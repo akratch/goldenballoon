@@ -55,6 +55,11 @@ typedef struct ALSoundState {
     /* 0x3D */ u8 fxmix;
     /* 0x3E */ u8 flags;
     /* 0x3F */ u8 state;
+#ifdef NATIVE_PORT
+    /* Host-only ABA guard. Rollback cancellation must distinguish a predicted
+     * voice from a later voice that reused the same fixed-pool address. */
+    u64 rollbackGeneration;
+#endif
 } ALSoundState;
 
 typedef struct ALSoundState* SoundHandle;
@@ -134,6 +139,9 @@ void sndp_stop(SoundHandle state);
  * sndp_deallocate() writes NULL through userHandle long after sndp_stop()
  * returns. */
 void sndp_stop_and_detach(SoundHandle *handlePtr);
+u64 sndp_rollback_generation(SoundHandle handle);
+void sndp_stop_rollback_voice(
+    SoundHandle handle, u64 generation, SoundHandle *handlePtr);
 #endif
 ALSoundState *sndp_allocate(UNUSED ALBank *arg0, ALSound *sound);
 void sndp_deallocate(ALSoundState *);

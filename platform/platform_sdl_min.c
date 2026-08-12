@@ -153,6 +153,11 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "gameplay_event_trace.h"
 #include "a11y_race.h"
 #include "input_tick_queue.h"
+#include "pad_router.h"
+#include "party/remote_pad.h"
+#ifdef MDKR_APP
+#include "party/native_remote_pad_ingress.h"
+#endif
 #include "input_consumption_trace.h"
 #include "controller_mapping.h"
 #include "video_config.h"
@@ -162,6 +167,8 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "gfx_ptr.h"
 #ifdef MDKR_APP
 #include "host_window.h"          /* app-shell window/device handoff */
+#endif
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
 #include "app_overlay_hooks.h"    /* in-game overlay event/render hooks */
 #endif
 #include "presentation_snapshot.h" /* live policy apply retires the staged pair */
@@ -262,6 +269,7 @@ static int           s_renderBackend = -1;
 static int           s_renderBackendUnavailable = 0;
 static int           s_surfaceRenderElided;
 static int           s_surfaceResumeRebasePending;
+static MdkrPresentIntervalClassifier s_quantumIntervals;
 static int           s_testMinimizeStart = -2;
 static int           s_testMinimizeEnd = -2;
 static int           s_testForcedMinimized;
@@ -371,6 +379,13 @@ struct pad_state {
 static struct pad_state s_pads[DKR_MAXPADS];
 static MdkrInputTickQueue s_inputQueue;
 static int s_inputQueueReady;
+static MdkrPadRouter s_padRouter;
+static MdkrPadLease s_localPadLease[DKR_MAXPADS];
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+static MdkrRemotePad s_remotePad[DKR_MAXPADS];
+static MdkrPadLease s_remotePadLease[DKR_MAXPADS];
+static uint64_t s_remotePadOwner[DKR_MAXPADS];
+#endif
 
 struct controller_source_state {
     Uint8 buttons[SDL_CONTROLLER_BUTTON_MAX];
@@ -450,6 +465,17 @@ EM_JS(int, browser_gamepad_rumble, (int instanceId, int strength), {
     }
     return 0;
 });
+EM_JS(int, browser_remote_phone_rumble_supported, (int port), {
+    const pads = Module.__mdkrRemotePads;
+    const pad = Array.isArray(pads) ? pads[port] : null;
+    return !!(pad && pad.active && pad.haptics && typeof pad.rumble === "function");
+});
+EM_JS(int, browser_remote_phone_rumble, (int port, int strength), {
+    const pads = Module.__mdkrRemotePads;
+    const pad = Array.isArray(pads) ? pads[port] : null;
+    if (!pad || !pad.active || !pad.haptics || typeof pad.rumble !== "function") return 0;
+    try { return pad.rumble(strength) ? 1 : 0; } catch (_) { return 0; }
+});
 
 /*
  * Touch input is published by the browser shell as plain Module state and
@@ -480,6 +506,33 @@ EM_JS(int, browser_touch_pad_pop,
     HEAP32[stickY >> 2] = active ? (Number(event.stickY) | 0) : 0;
     HEAP32[enabled >> 2] = active ? 1 : 0;
     return 1;
+});
+
+EM_JS(int, browser_remote_pad_info,
+      (int port, unsigned int *owner, unsigned int *connectionSequence), {
+    const pads = (typeof Module !== "undefined") && Module.__mdkrRemotePads;
+    const pad = Array.isArray(pads) && port >= 0 && port < 4 ? pads[port] : null;
+    /* Reservation and transport liveness are distinct. An approved phone owns
+     * its slot while reconnecting, so the fail-neutral RemotePad remains the
+     * source instead of silently handing the kart to a local keyboard/gamepad.
+     * `active` remains accepted for older automation fixtures. */
+    const reserved = pad && (pad.reserved === true || pad.active === true);
+    HEAPU32[owner >> 2] = reserved ? (Number(pad.owner) >>> 0) : 0;
+    HEAPU32[connectionSequence >> 2] = reserved
+      ? (Number(pad.connectionSequence) >>> 0) : 0;
+    return reserved ? 1 : 0;
+});
+
+EM_JS(int, browser_remote_pad_pop,
+      (int port, unsigned char *output, int capacity), {
+    const pads = (typeof Module !== "undefined") && Module.__mdkrRemotePads;
+    const pad = Array.isArray(pads) && port >= 0 && port < 4 ? pads[port] : null;
+    if (!pad || !Array.isArray(pad.packets) || pad.packets.length === 0) return 0;
+    const packet = pad.packets.shift();
+    const bytes = packet instanceof Uint8Array ? packet : new Uint8Array(packet || 0);
+    if (bytes.byteLength <= 0 || bytes.byteLength > capacity) return -1;
+    HEAPU8.set(bytes, output);
+    return bytes.byteLength;
 });
 #endif
 
@@ -1964,6 +2017,15 @@ void platform_input_init(void) {
     memset(initial, 0, sizeof(initial));
     initial[0].present = true;
     mdkr_input_tick_queue_init(&s_inputQueue, initial);
+    mdkr_pad_router_init(&s_padRouter);
+    memset(s_localPadLease, 0, sizeof(s_localPadLease));
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+    memset(s_remotePadLease, 0, sizeof(s_remotePadLease));
+    memset(s_remotePadOwner, 0, sizeof(s_remotePadOwner));
+    for (int remote_port = 0; remote_port < DKR_MAXPADS; remote_port++) {
+        mdkr_remote_pad_init(&s_remotePad[remote_port], 0u);
+    }
+#endif
     s_inputQueueReady = 1;
     memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
     if (s_sdlReady) {
@@ -2174,26 +2236,177 @@ static int browser_touch_pop(struct pad_state *p) {
     return 1;
 }
 
-static void browser_touch_merge(
-    const struct pad_state *touch, struct pad_state *p) {
-    unsigned int buttons = touch->buttons;
-    int stickX = touch->stick_x;
-    int stickY = touch->stick_y;
+/* Drain at most one validated remote transition per call. The caller captures
+ * after every true return, preserving a press+release that arrived between two
+ * display opportunities without ever re-entering wasm from a DataChannel
+ * callback. */
+static int browser_remote_pad_pump_one(void) {
+    uint8_t packet[MDKR_PARTY_PAD_MAX_BYTES];
+    const uint64_t now_ms = pace_host_ns() / 1000000u;
+    int port;
+    for (port = 0; port < DKR_MAXPADS; port++) {
+        uint32_t owner = 0u;
+        uint32_t connection_sequence = 0u;
+        MdkrPadLease current;
+        MdkrRemotePadTransition transition;
+        int length;
+        int attempts;
+        const int active = browser_remote_pad_info(
+            port, &owner, &connection_sequence);
+        const bool occupied = mdkr_pad_router_lease(
+            &s_padRouter, (unsigned)port, &current);
+        if (!active || owner == 0u || connection_sequence == 0u) {
+            if (occupied && current.kind == MDKR_PAD_REMOTE_PHONE &&
+                s_remotePadLease[port].generation != 0u) {
+                (void)mdkr_pad_router_release(
+                    &s_padRouter, &s_remotePadLease[port]);
+                memset(&s_remotePadLease[port], 0,
+                       sizeof(s_remotePadLease[port]));
+                s_remotePadOwner[port] = 0u;
+                mdkr_remote_pad_init(&s_remotePad[port], 0u);
+                return 1;
+            }
+            continue;
+        }
+        if (!occupied || current.kind != MDKR_PAD_REMOTE_PHONE ||
+            current.owner != (uint64_t)owner) {
+            if (occupied) (void)mdkr_pad_router_release(&s_padRouter, &current);
+            memset(&s_localPadLease[port], 0, sizeof(s_localPadLease[port]));
+            if (!mdkr_pad_router_claim(
+                    &s_padRouter, (unsigned)port, MDKR_PAD_REMOTE_PHONE,
+                    (uint64_t)owner, &s_remotePadLease[port])) {
+                continue;
+            }
+            s_remotePadOwner[port] = owner;
+            mdkr_remote_pad_init(&s_remotePad[port], connection_sequence);
+            return 1;
+        }
+        s_remotePadLease[port] = current;
+        if (s_remotePadOwner[port] != owner) {
+            s_remotePadOwner[port] = owner;
+            mdkr_remote_pad_init(&s_remotePad[port], connection_sequence);
+        } else if (s_remotePad[port].connection_sequence != connection_sequence) {
+            mdkr_remote_pad_rebind(
+                &s_remotePad[port], connection_sequence, now_ms);
+        }
+        if (mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+            (void)mdkr_pad_router_publish(
+                &s_padRouter, &s_remotePadLease[port], transition.sample);
+            return 1;
+        }
+        for (attempts = 0; attempts < 16; attempts++) {
+            length = browser_remote_pad_pop(port, packet, (int)sizeof(packet));
+            if (length == 0) break;
+            if (length > 0) {
+                (void)mdkr_remote_pad_accept(
+                    &s_remotePad[port], packet, (size_t)length, now_ms);
+                if (mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+                    (void)mdkr_pad_router_publish(
+                        &s_padRouter, &s_remotePadLease[port], transition.sample);
+                    return 1;
+                }
+            }
+        }
+        if (mdkr_remote_pad_expire(&s_remotePad[port], now_ms) &&
+            mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+            (void)mdkr_pad_router_publish(
+                &s_padRouter, &s_remotePadLease[port], transition.sample);
+            return 1;
+        }
+    }
+    return 0;
+}
 
-    /* The analog stick is the authoritative steering source. Mirror a decisive
-     * deflection onto the D-pad as the keyboard path does because a few menus
-     * and gameplay screens read jpad directly instead of the analog axes. */
-    if (stickX < -24) buttons |= N64_DL;
-    if (stickX >  24) buttons |= N64_DR;
-    if (stickY < -24) buttons |= N64_DD;
-    if (stickY >  24) buttons |= N64_DU;
+#endif
 
-    p->buttons |= buttons;
+#ifdef MDKR_APP
+/* Native libdatachannel callbacks publish into a process-owned bounded queue.
+ * The input thread consumes exactly the same MdkrRemotePad and PadRouter path
+ * as the browser. No transport callback is allowed to mutate engine state. */
+static int native_remote_pad_pump_one(void) {
+    uint8_t packet[MDKR_PARTY_PAD_MAX_BYTES];
+    const uint64_t now_ms = pace_host_ns() / 1000000u;
+    int port;
+    for (port = 0; port < DKR_MAXPADS; port++) {
+        uint64_t owner = 0u;
+        uint32_t connection_sequence = 0u;
+        MdkrPadLease current;
+        MdkrRemotePadTransition transition;
+        int attempts;
+        const int active = mdkr_native_remote_pad_info(
+            (unsigned)port, &owner, &connection_sequence) ? 1 : 0;
+        const bool occupied = mdkr_pad_router_lease(
+            &s_padRouter, (unsigned)port, &current);
+        if (!active || owner == 0u || connection_sequence == 0u) {
+            if (occupied && current.kind == MDKR_PAD_REMOTE_PHONE &&
+                s_remotePadLease[port].generation != 0u) {
+                (void)mdkr_pad_router_release(
+                    &s_padRouter, &s_remotePadLease[port]);
+                memset(&s_remotePadLease[port], 0,
+                       sizeof(s_remotePadLease[port]));
+                s_remotePadOwner[port] = 0u;
+                mdkr_remote_pad_init(&s_remotePad[port], 0u);
+                return 1;
+            }
+            continue;
+        }
+        if (!occupied || current.kind != MDKR_PAD_REMOTE_PHONE ||
+            current.owner != owner) {
+            if (occupied) (void)mdkr_pad_router_release(&s_padRouter, &current);
+            memset(&s_localPadLease[port], 0, sizeof(s_localPadLease[port]));
+            if (!mdkr_pad_router_claim(
+                    &s_padRouter, (unsigned)port, MDKR_PAD_REMOTE_PHONE,
+                    owner, &s_remotePadLease[port])) {
+                continue;
+            }
+            s_remotePadOwner[port] = owner;
+            mdkr_remote_pad_init(&s_remotePad[port], connection_sequence);
+            return 1;
+        }
+        s_remotePadLease[port] = current;
+        if (s_remotePadOwner[port] != owner) {
+            s_remotePadOwner[port] = owner;
+            mdkr_remote_pad_init(&s_remotePad[port], connection_sequence);
+        } else if (s_remotePad[port].connection_sequence != connection_sequence) {
+            mdkr_remote_pad_rebind(
+                &s_remotePad[port], connection_sequence, now_ms);
+        }
+        if (mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+            (void)mdkr_pad_router_publish(
+                &s_padRouter, &s_remotePadLease[port], transition.sample);
+            return 1;
+        }
+        for (attempts = 0; attempts < 16; attempts++) {
+            const size_t length = mdkr_native_remote_pad_pop(
+                (unsigned)port, owner, connection_sequence,
+                packet, sizeof(packet));
+            if (length == 0u) break;
+            (void)mdkr_remote_pad_accept(
+                &s_remotePad[port], packet, length, now_ms);
+            if (mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+                (void)mdkr_pad_router_publish(
+                    &s_padRouter, &s_remotePadLease[port], transition.sample);
+                return 1;
+            }
+        }
+        if (mdkr_remote_pad_expire(&s_remotePad[port], now_ms) &&
+            mdkr_remote_pad_pop(&s_remotePad[port], &transition)) {
+            (void)mdkr_pad_router_publish(
+                &s_padRouter, &s_remotePadLease[port], transition.sample);
+            return 1;
+        }
+    }
+    return 0;
+}
+#endif
 
-    /* A resting touch stick must not erase a physical pad. If both are active,
-     * retain the larger deflection independently on each axis. */
-    if (abs(stickX) > abs(p->stick_x)) p->stick_x = stickX;
-    if (abs(stickY) > abs(p->stick_y)) p->stick_y = stickY;
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+static int remote_pad_pump_one(void) {
+#ifdef __EMSCRIPTEN__
+    return browser_remote_pad_pump_one();
+#else
+    return native_remote_pad_pump_one();
+#endif
 }
 #endif
 
@@ -2202,7 +2415,7 @@ static void input_clear_game_sources(void) {
     memset(s_controllerSource, 0, sizeof(s_controllerSource));
 }
 
-#ifdef MDKR_APP
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
 /* The single handoff between the shell overlay's input capture and the game.
  *
  * The overlay does not only open and close from inside process_event. Its
@@ -2242,6 +2455,50 @@ static int test_script_only_input(void) {
     return s_testScriptOnlyInput;
 }
 
+static uint64_t local_pad_owner(int port, MdkrPadSourceKind kind) {
+    if (kind == MDKR_PAD_SDL && s_gc[port] != NULL) {
+        SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
+        const SDL_JoystickID instance = joystick != NULL
+            ? SDL_JoystickInstanceID(joystick) : -1;
+        /* Zero is reserved by PadRouter. Preserve the full signed SDL identity
+         * through a stable unsigned widening, then offset it. */
+        return (uint64_t)(uint32_t)instance + 1u;
+    }
+    return (uint64_t)kind;
+}
+
+static bool route_local_sample(
+    int port, MdkrPadSourceKind kind, MdkrInputSample source,
+    MdkrInputSample *out_sample) {
+    MdkrPadLease current;
+    const uint64_t owner = local_pad_owner(port, kind);
+    const bool occupied = mdkr_pad_router_lease(
+        &s_padRouter, (unsigned)port, &current);
+
+    /* An approved phone keeps its seat until the launcher explicitly releases
+     * its generation. Hotplugging a physical pad must never silently evict it. */
+    if (occupied && current.kind == MDKR_PAD_REMOTE_PHONE) {
+        return mdkr_pad_router_sample(
+            &s_padRouter, (unsigned)port, out_sample);
+    }
+    if (occupied &&
+        (current.kind != (uint8_t)kind || current.owner != owner)) {
+        if (!mdkr_pad_router_release(&s_padRouter, &current)) return false;
+        memset(&s_localPadLease[port], 0, sizeof(s_localPadLease[port]));
+    }
+    if (!mdkr_pad_router_lease(&s_padRouter, (unsigned)port, &current)) {
+        if (!mdkr_pad_router_claim(
+                &s_padRouter, (unsigned)port, kind, owner,
+                &s_localPadLease[port])) return false;
+    } else {
+        s_localPadLease[port] = current;
+    }
+    if (!mdkr_pad_router_publish(
+            &s_padRouter, &s_localPadLease[port], source)) return false;
+    return mdkr_pad_router_sample(
+        &s_padRouter, (unsigned)port, out_sample);
+}
+
 static void input_capture_live(uint64_t target_tick) {
     int port;
     /* Exact scripted-input gates must not inherit a transient host key,
@@ -2254,25 +2511,71 @@ static void input_capture_live(uint64_t target_tick) {
     }
     for (port = 0; port < DKR_MAXPADS; port++) {
         struct pad_state live = { 0, 0, 0, 0 };
-        MdkrInputSample sample;
-        live.present = port == 0 || s_gc[port] != NULL;
+        MdkrInputSample source = {0, 0, 0, false};
+        MdkrInputSample sample = {0, 0, 0, false};
+        MdkrPadSourceKind kind = MDKR_PAD_NONE;
+
+        /* Explicit one-source policy: physical controller, then selected local
+         * touch, then the P1 keyboard fallback. This removes the old bitwise
+         * merge where two people could unknowingly steer one kart. */
+        if (s_gc[port] != NULL) {
+            kind = MDKR_PAD_SDL;
+            live.present = 1;
+#ifdef __EMSCRIPTEN__
+        } else if (port == 0 && s_browserTouchSource.present) {
+            kind = MDKR_PAD_LOCAL_TOUCH;
+            live = s_browserTouchSource;
+#endif
+        } else if (port == 0) {
+            kind = MDKR_PAD_KEYBOARD;
+            live.present = 1;
+        }
         if (!s_gameInputSuppressed) {
-            if (port == 0) {
+            if (kind == MDKR_PAD_KEYBOARD) {
                 kbd_read(&live);
             }
-            if (s_gc[port] != NULL) {
+            if (kind == MDKR_PAD_SDL) {
                 gc_read(&s_controllerSource[port], &live);
+                /* One source at a time, but presence must not outrank use: a
+                 * merely-connected pad (charging, paired but idle) must not
+                 * take P1's keyboard away. When the pad contributes nothing
+                 * this capture and the keyboard does, the keyboard is the
+                 * active source; the seat follows whoever is actually
+                 * playing, and the pad reclaims it on its next input. */
+                if (port == 0 && live.buttons == 0u &&
+                    live.stick_x > -8 && live.stick_x < 8 &&
+                    live.stick_y > -8 && live.stick_y < 8) {
+                    struct pad_state keys = { 0, 0, 0, 0 };
+                    keys.present = 1;
+                    kbd_read(&keys);
+                    if (keys.buttons != 0u || keys.stick_x != 0 ||
+                        keys.stick_y != 0) {
+                        kind = MDKR_PAD_KEYBOARD;
+                        live = keys;
+                    }
+                }
             }
-#ifdef __EMSCRIPTEN__
-            if (port == 0) {
-                browser_touch_merge(&s_browserTouchSource, &live);
-            }
-#endif
+        } else {
+            live.buttons = 0u;
+            live.stick_x = 0;
+            live.stick_y = 0;
         }
-        sample.buttons = (uint16_t)live.buttons;
-        sample.stick_x = (int8_t)live.stick_x;
-        sample.stick_y = (int8_t)live.stick_y;
-        sample.present = live.present != 0;
+        source.buttons = (uint16_t)live.buttons;
+        source.stick_x = (int8_t)live.stick_x;
+        source.stick_y = (int8_t)live.stick_y;
+        source.present = live.present != 0;
+        if (kind == MDKR_PAD_NONE) {
+            MdkrPadLease current;
+            if (mdkr_pad_router_lease(&s_padRouter, (unsigned)port, &current) &&
+                current.kind != MDKR_PAD_REMOTE_PHONE) {
+                (void)mdkr_pad_router_release(&s_padRouter, &current);
+                memset(&s_localPadLease[port], 0, sizeof(s_localPadLease[port]));
+            }
+            (void)mdkr_pad_router_sample(
+                &s_padRouter, (unsigned)port, &sample);
+        } else if (!route_local_sample(port, kind, source, &sample)) {
+            sample = (MdkrInputSample){0, 0, 0, false};
+        }
         mdkr_input_tick_queue_capture(
             &s_inputQueue, (unsigned)port, target_tick, sample);
     }
@@ -2284,8 +2587,8 @@ static void input_capture_live(uint64_t target_tick) {
 /*
  * JUST-IN-TIME INPUT SAMPLING.
  *
- * Off unless MDKR_INPUT_JIT is set to something other than 0, latched once so
- * no tick can observe the setting changing under it. Deliberately NOT keyed on
+ * On unless MDKR_INPUT_JIT is explicitly 0, latched once so no tick can
+ * observe the setting changing under it. Deliberately NOT keyed on
  * the simulation cadence: sampling the pad later in wall-clock time changes
  * nothing about how the sample is processed, so it is correct under Original
  * and Enhanced alike and has no business asking which one is running.
@@ -2304,7 +2607,7 @@ static int input_jit_sampling_enabled(void) {
     if (s_inputJitSampling < 0) {
         const char *value = getenv("MDKR_INPUT_JIT");
         s_inputJitSampling =
-            (value != NULL && value[0] != '\0' && value[0] != '0');
+            value == NULL || value[0] == '\0' || value[0] != '0';
     }
     return s_inputJitSampling;
 }
@@ -2358,6 +2661,10 @@ static void platform_surface_visibility_update(void) {
     if ((int)elide != s_surfaceRenderElided) {
         s_surfaceRenderElided = elide ? 1 : 0;
         present_sched_set_surface_elided(elide);
+        /* No interval on either side of a suspended surface describes one
+         * continuous scanout cadence. Retire the old display evidence at the
+         * same boundary that retires the old pacing timeline. */
+        mdkr_present_interval_reset(&s_quantumIntervals);
         if (!elide) {
             s_surfaceResumeRebasePending = 1;
         }
@@ -2561,7 +2868,7 @@ static void input_dispatch_events(uint64_t target_tick) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             int input_changed = 0;
-#ifdef MDKR_APP
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
             /*
              * Input-swallowing contract with the in-game overlay.
              *
@@ -2739,7 +3046,7 @@ void platform_input_pump(void) {
     /* Test-only; one compare in every real run (see settings_toggle_poll). */
     settings_toggle_poll();
     pad_hotplug_poll();
-#ifdef MDKR_APP
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
     /* Applies deferred shell/window work after the previous present and before
      * any new frame acquires a drawable. No-op without registered app hooks. */
     platformOverlayService();
@@ -2759,6 +3066,9 @@ void platform_input_pump(void) {
         input_capture_live(target_tick);
     }
     browser_touch_read_current(&s_browserTouchSource);
+#endif
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+    while (remote_pad_pump_one()) input_capture_live(target_tick);
 #endif
     /* Sample touch/current source state even when this opportunity carried no
      * discrete SDL event. The queue coalesces unchanged/analog-only samples. */
@@ -2802,7 +3112,7 @@ void platform_input_sample_late(void) {
         return;
     }
     target_tick = present_sched_input_target_tick();
-#ifdef MDKR_APP
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
     overlay_capture_sync(target_tick);
 #endif
     input_dispatch_events(target_tick);
@@ -2811,6 +3121,9 @@ void platform_input_sample_late(void) {
         input_capture_live(target_tick);
     }
     browser_touch_read_current(&s_browserTouchSource);
+#endif
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+    while (remote_pad_pump_one()) input_capture_live(target_tick);
 #endif
     input_capture_live(target_tick);
 }
@@ -3907,6 +4220,7 @@ static void present_pace_note_display_changed(void) {
         return;
     }
     resolved = present_pace_rate_for_display(rate);
+    mdkr_present_interval_reset(&s_quantumIntervals);
     /*
      * `effectiveRate` is what the pacer is running on at this instant;
      * `resolvedRate` is what the latched policy's cadence WORKS OUT TO on the
@@ -4034,6 +4348,7 @@ void platform_present_config_apply(void) {
     s_occludedDeadlineReady = false;
     s_shedDeadlineReady = false;
     s_presentLastHeld = false;
+    mdkr_present_interval_reset(&s_quantumIntervals);
     present_pace_lazy_init();
 
     fprintf(stderr,
@@ -4078,88 +4393,30 @@ static void present_pace_poll_display_switch(void) {
     present_pace_note_display_changed();
 }
 
-/*
- * Rolling variance of the last 32 present-to-present intervals, fed from the
- * SAME clock read platform_vi_present_pace_units() already takes to pace each
- * present (quantum_interval_note() below is called with its `elapsed`, not a
- * fresh pace_host_ns()). Expressed as parts-per-million of the mean interval
- * squared -- the squared coefficient of variation -- so the threshold is
- * resolution-independent across refresh rates: 2500 ppm is exactly 5%
- * relative jitter (0.05^2 * 1e6), roughly a VRR panel mid-range. A fixed
- * panel's ordinary scheduling noise sits orders of magnitude below that.
- */
-#define QUANTUM_INTERVAL_WINDOW 32u
-static uint64_t s_quantumIntervalNs[QUANTUM_INTERVAL_WINDOW];
-static unsigned s_quantumIntervalCount;
-static unsigned s_quantumIntervalHead;
-static uint64_t s_quantumLastVariancePpm;
-
+/* Fed from the same clock read that paces the present. The pure classifier in
+ * pacing_policy.c trims isolated host stalls and carries the hysteresis state;
+ * keeping the samples out of this SDL translation unit makes the shipping
+ * decision independently testable. */
 static void quantum_interval_note(uint64_t elapsed_ns) {
-    s_quantumIntervalNs[s_quantumIntervalHead] = elapsed_ns;
-    s_quantumIntervalHead = (s_quantumIntervalHead + 1u) % QUANTUM_INTERVAL_WINDOW;
-    if (s_quantumIntervalCount < QUANTUM_INTERVAL_WINDOW) {
-        s_quantumIntervalCount++;
-    }
-}
-
-static uint64_t quantum_interval_variance_ppm(void) {
-    uint64_t sum = 0u;
-    uint64_t sum_sq = 0u;
-    uint64_t mean, mean_sq, variance;
-    unsigned i;
-
-    if (s_quantumIntervalCount < QUANTUM_INTERVAL_WINDOW) {
-        /* Not enough history yet: report no variance rather than a noisy
-         * early estimate that could flip mode on startup jitter alone. */
-        return 0u;
-    }
-    for (i = 0u; i < QUANTUM_INTERVAL_WINDOW; i++) {
-        sum += s_quantumIntervalNs[i];
-    }
-    mean = sum / QUANTUM_INTERVAL_WINDOW;
-    if (mean == 0u) {
-        return 0u;
-    }
-    for (i = 0u; i < QUANTUM_INTERVAL_WINDOW; i++) {
-        const uint64_t sample = s_quantumIntervalNs[i];
-        const uint64_t d = sample > mean ? sample - mean : mean - sample;
-        /* Every sample is bounded by MDKR_PACING_STALL_REBASE_NS (200ms):
-         * quantum_interval_note() is only ever called from the non-rebase
-         * branch. A bound this generous (d well under 2e8) keeps d*d far
-         * below UINT64_MAX (~1.8e19) on its own, but the bound is asserted
-         * rather than assumed -- a future widening of the rebase threshold
-         * must not silently reopen the overflow this guards against. */
-        if (d > (uint64_t)UINT32_MAX) {
-            return UINT64_MAX;
-        }
-        sum_sq += d * d;
-    }
-    variance = sum_sq / QUANTUM_INTERVAL_WINDOW;
-    mean_sq = mean * mean; /* mean is well under UINT32_MAX; cannot overflow */
-    /*
-     * variance_ppm = variance * 1e6 / mean_sq, but computing the numerator
-     * first overflows uint64 for perfectly ordinary jitter (mean_sq is
-     * ~2.8e14 at 60 Hz, so variance need only exceed ~1.8e13 -- a ~4.3ms
-     * deviation squared -- to overflow `variance * 1e6` before the division
-     * that would have brought it back down to a small ppm figure). Folding
-     * the 1e6 into the DIVISOR instead avoids that: it costs a few
-     * insignificant low bits of `mean_sq` (relative error ~1e6/mean_sq,
-     * negligible at any real display rate) rather than the answer itself.
-     */
-    {
-        const uint64_t scaled_mean_sq = mean_sq / UINT64_C(1000000);
-        if (scaled_mean_sq == 0u) {
-            /* mean_sq under 1e6 means a sub-millisecond mean interval --
-             * not a real display rate -- so there is nothing meaningful to
-             * report rather than dividing by zero. */
-            return 0u;
-        }
-        return variance / scaled_mean_sq;
-    }
+    mdkr_present_interval_note(&s_quantumIntervals, elapsed_ns);
 }
 
 uint64_t platform_present_quantum_variance_ppm(void) {
-    return s_quantumLastVariancePpm;
+    /* Read live like the sibling accessors: a manually synced cache
+     * here went stale whenever a new reset path forgot its zero. */
+    return s_quantumIntervals.jitter_ppm;
+}
+
+unsigned platform_present_quantum_sample_count(void) {
+    return s_quantumIntervals.count;
+}
+
+uint64_t platform_present_quantum_transition_count(void) {
+    return s_quantumIntervals.transitions;
+}
+
+const char *platform_present_quantum_timing_name(void) {
+    return mdkr_present_interval_kind_name(s_quantumIntervals.kind);
 }
 
 /*
@@ -4199,8 +4456,7 @@ uint64_t platform_present_display_quantum_units(void) {
          * caller, so a present is not one refresh. */
         return 0u;
     }
-    s_quantumLastVariancePpm = quantum_interval_variance_ppm();
-    if (s_quantumLastVariancePpm > 2500u &&
+    if (s_quantumIntervals.kind == MDKR_PRESENT_INTERVAL_VARIABLE &&
         !present_pace_quantum_strict_forced()) {
         /*
          * Every branch above establishes that presents are gated by a
@@ -4213,9 +4469,9 @@ uint64_t platform_present_display_quantum_units(void) {
          * phase onto ticks it never lands on is what UNCAPPED_PRESENTATION.md
          * calls the latched-pacer hazard (docs/UNCAPPED_PRESENTATION.md:51-62)
          * applied to the interpolation phase rather than the frame limit.
-         * Measured interval jitter is the signal a fixed panel cannot
-         * produce: declining here leaves the measured phase standing, same
-         * as every other 0-returning branch above.
+         * A trimmed interval distribution, with hysteresis, is the signal a
+         * fixed panel cannot sustain: declining here leaves the measured
+         * phase standing, same as every other 0-returning branch above.
          *
          * MDKR_PRESENT_QUANTUM_STRICT=1 forces today's behavior (always grid
          * when the branches above qualify) for A/B comparison against this
@@ -4245,6 +4501,7 @@ uint64_t platform_vi_present_pace_units(void) {
     }
     if (s_surfaceResumeRebasePending) {
         s_surfaceResumeRebasePending = 0;
+        mdkr_present_interval_reset(&s_quantumIntervals);
         s_presentLastNs = pace_host_ns();
         s_occludedDeadlineReady = false;
         /* Suspension time is retired, not paced across: the floor's grid
@@ -4367,7 +4624,8 @@ uint64_t platform_vi_present_pace_units(void) {
             mdkr_pacing_interval_requires_rebase(
                 now - s_presentLastNs)) {
             /* Suspension/debugger/occlusion time is retired, not simulated. */
-            units = (uint64_t)s_minFields * UINT64_C(1000000000);
+            mdkr_present_interval_reset(&s_quantumIntervals);
+                units = (uint64_t)s_minFields * UINT64_C(1000000000);
             s_viLastPaceRebased = 1;
             if (deadline && clock != NULL) {
                 (void)mdkr_present_deadline_init(clock, clock_rate);
@@ -4447,13 +4705,30 @@ void mdkr_pace_probe_racer(int playerIndex, float x, float y, float z, int clock
  * module at all -- is a separate question, and one a "the process survived and the
  * checkpoint counter climbed" assertion cannot answer: a silently-ignored override
  * would drive a CAR on every row of tests/check_vehicle_sweep.py and pass all 47.
- * Printed once per change, so a whole race costs one line. */
+ * MDKR_TRACE enables this with the other pacing probes; MDKR_TRACE_VEHICLE=1
+ * enables only this bounded witness for long CI runs. Printed once per change,
+ * so a whole race normally costs one line. */
 static int s_probeVehicle[MDKR_PROBE_PLAYERS] = { -1, -1, -1, -1 };
+static int mdkr_vehicle_trace_enabled(void) {
+    static int cached = -1;
+    if (mdkr_trace_enabled()) {
+        return 1;
+    }
+    if (cached < 0) {
+        const char *value = getenv("MDKR_TRACE_VEHICLE");
+        cached = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    return cached;
+}
+
 void mdkr_pace_probe_vehicle(int playerIndex, int vehicleID) {
     if (playerIndex < 0 || playerIndex >= MDKR_PROBE_PLAYERS) return;
     if (s_probeVehicle[playerIndex] == vehicleID) return;
     s_probeVehicle[playerIndex] = vehicleID;
-    MDKR_TRACE("[PVEH] frame=%d player=%d vehicleID=%d", g_frameCounter, playerIndex, vehicleID);
+    if (mdkr_vehicle_trace_enabled()) {
+        mdkr_trace("[PVEH] frame=%d player=%d vehicleID=%d",
+                   g_frameCounter, playerIndex, vehicleID);
+    }
 }
 /* Race progress along the spline (checkpoint index + lap). Position alone cannot
  * distinguish "driving the track" from "sliding along a wall" or "spinning in
@@ -4536,7 +4811,7 @@ void mdkr_pace_probe_ghost(int ghostBank) {
  * exactly what made the volcano fall look like a "tilt never recovers" bug.
  * Emitted only when MDKR_TRACE >= 1, for player 1, one line per frame. */
 void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int s0, int s1, int s2, int s3,
-                       int xrot, int zrot) {
+                       int xrot, int zrot, int inputBlocked) {
     if (!mdkr_trace_enabled()) return;
     /* xrot/zrot are the racer object's pitch and roll -- the "tilt" a player
      * sees. They are derived from where the four wheels touched down, so they
@@ -4549,8 +4824,16 @@ void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int 
      * makes "no racer loses the ground" assertable, rather than "player 1 did
      * not happen to drive over the bad spot". `ri` is racer->racerIndex, `pi`
      * the playerIndex (PLAYER_COMPUTER == 4). */
-    mdkr_trace("[GRND] frame=%d pi=%d ri=%d gw=%d surf=%d,%d,%d,%d xrot=%d zrot=%d",
-               g_frameCounter, playerIndex, racerIndex, groundedWheels, s0, s1, s2, s3, xrot, zrot);
+    /* `blk` is gRacerInputBlocked: the game is deliberately holding this racer
+     * still (a textbox, a cutscene camera, an approach target). It is appended
+     * LAST so every existing [GRND] parser keeps matching -- and it exists
+     * because a wedge detector cannot tell "cannot move" from "is not allowed to
+     * move" without it. Measured: the "you need N balloons" textbox pins the
+     * kart at one bit-exact position for the whole message while a commanded
+     * reverse is being ignored, which is authored behaviour, not a wedge. */
+    mdkr_trace("[GRND] frame=%d pi=%d ri=%d gw=%d surf=%d,%d,%d,%d xrot=%d zrot=%d blk=%d",
+               g_frameCounter, playerIndex, racerIndex, groundedWheels, s0, s1, s2, s3, xrot, zrot,
+               inputBlocked);
 }
 
 /* One cooperative frame: pump events, present, advance/headless-exit. Called
@@ -4842,6 +5125,23 @@ static void platform_frame_sync_impl(int swap, int count_present) {
                    mdkr_coll_cap(500),
                    mdkr_coll_canary_armed() ? mdkr_coll_canary_trips() : -1L);
         }
+        /* Embedded-point recovery in func_80017A18(). `points` is how many wheel
+         * points arrived INSIDE a collision mesh and were ejected; `iters` the
+         * push-out iterations that took. `embedded` is the independent arrival
+         * probe (token-gated, so -1 when the wedge gate is not driving this run)
+         * and is the number tests/check_object_wedge.py asserts on: it counts the
+         * state the PREVIOUS tick left behind, so it reads the same way in the
+         * recovering and non-recovering arms. */
+        {
+            extern unsigned long mdkr_objcoll_recover_iters(void);
+            extern unsigned long mdkr_objcoll_recover_points(void);
+            extern unsigned long mdkr_objcoll_embed_total(void);
+            extern int           mdkr_objcoll_wedge_test_enabled(void);
+            printf("[OBJRECOVER] points=%lu iters=%lu embedded=%ld\n",
+                   mdkr_objcoll_recover_points(), mdkr_objcoll_recover_iters(),
+                   mdkr_objcoll_wedge_test_enabled()
+                       ? (long)mdkr_objcoll_embed_total() : -1L);
+        }
         /* Segment-overlap list high-water marks. These two lists are written
          * through a bare pointer by get_inside_segment_count_x[y]z(), so the
          * bound parameter is the only instrument that can see them overflow --
@@ -4974,7 +5274,13 @@ int platform_pad_present(int port) {
            (s_scriptPresentMask & (1u << port)) != 0;
 }
 int platform_pad_rumble_supported(int port) {
-    if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    if (port < 0 || port >= DKR_MAXPADS) return 0;
+#ifdef __EMSCRIPTEN__
+    if (browser_remote_phone_rumble_supported(port)) return 1;
+#elif defined(MDKR_APP)
+    if (mdkr_native_remote_pad_haptics_supported((unsigned)port)) return 1;
+#endif
+    if (s_gc[port] == NULL) return 0;
     if (s_rumbleSupported[port] >= 0) return s_rumbleSupported[port];
 #ifdef __EMSCRIPTEN__
     SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
@@ -4996,9 +5302,18 @@ int platform_pad_rumble_supported(int port) {
 }
 static int platform_pad_rumble_send(int port, int enabled) {
     uint16_t strength;
-    if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    if (port < 0 || port >= DKR_MAXPADS) return 0;
     strength = mdkr_controller_rumble_output_strength(
         mdkr_video_config_current(), enabled);
+#ifdef __EMSCRIPTEN__
+    if (browser_remote_phone_rumble_supported(port)) {
+        return browser_remote_phone_rumble(port, (int)strength);
+    }
+#elif defined(MDKR_APP)
+    if (mdkr_native_remote_pad_request_rumble(
+            (unsigned)port, strength)) return 1;
+#endif
+    if (s_gc[port] == NULL) return 0;
 #ifdef __EMSCRIPTEN__
     SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[port]);
     if (!joystick) return 0;
@@ -5016,7 +5331,12 @@ static int platform_pad_rumble_send(int port, int enabled) {
 
 int platform_pad_rumble(int port, int enabled) {
     int audible;
-    if (port < 0 || port >= DKR_MAXPADS || s_gc[port] == NULL) return 0;
+    if (port < 0 || port >= DKR_MAXPADS ||
+        (s_gc[port] == NULL
+#ifdef __EMSCRIPTEN__
+         && !browser_remote_phone_rumble_supported(port)
+#endif
+        )) return 0;
     s_rumbleRequested[port] = enabled != 0;
     audible = enabled &&
         mdkr_controller_rumble_enabled(mdkr_video_config_current());
@@ -5031,7 +5351,11 @@ void platform_pad_rumble_preferences_changed(void) {
     const int allowed =
         mdkr_controller_rumble_enabled(mdkr_video_config_current());
     for (int port = 0; port < DKR_MAXPADS; port++) {
-        if (s_gc[port] != NULL) {
+        if (s_gc[port] != NULL
+#ifdef __EMSCRIPTEN__
+            || browser_remote_phone_rumble_supported(port)
+#endif
+        ) {
             (void)platform_pad_rumble_send(
                 port, allowed && s_rumbleRequested[port]);
         }
@@ -5045,4 +5369,166 @@ void platform_pad_stick(int port, int *sx, int *sy) {
     if (port < 0 || port >= DKR_MAXPADS) { if (sx) *sx = 0; if (sy) *sy = 0; return; }
     if (sx) *sx = s_pads[port].stick_x;
     if (sy) *sy = s_pads[port].stick_y;
+}
+
+int platform_engine_session_begin(void) {
+    int index;
+
+    /* The launcher may retain SDL and the host window/device. Everything the
+     * engine borrowed or created must already have been returned. */
+    if (s_window != NULL || s_glctx != NULL) {
+        fprintf(stderr,
+                "[ENGINE-SESSION] prior engine handles are still live\n");
+        return -1;
+    }
+    for (index = 0; index < DKR_MAXPADS; index++) {
+        if (s_gc[index] != NULL) {
+            fprintf(stderr,
+                    "[ENGINE-SESSION] prior controller %d is still live\n",
+                    index);
+            return -1;
+        }
+    }
+
+    g_headlessFrames = -1;
+    g_headlessTicks = -1;
+    g_frameCounter = 0;
+    g_surfaceFrameCounter = 0u;
+    g_dumpFramesDir = NULL;
+    s_exitRequested = 0;
+    s_exitCode = 0;
+#ifdef __EMSCRIPTEN__
+    s_browserFrameNowNs = 0u;
+#endif
+
+    s_renderBackend = -1;
+    s_renderBackendUnavailable = 0;
+    s_surfaceRenderElided = 0;
+    s_surfaceResumeRebasePending = 0;
+    s_testMinimizeStart = -2;
+    s_testMinimizeEnd = -2;
+    s_testForcedMinimized = 0;
+
+    memset(s_pads, 0, sizeof(s_pads));
+    memset(&s_inputQueue, 0, sizeof(s_inputQueue));
+    s_inputQueueReady = 0;
+    mdkr_pad_router_init(&s_padRouter);
+    memset(s_localPadLease, 0, sizeof(s_localPadLease));
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+    memset(s_remotePadLease, 0, sizeof(s_remotePadLease));
+    memset(s_remotePadOwner, 0, sizeof(s_remotePadOwner));
+    for (index = 0; index < DKR_MAXPADS; index++) {
+        mdkr_remote_pad_init(&s_remotePad[index], 0u);
+    }
+#endif
+    memset(s_controllerSource, 0, sizeof(s_controllerSource));
+    memset(s_keyboardDown, 0, sizeof(s_keyboardDown));
+#if defined(MDKR_APP) || defined(__EMSCRIPTEN__)
+    /* One latch owner: a prior engine epoch can finish while the overlay owns
+     * input, so reconcile through the same neutralizing handoff used at run
+     * time instead of inventing a lifecycle-only assignment. */
+    overlay_capture_sync(0u);
+#endif
+    s_testScriptOnlyInput = -1;
+#ifdef __EMSCRIPTEN__
+    memset(&s_browserTouchSource, 0, sizeof(s_browserTouchSource));
+#endif
+    memset(s_rumbleRequested, 0, sizeof(s_rumbleRequested));
+    for (index = 0; index < DKR_MAXPADS; index++) {
+        s_rumbleSupported[index] = -1;
+    }
+    s_quitRequested = 0;
+    memset(s_script, 0, sizeof(s_script));
+    s_scriptCount = 0;
+    s_scriptPresentMask = 0u;
+    s_initialWindowWidth = DEFAULT_WIN_W;
+    s_initialWindowHeight = DEFAULT_WIN_H;
+    s_dumpFrom = -2;
+    s_dumpEvery = 1;
+
+    /* Settings can scan packs while the shell is home. Retire that view before
+     * the engine binds a fresh store using this epoch's resolved settings. */
+    if (s_contentPacksScanned) {
+        platform_content_packs_shutdown();
+    }
+    s_contentPacksScanned = 0;
+    s_contentPacksActive = 0;
+
+    s_hotplugState = -1;
+    memset(s_hotplug, 0, sizeof(s_hotplug));
+    s_hotplugCount = 0;
+    memset(s_hotplugInstance, 0, sizeof(s_hotplugInstance));
+    s_inputJitSampling = -1;
+    s_toggleState = -1;
+    memset(s_toggles, 0, sizeof(s_toggles));
+    s_toggleCount = 0;
+
+    g_viLastFields = 1;
+    g_viLastWallFields = 1;
+    s_viLastPaceRebased = 0;
+    s_paceMode = -1;
+    s_paceCompensate = 1;
+    s_synthFields = 2;
+    s_minFields = 2;
+    s_fieldHz = 60;
+    memset(&s_paceClock, 0, sizeof(s_paceClock));
+    s_paceCumWall = 0u;
+    s_paceUnitResidual = 0u;
+    s_simCumFields = 0u;
+    s_testRebaseEvery = 0u;
+    s_paceSamples = 0u;
+    free(s_oracleFieldEntries);
+    s_oracleFieldEntries = NULL;
+    s_oracleFieldCount = 0u;
+    s_oracleFieldCursor = 0u;
+    s_oracleFieldConfigured = -1;
+    s_oracleFieldApplied = 0u;
+
+    s_presentActive = -1;
+    s_presentKind = MDKR_PRESENT_ORIGINAL;
+    s_presentEffectiveRate = 0u;
+    s_presentSoftwareDeadline = false;
+    memset(&s_presentDeadline, 0, sizeof(s_presentDeadline));
+#ifndef __EMSCRIPTEN__
+    memset(&s_occludedDeadline, 0, sizeof(s_occludedDeadline));
+    memset(&s_shedDeadline, 0, sizeof(s_shedDeadline));
+#endif
+    s_occludedDeadlineReady = false;
+    s_presentLastNs = 0u;
+    s_presentSyntheticPhase = 0u;
+    s_presentDisplayRate = 0u;
+    s_shedDeadlineReady = false;
+    s_presentLastHeld = false;
+    s_displaySwitchState = -1;
+    s_displaySwitchRate = 0u;
+    s_displaySwitchTick = 0u;
+    s_displaySwitchFired = false;
+    mdkr_present_interval_reset(&s_quantumIntervals);
+
+    s_probeX = s_probeY = s_probeZ = 0.0f;
+    s_probeClock = 0;
+    s_probeCheckpoint = -1;
+    s_probeLap = -1;
+    s_probeValid = 0;
+    memset(s_probe2X, 0, sizeof(s_probe2X));
+    memset(s_probe2Y, 0, sizeof(s_probe2Y));
+    memset(s_probe2Z, 0, sizeof(s_probe2Z));
+    memset(s_probe2Clock, 0, sizeof(s_probe2Clock));
+    memset(s_probe2Valid, 0, sizeof(s_probe2Valid));
+    for (index = 0; index < MDKR_PROBE_PLAYERS; index++) {
+        s_probe2Cp[index] = -1;
+        s_probe2Lap[index] = -1;
+        s_probeVehicle[index] = -1;
+    }
+    s_probeRaceLap = -1;
+    s_probeRaceFinished = -1;
+    s_probeRaceFinishPosition = -1;
+    s_probeRaceRacerIndex = -1;
+    s_probeRacePlayerIndex = -1;
+    s_probeGhostReads = 0;
+    s_probeGhostBank = -1;
+
+    platform_libultra_session_begin();
+    present_sched_engine_session_begin();
+    return 0;
 }

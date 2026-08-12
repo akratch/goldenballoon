@@ -12,6 +12,9 @@
 #include "video.h"
 #ifdef NATIVE_PORT
 #include "gameplay_event_trace.h"
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #endif
 
 /************ .data ************/
@@ -181,6 +184,10 @@ f32 *gTransitionNextVtx;
 f32 *gTransitionVtxStep;
 f32 *gTransitionVertexTarget;
 s32 gTransitionVertexCount;
+#ifdef NATIVE_PORT
+static s32 sTransitionWorkspacePinned;
+static size_t sTransitionWorkspaceCapacity;
+#endif
 
 /*****************************/
 
@@ -385,15 +392,119 @@ void transition_render(Gfx **dList, Mtx **mtx, Vertex **vtx) {
  */
 void transition_end(void) {
     if (sTransitionVtx[0] != NULL) {
+#ifdef NATIVE_PORT
+        if (!sTransitionWorkspacePinned) {
+#endif
         mempool_free(sTransitionVtx[0]);
         sTransitionVtx[0] = NULL;
         sTransitionVtx[1] = NULL;
         sTransitionTris[0] = NULL;
         sTransitionTris[1] = NULL;
+#ifdef NATIVE_PORT
+        }
+#endif
     }
     sTransitionStatus = TRANSITION_NONE;
     sTransitionTaskNum = 0;
 }
+
+#ifdef NATIVE_PORT
+static size_t transition_shape_workspace_size(
+    size_t vertex_count, size_t triangle_count) {
+    return ((vertex_count * sizeof(Vertex) +
+             triangle_count * sizeof(Triangle)) * 2u) +
+           (vertex_count * 12u * 3u);
+}
+
+s32 transition_workspace_preload(void) {
+    const size_t shape_size = transition_shape_workspace_size(92u, 80u);
+    const size_t circle_size =
+        (72u * sizeof(Vertex) + 64u * sizeof(Triangle)) * 2u;
+    const size_t capacity = shape_size > circle_size ? shape_size : circle_size;
+    if (sTransitionWorkspacePinned) {
+        return sTransitionVtx[0] != NULL &&
+               sTransitionWorkspaceCapacity >= capacity;
+    }
+    transition_end();
+    if (capacity > INT_MAX) {
+        return FALSE;
+    }
+    sTransitionVtx[0] = (Vertex *)mempool_alloc(
+        (s32)capacity, COLOUR_TAG_YELLOW);
+    if (sTransitionVtx[0] == NULL) {
+        return FALSE;
+    }
+    sTransitionWorkspaceCapacity = capacity;
+    sTransitionWorkspacePinned = TRUE;
+    return TRUE;
+}
+
+void *transition_workspace_address(void) {
+    return sTransitionWorkspacePinned ? sTransitionVtx[0] : NULL;
+}
+
+void transition_workspace_shutdown(void) {
+    sTransitionVtx[0] = NULL;
+    sTransitionVtx[1] = NULL;
+    sTransitionTris[0] = NULL;
+    sTransitionTris[1] = NULL;
+    gTransitionNextVtx = NULL;
+    gTransitionVtxStep = NULL;
+    gTransitionVertexTarget = NULL;
+    sTransitionWorkspacePinned = FALSE;
+    sTransitionWorkspaceCapacity = 0u;
+}
+
+s32 transition_rollback_state_spans(
+    MdkrTransitionRollbackSpan
+        spans[MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT]) {
+    size_t count = 0u;
+#define ADD_TRANSITION_STATE(value)                                      \
+    do {                                                                 \
+        spans[count++] = (MdkrTransitionRollbackSpan){                   \
+            &(value), sizeof(value)};                                    \
+    } while (0)
+    if (spans == NULL) {
+        return FALSE;
+    }
+    ADD_TRANSITION_STATE(gTransitionsDisabled);
+    ADD_TRANSITION_STATE(sLevelTransitionDelayTimer);
+    ADD_TRANSITION_STATE(gTransitionInvert);
+    ADD_TRANSITION_STATE(sTransitionStatus);
+    ADD_TRANSITION_STATE(sTransitionFadeTimer);
+    ADD_TRANSITION_STATE(gTransitionEndTimer);
+    ADD_TRANSITION_STATE(sTransitionFadeDuration);
+    ADD_TRANSITION_STATE(gTransitionFadeIn);
+    ADD_TRANSITION_STATE(sTransitionVtx);
+    ADD_TRANSITION_STATE(sTransitionTris);
+    ADD_TRANSITION_STATE(sTransitionTaskNum);
+    ADD_TRANSITION_STATE(gCurFadeTransition);
+    ADD_TRANSITION_STATE(gCurFadeRed);
+    ADD_TRANSITION_STATE(gCurFadeGreen);
+    ADD_TRANSITION_STATE(gCurFadeBlue);
+    ADD_TRANSITION_STATE(gCurFadeAlpha);
+    ADD_TRANSITION_STATE(gLastFadeRed);
+    ADD_TRANSITION_STATE(gLastFadeGreen);
+    ADD_TRANSITION_STATE(gLastFadeBlue);
+    ADD_TRANSITION_STATE(gLastFadeRedStep);
+    ADD_TRANSITION_STATE(gLastFadeGreenStep);
+    ADD_TRANSITION_STATE(gLastFadeBlueStep);
+    ADD_TRANSITION_STATE(sTransitionOpacity);
+    ADD_TRANSITION_STATE(gTransitionOpacityVel);
+    ADD_TRANSITION_STATE(D_8012A758);
+    ADD_TRANSITION_STATE(D_8012A75C);
+    ADD_TRANSITION_STATE(D_8012A760);
+    ADD_TRANSITION_STATE(D_8012A764);
+    ADD_TRANSITION_STATE(D_8012A768);
+    ADD_TRANSITION_STATE(D_8012A76C);
+    ADD_TRANSITION_STATE(gTransitionNextVtx);
+    ADD_TRANSITION_STATE(gTransitionVtxStep);
+    ADD_TRANSITION_STATE(gTransitionVertexTarget);
+    ADD_TRANSITION_STATE(gTransitionVertexCount);
+#undef ADD_TRANSITION_STATE
+    return count == MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT;
+}
+#endif
 
 /**
  * Sets the transition timer and opacity to positive or negative depending on whether to fade in or out.
@@ -483,7 +594,24 @@ void transition_init_shape(FadeTransition *transition, s32 numVerts, s32 numTris
     sizeTris = numTris * sizeof(Triangle);
     i = j * 12;
 
+#ifdef NATIVE_PORT
+    {
+        const size_t required =
+            (size_t)((sizeVerts + sizeTris) * 2) + (size_t)(i * 3);
+        if (!sTransitionWorkspacePinned) {
+            sTransitionVtx[0] = mempool_alloc_safe(
+                (s32)required, COLOUR_TAG_YELLOW);
+        } else if (required > sTransitionWorkspaceCapacity) {
+            fprintf(stderr,
+                    "[FATAL] transition workspace capacity exceeded "
+                    "(required=%zu capacity=%zu)\n",
+                    required, sTransitionWorkspaceCapacity);
+            abort();
+        }
+    }
+#else
     sTransitionVtx[0] = mempool_alloc_safe(((sizeVerts + sizeTris) * 2) + (i * 3), COLOUR_TAG_YELLOW);
+#endif
     sTransitionVtx[1] = sTransitionVtx[0] + j;
     sTransitionTris[0] = (Triangle *) (sTransitionVtx[1] + j);
     sTransitionTris[1] = (Triangle *) (((u8 *) sTransitionTris[0]) + sizeTris);
@@ -617,7 +745,23 @@ void transition_init_circle(FadeTransition *transition) {
 
     sizeVerts = 72 * sizeof(Vertex);
     sizeTris = 64 * sizeof(Triangle);
+#ifdef NATIVE_PORT
+    {
+        const size_t required = (size_t)(sizeVerts + sizeTris) * 2u;
+        if (!sTransitionWorkspacePinned) {
+            sTransitionVtx[0] = (Vertex *)mempool_alloc_safe(
+                (s32)required, COLOUR_TAG_YELLOW);
+        } else if (required > sTransitionWorkspaceCapacity) {
+            fprintf(stderr,
+                    "[FATAL] transition circle workspace capacity exceeded "
+                    "(required=%zu capacity=%zu)\n",
+                    required, sTransitionWorkspaceCapacity);
+            abort();
+        }
+    }
+#else
     sTransitionVtx[0] = (Vertex *) mempool_alloc_safe((sizeVerts + sizeTris) * 2, COLOUR_TAG_YELLOW);
+#endif
     sTransitionVtx[1] = sTransitionVtx[0] + 72;
     sTransitionTris[0] = (Triangle *) (sTransitionVtx[1] + 72);
     sTransitionTris[1] = sTransitionTris[0] + 64;

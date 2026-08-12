@@ -121,7 +121,12 @@ Findings that matter for the Emscripten step:
 - A published page also ships `sw.js` and `manifest.webmanifest`. The service
   worker is registered with the publish stamp appended, so each build gets its
   own cache and an installed page can never serve one build's wasm beside
-  another's JS glue; it deliberately does not call `skipWaiting()`.
+  another's JS glue; it deliberately does not call `skipWaiting()`. Every role
+  document carries the same `data-build-stamp`. An old active worker may return
+  a newer network document during the waiting-worker window, but it will not
+  write that document into its old cache. Offline recovery therefore returns a
+  complete old release, and activation deletes the old cache only after all old
+  controlled documents close.
 
 ## Acceptance — met
 

@@ -1,4 +1,5 @@
 #include "taj_mod_state_file.h"
+#include "magic_codes_state_file.h"
 #include "fs_utf8.h"
 #include "test_platform_compat.h"
 
@@ -23,7 +24,11 @@ int main(void) {
     char temporary[1400];
     TajModPersistentState expected;
     TajModPersistentState loaded;
+    MagicCodesPersistentState magic_expected;
+    MagicCodesPersistentState magic_loaded;
     const TajModStateStorage *storage = taj_mod_state_file_storage();
+    const MagicCodesStateStorage *magic_storage =
+        magic_codes_state_file_storage();
     int written;
     int failed = 0;
     int path_exists = 0;
@@ -54,6 +59,28 @@ int main(void) {
         loaded.taj_unlocked != 1 ||
         loaded.adventure_migration_complete != 1) {
         fprintf(stderr, "FAIL: stored sidecar did not load exactly\n");
+        failed = 1;
+    }
+
+    magic_codes_state_defaults(&magic_expected);
+    magic_expected.unlocked =
+        (UINT32_C(1) << 5) | (UINT32_C(1) << 25);
+    magic_expected.active = magic_expected.unlocked;
+    if (magic_codes_state_store(&magic_expected, magic_storage) != 1) {
+        fprintf(stderr, "FAIL: Magic Code store failed\n");
+        failed = 1;
+    }
+    magic_codes_state_defaults(&magic_loaded);
+    if (magic_codes_state_load(&magic_loaded, magic_storage) != 1 ||
+        magic_loaded.unlocked != magic_expected.unlocked ||
+        magic_loaded.active != magic_expected.active) {
+        fprintf(stderr, "FAIL: Magic Code sidecar did not round-trip exactly\n");
+        failed = 1;
+    }
+    (void)snprintf(path, sizeof(path), "%s/magic_codes_state.ini", save);
+    (void)mdkr_path_query_utf8(path, &path_exists, NULL, NULL);
+    if (!path_exists) {
+        fprintf(stderr, "FAIL: Magic Code sidecar used the wrong path\n");
         failed = 1;
     }
 
@@ -109,6 +136,10 @@ int main(void) {
     (void)mdkr_remove_utf8(temporary);
     (void)snprintf(temporary, sizeof(temporary), "%s/taj_mod_state.ini.lock", save);
     (void)mdkr_remove_utf8(temporary);
+    (void)mdkr_remove_utf8(path);
+    (void)snprintf(path, sizeof(path), "%s/magic_codes_state.ini", save);
+    (void)mdkr_remove_utf8(path);
+    (void)snprintf(path, sizeof(path), "%s/magic_codes_state.ini.lock", save);
     (void)mdkr_remove_utf8(path);
     (void)mdkr_rmdir_utf8(save);
     (void)mdkr_rmdir_utf8(root);

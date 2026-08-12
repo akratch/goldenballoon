@@ -20,6 +20,8 @@
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <stdlib.h>
+#include "net/local_listener_mix.h"
+#include "net/net_roster_runtime.h"
 #endif
 
 #ifdef NATIVE_PORT
@@ -44,6 +46,74 @@ Object_Racer *gSoundRacerObj;
 /******************************/
 
 #ifdef NATIVE_PORT
+static void racer_sound_endpoint_mix(
+    Object *source, s32 sourceSlot, Camera *cameras, s32 numCameras,
+    s32 fallbackVolume, s32 fallbackPan, MdkrLocalListenerMix *mix) {
+    s32 candidateVolume[MDKR_MATCH_SLOTS] = {0, 0, 0, 0};
+    u8 candidatePan[MDKR_MATCH_SLOTS] = {64, 64, 64, 64};
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    s32 listener;
+    /* Offline, the selector below can only answer with the fallback; skip the
+     * per-listener distance math (see racer_sound_endpoint_brake_mix). */
+    if (roster == NULL) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+        return;
+    }
+    for (listener = 0;
+         listener < numCameras && listener < MDKR_MATCH_SLOTS;
+         listener++) {
+        const f32 dx = source->trans.x_position -
+                       cameras[listener].trans.x_position;
+        const f32 dy = source->trans.y_position -
+                       cameras[listener].trans.y_position;
+        const f32 dz = source->trans.z_position -
+                       cameras[listener].trans.z_position;
+        const f32 distanceSquared = dx * dx + dy * dy + dz * dz;
+        f32 scale = 0.0f;
+        if (listener == sourceSlot && source->racer != NULL &&
+            !source->racer->raceFinished &&
+            !check_if_showing_cutscene_camera()) {
+            scale = 1.0f;
+            candidatePan[listener] = 64u;
+        } else if (distanceSquared < 2250000.0f) {
+            scale = (2250000.0f - distanceSquared) / 2250000.0f;
+            scale *= scale;
+            candidatePan[listener] = (u8)audspat_calculate_spatial_pan(
+                dx, dz, cameras[listener].trans.rotation.y_rotation);
+        }
+        candidateVolume[listener] = (s32)(fallbackVolume * scale);
+    }
+    if (!mdkr_local_listener_mix_select(
+            roster, candidateVolume, candidatePan, (unsigned)numCameras,
+            fallbackVolume, (u8)fallbackPan, mix)) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+    }
+}
+
+static void racer_sound_endpoint_brake_mix(
+    Object *source, s32 fallbackVolume, MdkrLocalListenerMix *mix) {
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    Camera *cameras;
+    if (roster == NULL) {
+        mix->volume = fallbackVolume;
+        mix->pan = 64u;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+        return;
+    }
+    cameras = cam_get_cameras();
+    racer_sound_endpoint_mix(
+        source, source->racer != NULL ? source->racer->playerIndex : -1,
+        cameras, roster->canonical_player_count,
+        fallbackVolume, 64, mix);
+}
+
 /* Focused end-to-end witness for tests/check_vehicle_audio.py. Sampling keeps
  * the opt-in trace compact while still exposing idle, acceleration and cruise. */
 static s32 vehicle_audio_trace_enabled(void) {
@@ -453,7 +523,15 @@ void racer_sound_car(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticks
             // Stop brake sound after being airborne for 10 consecutive frames
             sndp_set_param(gRacerSound->brakeSound, AL_SNDP_VOL_EVT, 0);
         } else {
+#ifdef NATIVE_PORT
+            MdkrLocalListenerMix endpointMix;
+            racer_sound_endpoint_brake_mix(
+                obj, gRacerSound->brakeSoundVolume, &endpointMix);
+            sndp_set_param(gRacerSound->brakeSound, AL_SNDP_VOL_EVT,
+                           endpointMix.volume << 8);
+#else
             sndp_set_param(gRacerSound->brakeSound, AL_SNDP_VOL_EVT, gRacerSound->brakeSoundVolume << 8);
+#endif
             audspat_calculate_echo(gRacerSound->brakeSound, obj->trans.x_position, obj->trans.y_position,
                                    obj->trans.z_position);
         }
@@ -924,6 +1002,9 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
     f32 pitch;
     VehicleSoundData *soundData;
     s32 bestSlot;
+#ifdef NATIVE_PORT
+    MdkrLocalListenerMix endpointMix;
+#endif
 
     // First, calculate engine and idle sound parameters for each player.
     for (i = 0; i < numCameras; i++) {
@@ -985,10 +1066,24 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
                     if (gRacerSound->engineIdleSoundHandle != NULL) {
                         audspat_calculate_echo(gRacerSound->engineIdleSoundHandle, racerObjs[i]->trans.x_position,
                                                racerObjs[i]->trans.y_position, racerObjs[i]->trans.z_position);
+#ifdef NATIVE_PORT
+                        racer_sound_endpoint_mix(
+                            racerObjs[i], i, cameras, numCameras,
+                            volume, gRacerSound->pan, &endpointMix);
+                        sndp_set_param(gRacerSound->engineIdleSoundHandle,
+                                       AL_SNDP_VOL_EVT,
+                                       endpointMix.volume << 8);
+#else
                         sndp_set_param(gRacerSound->engineIdleSoundHandle, AL_SNDP_VOL_EVT, volume << 8);
+#endif
                         sndp_set_param(gRacerSound->engineIdleSoundHandle, AL_SNDP_PITCH_EVT, *((u32 *) &pitch));
                         sndp_set_priority(gRacerSound->engineIdleSoundHandle, 80);
+#ifdef NATIVE_PORT
+                        sndp_set_param(gRacerSound->engineIdleSoundHandle,
+                                       AL_SNDP_PAN_EVT, endpointMix.pan);
+#else
                         sndp_set_param(gRacerSound->engineIdleSoundHandle, AL_SNDP_PAN_EVT, gRacerSound->pan);
+#endif
                     }
                 } else if (gRacerSound->engineIdleSoundHandle != NULL) {
                     // Otherwise, stop the idle sound if it was playing.
@@ -1030,13 +1125,27 @@ void racer_sound_update_all(Object **racerObjs, s32 numRacers, Camera *cameras, 
                         if (gRacerSound->soundHandle[j] != NULL) {
                             audspat_calculate_echo(gRacerSound->soundHandle[j], racerObjs[i]->trans.x_position,
                                                    racerObjs[i]->trans.y_position, racerObjs[i]->trans.z_position);
+#ifdef NATIVE_PORT
+                            racer_sound_endpoint_mix(
+                                racerObjs[i], i, cameras, numCameras,
+                                volume, gRacerSound->pan, &endpointMix);
+                            sndp_set_param(gRacerSound->soundHandle[j],
+                                           AL_SNDP_VOL_EVT,
+                                           endpointMix.volume << 8);
+#else
                             sndp_set_param(gRacerSound->soundHandle[j], AL_SNDP_VOL_EVT, volume << 8);
+#endif
                             sndp_set_param(gRacerSound->soundHandle[j], AL_SNDP_PITCH_EVT, *((u32 *) &pitch));
                             sndp_set_priority(gRacerSound->soundHandle[j], 80);
                             if (numCameras != 1) {
                                 gRacerSound->pan = 64;
                             }
+#ifdef NATIVE_PORT
+                            sndp_set_param(gRacerSound->soundHandle[j],
+                                           AL_SNDP_PAN_EVT, endpointMix.pan);
+#else
                             sndp_set_param(gRacerSound->soundHandle[j], AL_SNDP_PAN_EVT, gRacerSound->pan);
+#endif
                         }
                     }
                 }

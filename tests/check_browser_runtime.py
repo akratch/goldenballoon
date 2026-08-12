@@ -13,6 +13,8 @@ The first browser document must:
 * pass the real adapter gate and ROM identity/byte-order path;
 * instantiate WebGPU/wasm and advance a 3600-opportunity rAF-driven loop;
 * follow the title-to-Time-Trial fixture into an actual race;
+* complete a non-vacuous delayed-input rollback, exact replay, and
+  effect-journal commit inside the production WebAssembly runtime;
 * produce non-flat, changing screenshots across menus and gameplay;
 * sustain the contained authored ~30 Hz NTSC complete-loop cadence without
   crashes, one-field simulation leaks, or device loss;
@@ -122,6 +124,57 @@ WGPU_SHUTDOWN_RE = re.compile(
     r"textures=(\d+)\s+pendingPipelines=(\d+)\s+liveChildren=(\d+)\s+"
     r"cpuArrays=(\d+)"
 )
+ROLLBACK_READY_RE = re.compile(
+    r"^\[ROLLBACK\] lab ready: ranges=(\d+) snapshot=(\d+) bytes "
+    r"ring=(\d+) bytes target=(\d+) epoch=0$",
+    re.MULTILINE,
+)
+ROLLBACK_STATS_RE = re.compile(
+    r"^\[ROLLBACK\] lab stats: ticks=(\d+) captures=(\d+) restores=(\d+) "
+    r"capture_avg_ns=(\d+) capture_p50_ns=(\d+) capture_p95_ns=(\d+) "
+    r"capture_p99_ns=(\d+) capture_max_ns=(\d+) restore_avg_ns=(\d+) "
+    r"restore_p50_ns=(\d+) restore_p95_ns=(\d+) restore_p99_ns=(\d+) "
+    r"restore_max_ns=(\d+) timing_overflow=(\d+)/(\d+) "
+    r"over_8333333ns=(\d+)/(\d+) over_16666667ns=(\d+)/(\d+)$",
+    re.MULTILINE,
+)
+ROLLBACK_RESIM_RE = re.compile(
+    r"^\[ROLLBACK\] resimulation stats: samples=(\d+) avg_ns=(\d+) "
+    r"p50_ns=(\d+) p95_ns=(\d+) p99_ns=(\d+) max_ns=(\d+) "
+    r"timing_overflow=(\d+) over_8333333ns=(\d+) "
+    r"over_16666667ns=(\d+)$",
+    re.MULTILINE,
+)
+ROLLBACK_FRAME_RE = re.compile(
+    r"^\[ROLLBACK\] authored-frame stats: samples=(\d+) avg_ns=(\d+) "
+    r"p50_ns=(\d+) p95_ns=(\d+) p99_ns=(\d+) max_ns=(\d+) "
+    r"timing_overflow=(\d+) over_8333333ns=(\d+) "
+    r"over_16666667ns=(\d+)$",
+    re.MULTILINE,
+)
+ROLLBACK_EFFECTS_RE = re.compile(
+    r"^\[ROLLBACK\] effects: tracked=(\d+) emitted=(\d+) "
+    r"duplicates=(\d+) committed=(\d+) cancelled=(\d+) "
+    r"overflows=(\d+) forbidden_io=(\d+)$",
+    re.MULTILINE,
+)
+ROLLBACK_ITEM_ARM_RE = re.compile(
+    r"^\[ROLLBACK\] item probe armed: balloon=(\d+) level=(\d+) "
+    r"weapon=(-?\d+) quantity=(\d+) release=(\d+) mutation=(\d+)$",
+    re.MULTILINE,
+)
+ROLLBACK_ITEM_RESULT_RE = re.compile(
+    r"^\[ROLLBACK\] item probe result: balloon=(\d+) level=(\d+) "
+    r"weapon=(-?\d+) quantity=(-?\d+) spawns=(\d+) rumble=(\d+) "
+    r"boost=(-?\d+) shield=(-?\d+) shieldType=(-?\d+) observed=(\d+)$",
+    re.MULTILINE,
+)
+# The browser route reaches a live race through the real title/menu flow. Tick
+# 150 can still be inside the authored starting countdown on Ancient Lake, where
+# item release is intentionally suppressed; tick 300 is deep enough to prove a
+# real gameplay mutation without depending on a track-specific countdown edge.
+ROLLBACK_TARGET_TICK = 300
+ROLLBACK_DEPTH = 4
 WGPU_PERF_RE = re.compile(
     r"\[WGPU-PERF\]\s+asyncCreates=(\d+)\s+asyncReady=(\d+)\s+"
     r"asyncFailed=(\d+)\s+holdFrames=(\d+)\s+maxHoldStreak=(\d+)\s+"
@@ -1513,6 +1566,126 @@ def parse_pace(lines: list[str]) -> list[tuple[int, int, int, float, int | None,
     return rows
 
 
+def assert_browser_rollback(console_text: str) -> dict[str, int]:
+    """Require one non-vacuous delayed correction in the shipped wasm runtime."""
+    ready = [tuple(map(int, row)) for row in ROLLBACK_READY_RE.findall(
+        console_text
+    )]
+    require(len(ready) == 1, f"browser rollback ready rows: {ready!r}")
+    ranges, snapshot_bytes, ring_bytes, target = ready[0]
+    require(
+        ranges >= 140
+        and snapshot_bytes > 0
+        and ring_bytes == snapshot_bytes * 32
+        and ring_bytes <= 16 * 1024 * 1024
+        and target == ROLLBACK_TARGET_TICK,
+        f"browser rollback authority shape is invalid: {ready[0]!r}",
+    )
+
+    stats = [tuple(map(int, row)) for row in ROLLBACK_STATS_RE.findall(
+        console_text
+    )]
+    require(len(stats) == 1, f"browser rollback stats rows: {stats!r}")
+    stats_row = stats[0]
+    authored_ticks = stats_row[0]
+    require(
+        authored_ticks >= ROLLBACK_TARGET_TICK
+        and stats_row[1] == authored_ticks + 9
+        and stats_row[2] == 3
+        and stats_row[4] <= stats_row[5] <= stats_row[6]
+        and stats_row[9] <= stats_row[10] <= stats_row[11]
+        and not any(stats_row[13:19]),
+        f"browser rollback capture/restore budget failed: {stats_row!r}",
+    )
+
+    resim = [tuple(map(int, row)) for row in ROLLBACK_RESIM_RE.findall(
+        console_text
+    )]
+    require(len(resim) == 1, f"browser rollback resim rows: {resim!r}")
+    resim_row = resim[0]
+    require(
+        resim_row[0] == ROLLBACK_DEPTH * 2
+        and resim_row[1] > 0
+        and resim_row[2] <= resim_row[3] <= resim_row[4]
+        and resim_row[5] > 0
+        and not any(resim_row[6:]),
+        f"browser rollback resimulation budget failed: {resim_row!r}",
+    )
+
+    frame = [tuple(map(int, row)) for row in ROLLBACK_FRAME_RE.findall(
+        console_text
+    )]
+    require(len(frame) == 1, f"browser rollback frame rows: {frame!r}")
+    frame_row = frame[0]
+    require(
+        frame_row[0] == authored_ticks - 1
+        and frame_row[1] > 0
+        and frame_row[2] <= frame_row[3] <= frame_row[4]
+        and frame_row[4] <= 8_333_333
+        and frame_row[5] > 0
+        and frame_row[6] == 0
+        and frame_row[8] == 0,
+        f"browser rollback authored-frame budget failed: {frame_row!r}",
+    )
+
+    effects = [tuple(map(int, row)) for row in ROLLBACK_EFFECTS_RE.findall(
+        console_text
+    )]
+    require(
+        len(effects) == 1
+        and effects[0][1] > 0
+        and effects[0][5:] == (0, 0),
+        f"browser rollback effect journal failed: {effects!r}",
+    )
+    arms = [tuple(map(int, row)) for row in ROLLBACK_ITEM_ARM_RE.findall(
+        console_text
+    )]
+    results = [tuple(map(int, row)) for row in ROLLBACK_ITEM_RESULT_RE.findall(
+        console_text
+    )]
+    # This browser journey uses MDKR_AUTOPILOT so its long visual oracle reaches
+    # a checkpoint. Autopilot deliberately owns the racer instead of the human
+    # Z-release path; item breadth belongs to the separate 15-row real-player
+    # gate. Accidentally arming that probe here must not be mistaken for wasm
+    # parity.
+    require(
+        not arms and not results,
+        f"browser rollback unexpectedly armed a human item probe: "
+        f"arms={arms!r} results={results!r}",
+    )
+
+    first_tick = ROLLBACK_TARGET_TICK - ROLLBACK_DEPTH + 1
+    witnesses = (
+        f"[ROLLBACK] delayed-input correction passed ticks={first_tick}.."
+        f"{ROLLBACK_TARGET_TICK} depth={ROLLBACK_DEPTH} "
+        "non_input_divergence=1 exact_replay=1",
+        "[ROLLBACK] first-boundary restore roundtrip passed tick=1",
+    )
+    require(
+        all(console_text.count(marker) == 1 for marker in witnesses),
+        "browser rollback is missing an exact correction/roundtrip witness",
+    )
+    forbidden = (
+        "[FATAL]", "[CRASH]", "overflow=1", "overflows=1",
+        "forbidden_io=1", "observed=0", "simulation witness mismatch",
+        "corrected item breadth was not observed",
+    )
+    require(
+        not any(marker in console_text for marker in forbidden),
+        "browser rollback emitted a forbidden diagnostic",
+    )
+    return {
+        "ticks": authored_ticks,
+        "ranges": ranges,
+        "snapshot": snapshot_bytes,
+        "ring": ring_bytes,
+        "capture_p99": stats_row[6],
+        "restore_p99": stats_row[11],
+        "resim_p99": resim_row[4],
+        "frame_p99": frame_row[4],
+    }
+
+
 def parse_event_queue_peaks(
     lines: list[str],
 ) -> dict[int, tuple[str, int, int]]:
@@ -1622,6 +1795,18 @@ def run_check(args: argparse.Namespace) -> None:
                     "MDKR_TEST_WEBGPU_OVERLAY": "1",
                     "MDKR_WEBGPU_PIPELINE_TRACE": "1",
                     "MDKR_WEBGPU_FAULT": "overlay.pass",
+                    # Exercise the production WebAssembly ownership registry,
+                    # snapshot ring, delayed-input replay, and effect journal.
+                    # Human item breadth is intentionally kept in its dedicated
+                    # non-autopilot matrix. The bridge is
+                    # installed only by CDP before page code and accepts only
+                    # bounded MDKR_* keys, so this does not widen the launcher.
+                    "MDKR_ROLLBACK_LAB": "1",
+                    "MDKR_ROLLBACK_LAB_ROUNDTRIP": "1",
+                    "MDKR_ROLLBACK_LAB_DELAYED_INPUT": "1",
+                    "MDKR_ROLLBACK_LAB_TARGET_TICK": str(
+                        ROLLBACK_TARGET_TICK
+                    ),
                 },
             }
             if args.camera_obstruction:
@@ -1985,13 +2170,24 @@ def run_check(args: argparse.Namespace) -> None:
                 }
             )
             for target in targets:
-                wait_value(
+                milestone = wait_value(
                     cdp,
-                    "globalThis.__mdkrTestSnapshot().frames",
-                    lambda value, target=target: isinstance(value, (int, float))
-                    and value >= target,
+                    "globalThis.__mdkrTestSnapshot()",
+                    lambda value, target=target: isinstance(value, dict)
+                    and (
+                        value.get("frames", 0) >= target
+                        or value.get("phase") in {
+                            "aborted", "main-threw", "graphics-failed"
+                        }
+                    ),
                     f"browser frame {target}",
                     args.timeout,
+                )
+                require(
+                    milestone.get("frames", 0) >= target,
+                    f"browser stopped before frame {target}: "
+                    f"phase={milestone.get('phase')!r} "
+                    f"errors={milestone.get('errors', [])[-12:]}",
                 )
                 png = capture_png(cdp)
                 stats = scene_stats(png)
@@ -2263,6 +2459,7 @@ def run_check(args: argparse.Namespace) -> None:
                 "browser racer did not advance beyond checkpoint 0",
             )
             console_text = "\n".join(cdp.console)
+            rollback_summary = assert_browser_rollback(console_text)
             if args.camera_obstruction:
                 camera_rows = [
                     match.groups()
@@ -3562,6 +3759,9 @@ def run_check(args: argparse.Namespace) -> None:
                 f"{world_shadow_rows[0][0]} complete with "
                 f"{world_shadow_rows[0][2]} fallback frames; "
                 f"{visual_summary}; exact EEPROM+ROM reload; "
+                f"wasm rollback {rollback_summary['ticks']} ticks/"
+                f"{rollback_summary['snapshot']} B snapshot/"
+                f"p99 {rollback_summary['resim_p99']} ns resim; "
                 f"AudioWorklet posted {audio['posted']} frames; RAW16 fixed "
                 f"{raw16_rows[0][1]} loads/{raw16_rows[0][2]} bytes at first "
                 f"active block; font SDF {font_rows[0][0]} + outline "

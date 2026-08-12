@@ -869,6 +869,22 @@ Combined, without deleting a single gate: **roughly 30–35 minutes off a 135-mi
 release run**, and roughly an hour off a loaded one. Every one of them is a
 change to *how* a gate runs, not to *what* it asserts.
 
+### 9.1 Task-level pooling (`--jobs`), added 2026-08-12
+
+The runner's sequential rule existed because every task shared one scratch
+save directory. `tools/run_checks.py --jobs N` removes that sharing (each
+pooled task gets its own `MDKR_SAVE_DIR`/`MDKR_TEST_SAVE_DIR` tempdir) and
+pools everything except `SERIAL_ROLES` (instrumented/layout compiles, the
+wasm build, the port-bound browser lane) and `SERIAL_NAMES` (gates whose
+verdict is a wall-clock or host-load measurement: realtime pacing, adopted
+handoffs, replay-cost ceilings). The serial tail runs alone after the pool
+drains, so its measurements see a quiet host. `--jobs 1` is byte-for-byte
+the historical sequential runner. This composes with #2–#4 above — those
+pool arms *within* a task, this pools *between* tasks; the win concentrates
+in the long middle of the manifest where neither role nor name forces
+serialization. Record measured before/after wall-clocks here after each
+release run.
+
 Two further items, recorded but not costed:
 
 - **`overlay_pause`** moved 1m05s → 4s on an unchanged script. A 16× spread is

@@ -358,12 +358,18 @@ typedef struct SnapCameraHistory {
     int32_t camera_id;
     float last_position[3];
     int16_t last_rotation_y;
+    int16_t last_view_pitch;
+    int16_t last_rotation_z;
     float last_fov;
     uint8_t last_world_region;
     uint64_t last_capture;
 } SnapCameraHistory;
 
 static SnapCameraHistory s_camera_history[PRESENTATION_SNAPSHOT_MAX_VIEWPORTS];
+
+static int16_t camera_composed_pitch(int16_t rotation_x, int16_t pitch) {
+    return (int16_t)(uint16_t)((uint16_t)rotation_x + (uint16_t)pitch);
+}
 
 /*
  * One bit per VIEWPORT the game has declared cut; consumed by that viewport's
@@ -858,8 +864,19 @@ bool presentation_snapshot_capture_camera(
     if (!discontinuous) {
         const float yaw_delta_deg = mdkr_yaw_delta_deg(
             (uint16_t)history->last_rotation_y, (uint16_t)sample->rotation_y);
-        if (yaw_delta_deg > MDKR_CUT_YAW_DEG ||
-            yaw_delta_deg < -MDKR_CUT_YAW_DEG) {
+        const int16_t view_pitch = camera_composed_pitch(
+            sample->rotation_x, sample->pitch);
+        const float pitch_delta_deg = mdkr_yaw_delta_deg(
+            (uint16_t)history->last_view_pitch, (uint16_t)view_pitch);
+        const float roll_delta_deg = mdkr_yaw_delta_deg(
+            (uint16_t)history->last_rotation_z,
+            (uint16_t)sample->rotation_z);
+        if (yaw_delta_deg > MDKR_CUT_VIEW_ANGLE_DEG ||
+            yaw_delta_deg < -MDKR_CUT_VIEW_ANGLE_DEG ||
+            pitch_delta_deg > MDKR_CUT_VIEW_ANGLE_DEG ||
+            pitch_delta_deg < -MDKR_CUT_VIEW_ANGLE_DEG ||
+            roll_delta_deg > MDKR_CUT_VIEW_ANGLE_DEG ||
+            roll_delta_deg < -MDKR_CUT_VIEW_ANGLE_DEG) {
             discontinuous = true;
         }
     }
@@ -984,6 +1001,9 @@ void presentation_snapshot_capture_commit(void) {
         history->last_position[1] = entry->position[1];
         history->last_position[2] = entry->position[2];
         history->last_rotation_y = entry->rotation_y;
+        history->last_view_pitch = camera_composed_pitch(
+            entry->rotation_x, entry->pitch);
+        history->last_rotation_z = entry->rotation_z;
         history->last_fov = entry->fov;
         history->last_world_region = entry->world_region;
         history->last_capture = s_capture_serial;
@@ -1706,6 +1726,7 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
     out->rotation_y = entry->rotation_y;
     out->rotation_z = entry->rotation_z;
     out->pitch = entry->pitch;
+    out->view_pitch = camera_composed_pitch(entry->rotation_x, entry->pitch);
     out->shake_magnitude = entry->shake_magnitude;
     out->apply_shake = entry->apply_shake;
     out->fov = entry->fov;
@@ -1747,6 +1768,10 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
                                               denominator);
     out->pitch = presentation_lerp_angle(before->pitch, entry->pitch,
                                          numerator, denominator);
+    out->view_pitch = presentation_lerp_angle(
+        camera_composed_pitch(before->rotation_x, before->pitch),
+        camera_composed_pitch(entry->rotation_x, entry->pitch),
+        numerator, denominator);
     rotation_arc_audit(before->rotation_x, entry->rotation_x, out->rotation_x,
                        numerator, denominator);
     rotation_arc_audit(before->rotation_y, entry->rotation_y, out->rotation_y,
@@ -1755,6 +1780,10 @@ bool presentation_snapshot_resolve_camera(int viewport_index,
                        numerator, denominator);
     rotation_arc_audit(before->pitch, entry->pitch, out->pitch,
                        numerator, denominator);
+    rotation_arc_audit(
+        camera_composed_pitch(before->rotation_x, before->pitch),
+        camera_composed_pitch(entry->rotation_x, entry->pitch),
+        out->view_pitch, numerator, denominator);
     out->shake_magnitude = presentation_lerp1(before->shake_magnitude,
                                               entry->shake_magnitude,
                                               numerator, denominator);

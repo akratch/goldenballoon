@@ -84,6 +84,25 @@ jobs:
           python3 tests/check_webgpu_fault_matrix.py
           python3 tests/test_public_surface.py
 
+  party_service:
+    name: Zero-cost Party and MatchRoom service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.16.0"
+          cache: npm
+          cache-dependency-path: services/party/package-lock.json
+      - name: Install locked service dependencies
+        working-directory: services/party
+        run: npm ci --ignore-scripts
+      - name: Type, reducer, Durable Object, migration and abuse contracts
+        working-directory: services/party
+        run: npm run check
+      - name: Production-path signaling-loss canary smoke
+        run: python3 tests/check_party_experience_canary_smoke.py
+
   native:
     name: Native ${{ matrix.label }}
     runs-on: ${{ matrix.os }}

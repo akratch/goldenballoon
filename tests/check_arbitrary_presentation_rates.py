@@ -554,6 +554,17 @@ def main() -> int:
                 notes.append(
                     f"{label}: {result.summary.get('presents')} presents / "
                     f"{result.summary.get('ticks')} fixed ticks")
+                if policy == "60":
+                    jit_optout = run(
+                        binary, rom, root, "ntsc-60-jit-optout", policy,
+                        args.timeout, args.verbose,
+                        extra_env={"MDKR_INPUT_JIT": "0"})
+                    failures.extend(compare_arm(
+                        "ntsc-60-jit-optout", jit_optout, result,
+                        rate, 30, kind, published_rate))
+                    notes.append(
+                        "ntsc-60-jit-optout: state/event/input/PCM exact "
+                        "against default late sampling")
 
             enhanced_base = run(
                 binary, rom, root, "enhanced-webgpu-original", None,

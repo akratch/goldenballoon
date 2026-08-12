@@ -21,7 +21,18 @@
 #include "fs_utf8.h"
 #include "engine_entry.h"
 #include "rom_validate.h"
+#include "session_runtime.h"
+#include "net/match_input_runtime.h"
+#include "net/match_input_bundle.h"
+#include "net/match_input_packet.h"
+#include "net/net_clock.h"
+#include "net/net_impairment.h"
+#include "net/net_roster_runtime.h"
+#include "online/lobby_view_model.h"
+#include "platform_os.h"
+#include "present_sched.h"
 #include "ui_launcher.h"
+#include "ui_online_room.h"
 #include "ui_overlay.h"
 #include "ui_settings.h"
 #include "user_paths.h"
@@ -295,11 +306,602 @@ struct EngineSessionTransition {
     std::string romPath;
 };
 
-int runEngineSession(AppHost &host, const MdkrBootConfig &config,
+struct MatchInputProviderContext {
+    SessionRuntime *session = nullptr;
+    bool canonicalMirrorForTest = false;
+    bool delayInputForTest = false;
+    bool haveDelayedInput = false;
+    std::uint32_t delayedTick = 0u;
+    MdkrPadSample delayedSample{};
+    MdkrNetImpairment impairment{};
+    MdkrNetClock clock{};
+    MdkrNetImpairmentProfileName profile = MDKR_NET_PROFILE_COUNT;
+    const char *profileName = nullptr;
+    std::uint64_t decodedPackets = 0u;
+    std::uint64_t rejectedPackets = 0u;
+    std::uint32_t profileStartTick = 1u;
+    std::uint32_t historyTick[MDKR_MATCH_INPUT_BUNDLE_FRAMES]{};
+    MdkrPadSample history[MDKR_MATCH_INPUT_BUNDLE_FRAMES]
+                         [MDKR_SESSION_MAX_PLAYERS]{};
+    bool historyValid[MDKR_MATCH_INPUT_BUNDLE_FRAMES]{};
+    MdkrMatchRecovery recovery{};
+};
+
+MdkrMatchTransportIngressResult ingressCarrierBytes(
+    MatchInputProviderContext *context, std::uint8_t authenticatedMask,
+    const std::uint8_t *bytes, std::size_t length) {
+    MdkrMatchInputPacket decoded{};
+    if (context == nullptr || context->session == nullptr ||
+        !mdkr_match_input_packet_decode(bytes, length, &decoded)) {
+        if (context != nullptr) context->rejectedPackets++;
+        return MDKR_MATCH_INGRESS_INVALID;
+    }
+    context->decodedPackets++;
+    const MdkrPadSample decodedSample = {
+        decoded.buttons, decoded.stick_x, decoded.stick_y, 1u};
+    return context->session->receiveRemoteInput(
+        decoded.match_epoch, authenticatedMask, decoded.canonical_slot,
+        decoded.tick, decodedSample);
+}
+
+MdkrMatchTransportIngressResult ingressLoopbackPacket(
+    MatchInputProviderContext *context, std::uint32_t epoch,
+    std::uint8_t authenticatedMask, unsigned slot, std::uint32_t tick,
+    MdkrPadSample sample) {
+    const MdkrMatchInputPacket packet = {
+        epoch, tick, static_cast<std::uint8_t>(slot),
+        sample.buttons, sample.stick_x, sample.stick_y};
+    std::uint8_t bytes[MDKR_MATCH_INPUT_PACKET_BYTES]{};
+    if (context == nullptr || context->session == nullptr ||
+        !mdkr_match_input_packet_encode(&packet, bytes, sizeof(bytes))) {
+        return MDKR_MATCH_INGRESS_INVALID;
+    }
+    /* authenticatedMask comes from the launcher peer/session binding, never
+     * from decoded carrier bytes. MatchTransport performs the final ownership
+     * and exact-epoch check before accepting the sample. */
+    return ingressCarrierBytes(
+        context, authenticatedMask, bytes, sizeof(bytes));
+}
+
+bool parseNetworkProfile(const char *text,
+                         MdkrNetImpairmentProfileName *profile) {
+    static const char *const names[MDKR_NET_PROFILE_COUNT] = {
+        "lan", "regional-good", "regional-variable", "poor",
+        "two-second-outage", "adversarial"};
+    if (text == nullptr || text[0] == '\0' || profile == nullptr) return false;
+    for (unsigned index = 0u; index < MDKR_NET_PROFILE_COUNT; index++) {
+        if (std::strcmp(text, names[index]) == 0) {
+            *profile = static_cast<MdkrNetImpairmentProfileName>(index);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool drainImpairedLoopback(
+    MatchInputProviderContext *context, std::uint32_t epoch,
+    std::uint32_t tick,
+    const MdkrPadSample physical[MDKR_SESSION_MAX_PLAYERS],
+    const MdkrNetRoster *roster, std::uint8_t remote) {
+    if (tick < context->profileStartTick) {
+        for (unsigned slot = 0u; slot < roster->canonical_player_count; slot++) {
+            const std::uint8_t bit = static_cast<std::uint8_t>(1u << slot);
+            if ((remote & bit) == 0u) continue;
+            const MdkrMatchTransportIngressResult result = ingressLoopbackPacket(
+                context, epoch, remote, slot, tick, physical[slot]);
+            if (result != MDKR_MATCH_INGRESS_ACCEPTED &&
+                result != MDKR_MATCH_INGRESS_DUPLICATE) return false;
+        }
+        return true;
+    }
+    const std::uint32_t profileTick = tick - context->profileStartTick + 1u;
+    const unsigned historyIndex = tick % MDKR_MATCH_INPUT_BUNDLE_FRAMES;
+    context->historyTick[historyIndex] = tick;
+    context->historyValid[historyIndex] = true;
+    for (unsigned slot = 0u; slot < roster->canonical_player_count; slot++) {
+        const std::uint8_t bit = static_cast<std::uint8_t>(1u << slot);
+        context->history[historyIndex][slot] =
+            (remote & bit) != 0u ? physical[slot] : MdkrPadSample{};
+    }
+    const MdkrNetClockStep clockStep = mdkr_net_clock_step(&context->clock);
+    if (clockStep.tick_offered) {
+        MdkrMatchInputBundle bundle{};
+        std::uint8_t bytes[MDKR_MATCH_INPUT_BUNDLE_BYTES]{};
+        bundle.match_epoch = epoch;
+        bundle.newest_tick = tick;
+        bundle.slot_mask = remote;
+        for (unsigned age = 0u; age < MDKR_MATCH_INPUT_BUNDLE_FRAMES; age++) {
+            if (tick < age) break;
+            const std::uint32_t authoredTick = tick - age;
+            const unsigned index = authoredTick % MDKR_MATCH_INPUT_BUNDLE_FRAMES;
+            if (!context->historyValid[index] ||
+                context->historyTick[index] != authoredTick) break;
+            for (unsigned slot = 0u;
+                 slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+                bundle.frames[age][slot] = context->history[index][slot];
+            }
+            bundle.frame_count++;
+        }
+        if (!mdkr_match_input_bundle_encode(&bundle, bytes, sizeof(bytes)) ||
+            !mdkr_net_impairment_send(
+                &context->impairment, profileTick, 0u, 0u,
+                bytes, sizeof(bytes))) return false;
+    }
+    MdkrNetSimPacket wire{};
+    while (mdkr_net_impairment_receive(
+               &context->impairment, profileTick, 0u, &wire)) {
+        MdkrMatchInputBundle bundle{};
+        if (!mdkr_match_input_bundle_decode(
+                wire.bytes, wire.length, &bundle) ||
+            (bundle.slot_mask & static_cast<std::uint8_t>(~remote)) != 0u) {
+            context->rejectedPackets++;
+            continue;
+        }
+        context->decodedPackets++;
+        /* Oldest first prevents a redundant bundle from invalidating a newer
+         * prediction suffix twice in one authenticated ingress transaction. */
+        for (unsigned age = bundle.frame_count; age-- > 0u;) {
+            const std::uint32_t authoredTick = bundle.newest_tick - age;
+            for (unsigned slot = 0u; slot < MDKR_SESSION_MAX_PLAYERS; slot++) {
+                const std::uint8_t bit = static_cast<std::uint8_t>(1u << slot);
+                if ((bundle.slot_mask & bit) == 0u) continue;
+                const MdkrMatchTransportIngressResult result =
+                    context->session->receiveRemoteInput(
+                        bundle.match_epoch, remote, slot, authoredTick,
+                        bundle.frames[age][slot]);
+                if (result != MDKR_MATCH_INGRESS_ACCEPTED &&
+                    result != MDKR_MATCH_INGRESS_CORRECTED &&
+                    result != MDKR_MATCH_INGRESS_DUPLICATE &&
+                    result != MDKR_MATCH_INGRESS_OUT_OF_WINDOW &&
+                    result != MDKR_MATCH_INGRESS_TAKEN_OVER) return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool drainMatchInputProvider(
+    void *opaque, std::uint32_t epoch, std::uint32_t tick,
+    const MdkrPadSample physical[MDKR_SESSION_MAX_PLAYERS], unsigned count,
+    MdkrInputSet *out) {
+    MatchInputProviderContext *context =
+        static_cast<MatchInputProviderContext *>(opaque);
+    if (context == nullptr || context->session == nullptr || out == nullptr) {
+        return false;
+    }
+    if (context->canonicalMirrorForTest) {
+        const MdkrSessionBridge &bridge = context->session->bridge();
+        const MdkrNetRoster *roster = mdkr_session_bridge_roster(&bridge);
+        if (roster == nullptr) return false;
+        const std::uint8_t active = static_cast<std::uint8_t>(
+            (1u << roster->canonical_player_count) - 1u);
+        const std::uint8_t remote = static_cast<std::uint8_t>(
+            active & ~mdkr_session_bridge_local_slot_mask(&bridge));
+        if (context->profile != MDKR_NET_PROFILE_COUNT) {
+            if (!drainImpairedLoopback(
+                    context, epoch, tick, physical, roster, remote)) return false;
+            const bool drained = context->session->engineDrainInputs(
+                epoch, tick, physical, count, *out, true);
+            MdkrMatchRecovery recovery{};
+            if (drained &&
+                context->session->engineRecovery(epoch, recovery) &&
+                context->recovery.reason == MDKR_MATCH_RECOVERY_NONE) {
+                context->recovery = recovery;
+                std::fprintf(
+                    stderr,
+                    "[NET-RECOVERY] reason=%s slot=%u first=%u observed=%u "
+                    "action=return-to-launcher\n",
+                    recovery.reason == MDKR_MATCH_RECOVERY_INPUT_GAP
+                        ? "input-gap" : "late-input",
+                    static_cast<unsigned>(recovery.canonical_slot),
+                    static_cast<unsigned>(recovery.first_unrecoverable_tick),
+                    static_cast<unsigned>(recovery.observed_at_tick));
+                platform_request_exit(0);
+            }
+            return drained;
+        }
+        if (context->haveDelayedInput && tick == context->delayedTick + 4u) {
+            const MdkrMatchTransportIngressResult result = ingressLoopbackPacket(
+                context, epoch, remote, 0u, context->delayedTick,
+                context->delayedSample);
+            if (result != MDKR_MATCH_INGRESS_CORRECTED) return false;
+            std::fprintf(stderr,
+                         "[NET-INPUT-TEST] delivered slot=0 tick=%u at=%u\n",
+                         context->delayedTick, tick);
+            context->haveDelayedInput = false;
+        }
+        for (unsigned slot = 0u; slot < roster->canonical_player_count; ++slot) {
+            const std::uint8_t bit = static_cast<std::uint8_t>(1u << slot);
+            if ((remote & bit) == 0u) continue;
+            if (context->delayInputForTest && slot == 0u && tick == 131u) {
+                context->delayedTick = tick;
+                context->delayedSample = physical[slot];
+                context->haveDelayedInput = true;
+                std::fprintf(stderr,
+                             "[NET-INPUT-TEST] withheld slot=0 tick=%u "
+                             "deliver=%u\n", tick, tick + 4u);
+                continue;
+            }
+            const MdkrMatchTransportIngressResult result = ingressLoopbackPacket(
+                context, epoch, remote, slot, tick, physical[slot]);
+            if (result != MDKR_MATCH_INGRESS_ACCEPTED &&
+                result != MDKR_MATCH_INGRESS_DUPLICATE &&
+                result != MDKR_MATCH_INGRESS_TAKEN_OVER) {
+                return false;
+            }
+        }
+    }
+    return context->session->engineDrainInputs(
+            epoch, tick, physical, count, *out,
+            context->canonicalMirrorForTest);
+}
+
+bool readMatchInputProvider(void *opaque, std::uint32_t epoch,
+                            std::uint32_t tick, MdkrInputSet *out) {
+    MatchInputProviderContext *context =
+        static_cast<MatchInputProviderContext *>(opaque);
+    return context != nullptr && context->session != nullptr && out != nullptr &&
+        context->session->engineInputsForTick(epoch, tick, *out);
+}
+
+bool takeDirtyMatchInputProvider(void *opaque, std::uint32_t epoch,
+                                 std::uint32_t *tick) {
+    MatchInputProviderContext *context =
+        static_cast<MatchInputProviderContext *>(opaque);
+    return context != nullptr && context->session != nullptr && tick != nullptr &&
+        context->session->engineTakeDirty(epoch, *tick);
+}
+
+bool aiMaskMatchInputProvider(void *opaque, std::uint32_t epoch,
+                              std::uint32_t tick, std::uint8_t *slotMask) {
+    MatchInputProviderContext *context =
+        static_cast<MatchInputProviderContext *>(opaque);
+    return context != nullptr && context->session != nullptr &&
+        slotMask != nullptr &&
+        context->session->engineAiMaskForTick(epoch, tick, *slotMask);
+}
+
+bool parseTestOnlineMask(const char *name, std::uint8_t *out) {
+    const char *text = std::getenv(name);
+    if (text == nullptr || text[0] == '\0' || out == nullptr) return false;
+    char *end = nullptr;
+    errno = 0;
+    const unsigned long value = std::strtoul(text, &end, 0);
+    if (errno != 0 || end == text || *end != '\0' || value > 0x0fu) {
+        return false;
+    }
+    *out = static_cast<std::uint8_t>(value);
+    return true;
+}
+
+bool makeTestOnlineLaunch(std::uint32_t epoch, std::uint8_t localMask,
+                          std::uint8_t viewportMask,
+                          MdkrSessionLaunchV2 *out) {
+    if (out == nullptr || epoch == 0u || localMask == 0u ||
+        (viewportMask & static_cast<std::uint8_t>(~localMask)) != 0u) {
+        return false;
+    }
+    MdkrSessionLaunchV2 launch{};
+    launch.version = MDKR_SESSION_LAUNCH_VERSION;
+    launch.size = sizeof(launch);
+    launch.match.match_epoch = epoch;
+    launch.match.protocol_version = MDKR_SESSION_PROTOCOL_VERSION;
+    for (std::size_t index = 0; index < sizeof(launch.match.build_id); ++index) {
+        launch.match.build_id[index] = static_cast<std::uint8_t>(0x40u + index);
+    }
+    for (std::size_t index = 0;
+         index < sizeof(launch.match.gameplay_digest); ++index) {
+        launch.match.gameplay_digest[index] =
+            static_cast<std::uint8_t>(0x80u + index);
+    }
+    for (unsigned slot = 0u; slot < MDKR_MATCH_SLOTS; ++slot) {
+        launch.match.slot_owner[slot] = UINT64_C(0x1000000000000001) + slot;
+    }
+    launch.match.rng_seed = UINT64_C(0x4d444b5236340001);
+    launch.match.track_id = 5u;
+    if (const char *trackText =
+            std::getenv("MDKR_APP_TEST_ONLINE_MANIFEST_TRACK")) {
+        char *end = nullptr;
+        errno = 0;
+        const unsigned long track = std::strtoul(trackText, &end, 10);
+        if (errno != 0 || end == trackText || *end != '\0' || track > 65u) {
+            return false;
+        }
+        launch.match.track_id = static_cast<std::uint16_t>(track);
+    }
+    launch.match.rom_revision = MDKR_ROM_US_11;
+    launch.match.cadence_hz = 30u;
+    launch.match.slot_count = MDKR_MATCH_SLOTS;
+    launch.match.rules = 1u;
+    /* The default test route loads Ancient Lake (id 5), whose ROM-authored
+     * player-vehicle capability mask is car/hovercraft/plane. A different
+     * manifest track must supply its own exact mask through the test override
+     * below, just as production matchmaking derives it from the validated ROM. */
+    launch.match.vehicle_mask = 7u;
+    if (const char *maskText =
+            std::getenv("MDKR_APP_TEST_ONLINE_MANIFEST_VEHICLE_MASK")) {
+        char *end = nullptr;
+        errno = 0;
+        const unsigned long mask = std::strtoul(maskText, &end, 0);
+        if (errno != 0 || end == maskText || *end != '\0' ||
+            mask == 0u || mask > 7u) {
+            return false;
+        }
+        launch.match.vehicle_mask = static_cast<std::uint8_t>(mask);
+    }
+    launch.match.input_delay = 2u;
+    launch.local_slot_mask = localMask;
+    launch.viewport_slot_mask = viewportMask;
+    *out = launch;
+    return true;
+}
+
+bool makeTestOnlineLaunchV3(std::uint32_t epoch, std::uint8_t localMask,
+                            std::uint8_t viewportMask,
+                            MdkrSessionLaunchV3 *out) {
+    MdkrSessionLaunchV2 legacy{};
+    if (out == nullptr ||
+        !makeTestOnlineLaunch(epoch, localMask, viewportMask, &legacy)) {
+        return false;
+    }
+    MdkrSessionLaunchV3 launch{};
+    launch.version = MDKR_SESSION_LAUNCH_V3_VERSION;
+    launch.size = sizeof(launch);
+    launch.match.version = MDKR_MATCH_LAUNCH_DESCRIPTOR_VERSION;
+    launch.match.manifest = legacy.match;
+    for (unsigned slot = 0u; slot < MDKR_MATCH_SLOTS; ++slot) {
+        launch.match.selections[slot].selection_revision = slot + 1u;
+        launch.match.selections[slot].character_id =
+            static_cast<std::uint8_t>(slot);
+        launch.match.selections[slot].vehicle_id = 0u;
+    }
+    launch.local_slot_mask = localMask;
+    launch.viewport_slot_mask = viewportMask;
+    *out = launch;
+    return true;
+}
+
+void logNetworkRoster(const MdkrMatchManifestV1 &manifest,
+                      const MdkrNetRoster &roster,
+                      std::uint8_t localMask,
+                      std::uint8_t viewportMask) {
+    std::fprintf(stderr,
+                 "[NET-ROSTER] epoch=%u manifest=%016llx players=%u "
+                 "local-mask=0x%02x viewport-mask=0x%02x local-map=",
+                 static_cast<unsigned>(manifest.match_epoch),
+                 static_cast<unsigned long long>(
+                     mdkr_match_manifest_digest(&manifest)),
+                 static_cast<unsigned>(roster.canonical_player_count),
+                 static_cast<unsigned>(localMask),
+                 static_cast<unsigned>(viewportMask));
+    for (unsigned index = 0u; index < roster.local_seat_count; ++index) {
+        std::fprintf(stderr, "%s%u", index == 0u ? "" : ",",
+                     static_cast<unsigned>(roster.local_to_canonical[index]));
+    }
+    std::fprintf(stderr, " viewport-map=");
+    for (unsigned index = 0u; index < roster.viewport_count; ++index) {
+        std::fprintf(stderr, "%s%u", index == 0u ? "" : ",",
+                     static_cast<unsigned>(roster.viewport_to_canonical[index]));
+    }
+    std::fprintf(stderr, "\n");
+}
+
+int runEngineSession(AppHost &host, SessionRuntime &session,
+                     const MdkrBootConfig &config,
                      EngineSessionTransition *transition) {
     const std::string sessionRom =
         config.rom_path && config.rom_path[0]
             ? config.rom_path : AppConfig::get("rom_path", "");
+    /* The runtime lives above this blocking engine invocation. Transition it
+     * before lending the window/device so overlay and recovery policy come
+     * from one executable state authority rather than from boot call sites. */
+    bool sessionReady = true;
+    if (session.state().scene == MDKR_SCENE_HOME) {
+        sessionReady = session.beginLocal();
+    }
+    if (sessionReady && session.state().engine == MDKR_ENGINE_STOPPED &&
+        (session.state().scene == MDKR_SCENE_LOCAL_SETUP ||
+         (session.state().intent == MDKR_INTENT_ONLINE_PRIVATE &&
+          session.state().scene == MDKR_SCENE_LOADING))) {
+        sessionReady = session.requestRace();
+    } else if (sessionReady && session.state().scene == MDKR_SCENE_RESULTS) {
+        sessionReady = session.rematch();
+    }
+    if (sessionReady && session.state().engine == MDKR_ENGINE_BOOTING) {
+        sessionReady = session.enginePhase(MDKR_ENGINE_READY) &&
+                       session.enginePhase(MDKR_ENGINE_RACING);
+    }
+    if (!sessionReady || session.state().engine != MDKR_ENGINE_RACING) {
+        std::fprintf(stderr,
+                     "[session] refused engine boot scene=%u engine=%u error=%u\n",
+                     static_cast<unsigned>(session.state().scene),
+                     static_cast<unsigned>(session.state().engine),
+                     static_cast<unsigned>(session.lastStep().error));
+        return 2;
+    }
+
+    const bool online =
+        session.state().intent == MDKR_INTENT_ONLINE_PRIVATE;
+    const MdkrMatchManifestV1 *networkManifest = online
+        ? mdkr_session_bridge_manifest(&session.bridge()) : nullptr;
+    const MdkrNetRoster *networkRoster = online
+        ? mdkr_session_bridge_roster(&session.bridge()) : nullptr;
+    const MdkrMatchLaunchDescriptorV1 *networkLaunch = online
+        ? mdkr_session_bridge_launch_descriptor(&session.bridge()) : nullptr;
+    if (online &&
+        (networkManifest == nullptr || networkRoster == nullptr ||
+         networkManifest->match_epoch != session.state().match_epoch)) {
+        std::fprintf(stderr,
+                     "[session] refused missing/stale online launch "
+                     "expected-epoch=%u actual-epoch=%u\n",
+                     static_cast<unsigned>(session.state().match_epoch),
+                     networkManifest != nullptr
+                         ? static_cast<unsigned>(networkManifest->match_epoch)
+                         : 0u);
+        (void)session.enginePhase(MDKR_ENGINE_FAILED);
+        return 2;
+    }
+    if (networkRoster != nullptr &&
+        !(networkLaunch != nullptr
+              ? mdkr_net_roster_runtime_install_launch(
+                    networkLaunch, networkRoster)
+              : mdkr_net_roster_runtime_install(
+                    networkManifest, networkRoster))) {
+        std::fprintf(stderr,
+                     "[session] refused mismatched manifest/network roster\n");
+        (void)session.enginePhase(MDKR_ENGINE_FAILED);
+        return 2;
+    }
+    MatchInputProviderContext matchInputContext{};
+    bool matchInputInstalled = false;
+    if (networkManifest != nullptr && networkRoster != nullptr) {
+        logNetworkRoster(*networkManifest, *networkRoster,
+                         mdkr_session_bridge_local_slot_mask(&session.bridge()),
+                         mdkr_session_bridge_viewport_slot_mask(&session.bridge()));
+        if (networkLaunch != nullptr) {
+            std::fprintf(stderr,
+                         "[NET-LAUNCH] epoch=%u descriptor=%016llx "
+                         "track=%u selections=0:%u/%u,1:%u/%u,2:%u/%u,3:%u/%u\n",
+                         static_cast<unsigned>(networkManifest->match_epoch),
+                         static_cast<unsigned long long>(
+                             mdkr_match_launch_descriptor_digest(networkLaunch)),
+                         static_cast<unsigned>(networkManifest->track_id),
+                         networkLaunch->selections[0].character_id,
+                         networkLaunch->selections[0].vehicle_id,
+                         networkLaunch->selections[1].character_id,
+                         networkLaunch->selections[1].vehicle_id,
+                         networkLaunch->selections[2].character_id,
+                         networkLaunch->selections[2].vehicle_id,
+                         networkLaunch->selections[3].character_id,
+                         networkLaunch->selections[3].vehicle_id);
+        }
+        matchInputContext.session = &session;
+        matchInputContext.canonicalMirrorForTest =
+            std::getenv("MDKR_APP_TEST_ONLINE_LOOPBACK_INPUTS") != nullptr;
+        matchInputContext.delayInputForTest =
+            std::getenv("MDKR_APP_TEST_ONLINE_DELAY_INPUT") != nullptr;
+        const char *networkProfile =
+            std::getenv("MDKR_APP_TEST_NET_PROFILE");
+        if (networkProfile != nullptr) {
+            MdkrNetImpairmentProfile impairmentProfile{};
+            MdkrNetClockProfile clockProfile{};
+            std::uint8_t endpoint = 0u;
+            if (!matchInputContext.canonicalMirrorForTest ||
+                matchInputContext.delayInputForTest ||
+                !parseNetworkProfile(
+                    networkProfile, &matchInputContext.profile) ||
+                !mdkr_net_impairment_named_profile(
+                    matchInputContext.profile, networkManifest->cadence_hz,
+                    &impairmentProfile) ||
+                !mdkr_net_roster_runtime_local_to_canonical(0u, &endpoint) ||
+                !mdkr_net_clock_named_profile(
+                    matchInputContext.profile, networkManifest->cadence_hz,
+                    endpoint, &clockProfile) ||
+                !mdkr_net_clock_init(&matchInputContext.clock, &clockProfile)) {
+                std::fprintf(stderr,
+                             "[session] invalid named network profile: %s\n",
+                             networkProfile);
+                mdkr_net_roster_runtime_clear();
+                (void)session.enginePhase(MDKR_ENGINE_FAILED);
+                return 2;
+            }
+            mdkr_net_impairment_init(
+                &matchInputContext.impairment,
+                mdkr_match_manifest_digest(networkManifest) ^ endpoint,
+                impairmentProfile);
+            matchInputContext.profileName = networkProfile;
+            if (const char *startText =
+                    std::getenv("MDKR_APP_TEST_NET_PROFILE_START_TICK")) {
+                char *end = nullptr;
+                errno = 0;
+                const unsigned long parsed = std::strtoul(startText, &end, 10);
+                if (errno != 0 || end == startText || *end != '\0' ||
+                    parsed == 0u || parsed > 1000000u) {
+                    std::fprintf(stderr,
+                                 "[session] invalid network profile start: %s\n",
+                                 startText);
+                    mdkr_net_roster_runtime_clear();
+                    (void)session.enginePhase(MDKR_ENGINE_FAILED);
+                    return 2;
+                }
+                matchInputContext.profileStartTick =
+                    static_cast<std::uint32_t>(parsed);
+            }
+        }
+        if (matchInputContext.delayInputForTest &&
+            !matchInputContext.canonicalMirrorForTest) {
+            std::fprintf(stderr,
+                         "[session] delayed-input test requires loopback input\n");
+            mdkr_net_roster_runtime_clear();
+            (void)session.enginePhase(MDKR_ENGINE_FAILED);
+            return 2;
+        }
+        const MdkrMatchInputSource source = {
+            MDKR_MATCH_INPUT_SOURCE_VERSION,
+            networkManifest->match_epoch,
+            &matchInputContext,
+            drainMatchInputProvider,
+            readMatchInputProvider,
+            takeDirtyMatchInputProvider,
+            aiMaskMatchInputProvider,
+        };
+        matchInputInstalled = mdkr_match_input_runtime_install(&source);
+        if (!matchInputInstalled) {
+            std::fprintf(stderr,
+                         "[session] refused duplicate/invalid match input provider\n");
+            mdkr_net_roster_runtime_clear();
+            (void)session.enginePhase(MDKR_ENGINE_FAILED);
+            return 2;
+        }
+        const char *takeoverSlotText =
+            std::getenv("MDKR_APP_TEST_AI_TAKEOVER_SLOT");
+        const char *takeoverTickText =
+            std::getenv("MDKR_APP_TEST_AI_TAKEOVER_TICK");
+        if ((takeoverSlotText == nullptr) != (takeoverTickText == nullptr)) {
+            std::fprintf(stderr,
+                         "[session] AI takeover test requires slot and tick\n");
+            mdkr_match_input_runtime_clear();
+            mdkr_net_roster_runtime_clear();
+            (void)session.enginePhase(MDKR_ENGINE_FAILED);
+            return 2;
+        }
+        if (takeoverSlotText != nullptr) {
+            char *slotEnd = nullptr;
+            char *tickEnd = nullptr;
+            errno = 0;
+            const unsigned long slot =
+                std::strtoul(takeoverSlotText, &slotEnd, 10);
+            const unsigned long activation =
+                std::strtoul(takeoverTickText, &tickEnd, 10);
+            const bool parsed = errno == 0 && slotEnd != takeoverSlotText &&
+                *slotEnd == '\0' && tickEnd != takeoverTickText &&
+                *tickEnd == '\0' && slot < MDKR_SESSION_MAX_PLAYERS &&
+                activation > 0u && activation <= UINT32_MAX;
+            const MdkrMatchTakeoverResult scheduled = parsed
+                ? session.scheduleAiTakeover(
+                    networkManifest->match_epoch,
+                    static_cast<unsigned>(slot),
+                    static_cast<std::uint32_t>(activation))
+                : MDKR_MATCH_TAKEOVER_INVALID;
+            if (scheduled != MDKR_MATCH_TAKEOVER_ACCEPTED) {
+                std::fprintf(stderr,
+                             "[session] invalid AI takeover slot=%s tick=%s "
+                             "result=%u\n",
+                             takeoverSlotText, takeoverTickText,
+                             static_cast<unsigned>(scheduled));
+                mdkr_match_input_runtime_clear();
+                mdkr_net_roster_runtime_clear();
+                (void)session.enginePhase(MDKR_ENGINE_FAILED);
+                return 2;
+            }
+            std::fprintf(stderr,
+                         "[NET-TAKEOVER] epoch=%u slot=%lu tick=%lu "
+                         "policy=ai-no-handback\n",
+                         static_cast<unsigned>(networkManifest->match_epoch),
+                         slot, activation);
+        }
+    }
+
     platformSetHostWindow(host.window(), host.glContext());
     if (host.usingWebGpu()) {
         platformSetHostWebGpu(host.wgpuInstance(), host.wgpuAdapter(),
@@ -307,8 +909,83 @@ int runEngineSession(AppHost &host, const MdkrBootConfig &config,
                               host.wgpuSurface(), host.wgpuFormat());
         platformSetHostWebGpuRecovery(recoverAppHostWebGpu, &host);
     }
+    Overlay_setPauseAllowed(session.overlayMayPause());
     Overlay_install(host.window());
     const int result = mdkr64_engine_boot(&config);
+
+    if (matchInputContext.profile != MDKR_NET_PROFILE_COUNT) {
+        std::fprintf(stderr,
+                     "[NET-PROFILE] name=%s sent=%llu dropped=%llu duplicate=%llu "
+                     "reordered=%llu corrupted=%llu outage=%llu throttled=%llu "
+                     "overflow=%llu decoded=%llu rejected=%llu offers=%u "
+                     "skipped=%u long=%u sleep=%u\n",
+                     matchInputContext.profileName,
+                     (unsigned long long)matchInputContext.impairment.sent,
+                     (unsigned long long)matchInputContext.impairment.dropped,
+                     (unsigned long long)matchInputContext.impairment.duplicated,
+                     (unsigned long long)matchInputContext.impairment.reordered,
+                     (unsigned long long)matchInputContext.impairment.corrupted,
+                     (unsigned long long)matchInputContext.impairment.outage_dropped,
+                     (unsigned long long)matchInputContext.impairment.throttled,
+                     (unsigned long long)matchInputContext.impairment.overflow,
+                     (unsigned long long)matchInputContext.decodedPackets,
+                     (unsigned long long)matchInputContext.rejectedPackets,
+                     matchInputContext.clock.authored_offers,
+                     matchInputContext.clock.skipped_offers,
+                     matchInputContext.clock.long_frames,
+                     matchInputContext.clock.sleep_skips);
+    }
+    if (networkManifest != nullptr) {
+        const MdkrMatchTransportStats *stats = session.transportStats();
+        MdkrMatchRecovery recovery{};
+        const bool recovering = session.engineRecovery(
+            networkManifest->match_epoch, recovery);
+        if (stats != nullptr) {
+            std::fprintf(
+                stderr,
+                "[NET-TRANSPORT] epoch=%u accepted=%u corrected=%u "
+                "duplicate=%u invalid=%u stale=%u unauthorized=%u conflict=%u "
+                "outWindow=%u drained=%u drainRejected=%u recovery=%u "
+                "takeoverStarted=%u takeoverIgnored=%u\n",
+                static_cast<unsigned>(networkManifest->match_epoch),
+                stats->accepted, stats->corrected, stats->duplicates,
+                stats->invalid, stats->stale_epoch, stats->unauthorized,
+                stats->conflicts, stats->out_of_window, stats->drained,
+                stats->drain_rejected,
+                recovering ? static_cast<unsigned>(recovery.reason) : 0u,
+                stats->takeover_started,
+                stats->takeover_ignored_inputs);
+        }
+    }
+
+    /* mdkr64_engine_boot is blocking and returns only after every engine
+     * worker has joined. The launcher's frozen roster can now be retired. */
+    if (matchInputInstalled) mdkr_match_input_runtime_clear();
+    mdkr_net_roster_runtime_clear();
+
+    /* Presentation/settings consumers have now released their per-engine
+     * latches. Re-arm exactly one launcher handoff for a later match epoch. */
+    if (!mdkr_video_config_engine_session_complete()) {
+        std::fprintf(stderr,
+                     "[session] video-config engine epoch did not close cleanly\n");
+    }
+
+    if (session.state().engine == MDKR_ENGINE_RACING) {
+        if (matchInputContext.recovery.reason != MDKR_MATCH_RECOVERY_NONE) {
+            (void)session.enginePhase(MDKR_ENGINE_FAILED);
+            (void)session.recover(MDKR_SESSION_ERROR_CONNECTION_LOST);
+            std::fprintf(stderr,
+                         "[SESSION-RECOVERY] scene=%u engine=%u error=%u "
+                         "epoch=%u\n",
+                         static_cast<unsigned>(session.state().scene),
+                         static_cast<unsigned>(session.state().engine),
+                         static_cast<unsigned>(session.state().last_error),
+                         static_cast<unsigned>(session.state().match_epoch));
+        } else {
+            (void)session.enginePhase(
+                result == 0 ? MDKR_ENGINE_FINISHED : MDKR_ENGINE_FAILED);
+        }
+    }
 
     /* The engine has dropped every borrowed child. Clear the registries before
      * AppHost releases their roots so no process-lifetime seam keeps a dangling
@@ -385,6 +1062,41 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_TOUCH_SCROLL");
     const char *smokeTouchToken =
         std::getenv("MDKR_APP_SMOKE_TOUCH_TOKEN");
+    const char *smokeOnlineActionValue =
+        std::getenv("MDKR_APP_SMOKE_ONLINE_ACTION");
+    const char *smokeOnlineFocusValue =
+        std::getenv("MDKR_APP_ONLINE_FOCUS_ACTION");
+    const char *smokeOnlineActionToken =
+        std::getenv("MDKR_APP_ONLINE_ACTION_TOKEN");
+    const bool anyOnlineActionContract =
+        (smokeOnlineActionValue && smokeOnlineActionValue[0]) ||
+        (smokeOnlineFocusValue && smokeOnlineFocusValue[0]) ||
+        (smokeOnlineActionToken && smokeOnlineActionToken[0]);
+    char *onlineActionEnd = nullptr;
+    char *onlineFocusEnd = nullptr;
+    const long smokeOnlineAction = smokeOnlineActionValue
+        ? std::strtol(smokeOnlineActionValue, &onlineActionEnd, 10) : 0;
+    const long smokeOnlineFocus = smokeOnlineFocusValue
+        ? std::strtol(smokeOnlineFocusValue, &onlineFocusEnd, 10) : 0;
+    const bool smokeOnlineActionArmed = anyOnlineActionContract &&
+        smokeOnlineActionValue && onlineActionEnd &&
+        onlineActionEnd != smokeOnlineActionValue && *onlineActionEnd == '\0' &&
+        smokeOnlineFocusValue && onlineFocusEnd &&
+        onlineFocusEnd != smokeOnlineFocusValue && *onlineFocusEnd == '\0' &&
+        smokeOnlineAction == smokeOnlineFocus &&
+        smokeOnlineAction > MDKR_ONLINE_VIEW_ACTION_NONE &&
+        smokeOnlineAction <= MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE &&
+        smokeOnlineActionToken &&
+        std::strcmp(smokeOnlineActionToken,
+                    "mdkr64-online-action-v1") == 0 &&
+        (smokeInputMode == AppUiSmokeInputMode::Keyboard ||
+         smokeInputMode == AppUiSmokeInputMode::Gamepad);
+    if (anyOnlineActionContract && !smokeOnlineActionArmed) {
+        std::fprintf(stderr,
+                     "[app] smoke: invalid Online Room action contract\n");
+        host.shutdown();
+        return 2;
+    }
     const bool anyTouchContract =
         (smokeTouchScroll && smokeTouchScroll[0]) ||
         (smokeTouchToken && smokeTouchToken[0]);
@@ -411,9 +1123,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         (smokePresentationPace && (smokeUiScaleDrag || smokeFrameLimit)) ||
         (smokeA11yWalk && (smokeUiScaleDrag || smokeFrameLimit ||
                            smokePresentationPace || smokeTouch ||
-                           smokeNavigation)) ||
+                           smokeNavigation || smokeOnlineActionArmed)) ||
         (smokeTouch && (smokeUiScaleDrag || smokeFrameLimit ||
-                        smokePresentationPace || smokeNavigation))) {
+                        smokePresentationPace || smokeNavigation ||
+                        smokeOnlineActionArmed)) ||
+        (smokeOnlineActionArmed &&
+         (smokeUiScaleDrag || smokeFrameLimit || smokePresentationPace ||
+          smokeNavigation))) {
         std::fprintf(stderr,
                      "[app] smoke: pointer scripts cannot share one input run\n");
         host.shutdown();
@@ -431,6 +1147,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (smokePresentationPace && frames < 8) frames = 8;
     if (smokeUiScaleDrag && frames < 11) frames = 11;
     if (smokeTouch && frames < 10) frames = 10;
+    if (smokeOnlineActionArmed && frames < 12) frames = 12;
     /* One keystroke per frame, and the walk has to get all the way round the
      * panel with room to spare -- an early stop would report controls as
      * silent that the keyboard simply never reached. */
@@ -509,6 +1226,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     float touchFinalScroll = 0.0f;
     bool touchGestureQueued = false;
     bool touchGestureReleased = false;
+    bool onlineActionInputQueued = false;
     int smokePlayActions = 0;
     std::string smokePlayActionRom;
     auto observeSmokePlay = [&](const LauncherAction &action) {
@@ -567,6 +1285,31 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     stderr,
                     "[app-ui-test] top navigation click queued target=%ld at %d,%d\n",
                     smokeNavigationPanel, x, y);
+            }
+        }
+
+        if (smokeOnlineActionArmed) {
+            const bool selection =
+                smokeOnlineAction == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER ||
+                smokeOnlineAction == MDKR_ONLINE_VIEW_ACTION_CHOOSE_VEHICLE ||
+                smokeOnlineAction == MDKR_ONLINE_VIEW_ACTION_VOTE_TRACK;
+            // Let the token-gated SetKeyboardFocusHere request survive one
+            // complete ImGui frame before activation. Selection combos then
+            // need one settled popup frame around each navigation input.
+            const bool activate = i == 2 || (selection && i == 8);
+            const bool move = selection && i == 5;
+            if (activate || move) {
+                if (smokeUsesGamepad) {
+                    onlineActionInputQueued = host.queueGamepadPressForSmoke(
+                        move ? SDL_CONTROLLER_BUTTON_DPAD_DOWN
+                             : SDL_CONTROLLER_BUTTON_A) ||
+                        onlineActionInputQueued;
+                } else {
+                    host.queueKeyPressForSmoke(
+                        move ? SDLK_DOWN
+                             : SDLK_RETURN);
+                    onlineActionInputQueued = true;
+                }
             }
         }
 
@@ -656,7 +1399,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
 
         if (smokeTouch) {
             int currentRect[4] = {0, 0, 0, 0};
-            if (!Launcher_smokeSettingsScrollRect(
+            if (!Launcher_smokePanelScrollRect(
                     &currentRect[0], &currentRect[1],
                     &currentRect[2], &currentRect[3])) {
                 if (i >= 1) {
@@ -665,7 +1408,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     renderOk = false;
                 }
             } else {
-                touchFinalScroll = Launcher_smokeSettingsScrollY();
+                touchFinalScroll = Launcher_smokePanelScrollY();
                 if (touchScriptStep == 0 && i >= 1) {
                     std::memcpy(touchRect, currentRect, sizeof(touchRect));
                     touchStartX = touchRect[0] +
@@ -884,6 +1627,21 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             static_cast<double>(moved), touchRect[0], touchRect[1],
             touchRect[2], touchRect[3]);
         renderOk = renderOk && targetQualified && scrollQualified;
+    }
+
+    if (smokeOnlineActionArmed) {
+        bool actionAccepted = false;
+        const bool witnessed = OnlineRoom_smokeActionResult(
+            static_cast<unsigned>(smokeOnlineAction), &actionAccepted);
+        std::fprintf(stderr,
+                     "[app-ui-test] online action=%ld input=%s queued=%u "
+                     "witnessed=%u accepted=%u\n",
+                     smokeOnlineAction,
+                     smokeUsesGamepad ? "gamepad" : "keyboard",
+                     onlineActionInputQueued ? 1u : 0u,
+                     witnessed ? 1u : 0u, actionAccepted ? 1u : 0u);
+        renderOk = renderOk && onlineActionInputQueued && witnessed &&
+            actionAccepted;
     }
 
     /* A full ROM check is deliberately asynchronous. Drop qualification keeps
@@ -1210,7 +1968,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     return 0;
 }
 
-int runAutoplay(AppHost &host, Launcher &launcher,
+int runAutoplay(AppHost &host, Launcher &launcher, SessionRuntime &session,
                 EngineSessionTransition *transition,
                 bool *restartReplacement) {
     MdkrBootConfig config{};
@@ -1257,7 +2015,81 @@ int runAutoplay(AppHost &host, Launcher &launcher,
         }
         config.automation_ticks = static_cast<int>(parsed);
     }
+    if (const char *frames = std::getenv("MDKR_APP_AUTOPLAY_FRAMES")) {
+        char *end = nullptr;
+        const long parsed = std::strtol(frames, &end, 10);
+        if (end == frames || *end != '\0' || parsed < 1 || parsed > 1000000 ||
+            config.automation_ticks > 0) {
+            std::fprintf(stderr,
+                         "[app] invalid/conflicting MDKR_APP_AUTOPLAY_FRAMES=%s "
+                         "(expected 1..1000000 and no tick limit)\n",
+                         frames);
+            host.shutdown();
+            return 2;
+        }
+        config.automation_frames = static_cast<int>(parsed);
+    }
     config.input_script = std::getenv("MDKR_APP_AUTOPLAY_INPUT_SCRIPT");
+
+    /* Test-only process-isolation seam. It deliberately enters through the
+     * launcher-owned session envelope rather than installing a roster in the
+     * engine directly. Both variables are required so a stale CI environment
+     * cannot silently select an online topology. The legacy V2 path remains
+     * the rollback laboratory default; MDKR_APP_TEST_ONLINE_LAUNCH_V3 selects
+     * the production descriptor/direct-load seam. */
+    const bool haveTestLocalMask =
+        std::getenv("MDKR_APP_TEST_ONLINE_LOCAL_MASK") != nullptr;
+    const bool haveTestViewportMask =
+        std::getenv("MDKR_APP_TEST_ONLINE_VIEWPORT_MASK") != nullptr;
+    const bool testOnline = haveTestLocalMask || haveTestViewportMask;
+    const bool testLaunchV3 =
+        std::getenv("MDKR_APP_TEST_ONLINE_LAUNCH_V3") != nullptr;
+    std::uint8_t testLocalMask = 0u;
+    std::uint8_t testViewportMask = 0u;
+    if (testOnline) {
+        if (!haveTestLocalMask || !haveTestViewportMask ||
+            !parseTestOnlineMask("MDKR_APP_TEST_ONLINE_LOCAL_MASK",
+                                 &testLocalMask) ||
+            !parseTestOnlineMask("MDKR_APP_TEST_ONLINE_VIEWPORT_MASK",
+                                 &testViewportMask) ||
+            testLocalMask == 0u ||
+            (testViewportMask &
+             static_cast<std::uint8_t>(~testLocalMask)) != 0u) {
+            std::fprintf(stderr,
+                         "[session-test] invalid online mask contract "
+                         "(local must be 1..15; viewport must be its subset)\n");
+            host.shutdown();
+            return 2;
+        }
+        if (!session.beginOnline() ||
+            !session.setConnectivity(MDKR_CONNECTIVITY_DIRECT) ||
+            !session.setRoomPhase(MDKR_ROOM_LOADING)) {
+            std::fprintf(stderr,
+                         "[session-test] could not compose first online "
+                         "launcher envelope\n");
+            host.shutdown();
+            return 2;
+        }
+        bool launchApplied = false;
+        if (testLaunchV3) {
+            MdkrSessionLaunchV3 launch{};
+            launchApplied = makeTestOnlineLaunchV3(
+                1u, testLocalMask, testViewportMask, &launch) &&
+                session.applyLaunch(launch);
+        } else {
+            MdkrSessionLaunchV2 launch{};
+            launchApplied = makeTestOnlineLaunch(
+                1u, testLocalMask, testViewportMask, &launch) &&
+                session.applyLaunch(launch);
+        }
+        if (!launchApplied) {
+            std::fprintf(stderr,
+                         "[session-test] could not freeze first online "
+                         "launcher envelope\n");
+            host.shutdown();
+            return 2;
+        }
+    }
 
     /* Match the interactive handoff: do not let the engine adopt a newly
      * created surface until the host has actually presented it once. A
@@ -1309,8 +2141,101 @@ int runAutoplay(AppHost &host, Launcher &launcher,
                      "continuing with offscreen engine frames\n",
                      warmupAttempts);
     }
-    const int result =
-        runEngineSession(host, config, transition);
+    int roundTrips = 1;
+    if (const char *roundText =
+            std::getenv("MDKR_APP_TEST_SESSION_ROUNDTRIPS")) {
+        char *end = nullptr;
+        const long parsed = std::strtol(roundText, &end, 10);
+        if (end == roundText || *end != '\0' || parsed < 1 || parsed > 3 ||
+            restartProbe != nullptr) {
+            std::fprintf(stderr,
+                         "[session-test] invalid round-trip contract\n");
+            host.shutdown();
+            return 2;
+        }
+        roundTrips = static_cast<int>(parsed);
+    }
+    const std::uint64_t persistentSessionId = session.state().session_id;
+    int result = 0;
+    for (int round = 0; round < roundTrips; ++round) {
+        if (testOnline && round > 0) {
+            const std::uint32_t nextEpoch = session.state().match_epoch + 1u;
+            bool launchApplied = false;
+            if (testLaunchV3) {
+                MdkrSessionLaunchV3 launch{};
+                launchApplied = makeTestOnlineLaunchV3(
+                    nextEpoch, testLocalMask, testViewportMask, &launch) &&
+                    session.applyLaunch(launch);
+            } else {
+                MdkrSessionLaunchV2 launch{};
+                launchApplied = makeTestOnlineLaunch(
+                    nextEpoch, testLocalMask, testViewportMask, &launch) &&
+                    session.applyLaunch(launch);
+            }
+            if (!launchApplied) {
+                std::fprintf(stderr,
+                             "[session-test] could not compose online "
+                             "rematch envelope epoch=%u\n",
+                             static_cast<unsigned>(nextEpoch));
+                result = 2;
+                break;
+            }
+        }
+        result = runEngineSession(host, session, config, transition);
+        if (result != 0 || (transition != nullptr &&
+                            transition->request != OverlayExitRequest::None)) {
+            break;
+        }
+        std::fprintf(stderr,
+                     "[session-test] engine round=%d epoch=%u id=%llu ticks=%d "
+                     "complete\n",
+                     round + 1, session.state().match_epoch,
+                     static_cast<unsigned long long>(session.state().session_id),
+                     g_simTickCounter);
+        if (roundTrips > 1 && config.automation_ticks > 0 &&
+            g_simTickCounter != config.automation_ticks) {
+            std::fprintf(stderr,
+                         "[session-test] round=%d simulation witness mismatch "
+                         "expected=%d actual=%d\n",
+                         round + 1, config.automation_ticks,
+                         g_simTickCounter);
+            result = 2;
+            break;
+        }
+        if (roundTrips > 1 && config.automation_frames > 0 &&
+            g_frameCounter != config.automation_frames) {
+            std::fprintf(stderr,
+                         "[session-test] round=%d presentation witness mismatch "
+                         "expected=%d actual=%d\n",
+                         round + 1, config.automation_frames, g_frameCounter);
+            result = 2;
+            break;
+        }
+        if (round + 1 < roundTrips) {
+            /* Prove the returned host can draw the launcher before it lends the
+             * same window/device to the next match. */
+            host.beginFrame();
+            (void)launcher.draw(host);
+            if (!host.endFrame()) {
+                result = 1;
+                break;
+            }
+        }
+    }
+    if (result == 0 && roundTrips > 1) {
+        if (session.state().session_id != persistentSessionId ||
+            session.state().match_epoch != static_cast<std::uint32_t>(roundTrips)) {
+            std::fprintf(stderr,
+                         "[session-test] persistent identity/epoch mismatch\n");
+            result = 2;
+        } else {
+            std::fprintf(stderr,
+                         "[session-test] persistent native lifecycle passed "
+                         "rounds=%d id=%llu\n",
+                         roundTrips,
+                         static_cast<unsigned long long>(persistentSessionId));
+        }
+    }
     /* A deliberately narrow integration seam for the package restart gate.
      * It requests the exact post-engine transition the overlay produces, once:
      * the replacement process enters with MDKR_APP_RESTART_GAME and therefore
@@ -1393,7 +2318,7 @@ void describeBootFailure(AppHost &host, int exitCode,
  * compositor that is slow to schedule its first present into a failed restart.
  * The launcher frames below are the same warm-up the interactive Play path
  * gets for free by having drawn itself before the engine adopts the surface. */
-int runRestartSession(AppHost &host, Launcher &launcher,
+int runRestartSession(AppHost &host, Launcher &launcher, SessionRuntime &session,
                       EngineSessionTransition *transition,
                       const std::string &romPath,
                       std::string *bootRecoveryMessage) {
@@ -1419,13 +2344,14 @@ int runRestartSession(AppHost &host, Launcher &launcher,
         if (host.presentedFrames() == initialPresents) SDL_Delay(1);
     }
 
-    const int result = runEngineSession(host, config, transition);
+    const int result = runEngineSession(host, session, config, transition);
     if (result != 0) describeBootFailure(host, result, bootRecoveryMessage);
     host.shutdown();
     return result;
 }
 
 int runInteractiveLauncher(AppHost &host, Launcher &launcher,
+                           SessionRuntime &session,
                            EngineSessionTransition *transition,
                            std::string *bootRecoveryMessage) {
     bool running  = true;
@@ -1457,11 +2383,31 @@ int runInteractiveLauncher(AppHost &host, Launcher &launcher,
             running = false;
         } else if (action.type == LauncherActionType::Play) {
             // Blocks while the game renders into the launcher's host window.
-            exitCode = runEngineSession(host, action.boot, transition);
+            exitCode = runEngineSession(host, session, action.boot, transition);
             if (exitCode != 0) {
                 describeBootFailure(host, exitCode, bootRecoveryMessage);
             }
-            running = false;
+            if (exitCode == 0 && transition != nullptr &&
+                transition->request == OverlayExitRequest::ReturnToLauncher) {
+                /* Return through the surviving host/runtime. The engine has
+                 * released its adopted children; no exec, second app process,
+                 * or lost Party state is needed. */
+                if (!session.returnHome()) {
+                    std::fprintf(stderr,
+                                 "[session] could not return engine result Home\n");
+                    exitCode = 2;
+                    running = false;
+                } else {
+                    transition->request = OverlayExitRequest::None;
+                    running = true;
+                    std::fprintf(stderr,
+                                 "[session] returned to persistent launcher id=%llu\n",
+                                 static_cast<unsigned long long>(
+                                     session.state().session_id));
+                }
+            } else {
+                running = false;
+            }
         }
     }
     return exitCode;
@@ -1548,6 +2494,12 @@ int main(int argc, char **argv) {
         return dumpSchema();
     }
 
+    // Windowless inventory consumed by the all-state Online Room render gate.
+    // It is deliberately independent of providers and graphics initialization.
+    if (std::getenv("MDKR_APP_DUMP_ONLINE_GALLERY")) {
+        return OnlineRoom_dumpGalleryContract();
+    }
+
     // Non-interactive tool-registry dump, on the same path and for the same
     // reason. Above the automation dispatch below, which would otherwise hand
     // the flag to the engine as an unrecognised argument and start a game.
@@ -1630,6 +2582,12 @@ int main(int argc, char **argv) {
     }
 
     Launcher launcher;
+    Overlay_setPhonePartyHost(launcher.state().phoneParty);
+    std::uint64_t sessionId =
+        static_cast<std::uint64_t>(SDL_GetPerformanceCounter()) ^
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&host));
+    if (sessionId == 0u) sessionId = 1u;
+    SessionRuntime session(sessionId);
 
     std::string inheritedRecovery;
     if (AppRestart_getEnv("MDKR_APP_BOOT_RECOVERY", inheritedRecovery) &&
@@ -1651,7 +2609,7 @@ int main(int argc, char **argv) {
     if (std::getenv("MDKR_APP_AUTOPLAY")) {
         bool restartReplacement = false;
         const int autoplayResult = runAutoplay(
-            host, launcher, &transition, &restartReplacement);
+            host, launcher, session, &transition, &restartReplacement);
         if (transition.request != OverlayExitRequest::None) {
             if (transition.request == OverlayExitRequest::RestartGame &&
                 !AppRestart_stageGame(transition.romPath.c_str(),
@@ -1691,7 +2649,8 @@ int main(int argc, char **argv) {
     if (AppRestart_pendingGame() && AppRestart_consumeGame(restartRom)) {
         std::fprintf(stderr, "[app] Restart & Apply handoff accepted\n");
         exitCode = runRestartSession(
-            host, launcher, &transition, restartRom, &bootRecoveryMessage);
+            host, launcher, session, &transition, restartRom,
+            &bootRecoveryMessage);
     } else {
         if (AppRestart_pendingGame()) {
             /* An inherited marker without a usable ROM is stale state, not a
@@ -1703,7 +2662,7 @@ int main(int argc, char **argv) {
             AppRestart_clear();
         }
         exitCode = runInteractiveLauncher(
-            host, launcher, &transition, &bootRecoveryMessage);
+            host, launcher, session, &transition, &bootRecoveryMessage);
     }
     host.shutdown();
     if (transition.request != OverlayExitRequest::None ||

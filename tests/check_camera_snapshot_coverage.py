@@ -66,6 +66,9 @@ SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.+)")
 CAMERA_CUT_RE = re.compile(r"\[CAMERA-CUT\] (.+)")
 LEVEL_LOAD_RE = re.compile(r"level_load: levelId=(\d+)")
 SCHED_RE = re.compile(r"\[PRESENTSCHED-SUMMARY\] (.+)")
+REPLAY_RE = re.compile(r"\[REPLAY-SUMMARY\] (.+)")
+SMOOTH_RE = re.compile(
+    r"^\[SMOOTH-VERDICT\] class=(\S+) (.+)$", re.MULTILINE)
 CAMERA_VP_RE = re.compile(r"\[CAMERA-VP\] (.+)")
 LOAD_RE = re.compile(r"level_load: levelId=5 numPlayers=(-?\d+)")
 CUTSCENE_LOAD_RE = re.compile(
@@ -146,6 +149,22 @@ def parse_fields(output: str, pattern: re.Pattern[str], label: str) -> dict[str,
         except ValueError:
             continue
     return fields
+
+
+def parse_smooth_verdicts(output: str) -> dict[str, dict[str, int]]:
+    rows: dict[str, dict[str, int]] = {}
+    for match in SMOOTH_RE.finditer(output):
+        fields: dict[str, int] = {}
+        for token in match.group(2).split():
+            key, separator, value = token.partition("=")
+            if not separator:
+                continue
+            try:
+                fields[key] = int(value)
+            except ValueError:
+                continue
+        rows[match.group(1)] = fields
+    return rows
 
 
 def parse_camera_journal(output: str) -> list[dict[str, float]]:
@@ -660,6 +679,7 @@ def run_adventure_arm(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_PRESENT_SMOOTHING="interpolate",
         MDKR_PRESENT_SCHED_TRACE="1",
         MDKR_PRESENT_SNAPSHOT="1",
+        MDKR_SMOOTH_VERDICT="1",
         MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
         MDKR_TEST_CAMERA_CUT_TRACE="1",
         MDKR_SAVE_DIR=str(save_dir),
@@ -699,6 +719,7 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
             f"{missing}")
     try:
         snapshot = parse_fields(output, SNAPSHOT_RE, "SNAPSHOT")
+        replay = parse_fields(output, REPLAY_RE, "REPLAY-SUMMARY")
     except RuntimeError as error:
         return failures + [f"{name}: {error}"], ""
     if snapshot.get("overflows") != 0:
@@ -727,6 +748,49 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         failures.append(
             f"{name}: {snapshot.get('identityinsertfail')} spawns could not "
             "be registered in the identity table")
+
+    # This one long route crosses frontend, hub, lobby, race, finish camera and
+    # three level lifetimes. It therefore owns the breadth assertion that the
+    # shorter race-focused stage gates cannot make: an interpolation refusal
+    # must come from a classified discontinuity/correspondence rule, never from
+    # reading an external pointer the retained task failed to capture.
+    for field in ("uncapturedext", "uncapturedrefusals"):
+        if replay.get(field) != 0:
+            failures.append(
+                f"{name}: replay {field}={replay.get(field)}, expected zero "
+                "across the full frontend/adventure/race/finish route")
+
+    smooth = parse_smooth_verdicts(output)
+    # Calibration and qualification on this exact route measured 228/49/34-36.
+    # These ceilings leave meaningful route/content margin while still failing
+    # if a class quietly falls back to holding most of its in-between frames.
+    held_ceilings = {
+        "WORLD_SCROLL": 350,
+        "WATER_WAVE": 100,
+        "OBJECT_ROOT": 100,
+    }
+    for surface_class, ceiling in held_ceilings.items():
+        row = smooth.get(surface_class)
+        if row is None:
+            failures.append(
+                f"{name}: no SMOOTH-VERDICT row for {surface_class}")
+            continue
+        blend = row.get("blend", 0)
+        snap = row.get("snap", 0)
+        reported = row.get("heldpermille", -1)
+        expected = snap * 1000 // (blend + snap) if blend + snap else -1
+        if blend <= 0:
+            failures.append(
+                f"{name}: {surface_class} blended no frame; its held ratio "
+                "is therefore not a smoothing witness")
+        if reported != expected:
+            failures.append(
+                f"{name}: {surface_class} heldpermille={reported}, but raw "
+                f"blend={blend}/snap={snap} recomputes to {expected}")
+        if reported > ceiling:
+            failures.append(
+                f"{name}: {surface_class} heldpermille={reported} exceeds "
+                f"the route ceiling {ceiling}")
     # Measured on this route: 9 viewport entries (three of them the door
     # transitions), one in-place cutscene-bank switch, and 20 jumps, all but
     # three of which are the post-race camera changing spectate point. The
@@ -738,7 +802,13 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
     return failures, (
         f"{name}: levels {sorted(loaded)} entered; cut notes "
         f"{snapshot.get('camcutconsumed')}/{snapshot.get('camcutnote')} "
-        f"consumed, {snapshot.get('camcutunconsumed')} unconsumed; {cut_note}")
+        f"consumed, {snapshot.get('camcutunconsumed')} unconsumed; replay "
+        f"externals/refusals {replay.get('uncapturedext')}/"
+        f"{replay.get('uncapturedrefusals')}; held permille "
+        + ", ".join(
+            f"{surface}={smooth.get(surface, {}).get('heldpermille')}"
+            for surface in held_ceilings)
+        + f"; {cut_note}")
 
 
 def main() -> int:

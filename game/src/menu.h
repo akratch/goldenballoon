@@ -730,6 +730,10 @@ void postrace_start(s32 finishState, s32 worldID);
 
 // Non Matching functions below here
 void load_menu_text(s32 language); // Non Matching
+#ifdef NATIVE_PORT
+/* Unlink every arena-backed menu root before a persistent launcher rematch. */
+void menu_session_shutdown(void);
+#endif
 s32 menu_controller_pak_loop(s32 updateRate);
 void menu_game_select_init(void);
 void trackmenu_render_names(s32 updateRate);

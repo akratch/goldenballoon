@@ -238,7 +238,7 @@ def check_launcher(output: str, controls: list[tuple[str, str, str]]) -> str:
 def check_panels(executable: Path, root: Path, timeout: int) -> str:
     """Each launcher panel announces itself on arrival."""
     announced = []
-    for panel in ("Game ROM", "Diagnostics", "About"):
+    for panel in ("Game ROM", "Online Room", "Diagnostics", "About"):
         output = walk_panel(executable, root, panel, timeout)
         sections = [text for category, _priority, text in utterances(output)
                     if category == "section"]

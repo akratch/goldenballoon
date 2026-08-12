@@ -1,0 +1,23 @@
+{
+  "name": "@golden-balloon/party-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && node ../../tests/test_party_qr.cjs && vitest run",
+    "test": "vitest run",
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.21.1",
+    "@cloudflare/workers-types": "5.20260811.1",
+    "jsqr": "1.4.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10",
+    "wrangler": "4.121.0"
+  }
+}

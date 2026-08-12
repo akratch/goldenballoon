@@ -5,9 +5,13 @@
 #include "app_theme.h"
 #include "app_brand.h"
 #include "ui_common.h"
+#include "ui_online_room.h"
 #include "ui_settings.h"
+#include "party/libdatachannel_party_transport.h"
+#include "party/native_party_host.h"
 
 #include "imgui.h"
+#include "SDL.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -26,6 +30,7 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
     {"Game ROM",    RomPanel_draw},
+    {"Online Room", OnlineRoomPanel_draw},
     {"Settings",    drawSettingsPanel},
     {"Diagnostics", DiagPanel_draw},
     {"About",       drawAboutPanel},
@@ -40,6 +45,10 @@ ImVec2 g_smokeSettingsScrollMin;
 ImVec2 g_smokeSettingsScrollMax;
 float g_smokeSettingsScrollY = 0.0f;
 bool g_smokeSettingsScrollValid = false;
+ImVec2 g_smokePanelScrollMin;
+ImVec2 g_smokePanelScrollMax;
+float g_smokePanelScrollY = 0.0f;
+bool g_smokePanelScrollValid = false;
 
 void fillBootConfig(const LauncherState &state, MdkrBootConfig &boot) {
     boot = MdkrBootConfig{};
@@ -76,7 +85,7 @@ void acceptDroppedRom(AppHost &host, LauncherState &state, int &activePanel) {
 
     RomPanel_ensureInit(state);
     RomPanel_setRom(state, dropped.c_str());
-    activePanel = 0;   // show the validation verdict
+    activePanel = kLauncherPanelGameRom;   // show the validation verdict
 }
 
 void preparePlay(LauncherState &state) {
@@ -108,7 +117,7 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
         // action. Open the native picker where one exists, then show the ROM
         // panel for its validation result or its typed-path/drop alternatives.
         RomPanel_chooseRom(state);
-        Launcher_requestTab(state, 0, kLauncherTabPlayer);
+        Launcher_requestTab(state, kLauncherPanelGameRom, kLauncherTabPlayer);
     }
 }
 
@@ -566,7 +575,8 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
             const ImVec2 first(actions.firstWidth, ui::kBtnSecondary().y);
             const ImVec2 second(actions.secondWidth, ui::kBtnSecondary().y);
             if (ImGui::Button("View Diagnostics", first)) {
-                Launcher_requestTab(state, 2, kLauncherTabPlayer);
+                Launcher_requestTab(state, kLauncherPanelDiagnostics,
+                                    kLauncherTabPlayer);
             }
             if (actions.sameLine) ImGui::SameLine();
             if (ImGui::Button("Dismiss", second)) {
@@ -580,10 +590,25 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
         kPanels[activePanel].draw(state, action);
     }
     ui::TouchScrollCurrentWindow();
+    g_smokePanelScrollMin = ImGui::GetWindowPos();
+    const ImVec2 panelScrollSize = ImGui::GetWindowSize();
+    g_smokePanelScrollMax = ImVec2(
+        g_smokePanelScrollMin.x + panelScrollSize.x,
+        g_smokePanelScrollMin.y + panelScrollSize.y);
+    g_smokePanelScrollY = ImGui::GetScrollY();
+    g_smokePanelScrollValid = ImGui::GetScrollMaxY() > 0.0f;
     ImGui::EndChild();
 }
 
 }  // namespace
+
+Launcher::Launcher()
+    : partyTransport_(mdkr_create_native_party_transport()),
+      phoneParty_(std::make_unique<MdkrNativePartyHost>(*partyTransport_)) {
+    state_.phoneParty = phoneParty_.get();
+}
+
+Launcher::~Launcher() = default;
 
 void Launcher_requestTab(LauncherState &s, int panel, int priority) {
     if (panel < 0 || panel >= kPanelCount) return;
@@ -622,6 +647,29 @@ bool Launcher_smokeSettingsScrollRect(int *minX, int *minY,
 
 float Launcher_smokeSettingsScrollY() {
     return g_smokeSettingsScrollY;
+}
+
+bool Launcher_smokePanelScrollRect(int *minX, int *minY,
+                                   int *maxX, int *maxY) {
+    if (!minX || !minY || !maxX || !maxY) return false;
+    const bool settings = g_spokenPanel == kLauncherPanelSettings;
+    const bool valid = settings ? g_smokeSettingsScrollValid
+                                : g_smokePanelScrollValid;
+    if (!valid) return false;
+    const ImVec2 &minimum = settings ? g_smokeSettingsScrollMin
+                                    : g_smokePanelScrollMin;
+    const ImVec2 &maximum = settings ? g_smokeSettingsScrollMax
+                                    : g_smokePanelScrollMax;
+    *minX = static_cast<int>(minimum.x);
+    *minY = static_cast<int>(minimum.y);
+    *maxX = static_cast<int>(maximum.x);
+    *maxY = static_cast<int>(maximum.y);
+    return true;
+}
+
+float Launcher_smokePanelScrollY() {
+    return g_spokenPanel == kLauncherPanelSettings
+        ? g_smokeSettingsScrollY : g_smokePanelScrollY;
 }
 
 namespace {
@@ -705,6 +753,7 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 
 LauncherAction Launcher::draw(AppHost &host) {
     state_.hostWindow = host.window();
+    phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
     LauncherAction action;
     const int panelAtFrameStart = active_;
     for (int i = 0; i < kPanelCount; ++i) g_smokeTopTabValid[i] = false;
@@ -713,6 +762,7 @@ LauncherAction Launcher::draw(AppHost &host) {
     // last value latched let Launcher_smokeSettingsScrollRect hand a touch or
     // capture gate a rectangle belonging to a panel that is no longer on screen.
     g_smokeSettingsScrollValid = false;
+    g_smokePanelScrollValid = false;
 
     // Design-review / CI hook: MDKR_APP_PANEL=<index|name> opens a specific panel
     // on the first frame so a screenshot gate can capture it without input.
@@ -768,7 +818,8 @@ LauncherAction Launcher::draw(AppHost &host) {
     state_.requestTab = -1;
     state_.requestTabPriority = 0;
 
-    if (panelAtFrameStart == 1 && active_ != 1) {
+    if (panelAtFrameStart == kLauncherPanelSettings &&
+        active_ != kLauncherPanelSettings) {
         Settings_cancelAudioPreview();
     }
 

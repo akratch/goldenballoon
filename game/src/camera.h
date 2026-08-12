@@ -146,6 +146,13 @@ void cutscene_camera_pause_restore(void);
  * view / inverse-view basis, so the fixed step can reconstruct the basis render
  * will use later in the same frame. */
 void cam_build_view_basis(void);
+/* During an endpoint-local scene pass, the canonical camera/player may differ
+ * from the output rectangle. The override is presentation-only, non-nestable,
+ * and must bracket exactly one viewport draw. */
+s32 cam_output_view_begin(s32 outputViewport, s32 outputLayout);
+void cam_output_view_end(void);
+s32 cam_get_output_viewport(void);
+s32 cam_get_output_viewport_layout(void);
 #endif
 void camEnableUserView(s32 viewPortIndex, s32 arg1);
 void camDisableUserView(s32 viewPortIndex, s32 arg1);

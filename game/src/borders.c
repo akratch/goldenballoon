@@ -8,6 +8,19 @@
 #include "structs.h"
 #include "types.h"
 #include "video.h"
+#ifdef NATIVE_PORT
+#include "net/net_roster_runtime.h"
+
+static s32 presentation_viewport_layout(void) {
+    if (mdkr_net_roster_runtime_active()) {
+        const uint8_t count = mdkr_net_roster_runtime_viewport_count(0u);
+        return count > 0u ? (s32)count - 1 : VIEWPORT_LAYOUT_1_PLAYER;
+    }
+    return cam_get_viewport_layout();
+}
+#else
+#define presentation_viewport_layout cam_get_viewport_layout
+#endif
 
 /**
  * Renders the black borders that separate each viewport during multiplayer.
@@ -27,7 +40,7 @@ void divider_draw(Gfx **dList) {
     yOffset = height / 128;
     gDPSetCycleType((*dList)++, G_CYC_FILL);
     gDPSetFillColor((*dList)++, GPACK_RGBA5551(0, 0, 0, 1) << 16 | GPACK_RGBA5551(0, 0, 0, 1)); // Black fill color
-    switch (cam_get_viewport_layout()) {
+    switch (presentation_viewport_layout()) {
         case VIEWPORT_LAYOUT_2_PLAYERS:
             // Draws a solid horizontal black line in the middle of the screen.
             y = (height >> 1) - yOffset;
@@ -72,7 +85,7 @@ void divider_clear_coverage(Gfx **dList) {
     gDPSetCombineMode((*dList)++, G_CC_PRIMITIVE, G_CC_PRIMITIVE);
     gDPSetRenderMode((*dList)++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
     gDPSetPrimColor((*dList)++, 0, 0, 0, 0, 0, 0);
-    switch (cam_get_viewport_layout()) {
+    switch (presentation_viewport_layout()) {
         case VIEWPORT_LAYOUT_2_PLAYERS:
             tempY = (screenHeight / 2) - (height / 2);
             gDPFillRectangle((*dList)++, 0, tempY, screenWidth, tempY + height);

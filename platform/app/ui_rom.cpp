@@ -41,6 +41,8 @@
 #include "app_ui_policy.h"
 #include "file_dialog.h"
 #include "ui_common.h"
+#include "ui_phone_party.h"
+#include "party/native_party_host.h"
 
 #include "imgui.h"
 
@@ -717,8 +719,9 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
     }
 
     bool keepPopupOpen = true;
+    ui::ConfirmModalSize();
     if (ImGui::BeginPopupModal("Forget remembered ROM?", &keepPopupOpen,
-                               ImGuiWindowFlags_AlwaysAutoResize)) {
+                               ImGuiWindowFlags_NoResize)) {
         ImGui::TextWrapped(
             "Golden Balloon will forget this file path. The ROM itself and all "
             "saved progress remain untouched.");
@@ -779,5 +782,9 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         }
         ImGui::PopStyleColor(3);
         ImGui::EndPopup();
+    }
+
+    if (s.phoneParty != nullptr) {
+        PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
     }
 }

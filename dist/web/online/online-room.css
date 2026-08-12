@@ -1,0 +1,197 @@
+.online-room-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(760px, calc(100dvh - 32px));
+  margin: auto;
+  padding: clamp(20px, 4vw, 32px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid rgba(133, 178, 235, .38);
+  border-left: 4px solid var(--gold);
+  border-radius: 4px;
+  background: #0b274b;
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .55);
+}
+
+.online-room-dialog::backdrop {
+  background: rgba(2, 10, 22, .76);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.online-room-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.online-room-heading h2 {
+  margin: 2px 0 0;
+  font: italic 850 clamp(22px, 4.5vw, 34px)/1.08 system-ui, sans-serif;
+  letter-spacing: -.025em;
+  text-transform: uppercase;
+  text-wrap: balance;
+}
+
+.online-room-eyebrow {
+  margin: 0;
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+#online-room-explanation {
+  margin: 18px 0;
+  color: var(--ink-dim);
+}
+
+.online-room-status {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border: 1px solid rgba(113, 190, 249, .42);
+  background: rgba(113, 190, 249, .09);
+}
+
+.online-room-status strong { color: #fff; }
+.online-room-status span { color: var(--ink-dim); }
+
+.online-room-timeout,
+.online-room-auxiliary {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 196, 46, .58);
+  background: rgba(255, 196, 46, .09);
+}
+
+.online-room-timeout[hidden],
+.online-room-auxiliary[hidden] { display: none; }
+.online-room-timeout span,
+.online-room-auxiliary { color: var(--ink-dim); }
+.online-room-auxiliary h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+  text-wrap: balance;
+}
+
+.online-room-auxiliary label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 750;
+}
+
+.online-room-auxiliary input,
+.online-room-auxiliary select {
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid rgba(133, 178, 235, .42);
+  border-radius: 3px;
+  background: #061a33;
+  color: var(--ink);
+  font: inherit;
+}
+
+.online-room-inline-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.online-room-qr {
+  display: block;
+  width: min(240px, 100%);
+  height: auto;
+  margin: 8px auto;
+  border: 8px solid #fff;
+}
+
+.online-room-code {
+  color: #fff;
+  font: 850 clamp(24px, 7vw, 36px)/1 ui-monospace, monospace;
+  letter-spacing: .12em;
+  text-align: center;
+}
+
+#online-room-selection { margin-top: 18px; }
+.online-room-choice { display: grid; gap: 7px; }
+.online-room-choice span { color: var(--ink); font-weight: 750; }
+.online-room-choice select {
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid rgba(133, 178, 235, .42);
+  border-radius: 3px;
+  background: #061a33;
+  color: var(--ink);
+  font: inherit;
+}
+
+#online-room-model-actions > .btn { width: 100%; }
+#online-room-model-actions > .btn[data-tone="destructive"] {
+  border-color: rgba(255, 129, 137, .68);
+  color: #ffd7da;
+}
+
+.online-room-scope { margin-top: 22px; }
+.online-room-scope h3 { margin: 0 0 8px; }
+.online-room-scope ul { margin: 0; padding-left: 1.25em; }
+.online-room-scope li + li { margin-top: 7px; }
+
+.online-room-details {
+  margin-top: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: rgba(3, 17, 34, .35);
+}
+
+.online-room-details summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  color: var(--ink);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.online-room-details p { color: var(--ink-dim); }
+
+.online-room-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.online-room-actions .btn { min-height: 48px; }
+
+@media (max-width: 440px), (max-height: 620px) {
+  .online-room-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+    padding: 18px;
+  }
+  .online-room-heading { display: grid; grid-template-columns: 1fr auto; }
+  .online-room-actions,
+  .online-room-inline-actions { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .online-room-dialog::backdrop {
+    background: #020a16;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .online-room-dialog { scroll-behavior: auto; }
+}

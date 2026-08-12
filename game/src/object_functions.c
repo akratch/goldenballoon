@@ -19,6 +19,7 @@
 #include "macros.h"
 #include "math_util.h"
 #include "menu.h" // For cheats
+#include "network_player_authority.h"
 #include "object_models.h"
 #include "objects.h"
 #include "particles.h"
@@ -178,7 +179,8 @@ void obj_loop_scenery(Object *obj, s32 updateRate) {
             properties->interactObj = obj->interactObj->obj;
             properties->angleVel = 0x71C;
             properties->hitTimer = 10;
-            if (get_number_of_active_players() < 2) {
+            if (mdkr_authoritative_player_count(
+                    get_number_of_active_players()) < 2) {
                 if (obj->header->particleCount > 0) {
                     if (obj->header->particleCount == 1) {
                         particleFlagShift = 0;
@@ -1677,8 +1679,15 @@ void obj_loop_fish(Object *fishObj, s32 updateRate) {
     f32 prevXThing, prevZThing;
     Vertex *verts;
     s32 randNumber;
+    s32 authorityPlayerCount;
 
-    if (cam_get_viewport_layout() > 0) {
+#ifdef NATIVE_PORT
+    authorityPlayerCount = mdkr_authoritative_player_count(
+        cam_get_viewport_layout() + 1);
+#else
+    authorityPlayerCount = cam_get_viewport_layout() + 1;
+#endif
+    if (authorityPlayerCount > 1) {
         free_object(fishObj);
         return;
     }
@@ -2658,7 +2667,8 @@ void obj_loop_bombexplosion(Object *obj, s32 updateRate) {
     }
 
     if (obj->particleEmittersEnabled) {
-        if (get_number_of_active_players() < THREE_PLAYERS) {
+        if (mdkr_authoritative_player_count(
+                get_number_of_active_players()) < THREE_PLAYERS) {
             obj_spawn_particle(obj, LOGIC_30FPS);
             obj->particleEmittersEnabled = OBJ_EMIT_NONE;
         }
@@ -3152,7 +3162,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                 taj->unk1C = 0;
                 play_taj_voice_clip(SOUND_VOICE_TAJ_BYE, TRUE);
                 slowly_change_fog(PLAYER_ONE, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
-                music_voicelimit_set(levelHeader->voiceLimit);
+                music_voicelimit_set_from_level_header(levelHeader->voiceLimit);
                 music_play(levelHeader->music);
                 music_dynamic_set(levelHeader->instruments);
                 audspat_jingle_on();
@@ -3312,7 +3322,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
             } else {
                 racer->vehicleSound = racer_sound_init(racer->characterId, racer->vehicleID);
                 slowly_change_fog(PLAYER_ONE, taj->fogR, taj->fogG, taj->fogB, taj->fogNear, taj->fogFar, 180);
-                music_voicelimit_set(levelHeader->voiceLimit);
+                music_voicelimit_set_from_level_header(levelHeader->voiceLimit);
                 music_play(levelHeader->music);
                 music_dynamic_set(levelHeader->instruments);
                 init_racer_for_challenge(racer->vehicleID);
@@ -4879,7 +4889,8 @@ void obj_loop_banana(Object *obj, s32 updateRate) {
                     if (banana->spawner != NULL) {
                         banana->spawner->properties.bananaSpawner.spawn = TRUE;
                     }
-                    if (get_number_of_active_players() > TWO_PLAYERS) {
+                    if (mdkr_authoritative_player_count(
+                            get_number_of_active_players()) > TWO_PLAYERS) {
                         free_object(obj);
                     } else {
                         properties->status = BANANA_COLLECTED;
@@ -5185,7 +5196,8 @@ void obj_loop_weaponballoon(Object *weaponBalloonObj, s32 updateRate) {
                     prevBalloonQuantity = racer->balloon_quantity;
                     racer->balloon_quantity = powerupTable[(racer->balloon_type * 10) + (racer->balloon_level * 2) + 1];
                     racer->unk209 |= 1;
-                    if (get_number_of_active_players() < THREE_PLAYERS) {
+                    if (mdkr_authoritative_player_count(
+                            get_number_of_active_players()) < THREE_PLAYERS) {
                         weaponBalloonObj->properties.weaponBalloon.particleTimer = 16;
                     }
                     if (racer->playerIndex == PLAYER_COMPUTER) {
@@ -5532,7 +5544,8 @@ void homing_rocket_prevent_overshoot(Object *obj, s32 updateRate, Object_Weapon 
         }
     }
     play_rocket_trailing_sound(obj, rocket, SOUND_HOMING_ROCKET);
-    if (get_number_of_active_players() < 3) {
+    if (mdkr_authoritative_player_count(
+            get_number_of_active_players()) < 3) {
         obj->particleEmittersEnabled |= OBJ_EMIT_1;
         obj_spawn_particle(obj, updateRate);
     }
@@ -6828,7 +6841,8 @@ void obj_loop_bubbler(Object *obj, s32 updateRate) {
     } else {
         obj->particleEmittersEnabled = OBJ_EMIT_NONE;
     }
-    if (get_number_of_active_players() < 2) {
+    if (mdkr_authoritative_player_count(
+            get_number_of_active_players()) < 2) {
         obj_spawn_particle(obj, updateRate);
     }
 }

@@ -16,6 +16,41 @@
 #define MDKR_PRESENT_RATE_MAX 1000u
 
 /*
+ * Classify the retirement cadence behind a blocking present queue.
+ *
+ * A fixed-refresh queue has a narrow interval distribution even when the host
+ * wakes a little late. A VRR queue follows the application's varying delivery
+ * times and therefore has a materially wider distribution. The classifier
+ * trims isolated scheduling stalls, uses separate enter/leave thresholds, and
+ * requires sustained contrary evidence before changing an established state.
+ * It is intentionally a pure policy object: platform code feeds the same
+ * interval it already measured for pacing, while unit tests can exercise the
+ * decision without inventing a display.
+ */
+#define MDKR_PRESENT_INTERVAL_WINDOW 32u
+#define MDKR_PRESENT_INTERVAL_TRIM 4u
+#define MDKR_PRESENT_INTERVAL_VARIABLE_PPM UINT64_C(2500)
+#define MDKR_PRESENT_INTERVAL_FIXED_PPM UINT64_C(900)
+#define MDKR_PRESENT_INTERVAL_VARIABLE_CONFIRM 4u
+#define MDKR_PRESENT_INTERVAL_FIXED_CONFIRM 16u
+
+typedef enum MdkrPresentIntervalKind {
+    MDKR_PRESENT_INTERVAL_WARMING = 0,
+    MDKR_PRESENT_INTERVAL_FIXED = 1,
+    MDKR_PRESENT_INTERVAL_VARIABLE = 2
+} MdkrPresentIntervalKind;
+
+typedef struct MdkrPresentIntervalClassifier {
+    uint64_t intervals_ns[MDKR_PRESENT_INTERVAL_WINDOW];
+    uint64_t jitter_ppm;
+    uint64_t transitions;
+    unsigned count;
+    unsigned head;
+    unsigned contrary_count;
+    MdkrPresentIntervalKind kind;
+} MdkrPresentIntervalClassifier;
+
+/*
  * How far below the display's own refresh `display-margin` sits, in Hz.
  *
  * WHY THREE. A variable-refresh display holds its adaptive range only while the
@@ -96,6 +131,11 @@ int mdkr_pacing_queue_refill(int pending_fields, int measured_fields,
                              int capacity);
 int mdkr_pacing_interval_requires_rebase(uint64_t elapsed_ns);
 uint32_t mdkr_counter_guard_commit(MdkrCounterGuard *guard, uint32_t sample);
+
+void mdkr_present_interval_reset(MdkrPresentIntervalClassifier *classifier);
+void mdkr_present_interval_note(MdkrPresentIntervalClassifier *classifier,
+                                uint64_t elapsed_ns);
+const char *mdkr_present_interval_kind_name(MdkrPresentIntervalKind kind);
 
 int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out);
 int mdkr_present_policy_equal(const MdkrPresentPolicy *left,

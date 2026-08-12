@@ -469,16 +469,20 @@ int mdkr_video_config_readonly_for(const MdkrVideoConfig *config);
 void mdkr_video_config_init(int argc, char *const *argv);
 
 /*
- * Complete the launcher -> engine boundary exactly once in an app process.
+ * Complete the launcher -> engine boundary exactly once per engine session.
  * The launcher initializes this module early so its settings UI can stage
  * restart-scoped changes. Immediately before engine entry, this transaction
  * reloads the saved layer and resolves the engine argv into both the active
  * and desired configs. The engine's later init remains an idempotent no-op.
  *
  * Returns 1 for the one valid handoff, or 0 if initialization has not happened
- * or a handoff was already completed.
+ * or the current engine session already consumed its handoff.
  */
 int mdkr_video_config_handoff_to_engine(int argc, char *const *argv);
+
+/* Re-arm the handoff only after the engine has fully unwound and released its
+ * borrowed host resources. Calling this before a successful handoff fails. */
+int mdkr_video_config_engine_session_complete(void);
 const MdkrVideoConfig *mdkr_video_config_current(void);
 const MdkrVideoConfig *mdkr_video_config_desired(void);
 int mdkr_video_config_is_readonly(void);

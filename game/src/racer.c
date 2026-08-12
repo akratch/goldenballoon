@@ -11,6 +11,7 @@
 #include "runtime_contracts.h"
 #include "memory.h"
 #include "menu.h"
+#include "network_player_authority.h"
 #include "video.h"
 #include "platform_os.h"
 
@@ -49,6 +50,7 @@
 #ifdef NATIVE_PORT
 #include "camera_obstruction_runtime.h"
 #include "enh_ai_difficulty.h"
+#include "net/match_input_runtime.h"
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
@@ -1231,7 +1233,8 @@ void racer_ai_challenge(Object *aiRacerObj, Object_Racer *aiRacer, s32 updateRat
                     }
                 }
                 if (roll_percent_chance(sp38[2]) != 0) {
-                    if (cam_get_viewport_layout() == 0) {
+                    if (mdkr_authoritative_player_count(
+                            cam_get_viewport_layout() + 1) == 1) {
                         tempRacerObj = get_racer_object(index);
                         tempRacer = tempRacerObj->racer;
                         if (tempRacer->bananas > 0) {
@@ -1548,7 +1551,9 @@ void racer_ai_eggs(Object *obj, Object_Racer *racer, s32 updateRate) {
                 bestTick = 2;
             } else {
                 bestTick = 1;
-                if (roll_percent_chance(header[2]) && cam_get_viewport_layout() == 0) {
+                if (roll_percent_chance(header[2]) &&
+                    mdkr_authoritative_player_count(
+                        cam_get_viewport_layout() + 1) == 1) {
                     flags = 0;
                 }
             }
@@ -4673,6 +4678,9 @@ void update_player_racer(Object *obj, s32 updateRate) {
     f32 stretch;
     s32 i;
     struct LevelObjectEntryCommon newObject;
+#ifdef NATIVE_PORT
+    s32 networkAiTakeover;
+#endif
 
 #ifdef NATIVE_PORT
     /* Menu-owned scenes still run obj_update(0) while the application overlay
@@ -4693,6 +4701,10 @@ void update_player_racer(Object *obj, s32 updateRate) {
     tempRacer = obj->racer;
 #ifdef NATIVE_PORT
     taj_physics_pre_vehicle_update(obj, tempRacer);
+    networkAiTakeover = tempRacer->playerIndex >= PLAYER_ONE &&
+        tempRacer->playerIndex <= PLAYER_FOUR &&
+        mdkr_match_input_runtime_slot_ai_controlled(
+            (unsigned)tempRacer->playerIndex);
 #endif
     // Cap all of the velocities on the different axes.
     // Unfortunately, Rareware didn't appear to use a clamp macro here, which would've saved a lot of real estate.
@@ -4752,14 +4764,28 @@ void update_player_racer(Object *obj, s32 updateRate) {
     header = level_header();
     gCurrentCourseHeight = header->course_height;
     tempRacer->throttleReleased = FALSE;
-    if (tempRacer->playerIndex == PLAYER_COMPUTER) {
+    if (tempRacer->playerIndex == PLAYER_COMPUTER
+#ifdef NATIVE_PORT
+        || networkAiTakeover
+#endif
+    ) {
+#ifdef NATIVE_PORT
+        /* The frozen canonical identity remains a human slot. Only the vehicle
+         * solver sees PLAYER_COMPUTER, for this authored tick, so DKR's AI path
+         * (including its CPU-field assumptions) drives the disconnected seat
+         * without changing roster/camera/HUD ownership. Every endpoint obtains
+         * the same mask from the launcher control schedule, including replay. */
+        const s16 savedPlayerIndex = tempRacer->playerIndex;
+        if (networkAiTakeover) tempRacer->playerIndex = PLAYER_COMPUTER;
+#endif
         update_AI_racer(obj, tempRacer, updateRate, updateRateF);
 #ifdef NATIVE_PORT
+        if (networkAiTakeover) tempRacer->playerIndex = savedPlayerIndex;
         /* Observation-only opponent stuck-recovery witness (MDKR_AI_STUCK_TRACE;
          * inert unless set). This limb -- not the input dispatch further down --
          * is the one every genuine CPU racer takes. See
          * tests/check_ai_unstick_opponents.py. */
-        ai_stuck_trace(obj, tempRacer, updateRate);
+        if (!networkAiTakeover) ai_stuck_trace(obj, tempRacer, updateRate);
 #endif
     } else {
 #ifdef NATIVE_PORT
@@ -6228,7 +6254,8 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     } else {
         racer->unk1EE = 0;
     }
-    if (cam_get_viewport_layout() < THREE_PLAYERS) {
+    if (mdkr_authoritative_player_count(
+            cam_get_viewport_layout() + 1) <= THREE_PLAYERS) {
         if ((sp60 != 0 && racer->velocity < -2.0) || sp58 != 0 || racer->unk1FB != 0) {
             if (racer->wheel_surfaces[2] < SURFACE_NONE) {
                 obj->particleEmittersEnabled |= gSurfaceFlagTable[racer->wheel_surfaces[2]];
@@ -7355,7 +7382,9 @@ void update_car_velocity_ground(Object *obj, Object_Racer *racer, s32 updateRate
     } else {
         racer->unk1EE = 0;
     }
-    if (cam_get_viewport_layout() < 2 && sp38 && racer->velocity < -2.0) {
+    if (mdkr_authoritative_player_count(
+            cam_get_viewport_layout() + 1) <= THREE_PLAYERS && sp38 &&
+        racer->velocity < -2.0) {
         if (racer->wheel_surfaces[2] < SURFACE_NONE) {
             obj->particleEmittersEnabled |= DKR_SHL32(1u, racer->wheel_surfaces[2] * 2);
         }
@@ -7660,10 +7689,10 @@ void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
      * tests/check_collision_gridmask.py. */
     {
         extern void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int s0, int s1, int s2,
-                                      int s3, int xrot, int zrot);
+                                      int s3, int xrot, int zrot, int inputBlocked);
         mdkr_ground_probe(racer->playerIndex, racer->racerIndex, racer->groundedWheels, sp58[0], sp58[1], sp58[2],
                           sp58[3], (int) racerObj->trans.rotation.x_rotation,
-                          (int) racerObj->trans.rotation.z_rotation);
+                          (int) racerObj->trans.rotation.z_rotation, (int) gRacerInputBlocked);
     }
 #endif
     racerObj->trans.x_position = 0;

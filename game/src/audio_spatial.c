@@ -13,6 +13,11 @@
 #include "textures_sprites.h"
 #include "tracks.h"
 #include "types.h"
+#ifdef NATIVE_PORT
+#include "net/local_listener_mix.h"
+#include "net/net_roster_runtime.h"
+#include <stdio.h>
+#endif
 
 #define MAX_AUDIO_POINTS 40
 #define MAX_AUDIO_LINES 7
@@ -38,6 +43,197 @@ u8 gJinglesOff;
 s32 D_8011AC1C;
 
 /*******************************/
+
+#ifdef NATIVE_PORT
+static void audspat_endpoint_point_mix(
+    const AudioPoint *point, Camera *cameras, s32 numCameras,
+    s32 fallbackVolume, s32 fallbackPan, MdkrLocalListenerMix *mix) {
+    s32 candidateVolume[MDKR_MATCH_SLOTS] = {0, 0, 0, 0};
+    u8 candidatePan[MDKR_MATCH_SLOTS] = {64, 64, 64, 64};
+    s32 index;
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    /* Offline (no net roster) the selector below can only ever answer with
+     * the fallback, so don't compute per-camera candidates it will discard —
+     * the legacy inline math a few lines up already produced the fallback.
+     * Same early-out racer_sound_endpoint_brake_mix() carries. */
+    if (roster == NULL) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+        return;
+    }
+    for (index = 0; index < numCameras && index < MDKR_MATCH_SLOTS; index++) {
+        const f32 dx = point->pos.x - cameras[index].trans.x_position;
+        const f32 dy = point->pos.y - cameras[index].trans.y_position;
+        const f32 dz = point->pos.z - cameras[index].trans.z_position;
+        const s32 distance = sqrtf(dx * dx + dy * dy + dz * dz);
+        s32 volume = 0;
+        if (distance < point->range) {
+            if (!point->fastFalloff) {
+                volume = (1.0f - (f32)distance / (f32)point->range) *
+                         point->volume;
+            } else {
+                const f32 scale =
+                    (f32)(point->range - distance) / (f32)point->range;
+                volume = scale * scale * point->volume;
+            }
+        }
+        if (volume < point->minVolume) volume = point->minVolume;
+        candidateVolume[index] = volume;
+        candidatePan[index] = (u8)audspat_calculate_spatial_pan(
+            dx, dz, cameras[index].trans.rotation.y_rotation);
+    }
+    if (!mdkr_local_listener_mix_select(
+            roster, candidateVolume, candidatePan, (unsigned)numCameras,
+            fallbackVolume, (u8)fallbackPan, mix)) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+    }
+}
+
+static void audspat_endpoint_line_mix(
+    const AudioLine *line, Camera *cameras, s32 numCameras,
+    s32 fallbackVolume, s32 fallbackPan, MdkrLocalListenerMix *mix) {
+    s32 candidateVolume[MDKR_MATCH_SLOTS] = {0, 0, 0, 0};
+    u8 candidatePan[MDKR_MATCH_SLOTS] = {64, 64, 64, 64};
+    s32 cameraIndex;
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    /* See audspat_endpoint_point_mix: offline, the selector can only answer
+     * with the fallback; skip up to 4x29 segment distances per tick. */
+    if (roster == NULL) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+        return;
+    }
+    for (cameraIndex = 0;
+         cameraIndex < numCameras && cameraIndex < MDKR_MATCH_SLOTS;
+         cameraIndex++) {
+        s32 distances[29] = {0};
+        s32 pans[29] = {64};
+        const s32 segmentCount =
+            line->numSegments > 29 ? 29 : line->numSegments;
+        s32 sum = 0;
+        s32 minDistance = line->range;
+        s32 segment;
+        f32 *coords = (f32 *)line->coords;
+        f32 outX, outY, outZ;
+        s32 pan = 64;
+        s32 volume;
+        for (segment = 0; segment < segmentCount; segment++) {
+            distances[segment] = audspat_distance_to_segment(
+                cameras[cameraIndex].trans.x_position,
+                cameras[cameraIndex].trans.y_position,
+                cameras[cameraIndex].trans.z_position,
+                coords, &outX, &outY, &outZ);
+            pans[segment] = audspat_calculate_spatial_pan(
+                outX - cameras[cameraIndex].trans.x_position,
+                outZ - cameras[cameraIndex].trans.z_position,
+                cameras[cameraIndex].trans.rotation.y_rotation);
+            if (distances[segment] < minDistance) {
+                minDistance = distances[segment];
+            }
+            sum += distances[segment];
+            coords += 3;
+        }
+        if (!line->fastFalloff) {
+            volume = (1.0f - (f32)minDistance / (f32)line->range) *
+                     line->unk174;
+        } else {
+            const f32 scale =
+                (f32)(line->range - minDistance) / (f32)line->range;
+            volume = scale * scale * line->unk174;
+        }
+        if (segmentCount == 1) {
+            pan = pans[0];
+        } else if (segmentCount > 1) {
+            s32 inverseSum = 0;
+            for (segment = 0; segment < segmentCount; segment++) {
+                inverseSum += sum - distances[segment];
+            }
+            if (inverseSum > 0) {
+                pan = 0;
+                for (segment = 0; segment < segmentCount; segment++) {
+                    pan += (f32)(sum - distances[segment]) /
+                           (f32)inverseSum * (f32)pans[segment];
+                }
+            }
+        }
+        if (minDistance < 400) {
+            pan = (pan - 64) * (minDistance / 400.0f) + 64;
+        }
+        if (line->type == AUDIO_LINE_TYPE_SOUND && volume < line->maxVolume) {
+            volume = line->maxVolume;
+        }
+        if (volume < 0) volume = 0;
+        if (volume > 127) volume = 127;
+        candidateVolume[cameraIndex] = volume;
+        candidatePan[cameraIndex] = (u8)pan;
+    }
+    if (!mdkr_local_listener_mix_select(
+            roster, candidateVolume, candidatePan, (unsigned)numCameras,
+            fallbackVolume, (u8)fallbackPan, mix)) {
+        mix->volume = fallbackVolume;
+        mix->pan = (u8)fallbackPan;
+        mix->listener_count = 0u;
+        mix->endpoint_local = false;
+    }
+}
+
+static void audspat_report_endpoint_listeners(s32 numCameras) {
+    static u32 lastSignature = 0xffffffffu;
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    u32 signature = 0u;
+    unsigned index;
+    if (roster == NULL) return;
+    signature = ((u32)roster->canonical_player_count << 24) |
+                ((u32)roster->viewport_count << 16);
+    for (index = 0u; index < roster->viewport_count; index++) {
+        signature |= (u32)(roster->viewport_to_canonical[index] + 1u) <<
+                     (index * 3u);
+    }
+    if (signature == lastSignature) return;
+    fprintf(stderr, "[NET-AUDIO] listeners=%u canonical=%d map=",
+            (unsigned)roster->viewport_count, numCameras);
+    for (index = 0u; index < roster->viewport_count; index++) {
+        fprintf(stderr, "%s%u", index == 0u ? "" : ",",
+                (unsigned)roster->viewport_to_canonical[index]);
+    }
+    fprintf(stderr, " mode=%s authority=canonical\n",
+            roster->viewport_count == 0u ? "silent" :
+            roster->viewport_count == 1u ? "spatial" : "shared-center");
+    lastSignature = signature;
+}
+#endif
+
+#ifdef NATIVE_PORT
+s32 audspat_rollback_view(MdkrAudioSpatialRollbackView *view) {
+    if (view == NULL || gAudioPointsPool == NULL ||
+        gFreeAudioPoints == NULL || gAudioPoints == NULL) {
+        return FALSE;
+    }
+    view->allocations[0] = gAudioPointsPool;
+    view->allocations[1] = gFreeAudioPoints;
+    view->allocations[2] = gAudioPoints;
+    view->state[0] = (MdkrAudioSpatialRollbackSpan){
+        &gNumAudioPoints, sizeof(gNumAudioPoints)};
+    view->state[1] = (MdkrAudioSpatialRollbackSpan){
+        &gLastFreePointIndex, sizeof(gLastFreePointIndex)};
+    view->state[2] = (MdkrAudioSpatialRollbackSpan){
+        gAudioLines, sizeof(gAudioLines)};
+    view->state[3] = (MdkrAudioSpatialRollbackSpan){
+        gReverbLines, sizeof(gReverbLines)};
+    view->state[4] = (MdkrAudioSpatialRollbackSpan){
+        &gJinglesOff, sizeof(gJinglesOff)};
+    view->state[5] = (MdkrAudioSpatialRollbackSpan){
+        &D_8011AC1C, sizeof(D_8011AC1C)};
+    return TRUE;
+}
+#endif
 
 /**
  * Initializes the audio spatial system.
@@ -179,11 +375,29 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
     f32 pitch2;
     s32 unused;
     f32 pitch3;
+#ifdef NATIVE_PORT
+    MdkrLocalListenerMix endpointMix;
+    s32 endpointJingleVolume = 0;
+    s32 endpointJinglePan = 64;
+#endif
 
     jingleVolume = 0;
     viewportLayout = cam_get_viewport_layout();
     numCameras = cam_set_layout(viewportLayout);
     cameras = cam_get_cameras();
+#ifdef NATIVE_PORT
+    /* Output routing may leave the camera module describing this endpoint's
+     * one- or two-view composition. Spatial voice lifetime is rollback state,
+     * so online authority must instead evaluate every canonical participant.
+     * The camera array retains those canonical poses; only the count was
+     * presentation-contaminated. Final hardware parameters are selected below
+     * by audspat_endpoint_*_mix without mutating source state. */
+    if (mdkr_net_roster_runtime_active()) {
+        numCameras = (s32)mdkr_net_roster_runtime_canonical_player_count(
+            (u8)numCameras);
+    }
+    audspat_report_endpoint_listeners(numCameras);
+#endif
 
     // Update audio points
     for (i = 0; i < gNumAudioPoints; i++) {
@@ -207,14 +421,28 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
 
                     if (audioPoint->soundHandle != NULL) {
                         pitch1 = audioPoint->pitch / 100.0f;
+                        pan2 = audspat_calculate_spatial_pan(
+                            dx, dz, cameras[0].trans.rotation.y_rotation);
+#ifdef NATIVE_PORT
+                        audspat_endpoint_point_mix(
+                            audioPoint, cameras, numCameras,
+                            audioPoint->volume, pan2, &endpointMix);
+                        sndp_set_param(audioPoint->soundHandle, AL_SNDP_VOL_EVT,
+                                       endpointMix.volume * 256);
+#else
                         sndp_set_param(audioPoint->soundHandle, AL_SNDP_VOL_EVT, audioPoint->volume * 256);
+#endif
                         sndp_set_param(audioPoint->soundHandle, AL_SNDP_PITCH_EVT, *(s32 *) &pitch1);
-                        pan2 = audspat_calculate_spatial_pan(dx, dz, cameras[0].trans.rotation.y_rotation);
                         // This can never be true
                         if (numCameras != 1) {
                             pan2 = 64;
                         }
+#ifdef NATIVE_PORT
+                        sndp_set_param(audioPoint->soundHandle, AL_SNDP_PAN_EVT,
+                                       endpointMix.pan);
+#else
                         sndp_set_param(audioPoint->soundHandle, AL_SNDP_PAN_EVT, pan2);
+#endif
                         audspat_calculate_echo(audioPoint->soundHandle, audioPoint->pos.x, audioPoint->pos.y,
                                                audioPoint->pos.z);
                         sndp_set_priority(audioPoint->soundHandle, audioPoint->priority);
@@ -275,12 +503,25 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
 
                 if (audioPoint->soundHandle != NULL) {
                     pitch2 = audioPoint->pitch / 100.0f;
+#ifdef NATIVE_PORT
+                    audspat_endpoint_point_mix(
+                        audioPoint, cameras, numCameras, volume, pan,
+                        &endpointMix);
+                    sndp_set_param(audioPoint->soundHandle, AL_SNDP_VOL_EVT,
+                                   endpointMix.volume * 256);
+#else
                     sndp_set_param(audioPoint->soundHandle, AL_SNDP_VOL_EVT, volume * 256);
+#endif
                     sndp_set_param(audioPoint->soundHandle, AL_SNDP_PITCH_EVT, *(s32 *) &pitch2);
                     if (numCameras != 1) {
                         pan = 64;
                     }
+#ifdef NATIVE_PORT
+                    sndp_set_param(audioPoint->soundHandle, AL_SNDP_PAN_EVT,
+                                   endpointMix.pan);
+#else
                     sndp_set_param(audioPoint->soundHandle, AL_SNDP_PAN_EVT, pan);
+#endif
                     sndp_set_priority(audioPoint->soundHandle, audioPoint->priority);
                     audspat_calculate_echo(audioPoint->soundHandle, audioPoint->pos.x, audioPoint->pos.y,
                                            audioPoint->pos.z);
@@ -375,12 +616,25 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
                     }
 
                     if (line->soundHandle != NULL) {
+#ifdef NATIVE_PORT
+                        audspat_endpoint_line_mix(
+                            line, cameras, numCameras, volume, pan,
+                            &endpointMix);
+                        sndp_set_param(line->soundHandle, AL_SNDP_VOL_EVT,
+                                       endpointMix.volume * 256);
+#else
                         sndp_set_param(line->soundHandle, AL_SNDP_VOL_EVT, volume * 256);
+#endif
                         sndp_set_param(line->soundHandle, AL_SNDP_PITCH_EVT, *(s32 *) &pitch3);
                         if (numCameras != 1) {
                             pan = 64;
                         }
+#ifdef NATIVE_PORT
+                        sndp_set_param(line->soundHandle, AL_SNDP_PAN_EVT,
+                                       endpointMix.pan);
+#else
                         sndp_set_param(line->soundHandle, AL_SNDP_PAN_EVT, pan);
+#endif
                         sndp_set_priority(line->soundHandle, line->priority);
                     }
                 } else {
@@ -392,6 +646,12 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
                 jingleVolume = volume;
                 jinglePan = pan;
                 jingleSound = line->soundBite;
+#ifdef NATIVE_PORT
+                audspat_endpoint_line_mix(
+                    line, cameras, numCameras, volume, pan, &endpointMix);
+                endpointJingleVolume = endpointMix.volume;
+                endpointJinglePan = endpointMix.pan;
+#endif
             }
         }
     }
@@ -401,8 +661,13 @@ void audspat_update_all(Object **objList, s32 numObjects, s32 updateRate) {
         if (music_jingle_current() != jingleSound) {
             music_jingle_play_safe(jingleSound);
         }
+#ifdef NATIVE_PORT
+        music_jingle_volume_set(endpointJingleVolume);
+        music_jingle_pan_set(endpointJinglePan);
+#else
         music_jingle_volume_set(jingleVolume);
         music_jingle_pan_set(jinglePan);
+#endif
     } else {
         music_jingle_stop();
     }

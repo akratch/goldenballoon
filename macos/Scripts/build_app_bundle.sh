@@ -457,6 +457,13 @@ if [[ "${BUNDLE_SDL2}" == true ]]; then
     mkdir -p "$(dirname "${SDL2_LICENSE_DEST}")"
     ditto "${SDL2_LICENSE}" "${SDL2_LICENSE_DEST}"
 fi
+PHONE_PARTY_NOTICE_SRC="${PROJECT_ROOT}/third_party/native_phone_party/NOTICE.txt"
+PHONE_PARTY_NOTICE_DEST="${OUTPUT_APP}/Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt"
+[[ -s "${PHONE_PARTY_NOTICE_SRC}" ]] ||
+    die "Tracked native Phone Party notice is missing or empty: ${PHONE_PARTY_NOTICE_SRC}"
+mkdir -p "$(dirname "${PHONE_PARTY_NOTICE_DEST}")"
+ditto "${PHONE_PARTY_NOTICE_SRC}" "${PHONE_PARTY_NOTICE_DEST}" ||
+    die "Failed to copy native Phone Party notices into the app bundle."
 
 ICONSET_DIR="${BUILD_DIR}/AppIcon.iconset"
 APP_ICON="${OUTPUT_APP}/Contents/Resources/AppIcon.icns"

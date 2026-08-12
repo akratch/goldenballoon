@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include "structs.h"
 #include "objects.h"
 #include "racer.h"
@@ -63,7 +65,12 @@ static int mdkr_objcoll_trace(void) {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("MDKR_OBJCOLL");
-        cached = (e != NULL && e[0] == 't') ? 1 : 0;
+        /* Substring, not first-character: the wedge gate needs per-hit frames in
+         * BOTH of its arms, and one of those arms is `norecover`. A single
+         * variable cannot carry two first characters, so the values compose --
+         * MDKR_OBJCOLL=norecover+trace selects both. `legacy` and `norecover`
+         * read the same way below for the same reason. */
+        cached = (e != NULL && strstr(e, "trace") != NULL) ? 1 : 0;
     }
     return cached;
 }
@@ -84,9 +91,133 @@ int mdkr_objcoll_legacy(void) {
     static int cached = -1;
     if (cached < 0) {
         const char *e = getenv("MDKR_OBJCOLL");
-        cached = (e != NULL && e[0] == 'l') ? 1 : 0;
+        cached = (e != NULL && strstr(e, "legacy") != NULL) ? 1 : 0;
     }
     return cached;
+}
+
+/* MDKR_OBJCOLL=norecover disables the embedded-point recovery pass added to
+ * func_80017A18() -- the pass that ejects a wheel point which arrived INSIDE a
+ * collision mesh, mirroring resolve_collisions()' Step 2 for terrain. Same
+ * one-binary-two-arms convention as `legacy` above and MDKR_COLLTEX=legacy: the
+ * fix's failure mode is silence (a point that is never ejected is simply never
+ * mentioned again by the one-sided facet walk), so the check needs the
+ * un-recovered arm from the same binary to have anything to compare against.
+ *
+ * A new VALUE on an existing seam, deliberately not a new variable. Off unless
+ * set, and composable with `trace` (see mdkr_objcoll_trace above), which the
+ * wedge gate needs because it asserts on hit frames in this arm too. */
+int mdkr_objcoll_norecover(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("MDKR_OBJCOLL");
+        cached = (e != NULL && strstr(e, "norecover") != NULL) ? 1 : 0;
+    }
+    return cached;
+}
+
+/* Count of points the recovery pass ejected, reported at headless exit as
+ * "[OBJRECOVER] points=N iters=M embedded=K". Unconditional, like [OBJCOLL]'s
+ * own summary, so a check can read it without turning tracing on. `points`
+ * counts distinct (point, tick, object) recoveries; `iters` counts push-out
+ * iterations, so iters/points is the mean iteration depth -- the number that
+ * says whether the pass is converging in one step or grinding toward its bail.
+ * Measured on the wedge gate's seeded contact: 1 point, 1 iteration. */
+static unsigned long s_objRecoverIters;
+static unsigned long s_objRecoverPoints;
+
+void mdkr_objcoll_recovered(int iterations) {
+    s_objRecoverPoints++;
+    s_objRecoverIters += (unsigned long)(iterations > 0 ? iterations : 0);
+}
+
+unsigned long mdkr_objcoll_recover_iters(void)  { return s_objRecoverIters; }
+unsigned long mdkr_objcoll_recover_points(void) { return s_objRecoverPoints; }
+
+/* ---- wedge gate: the versioned internal test capability ------------------ *
+ * Everything below is inert unless
+ *   MDKR_INTERNAL_TEST_TOKEN=mdkr64-objcoll-wedge-v1
+ * is present, the same versioned-capability pattern present_sched.c uses for
+ * its replay arms. Two hooks share it:
+ *
+ *   - the arrival probe in func_80017A18(), which answers "did a wheel point
+ *     start this tick already inside a collision mesh?" and is the only
+ *     arm-independent observable for the defect;
+ *   - MDKR_TEST_OBJCOLL_EMBED=<frame>, which SEEDS that state deterministically.
+ *
+ * The seed exists because a drive route cannot reach the state on demand: four
+ * measured approach angles into the hub's Dino Domain door leaf (head-on and
+ * three glancing) all separated correctly, so the embedded state is reachable in
+ * play -- the reporter reached it -- but not on a schedule a gate can assert on.
+ * Seeding it is what makes the recovery pass falsifiable rather than a change
+ * nothing measures. It is a TEST MUTATION and it says so: it moves wheel points,
+ * which no production path here does.
+ */
+int mdkr_objcoll_wedge_test_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *token = getenv("MDKR_INTERNAL_TEST_TOKEN");
+        cached = (token != NULL && strcmp(token, "mdkr64-objcoll-wedge-v1") == 0) ? 1 : 0;
+    }
+    return cached;
+}
+
+/* Per-tick embedded-point count, traced only on ticks where it is nonzero (the
+ * [COLPEAK] convention) plus a headless-exit total. A sustained nonzero run is
+ * the wedge; a single tick followed by zeros is the recovery working. */
+static unsigned long s_objEmbedPoints;
+static int           s_objEmbedFrame = -1;
+static int           s_objEmbedInFrame;
+
+void mdkr_objcoll_embed_probe(int inside) {
+    if (!inside) {
+        return;
+    }
+    s_objEmbedPoints++;
+    if (g_frameCounter != s_objEmbedFrame) {
+        s_objEmbedFrame = g_frameCounter;
+        s_objEmbedInFrame = 0;
+    }
+    s_objEmbedInFrame++;
+    fprintf(stderr, "[TRACE] [OBJEMB] frame=%d embedded=%d total=%lu\n",
+            g_frameCounter, s_objEmbedInFrame, s_objEmbedPoints);
+}
+
+unsigned long mdkr_objcoll_embed_total(void) { return s_objEmbedPoints; }
+
+/* MDKR_TEST_OBJCOLL_EMBED=<frame>: from <frame> onward, once, displace the
+ * racer's target AND origin wheel points toward the collision-meshed object's
+ * centre by MDKR_TEST_OBJCOLL_EMBED_DEPTH units. Returns the depth to apply, or
+ * 0 for "do nothing" -- which is every frame unless armed.
+ *
+ * The default is 8, and the ceiling is not a matter of taste: the recovery pass
+ * only claims penetrations shallower than one collision radius plus three units,
+ * so a seed deeper than that lands OUTSIDE the band and is deliberately ignored
+ * as "far side of the object" rather than ejected. Measured: depth 24 produced
+ * zero probe readings for exactly that reason, which is the containment working,
+ * not the seed failing. Keep it well inside the band. */
+float mdkr_objcoll_embed_seed_depth(void) {
+    static int   cached = -1;
+    static int   frame;
+    static float depth;
+    static int   fired;
+
+    if (!mdkr_objcoll_wedge_test_enabled()) {
+        return 0.0f;
+    }
+    if (cached < 0) {
+        const char *e = getenv("MDKR_TEST_OBJCOLL_EMBED");
+        const char *d = getenv("MDKR_TEST_OBJCOLL_EMBED_DEPTH");
+        frame  = (e != NULL && e[0] != '\0') ? atoi(e) : -1;
+        depth  = (d != NULL && d[0] != '\0') ? (float)atof(d) : 8.0f;
+        cached = 1;
+    }
+    if (frame < 0 || fired || g_frameCounter < frame) {
+        return 0.0f;
+    }
+    fired = 1;
+    fprintf(stderr, "[TRACE] [OBJEMB] SEED frame=%d depth=%.1f\n", g_frameCounter, (double)depth);
+    return depth;
 }
 
 /* ---- untextured-collision-batch A/B toggle + probe ----------------------- *

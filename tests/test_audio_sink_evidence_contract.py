@@ -92,7 +92,7 @@ def main() -> int:
             "void alCSPSetVol(ALCSPlayer *seqp, s16 vol)" in COMPAT_SOURCE,
             "music/jingle bus synchronization must tolerate an absent sequence player")
 
-    pause_start = GAME_LOOP_SOURCE.index("const s32 overlayPaused = platformOverlayWantsInput()")
+    pause_start = GAME_LOOP_SOURCE.index("const s32 overlayPaused = platformOverlayWantsPause()")
     pause_rate = GAME_LOOP_SOURCE.index(
         "logicUpdateRate = 0;", pause_start,
         GAME_LOOP_SOURCE.index("if (get_lockup_status())", pause_start))

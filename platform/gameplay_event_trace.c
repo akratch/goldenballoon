@@ -10,6 +10,7 @@
 
 static int s_hash_stream = -1;
 static const GameplayEventObserver *s_observer;
+static const GameplayEventObserver *s_rollback_observer;
 static uint64_t s_hash = EVENT_HASH_OFFSET;
 static uint64_t s_ticks;
 static uint64_t s_total_events;
@@ -45,11 +46,17 @@ bool gameplay_event_trace_enabled(void) {
      * hash stream or an observer wants the events. Keeping this one function is
      * what stops a call site from being armed for one reader and not the
      * other, which would make an observer see a stream the hash never did. */
-    return hash_stream_enabled() || s_observer != NULL;
+    return hash_stream_enabled() || s_observer != NULL ||
+           s_rollback_observer != NULL;
 }
 
 void gameplay_event_trace_set_observer(const GameplayEventObserver *observer) {
     s_observer = observer;
+}
+
+void gameplay_event_trace_set_rollback_observer(
+    const GameplayEventObserver *observer) {
+    s_rollback_observer = observer;
 }
 
 static void hash_u32(uint32_t value) {
@@ -68,6 +75,10 @@ void gameplay_event_trace_emit(
     }
     if (s_observer != NULL && s_observer->event != NULL) {
         s_observer->event(kind, a, b, c, d);
+    }
+    if (s_rollback_observer != NULL &&
+        s_rollback_observer->event != NULL) {
+        s_rollback_observer->event(kind, a, b, c, d);
     }
     if (!hash_stream_enabled()) {
         return; /* observed, not hashed: the hash stream was not asked for */
@@ -102,6 +113,10 @@ void gameplay_event_trace_tick(uint64_t tick) {
         /* The authoritative tick boundary, which is the only clock an observer
          * can pace itself against without inventing one of its own. */
         s_observer->tick(tick);
+    }
+    if (s_rollback_observer != NULL &&
+        s_rollback_observer->tick != NULL) {
+        s_rollback_observer->tick(tick);
     }
     if (!hash_stream_enabled()) {
         return;

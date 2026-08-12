@@ -23,6 +23,8 @@
 #ifndef MDKR_PORT_ENV_H
 #define MDKR_PORT_ENV_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -30,6 +32,12 @@ extern "C" {
 /* Registering, read-once boolean accessor. `help` is a short one-line
  * description recorded with the registration; pass NULL if genuinely none. */
 int port_env_bool(const char *name, int default_on, const char *help);
+
+/* Registering, read-once bounded unsigned accessor. Invalid, empty, or
+ * out-of-range values resolve to `default_value`; bounds are inclusive. */
+uint32_t port_env_u32(
+    const char *name, uint32_t default_value, uint32_t minimum,
+    uint32_t maximum, const char *help);
 
 #ifdef __cplusplus
 }

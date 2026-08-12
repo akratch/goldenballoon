@@ -70,6 +70,10 @@ int Settings_collectStagedOverrides(const char **out, int cap);
 // True when at least one RESTART-scope setting differs from what is live.
 bool Settings_restartPending();
 
+// Opens and scrolls the launcher Settings panel to Controller on its next
+// draw. Used by recovery routes; one-shot and process-local.
+void Settings_requestControllerSection();
+
 // Print the stable player-facing frame-limit labels used by the schema and
 // rendered-settings smoke tests. This keeps the conservative release wording
 // an executable contract rather than documentation that can silently drift.

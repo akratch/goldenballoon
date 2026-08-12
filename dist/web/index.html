@@ -25,6 +25,9 @@
 <meta name="apple-mobile-web-app-title" content="Golden Balloon">
 <link rel="preload" as="image" href="assets/hero.jpg" fetchpriority="high">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="input/touch-surface.css">
+<link rel="stylesheet" href="party/party-host.css">
+<link rel="stylesheet" href="online/online-room.css">
 </head>
 <body>
 <a class="skip-link" href="#gate">Skip to launcher</a>
@@ -151,10 +154,17 @@
 
             <div class="actions">
               <button id="play" class="btn btn-primary" type="button" disabled>
-                <span>▶ Play</span>
+                <span>▶ Play here</span>
               </button>
+              <button id="online-room-open" class="btn btn-ghost" type="button">
+                Online room
+              </button>
+              <button id="add-phone-controllers" class="btn btn-ghost" type="button"
+                      disabled>Add phone controllers</button>
               <button id="forget" class="btn btn-ghost" type="button" hidden>Forget stored ROM</button>
             </div>
+            <p class="fine">Play here supports solo, ordinary split-screen,
+              mixed gamepads and up to four browser-based phone controllers.</p>
 
             <p class="fine">
               Other revisions (US 1.0, EU 1.0, Japan) are recognised and named back to
@@ -342,6 +352,152 @@
   <div id="save-dialog-actions" class="actions"></div>
 </dialog>
 
+<dialog id="online-room-dialog" class="online-room-dialog"
+        aria-labelledby="online-room-title">
+  <header class="online-room-heading">
+    <div>
+      <p class="online-room-eyebrow">Private online play</p>
+      <h2 id="online-room-title" tabindex="-1">Online Racing Is Not Enabled in This Build</h2>
+    </div>
+    <button id="online-room-close" class="btn btn-ghost" type="button"
+            aria-label="Close online room">Close</button>
+  </header>
+  <p id="online-room-explanation">
+    Private rooms are still being qualified. Opening this screen makes no
+    network request and cannot enable online racing.
+  </p>
+  <div id="online-room-gate">
+    <div class="online-room-status" role="status" aria-live="polite">
+      <strong id="online-room-status-title">Local play stays available</strong>
+      <span id="online-room-status-copy">Choose a ROM to play on this display.</span>
+    </div>
+    <section class="online-room-scope" aria-labelledby="online-room-scope-title">
+      <h3 id="online-room-scope-title">What will live here</h3>
+      <ul>
+        <li>Create or join an invite-only room—no account or public matchmaking.</li>
+        <li>Check versions, ROMs, gameplay settings, controllers and connections.</li>
+        <li>Choose racers, vote, load together and keep the room for a rematch.</li>
+      </ul>
+    </section>
+    <details class="online-room-details">
+      <summary>Privacy and connection details</summary>
+      <p>Game inputs will travel directly between invited displays when their
+         networks allow it. The room service will never receive your ROM, saves,
+         screen, audio or successful per-frame input stream.</p>
+      <p>Some network pairs cannot connect without paid relay infrastructure.
+         This zero-cost edition will say so and keep local play ready.</p>
+    </details>
+    <div class="online-room-actions">
+      <button id="online-room-local" class="btn btn-primary" type="button">
+        Choose ROM
+      </button>
+      <button id="online-room-controllers" class="btn btn-ghost" type="button"
+              disabled>Add phone controllers</button>
+    </div>
+  </div>
+  <div id="online-room-model" hidden>
+    <div class="online-room-status">
+      <strong id="online-room-model-status">Private Room Preview</strong>
+      <span id="online-room-model-counts">0 members · 0 racer seats · 0 ready</span>
+    </div>
+    <div id="online-room-timeout" class="online-room-timeout" role="alert" hidden>
+      <strong id="online-room-timeout-title"></strong>
+      <span id="online-room-timeout-copy"></span>
+    </div>
+    <div id="online-room-selection"></div>
+    <div id="online-room-model-actions" class="online-room-actions"></div>
+    <div id="online-room-auxiliary" class="online-room-auxiliary" hidden></div>
+    <p id="online-room-announcement" class="sr-only" aria-live="polite"></p>
+  </div>
+</dialog>
+
+<dialog id="party-dialog" class="party-dialog" aria-labelledby="party-title">
+  <div class="party-heading">
+    <div>
+      <p class="party-eyebrow">Local split-screen</p>
+      <h2 id="party-title">Add phone controllers</h2>
+    </div>
+    <button id="party-close" class="btn btn-ghost" type="button"
+            aria-label="Close phone controller setup">Close</button>
+  </div>
+
+  <div id="party-opening" class="party-opening" role="status">
+    <span class="party-spinner" aria-hidden="true"></span>
+    <p>Opening a private controller room…</p>
+  </div>
+
+  <div id="party-error" class="party-error" role="alert" hidden>
+    <h3>Phone pairing is unavailable</h3>
+    <p id="party-error-message">Check this display’s internet connection and try again.</p>
+    <button id="party-retry" class="btn btn-primary" type="button">Try again</button>
+    <p>Keyboard, gamepads and this screen’s touch controls still work offline.</p>
+  </div>
+
+  <div id="party-room" hidden>
+    <div class="party-join">
+      <div class="party-qr-wrap">
+        <canvas id="party-qr" width="264" height="264" role="img"
+                aria-label="QR code for joining as a phone controller"></canvas>
+      </div>
+      <div class="party-invite">
+        <p class="party-step">1. Scan with your phone’s camera</p>
+        <p>Nothing to install. The controller opens in Safari or Chrome.</p>
+        <div class="party-code-block">
+          <span>Or enter code</span>
+          <strong id="party-code" aria-label="Controller room code">—— —— ——</strong>
+        </div>
+        <p id="party-expiry" class="party-expiry" role="timer">Invite expires in 2:00</p>
+        <button id="party-extend" class="btn btn-ghost" type="button">Extend 2 minutes</button>
+      </div>
+    </div>
+
+    <p class="party-privacy">The room receives controller signals and the optional
+      phone name. Your ROM, saves, screen and game audio stay on this display.</p>
+
+    <section class="party-pending" aria-labelledby="party-pending-title">
+      <h3 id="party-pending-title">Waiting for approval</h3>
+      <p id="party-pending-empty">Scan the code to add a phone.</p>
+      <ul id="party-pending-list" class="party-pending-list"></ul>
+    </section>
+
+    <section aria-labelledby="party-seats-title">
+      <div class="party-section-heading">
+        <h3 id="party-seats-title">Controllers</h3>
+        <span id="party-ready-count">0 of 4 ready</span>
+      </div>
+      <ol id="party-seats" class="party-seats">
+        <li data-seat="1"><span class="party-seat-number">1</span><span><strong>Controller 1</strong><small>Available</small></span></li>
+        <li data-seat="2"><span class="party-seat-number">2</span><span><strong>Controller 2</strong><small>Available</small></span></li>
+        <li data-seat="3"><span class="party-seat-number">3</span><span><strong>Controller 3</strong><small>Available</small></span></li>
+        <li data-seat="4"><span class="party-seat-number">4</span><span><strong>Controller 4</strong><small>Available</small></span></li>
+      </ol>
+    </section>
+
+    <div class="party-actions">
+      <button id="party-start" class="btn btn-primary" type="button" disabled>
+        Start local game
+      </button>
+      <button id="party-end" class="btn btn-ghost" type="button">End controller room</button>
+    </div>
+    <p id="party-status" class="sr-only" role="status" aria-live="polite"></p>
+  </div>
+</dialog>
+
+<dialog id="party-end-dialog" class="confirm-dialog"
+        aria-labelledby="party-end-title">
+  <h2 id="party-end-title">End controller room?</h2>
+  <p>This disconnects every phone controller. Keyboard, gamepads and this
+     display’s touch controls remain available.</p>
+  <div class="actions">
+    <button id="party-end-cancel" class="btn btn-ghost" type="button">
+      Keep controller room
+    </button>
+    <button id="party-end-confirm" class="btn btn-danger" type="button">
+      End controller room
+    </button>
+  </div>
+</dialog>
+
 <dialog id="forget-rom-dialog" class="confirm-dialog"
         aria-labelledby="forget-rom-title">
   <h2 id="forget-rom-title">Forget stored ROM?</h2>
@@ -362,6 +518,11 @@
   <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
   <p id="stage-status" role="status" aria-live="assertive" hidden></p>
   <div id="fps" class="fps" hidden aria-hidden="true"></div>
+  <button id="party-stage-button" class="party-stage-button" type="button"
+          aria-label="Manage local controllers">
+    <span aria-hidden="true">⌁</span><span>Controllers</span>
+    <strong id="party-stage-count" aria-hidden="true">1</strong>
+  </button>
   <button id="touch-toggle" class="touch-toggle" type="button" hidden
           aria-label="Hide touch controls" aria-pressed="true">
     <span aria-hidden="true">◉</span><span class="touch-toggle-label">Controls</span>
@@ -374,8 +535,9 @@
     <button class="touch-pause" type="button" data-touch-button="4096"
             aria-label="Pause or start"><span aria-hidden="true">❚❚</span></button>
 
-    <div id="touch-stick" class="touch-stick" role="group"
-         aria-label="Analog steering stick">
+    <div id="touch-stick" class="touch-stick" role="group" tabindex="0"
+         aria-label="Analog steering stick. Use arrow keys or W A S D to steer"
+         aria-valuetext="Centered">
       <span class="touch-stick-ring" aria-hidden="true"></span>
       <span id="touch-stick-knob" class="touch-stick-knob" aria-hidden="true"></span>
       <span class="touch-stick-label" aria-hidden="true">Steer</span>
@@ -428,6 +590,13 @@
      browser mirror of platform/rom_id.c (revision table + byte-order fix-up). -->
 <script src="rom-id.js"></script>
 <script src="mdkr-save-ui.js"></script>
+<script src="input/touch-surface.js"></script>
+<script src="party/party-protocol.js"></script>
+<script src="party/party-sas.js"></script>
+<script src="party/qrcodegen.js"></script>
+<script src="party/party-host.js"></script>
+<script src="online/online-control-config.js"></script>
+<script src="online/online-room.js"></script>
 <script src="mdkr64-shell.js"></script>
 </body>
 </html>

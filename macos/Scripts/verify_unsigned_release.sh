@@ -62,6 +62,11 @@ SDL2_LICENSE_SHA256="$(shasum -a 256 "${SDL2_LICENSE}" | awk '{print $1}')"
 [[ "${SDL2_LICENSE_SHA256}" == "${MDKR_RELEASE_SDL2_LICENSE_SHA256}" ]] ||
     die "bundled SDL2 license does not match the pinned" \
         "SDL2 ${MDKR_RELEASE_SDL2_VERSION} notice"
+PHONE_PARTY_NOTICE="${APP_PATH}/Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt"
+[[ -f "${PHONE_PARTY_NOTICE}" ]] || die "bundled native Phone Party notices are missing"
+PHONE_PARTY_NOTICE_SHA256="$(shasum -a 256 "${PHONE_PARTY_NOTICE}" | awk '{print $1}')"
+[[ "${PHONE_PARTY_NOTICE_SHA256}" == "dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd" ]] ||
+    die "bundled native Phone Party notices do not match the reviewed manifest"
 SDL2_MANIFEST="${APP_PATH}/Contents/Resources/ThirdParty/SDL2-MANIFEST.txt"
 [[ -f "${SDL2_MANIFEST}" ]] || die "bundled SDL2 provenance manifest is missing"
 [[ "$(wc -l <"${SDL2_MANIFEST}" | tr -d '[:space:]')" == "4" ]] ||

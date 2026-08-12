@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#071a30">
+  <meta name="referrer" content="no-referrer">
+  <title>Golden Balloon controller</title>
+  <link rel="stylesheet" href="../input/touch-surface.css">
+  <link rel="stylesheet" href="controller.css">
+</head>
+<body>
+  <a class="skip-link" href="#controller-main">Skip to controller</a>
+  <header class="brand" aria-label="Golden Balloon controller">
+    <span class="brand-mark" aria-hidden="true">GB</span>
+    <span>Golden Balloon</span>
+    <span id="connection-mark" class="connection-mark" role="img"
+          aria-label="Connecting"></span>
+  </header>
+
+  <main id="controller-main" tabindex="-1">
+    <section id="state-opening" class="state-card" aria-labelledby="opening-title">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1 id="opening-title">Joining controller room…</h1>
+      <p>This should only take a moment.</p>
+      <button class="text-button" type="button" data-action="leave">Cancel</button>
+    </section>
+
+    <section id="state-code" class="state-card" aria-labelledby="code-title" hidden>
+      <p class="eyebrow">Phone controller</p>
+      <h1 id="code-title">Enter the display code</h1>
+      <p>Open <strong>Add phone controllers</strong> on the display and enter its current six-digit code.</p>
+      <form id="code-form">
+        <label for="room-code">Controller room code</label>
+        <input id="room-code" class="room-code" type="text" inputmode="numeric"
+               name="room-code" autocomplete="one-time-code" spellcheck="false"
+               maxlength="7" pattern="[0-9 ]{6,7}"
+               enterkeyhint="go" placeholder="123 456…"
+               aria-describedby="code-error" aria-invalid="false"
+               translate="no" required>
+        <p id="code-error" class="code-error" role="alert" hidden>Check the code and try again.</p>
+        <button id="join-code" class="primary-button" type="submit">Join controller room</button>
+      </form>
+    </section>
+
+    <section id="state-waiting" class="state-card" aria-labelledby="waiting-title" hidden>
+      <p class="eyebrow">Waiting for approval</p>
+      <h1 id="waiting-title">Check the display</h1>
+      <p>The display must approve this phone before it can control a racer.</p>
+      <div class="phrase" aria-label="Pairing phrase">
+        <span>Pairing phrase</span><strong id="pairing-phrase">Bright Balloon</strong>
+      </div>
+      <label for="device-name">Phone name <span>(optional)</span></label>
+      <input id="device-name" name="device-name" type="text" maxlength="24"
+             autocomplete="off" spellcheck="false"
+             enterkeyhint="done" placeholder="For example, Sam’s phone…">
+      <button class="text-button" type="button" data-action="leave">Leave room</button>
+    </section>
+
+    <section id="state-assigned" class="state-card" aria-labelledby="assigned-title" hidden>
+      <p class="eyebrow">Approved</p>
+      <div id="seat-badge" class="seat-badge" aria-hidden="true">1</div>
+      <h1 id="assigned-title">Controller 1</h1>
+      <p>Test the connection, then pick up your phone and race.</p>
+      <button id="input-test" class="input-test" type="button">
+        <span>Press Go</span><small id="input-test-status">Connection test</small>
+      </button>
+      <button id="use-controller" class="primary-button" type="button" disabled>
+        Use controller
+      </button>
+      <button class="text-button" type="button" data-action="leave">Leave room</button>
+    </section>
+
+    <section id="state-error" class="state-card" aria-labelledby="error-title" hidden>
+      <div class="error-mark" aria-hidden="true">!</div>
+      <h1 id="error-title">Couldn’t join</h1>
+      <p id="error-message">This controller link is unavailable.</p>
+      <button id="error-recovery" class="primary-button" type="button">Enter another code</button>
+      <button id="copy-link" class="text-button" type="button" hidden>Copy link</button>
+    </section>
+
+    <section id="state-duplicate" class="state-card" aria-labelledby="duplicate-title" hidden>
+      <div class="error-mark" aria-hidden="true">2</div>
+      <h1 id="duplicate-title">Controller already open</h1>
+      <p>This controller is already active in another tab.</p>
+      <button id="reclaim-controller" class="primary-button" type="button">Use this tab instead</button>
+      <button class="text-button" type="button" data-action="leave">Leave room</button>
+    </section>
+
+    <section id="state-reconnecting" class="state-card" aria-labelledby="reconnecting-title" hidden>
+      <div class="spinner" aria-hidden="true"></div>
+      <h1 id="reconnecting-title">Reconnecting…</h1>
+      <p id="reconnect-progress">Attempt 1 of 5. Controls are safely released.</p>
+      <button class="text-button" type="button" data-action="leave">Leave room</button>
+    </section>
+
+    <section id="state-controller" class="controller-view" aria-label="Controller" hidden>
+      <div class="controller-status">
+        <span id="controller-seat">Controller 1</span>
+        <span id="wake-status">Screen awake when supported</span>
+        <button id="settings-open" class="icon-button" type="button"
+                aria-label="Controller settings">⚙</button>
+      </div>
+      <div id="phone-touch-controls" class="touch-controls phone-controls"
+           role="group" aria-label="On-screen game controls">
+        <button class="touch-pause" type="button" data-touch-button="4096"
+                aria-label="Pause or start"><span aria-hidden="true">❚❚</span></button>
+        <div id="phone-touch-stick" class="touch-stick" role="group" tabindex="0"
+             aria-label="Analog steering stick. Use arrow keys or W A S D to steer"
+             aria-valuetext="Centered">
+          <span class="touch-stick-ring" aria-hidden="true"></span>
+          <span id="phone-touch-stick-knob" class="touch-stick-knob" aria-hidden="true"></span>
+          <span class="touch-stick-label" aria-hidden="true">Steer</span>
+        </div>
+        <div class="touch-actions" role="group" aria-label="Race controls">
+          <button class="touch-action touch-item" type="button" data-touch-button="8192" aria-label="Use item"><span>Item</span><small>Z</small></button>
+          <button class="touch-action touch-drift" type="button" data-touch-button="16" aria-label="Hop or power-slide"><span>Drift</span><small>R</small></button>
+          <button class="touch-action touch-brake" type="button" data-touch-button="16384" aria-label="Brake or go back"><span>Brake</span><small>B</small></button>
+          <button class="touch-action touch-go" type="button" data-touch-button="32768" aria-label="Accelerate"><span>Go</span><small>A</small></button>
+          <button class="touch-action touch-look" type="button" data-touch-button="4" aria-label="Look behind"><span>Look</span><small>C</small></button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog">
+      <div class="dialog-heading">
+        <h2 id="settings-title">Controller settings</h2>
+        <button class="icon-button" value="close" aria-label="Close settings">×</button>
+      </div>
+      <fieldset>
+        <legend>Layout</legend>
+        <label><input type="radio" name="handedness" value="left" checked> Stick on left</label>
+        <label><input type="radio" name="handedness" value="right"> Stick on right</label>
+      </fieldset>
+      <label for="control-size">Control size</label>
+      <input id="control-size" name="control-size" type="range" min="85" max="125" value="100">
+      <label><input id="show-labels" name="show-labels" type="checkbox" checked> Show button labels</label>
+      <label><input id="haptics" name="haptics" type="checkbox" checked> Touch vibration</label>
+      <button id="leave-controller" class="danger-button" value="close" type="button">Leave controller room</button>
+    </form>
+  </dialog>
+
+  <dialog id="leave-dialog" aria-labelledby="leave-title">
+    <form method="dialog">
+      <h2 id="leave-title">Leave controller room?</h2>
+      <p>Your racer’s controls are released immediately. You can scan or enter
+         the newest code to join again.</p>
+      <div class="dialog-actions">
+        <button id="leave-cancel" class="text-button" type="submit"
+                value="cancel">Keep controller</button>
+        <button id="leave-confirm" class="danger-button" type="button">
+          Leave controller room
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <p id="live-status" class="sr-only" role="status" aria-live="polite"></p>
+  <script src="../party/party-protocol.js"></script>
+  <script src="../party/party-sas.js"></script>
+  <script src="../input/touch-surface.js"></script>
+  <script src="controller.js"></script>
+</body>
+</html>

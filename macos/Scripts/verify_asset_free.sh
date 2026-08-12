@@ -502,6 +502,10 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # hashes. verify_unsigned_release.sh validates its exact
                     # schema and values before accepting a release bundle.
                     ;;
+                Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt)
+                    # Exact, hash-pinned license/source-form manifest for the
+                    # static native Phone Party transport and QR generator.
+                    ;;
                 *)
                     fail "Unexpected app resource in asset-free bundle: ${REL}"
                     RESOURCE_FAIL=1

@@ -2,6 +2,9 @@
 #define _MEMORY_H_
 
 #include "types.h"
+#ifdef NATIVE_PORT
+#include <stddef.h>
+#endif
 
 typedef enum MemoryPools {
     POOL_MAIN,
@@ -73,6 +76,11 @@ typedef struct MemoryPool {
 /* 0x04 */ s32 curNumSlots;
 /* 0x08 */ MemoryPoolSlot *slots;
 /* 0x0C */ s32 size;
+#ifdef NATIVE_PORT
+    /* Monotonic allocator-topology epoch used by the rollback laboratory.
+     * It is never consulted by simulation. */
+    u64 topologyGeneration;
+#endif
 } MemoryPool;
 
 #ifdef NATIVE_PORT
@@ -83,6 +91,22 @@ typedef struct MdkrMemoryPoolStats {
     s32 freeBytes;
     s32 largestFreeBytes;
 } MdkrMemoryPoolStats;
+
+#define MDKR_MEMPOOL_STATE_SPAN_COUNT 2
+typedef struct MdkrMemorySpan {
+    void *base;
+    size_t size;
+} MdkrMemorySpan;
+
+typedef enum MdkrMempoolMutationKind {
+    MDKR_MEMPOOL_MUTATION_ASSIGN = 1,
+    MDKR_MEMPOOL_MUTATION_FREE = 2,
+} MdkrMempoolMutationKind;
+
+typedef void (*MdkrMempoolMutationObserver)(
+    MemoryPools poolIndex, MdkrMempoolMutationKind kind, u64 generation,
+    const void *address, size_t size, u32 colourTag, const void *origin,
+    void *context);
 #endif
 
 /* Size: 0x8 bytes */
@@ -115,6 +139,27 @@ s32 mempool_locked_set(u8 *address);
 s32 mempool_locked_unset(u8 *address);
 s32 mempool_get_pool(u8 *address);
 #ifdef NATIVE_PORT
+/* Resolve a pointer inside a live allocation to its complete mutable span.
+ * Fails closed for free blocks, pool metadata, corrupt slot chains, and foreign
+ * pointers. Outputs are cleared on failure. */
+s32 mdkr_mempool_allocation_span(
+    const void *address, void **allocationBase, size_t *allocationSize);
+/* Resolve against one explicit pool. This is required for a sub-pool's
+ * metadata/backing block, whose address is intentionally rejected as a live
+ * allocation by the nested pool but is live in its parent pool. */
+s32 mdkr_mempool_allocation_span_in_pool(
+    MemoryPools poolIndex, const void *address, void **allocationBase,
+    size_t *allocationSize);
+/* Return the mutable descriptor and bounded backing allocation for a sub-pool.
+ * The main pool is deliberately rejected: its arena is not an authority unit. */
+s32 mdkr_mempool_pool_state_spans(
+    MemoryPools poolIndex,
+    MdkrMemorySpan spans[MDKR_MEMPOOL_STATE_SPAN_COUNT]);
+s32 mdkr_mempool_topology_generation(
+    MemoryPools poolIndex, u64 *generation);
+/* Diagnostic-only observer. Simulation never reads its result. */
+void mdkr_mempool_set_mutation_observer(
+    MdkrMempoolMutationObserver observer, void *context);
 /* One past the last byte of the live pool block containing `address`, or NULL if
  * no in-use slot covers it. The read bound a bare interior pointer lacks. */
 u8 *mempool_block_end(u8 *address);

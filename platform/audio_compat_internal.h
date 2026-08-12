@@ -53,6 +53,11 @@ f32 audio_exp2f(f32 exponent);
  * through the same queue path the shared player uses. */
 void native_seqp_repost_event_item(ALEventQueue *evtq, ALEventListItem *item);
 
+/* Diagnostic events share the existing MIDI JSONL sink. They are inert unless
+ * that established oracle path is requested. */
+void native_csp_trace_physical_voice(const char *event, s16 old_priority,
+                                     s16 new_priority);
+
 /* Defined in audio_sequence.c: the CSP player peeks the next event's delta
  * without consuming it. Declared in game/libultra/src/audio/cseq.h too, which
  * is not on the port's include path. */

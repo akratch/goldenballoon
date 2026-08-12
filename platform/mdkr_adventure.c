@@ -65,6 +65,20 @@
  *                        can enter the trophy series.
  *         <x>,<z>        a plain waypoint, completed within MDKR_DRIVE_WPR
  *                        units (default 220).
+ *         R<frames>      REVERSE for <frames> update-rate units (B button, stick
+ *                        back, steering mirrored so the nose swings toward the
+ *                        NEXT point step while the kart backs off the obstacle).
+ *         H<frames>      hold the BRAKE for <frames> update-rate units, steering
+ *                        nothing; retires on the count, not on a position.
+ *
+ *       R and H are the escape primitives. Every other step drives forward, so
+ *       before them a route could not express "try to get out of this" -- the
+ *       only route to mdkr_adv_steer()'s reverse argument was the automatic
+ *       stall heuristic. That gap is why a wedge was unassertable: a kart
+ *       standing still with the throttle held into a shut door is CORRECT, and
+ *       only a commanded escape attempt separates it from one that cannot leave.
+ *       Existing routes are unaffected -- a bare `x,z` still parses as a plain
+ *       waypoint and no old route contains an R or H step.
  *
  *       Steps complete in order, are never revisited, and PERSIST per level
  *       across leaving and re-entering it.  That is what lets one route both
@@ -463,7 +477,16 @@ enum MdkrAdvStepKind {
     MDKR_ADV_POINT,  /* x,z          -- completes inside sAdvWpRadius       */
     MDKR_ADV_EXIT,   /* E<destMapId> -- retires when the level changes      */
     MDKR_ADV_BALLOON,/* B<balloonID> -- completes on the collected flag     */
-    MDKR_ADV_TROPHY  /* T            -- production cabinet collision         */
+    MDKR_ADV_TROPHY, /* T            -- production cabinet collision         */
+    /* R<x>,<z> and H<frames> -- the deliberate ESCAPE primitives. Everything
+     * above only ever drives FORWARD (mdkr_adv_steer's `reverse` argument was
+     * reachable solely from the automatic stall heuristic, 90 update-rate units
+     * of no progress), so a route could not express "now try to get out of
+     * this". That made an escape failure unassertable: a kart standing still
+     * with throttle held into a shut door is correct behaviour, and only a
+     * commanded, timed escape attempt distinguishes it from a wedge. */
+    MDKR_ADV_REVERSE,/* R<x>,<z>     -- as POINT, but driven in reverse     */
+    MDKR_ADV_HALT    /* H<frames>    -- hold the brake, steer nothing        */
 };
 
 typedef struct MdkrAdvStep {
@@ -508,6 +531,7 @@ static s32 sAdvPrevSlot = -1;
 static f32 sAdvBestDist = 1.0e30f;
 static s32 sAdvStall = 0;
 static s32 sAdvReverse = 0;
+static s32 sAdvHalt = 0; /* update-rate units the active H<frames> step has held */
 
 static f32 mdkr_adv_num(const char **p) {
     char *end = NULL;
@@ -551,6 +575,32 @@ static void mdkr_adv_parse_route(const char *s) {
             } else if (*s == 'T' || *s == 't') {
                 s++;
                 st->kind = MDKR_ADV_TROPHY;
+            } else if (*s == 'R' || *s == 'r') {
+                /* R<frames> -- reverse for a fixed number of update-rate units.
+                 * Frame-counted, not position-counted, and that is not laziness:
+                 * mdkr_adv_steer() MIRRORS the steering when reversing so the
+                 * nose swings toward the target, which means the kart travels
+                 * AWAY from it. A "reverse until you arrive at (x,z)" step is
+                 * therefore unsatisfiable by construction -- measured, it stalled
+                 * at 764 units and grew. Backing off is a duration, not a
+                 * destination; the waypoint after it is the destination. */
+                s++;
+                st->kind = MDKR_ADV_REVERSE;
+                st->id = (s32) mdkr_adv_num(&s);
+                if (st->id <= 0) {
+                    st->id = 60;
+                }
+            } else if (*s == 'H' || *s == 'h') {
+                /* H<frames> -- hold the brake for a fixed number of update-rate
+                 * units. Frame-counted rather than position-counted on purpose:
+                 * the whole point is to be assertable on a kart that is not
+                 * moving, and a position rule can never retire on one. */
+                s++;
+                st->kind = MDKR_ADV_HALT;
+                st->id = (s32) mdkr_adv_num(&s);
+                if (st->id <= 0) {
+                    st->id = 60;
+                }
             } else {
                 st->kind = MDKR_ADV_POINT;
                 st->x = mdkr_adv_num(&s);
@@ -955,6 +1005,16 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
                 mdkr_trace("drive: level=%d step %d: waypoint (%.0f, %.0f) reached @frame~%d", (int) levelId,
                            (int) sAdvStepIdx[slot], st->x, st->z, g_frameCounter);
             }
+        } else if (st->kind == MDKR_ADV_HALT || st->kind == MDKR_ADV_REVERSE) {
+            if (sAdvHalt < st->id) {
+                break; /* still braking/reversing -- the drive body counts it up */
+            }
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("drive: level=%d step %d: %s held %d units @frame~%d", (int) levelId,
+                           (int) sAdvStepIdx[slot],
+                           st->kind == MDKR_ADV_REVERSE ? "reverse" : "brake",
+                           (int) st->id, g_frameCounter);
+            }
         } else {
             break; /* EXIT retires on the level change; an uncollected balloon holds */
         }
@@ -962,12 +1022,56 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
         sAdvBestDist = 1.0e30f;
         sAdvStall = 0;
         sAdvReverse = 0;
+        sAdvHalt = 0;
     }
     if (sAdvStepIdx[slot] >= lv->count) {
         return; /* route exhausted -- hand the kart back */
     }
 
     st = &lv->step[sAdvStepIdx[slot]];
+
+    /* H<frames> / R<frames>: timed brake and timed reverse. Handled before the
+     * target lookup because neither HAS a target -- and neither must feed the
+     * stall heuristic, which would otherwise see a deliberately stationary kart
+     * making no progress and start reversing it out from under its own step.
+     *
+     * R steers mirrored toward the NEXT step's point if there is one, so the
+     * nose comes round to where the route is going while the kart backs off.
+     * With no next point it reverses straight back. */
+    if (st->kind == MDKR_ADV_HALT || st->kind == MDKR_ADV_REVERSE) {
+        s32 reversing = (st->kind == MDKR_ADV_REVERSE);
+        sAdvHalt += updateRate;
+        if (reversing) {
+            const MdkrAdvStep *next = (sAdvStepIdx[slot] + 1 < lv->count)
+                                          ? &lv->step[sAdvStepIdx[slot] + 1]
+                                          : NULL;
+            if (next != NULL && next->kind == MDKR_ADV_POINT) {
+                mdkr_adv_steer(racer, next->x - obj->trans.x_position,
+                               next->z - obj->trans.z_position, 1);
+            } else {
+                gCurrentStickX = 0;
+                gCurrentStickY = -80;
+                gCurrentButtonsPressed = 0;
+                gCurrentButtonsReleased = 0;
+                gCurrentRacerInput = B_BUTTON;
+            }
+        } else {
+            gCurrentStickX = 0;
+            gCurrentStickY = 0;
+            gCurrentButtonsPressed = 0;
+            gCurrentButtonsReleased = 0;
+            gCurrentRacerInput = B_BUTTON;
+        }
+        if (sAdvVerbose && mdkr_trace_enabled() && (g_frameCounter % 30) == 0) {
+            mdkr_trace("drive: level=%d step=%d %s %d/%d pos=(%.1f, %.1f, %.1f) vel=%.1f blk=%d",
+                       (int) levelId, (int) sAdvStepIdx[slot], reversing ? "REVERSE" : "HALT",
+                       (int) sAdvHalt, (int) st->id,
+                       obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
+                       racer->velocity, (int) textbox_visible());
+        }
+        return;
+    }
+
     target = NULL;
     if (st->kind == MDKR_ADV_EXIT) {
         target = mdkr_adv_find(BHV_EXIT, st->id);
@@ -1017,7 +1121,7 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     mdkr_adv_steer(racer, dx, dz, sAdvReverse > 0);
 
     if (sAdvVerbose && mdkr_trace_enabled() && (g_frameCounter % 30) == 0) {
-        f32 dy = (st->kind != MDKR_ADV_POINT) ? (target->trans.y_position - obj->trans.y_position) : 0.0f;
+        f32 dy = (target != NULL) ? (target->trans.y_position - obj->trans.y_position) : 0.0f;
         mdkr_trace("drive: level=%d step=%d kind=%d id=%d target=(%.0f, %.0f) pos=(%.0f, %.0f, %.0f) dist=%.1f "
                    "dy=%.1f stick=%d rev=%d vel=%.1f blk=%d",
                    (int) levelId, (int) sAdvStepIdx[slot], (int) st->kind, (int) st->id, tx, tz, obj->trans.x_position,

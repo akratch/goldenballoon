@@ -533,6 +533,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_magic_codes_test PRIVATE VERSION_us_v80)
     add_test(NAME magic_codes COMMAND mdkr_magic_codes_test)
 
+    add_executable(mdkr_magic_codes_state_test
+        ${CMAKE_SOURCE_DIR}/tests/test_magic_codes_state.c
+        ${CMAKE_SOURCE_DIR}/platform/magic_codes_state.c)
+    target_include_directories(mdkr_magic_codes_state_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_magic_codes_state_test PRIVATE
+        MAGIC_CODES_STATE_TESTING=1)
+    add_test(NAME magic_codes_state COMMAND mdkr_magic_codes_state_test)
+
     add_executable(mdkr_taj_mod_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod.c
         ${CMAKE_SOURCE_DIR}/game/src/taj_mod.c
@@ -555,8 +564,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_taj_mod_state_file_test
         ${CMAKE_SOURCE_DIR}/tests/test_taj_mod_state_file.c
+        ${CMAKE_SOURCE_DIR}/platform/magic_codes_state.c
+        ${CMAKE_SOURCE_DIR}/platform/magic_codes_state_file.c
         ${CMAKE_SOURCE_DIR}/platform/taj_mod_state.c
         ${CMAKE_SOURCE_DIR}/platform/taj_mod_state_file.c
+        ${CMAKE_SOURCE_DIR}/platform/text_state_file.c
         ${CMAKE_SOURCE_DIR}/platform/user_paths.c
         ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
     target_include_directories(mdkr_taj_mod_state_file_test PRIVATE
@@ -600,7 +612,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_memory_allocator_test
         ${CMAKE_SOURCE_DIR}/tests/test_memory_allocator.c
-        ${CMAKE_SOURCE_DIR}/game/src/memory.c)
+        ${CMAKE_SOURCE_DIR}/game/src/memory.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_engine_registry.c)
     target_include_directories(mdkr_memory_allocator_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
@@ -758,6 +772,331 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_app_overlay_hooks_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME app_overlay_hooks COMMAND mdkr_app_overlay_hooks_test)
+
+    add_executable(mdkr_session_core_test
+        ${CMAKE_SOURCE_DIR}/tests/test_session_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_session_core_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME session_core COMMAND mdkr_session_core_test)
+
+    add_executable(mdkr_session_bridge_test
+        ${CMAKE_SOURCE_DIR}/tests/test_session_bridge.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c)
+    target_include_directories(mdkr_session_bridge_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME session_bridge COMMAND mdkr_session_bridge_test)
+
+    add_executable(mdkr_match_transport_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_transport.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c)
+    target_include_directories(mdkr_match_transport_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME match_transport COMMAND mdkr_match_transport_test)
+
+    add_executable(mdkr_match_input_runtime_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_input_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_input_runtime.c)
+    target_include_directories(mdkr_match_input_runtime_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME match_input_runtime COMMAND mdkr_match_input_runtime_test)
+
+    add_executable(mdkr_match_input_packet_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_input_packet.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_input_packet.c)
+    target_include_directories(mdkr_match_input_packet_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME match_input_packet COMMAND mdkr_match_input_packet_test)
+
+    add_executable(mdkr_match_input_bundle_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_input_bundle.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c)
+    target_include_directories(mdkr_match_input_bundle_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR})
+    add_test(NAME match_input_bundle COMMAND mdkr_match_input_bundle_test)
+
+    add_executable(mdkr_online_lobby_core_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c)
+    target_include_directories(mdkr_online_lobby_core_test PRIVATE
+        ${CMAKE_SOURCE_DIR})
+    add_test(NAME online_lobby_core COMMAND mdkr_online_lobby_core_test)
+
+    add_executable(mdkr_online_lobby_view_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_online_lobby_view_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME online_lobby_view_model
+        COMMAND mdkr_online_lobby_view_model_test)
+
+    add_executable(mdkr_online_lobby_fake_adapter_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_fake_adapter.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_online_lobby_fake_adapter_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME online_lobby_fake_adapter
+        COMMAND mdkr_online_lobby_fake_adapter_test)
+
+    add_executable(mdkr_match_launch_descriptor_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c)
+    target_include_directories(mdkr_match_launch_descriptor_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME match_launch_descriptor
+        COMMAND mdkr_match_launch_descriptor_test)
+
+    add_executable(mdkr_pad_router_test
+        ${CMAKE_SOURCE_DIR}/tests/test_pad_router.c
+        ${CMAKE_SOURCE_DIR}/platform/pad_router.c)
+    target_include_directories(mdkr_pad_router_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME pad_router COMMAND mdkr_pad_router_test)
+
+    add_executable(mdkr_party_protocol_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_protocol.c
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+    target_include_directories(mdkr_party_protocol_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME party_protocol COMMAND mdkr_party_protocol_test)
+
+    add_executable(mdkr_remote_pad_test
+        ${CMAKE_SOURCE_DIR}/tests/test_remote_pad.c
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c
+        ${CMAKE_SOURCE_DIR}/platform/party/remote_pad.c)
+    target_include_directories(mdkr_remote_pad_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME remote_pad COMMAND mdkr_remote_pad_test)
+
+    add_executable(mdkr_native_remote_pad_ingress_test
+        ${CMAKE_SOURCE_DIR}/tests/test_native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+    target_include_directories(mdkr_native_remote_pad_ingress_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_native_remote_pad_ingress_test PRIVATE cxx_std_17)
+    find_package(Threads REQUIRED)
+    target_link_libraries(mdkr_native_remote_pad_ingress_test PRIVATE
+        Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_native_remote_pad_ingress_test PRIVATE
+            /W4 /WX)
+    else()
+        target_compile_options(mdkr_native_remote_pad_ingress_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME native_remote_pad_ingress
+        COMMAND mdkr_native_remote_pad_ingress_test)
+
+    add_executable(mdkr_native_party_host_test
+        ${CMAKE_SOURCE_DIR}/tests/test_native_party_host.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+    target_include_directories(mdkr_native_party_host_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_native_party_host_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_native_party_host_test PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_native_party_host_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_native_party_host_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME native_party_host COMMAND mdkr_native_party_host_test)
+
+    # Rollback primitives are kept ROM-, renderer- and window-free. Their
+    # boundaries must stay cheap enough to run on every native presubmit.
+    add_executable(mdkr_net_input_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_input.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c)
+    target_include_directories(mdkr_net_input_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_input COMMAND mdkr_net_input_test)
+
+    add_executable(mdkr_net_local_input_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_local_input.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c)
+    target_include_directories(mdkr_net_local_input_test PRIVATE
+        ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_local_input COMMAND mdkr_net_local_input_test)
+
+    add_executable(mdkr_joypad_rollback_test
+        ${CMAKE_SOURCE_DIR}/tests/test_joypad_rollback.c
+        ${CMAKE_SOURCE_DIR}/game/src/joypad_rollback.c)
+    target_include_directories(mdkr_joypad_rollback_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/libultra)
+    target_compile_definitions(mdkr_joypad_rollback_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1)
+    add_test(NAME joypad_rollback COMMAND mdkr_joypad_rollback_test)
+
+    add_executable(mdkr_match_manifest_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c)
+    target_include_directories(mdkr_match_manifest_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME match_manifest COMMAND mdkr_match_manifest_test)
+
+    add_executable(mdkr_net_roster_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c)
+    target_include_directories(mdkr_net_roster_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_roster COMMAND mdkr_net_roster_test)
+
+    add_executable(mdkr_local_listener_mix_test
+        ${CMAKE_SOURCE_DIR}/tests/test_local_listener_mix.c
+        ${CMAKE_SOURCE_DIR}/platform/net/local_listener_mix.c)
+    target_include_directories(mdkr_local_listener_mix_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME local_listener_mix COMMAND mdkr_local_listener_mix_test)
+
+    add_executable(mdkr_net_impairment_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_impairment.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c)
+    target_include_directories(mdkr_net_impairment_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_impairment COMMAND mdkr_net_impairment_test)
+
+    add_executable(mdkr_net_clock_test
+        ${CMAKE_SOURCE_DIR}/tests/test_net_clock.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c)
+    target_include_directories(mdkr_net_clock_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME net_clock COMMAND mdkr_net_clock_test)
+
+    add_executable(mdkr_rollback_snapshot_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_snapshot.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c)
+    target_include_directories(mdkr_rollback_snapshot_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_snapshot COMMAND mdkr_rollback_snapshot_test)
+
+    add_executable(mdkr_rollback_ring_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c)
+    target_include_directories(mdkr_rollback_ring_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_ring COMMAND mdkr_rollback_ring_test)
+
+    add_executable(mdkr_rollback_events_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_events.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c)
+    target_include_directories(mdkr_rollback_events_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_events COMMAND mdkr_rollback_events_test)
+
+    add_executable(mdkr_rollback_audio_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_audio.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_audio.c)
+    target_include_directories(mdkr_rollback_audio_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_audio COMMAND mdkr_rollback_audio_test)
+
+    add_executable(mdkr_gameplay_event_trace_test
+        ${CMAKE_SOURCE_DIR}/tests/test_gameplay_event_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c)
+    target_include_directories(mdkr_gameplay_event_trace_test PRIVATE
+        ${CMAKE_SOURCE_DIR})
+    add_test(NAME gameplay_event_trace COMMAND mdkr_gameplay_event_trace_test)
+
+    add_executable(mdkr_rollback_driver_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_driver.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c)
+    target_include_directories(mdkr_rollback_driver_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_driver COMMAND mdkr_rollback_driver_test)
+
+    add_executable(mdkr_rollback_four_endpoint_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_four_endpoint.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c)
+    target_include_directories(mdkr_rollback_four_endpoint_test PRIVATE ${CMAKE_SOURCE_DIR})
+    add_test(NAME rollback_four_endpoint COMMAND mdkr_rollback_four_endpoint_test)
+
+    add_executable(mdkr_rollback_game_runtime_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_game_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_game_runtime.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_audio.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c
+        ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/net/net_input.c)
+    target_include_directories(mdkr_rollback_game_runtime_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/libultra)
+    target_compile_definitions(mdkr_rollback_game_runtime_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        MDKR_ROLLBACK_LAB_RESIM_TARGET_TICK=4)
+    add_test(NAME rollback_game_runtime COMMAND mdkr_rollback_game_runtime_test)
+
+    add_executable(mdkr_rollback_game_authority_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rollback_game_authority.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_game_authority.c
+        ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c)
+    target_include_directories(mdkr_rollback_game_authority_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/libultra
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_rollback_game_authority_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1)
+    add_test(NAME rollback_game_authority COMMAND mdkr_rollback_game_authority_test)
 
     add_executable(mdkr_pacing_policy_test
         ${CMAKE_SOURCE_DIR}/tests/test_pacing_policy.c
@@ -1156,10 +1495,25 @@ endif()
 # native CTest configuration, including OpenGL-only and sanitizer lanes.
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(MDKR_NODE_EXECUTABLE NAMES node nodejs)
     add_test(
         NAME public_surface
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_public_surface.py)
+    add_test(
+        NAME multiplayer_boundaries
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    if(MDKR_NODE_EXECUTABLE)
+        add_test(
+            NAME party_protocol_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_party_protocol_js.cjs)
+        add_test(
+            NAME touch_surface_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/web/touch-surface.test.cjs)
+    endif()
     add_test(
         NAME oracle_reference_replay
         COMMAND ${Python3_EXECUTABLE}
@@ -1196,6 +1550,34 @@ if(BUILD_TESTING)
         NAME camera_obstruction_authority
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_camera_obstruction_authority.py)
+    add_test(
+        NAME water_effect_tick_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_water_effect_tick_contract.py)
+    add_test(
+        NAME durable_rollback_firewall
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_durable_rollback_firewall.py)
+    add_test(
+        NAME rumble_rollback_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_rumble_rollback_adapter.py)
+    add_test(
+        NAME audio_rollback_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_audio_rollback_adapter.py)
+    add_test(
+        NAME ai_takeover_adapter
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_ai_takeover_adapter.py)
+    add_test(
+        NAME postrace_rollback_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_postrace_rollback_contract.py)
+    add_test(
+        NAME network_viewport_invariance
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_network_viewport_invariance.py)
     add_test(
         NAME camera_track_occlusion_cache
         COMMAND ${Python3_EXECUTABLE}
@@ -1236,6 +1618,18 @@ if(BUILD_TESTING)
         NAME product_claim_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_product_claim_boundaries.py)
+    add_test(
+        NAME party_usage_reconciliation
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_party_usage_reconciliation.py)
+    add_test(
+        NAME party_beta_ledger
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_party_beta_ledger.py)
+    add_test(
+        NAME party_experience_canary
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_party_experience_canary.py)
     add_test(
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}

@@ -6,6 +6,39 @@
 table): none — every entry below is closed or resolved; kept as the
 append-only historical record.
 
+## FIXED: compressed-sequence voice limits dropped music and silver-coin jingles
+
+The player report in public issue #30 described short missing notes in the
+Bluey rematch, often near racer sounds, and occasional missing silver-coin
+pickup audio. Both observations reached the same compressed-sequence player,
+but through two defects.
+
+First, level headers retained the N64 music concurrency budget on a native
+synth that has a larger logical pool. On the progression-valid Bluey rematch,
+the 18-voice header rejected seven note-ons. The production route now admits
+the complete native music pool. Its measured peak is 25 voices, so the pool is
+26—not an open-ended capacity increase—and the shared 40 physical voices are
+unchanged.
+
+Second, `alCSPNew()` cleared the sequence player and allocated its voice states
+but never copied `ALSeqpConfig.voiceLimit`. The music player happened to mask
+that omission by setting its limit immediately after construction. The jingle
+player did not: it booted with limit zero, admitted one voice because of the
+original API's inclusive comparison, then rejected the next. Silver-coin
+pickups call `music_jingle_play(SEQUENCE_SILVER_COIN_1 + count)`, so the
+reported “sound effect” was direct evidence of this initialization bug.
+`alCSPNew()` now installs the configured limit for every compressed-sequence
+player.
+
+The Bluey gate records player identity, logical occupancy, every rejected
+note, and physical steals. The fixed run admits 4,530 note-ons with zero
+unintended rejects or steals (`musicPeak=25/26`, `jinglePeak=2/16`). The general
+143.5-second audio capture, resource invariants, and focused audio contracts
+remain green. Against the existing ROM-derived ares capture of the same oracle
+route, the port is +0.840 dB broadband and every measured band remains inside
+the established tolerance. The fix changes admission, not master gain, tempo,
+or host-sink policy.
+
 
 ## FIXED: an AudioWorklet underrun left the repair envelope out of the loop
 

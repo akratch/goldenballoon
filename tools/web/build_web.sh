@@ -86,6 +86,7 @@ mkdir -p dist/web
 REQUIRED_BUILD_OUTPUT=(
     build-web/mdkr64_web.js build-web/mdkr64_web.wasm
     build-web/mdkr-save-tools.js build-web/mdkr-save-tools.wasm
+    build-web/mdkr-online-tools.js build-web/mdkr-online-tools.wasm
 )
 for required in "${REQUIRED_BUILD_OUTPUT[@]}"; do
     if [[ ! -f "$required" ]]; then
@@ -96,8 +97,10 @@ done
 
 wasm_bytes=$(wc -c < build-web/mdkr64_web.wasm | tr -d ' ')
 save_tools_bytes=$(wc -c < build-web/mdkr-save-tools.wasm | tr -d ' ')
+online_tools_bytes=$(wc -c < build-web/mdkr-online-tools.wasm | tr -d ' ')
 echo ">> wasm: ${wasm_bytes} bytes"
 echo ">> save tools wasm: ${save_tools_bytes} bytes"
+echo ">> online view tools wasm: ${online_tools_bytes} bytes"
 
 # Hard ceiling well under the 100 MiB GitHub Pages per-file limit. Fail closed so
 # an accidentally-embedded asset blob cannot sail through into a release.
@@ -109,6 +112,11 @@ fi
 if [[ "$save_tools_bytes" -ge 524288 ]]; then
     echo "build_web: FAIL -- save-tools wasm exceeds 512 KiB (${save_tools_bytes} bytes)." >&2
     echo "  The save module must remain ROM- and engine-independent." >&2
+    exit 1
+fi
+if [[ "$online_tools_bytes" -ge 131072 ]]; then
+    echo "build_web: FAIL -- online view tools wasm exceeds 128 KiB (${online_tools_bytes} bytes)." >&2
+    echo "  Matchmaking providers, the renderer and game code do not belong in this module." >&2
     exit 1
 fi
 
@@ -161,6 +169,8 @@ STAGED_BUILD_OUTPUT=(
     mdkr64_web.data mdkr64_web.worker.js mdkr64_web.wasm.map
     mdkr-save-tools.js mdkr-save-tools.wasm mdkr-save-tools.js.symbols
     mdkr-save-tools.data mdkr-save-tools.worker.js
+    mdkr-online-tools.js mdkr-online-tools.wasm mdkr-online-tools.js.symbols
+    mdkr-online-tools.data mdkr-online-tools.worker.js
     build-info.json
 )
 clear_staged_build_output() {
@@ -183,6 +193,7 @@ trap staging_failed EXIT
 clear_staged_build_output
 cp build-web/mdkr64_web.js build-web/mdkr64_web.wasm dist/web/
 cp build-web/mdkr-save-tools.js build-web/mdkr-save-tools.wasm dist/web/
+cp build-web/mdkr-online-tools.js build-web/mdkr-online-tools.wasm dist/web/
 # Ship the symbol map produced by THIS link (see the --emit-symbol-map comment in
 # CMakeLists.txt): it is the only way a browser stack trace of bare wasm code
 # offsets can be turned back into function names, and a later rebuild does not

@@ -236,6 +236,17 @@ void Chip(const char *text, const ImVec4 &color) {
 
 void GameplayChip() { Chip("Changes gameplay", AppTheme::warn()); }
 
+void ConfirmModalSize() {
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    const float margin = 2.0f * kGapL * AppTheme::uiScale();
+    float width = 420.0f * AppTheme::uiScale();
+    if (viewport != nullptr && viewport->WorkSize.x - margin < width) {
+        width = viewport->WorkSize.x - margin;
+    }
+    /* Height 0 = auto-fit that axis; only the width is pinned. */
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+}
+
 void HelpMarker(const char *text) {
     if (text == nullptr || text[0] == '\0') return;
     ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());

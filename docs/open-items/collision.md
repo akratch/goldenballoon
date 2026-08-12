@@ -213,6 +213,149 @@ missing capability as the navigation-primitive item.
   because no route drives a racing line. An oracle before/after on the hub routes
   is the obvious next measurement and partly answers that gap.
 
+## FIXED: object meshes never ejected a point that was already inside them — wave "objwedge"
+
+**Report (goldenballoon #32, JappaWakka, browser build, 60 Hz presentation):** an
+angled hit on a locked balloon door left the kart *"45 degrees into the floor
+unable to move properly"*; shortly after, it bumped a palm tree and *"got stuck
+inside the wall/tree, unable to escape."*
+
+### Mechanism
+
+`func_80017A18()` is **one-sided by construction**. It fires only on
+`sum1 >= -0.1 && sum2 < -0.1` (`objects.c:8489`) — the point started outside the
+facet's plane and ended inside it. A point that is **already inside** when the
+tick begins satisfies neither half, so every facet rejects it and the object
+stops pushing at all. Nothing else ejects it: `resolve_collisions()` only ever
+sees terrain. And the matched body's `counter > 10` bail resets the point to its
+**origin** (`objects.c:8524-8528`), so a pinned kart repeats a position
+*bit-exactly* rather than drifting.
+
+`resolve_collisions()` has had the answer since the ROM — its "Step 2: ensure
+object is fully pushed out from underneath" (`game/src/hasm/collision.c:658-716`)
+is exactly this case for terrain. The object path never had the equivalent, and
+could not have needed one before wave "objcoll" made collision-meshed objects
+tangible at all. That wave's own note predicted this: *"Wedging is bounded but
+not impossible."*
+
+### Fix
+
+The missing pass, transcribed from the terrain sibling onto object meshes, under
+`#ifdef NATIVE_PORT` only: same `targetDist < -0.1 && targetDist > -(radius +
+3.0f)` band, same `target -= N * targetDist` ejection, same `> 10` bail. The band
+is the containment — a point deeper than one radius plus three units is the far
+side of the object, not a shallow penetration, and is left alone.
+
+**One deliberate deviation from the sibling, and it is load-bearing.**
+`resolve_collisions()` writes `target` in place, so its Step 2 need not touch the
+collision mask. Here the caller's writeback is **gated** —
+`collision_objectmodel()` only transforms a point back out of object space `if
+(tempv0 & sp16C)` — so an ejection whose bit is not raised is silently discarded.
+The recovery therefore feeds `counter`. The knock-on is that a recovered wheel
+counts as grounded in `func_80054FD0()`, which is correct: it is in contact.
+
+### What was NOT changed, and why
+
+Two authored mechanisms explain the report at least as well and are **matched
+decomp text**; changing either would alter authored physics everywhere, so both
+stand:
+
+| site | authored behaviour |
+|---|---|
+| `racer.c:7755-7763` | pitch and pitch-velocity are levelled from wheel contact **only on ticks where no terrain wall was touched** (`if (sp184 == 0)`, i.e. `gHitWall`). A kart resting against a wall keeps its impact pitch indefinitely, clamped only at `±0x3400` (73°). 45° is `0x2000` — well inside that clamp. |
+| `game_text.c:574` → `racer.c:4999-5006`, `racer.c:5702-5714` | while the *"you need N balloons"* textbox is up, `disable_racer_input()` runs every tick: stick and buttons zeroed, and `velocity`/`lateral_velocity` multiplied by 0.65 per tick with a hard zero below 0.5. |
+
+The second was **measured directly** while building this wave's gate: on a
+commanded 240-unit reverse off the door leaf, the kart sat at exactly
+`(-4016.0, 268.0, 2396.2)` with `vel=0.0` and `blk=1` for 94 consecutive ticks,
+ignoring the input, and moved only once the message closed. The reporter's
+"unable to move properly" is at minimum this, and it is faithful.
+
+### Measured evidence
+
+Reproduction was attempted first and is recorded honestly. Four approach angles
+into the hub's 1-balloon Dino Domain door leaf (`(-4105, 260, 2435)`), head-on
+plus three glancing, under `original` cadence:
+
+| observation | value |
+|---|---|
+| head-on impact | decelerates over ~18 ticks to a bit-exact fixed point at `(-4018.48, 268.00, 2404.20)`, then **escapes cleanly** when steered away |
+| glancing arms | all separated; the one 2955-tick freeze occurred **after** the route had exhausted every step, i.e. script-throttled into a shut door with nothing steering away |
+| peak pitch, all four runs | `xrot=4884` (26.8°), on open terrain at tick 2802 — **not** at any door |
+
+So **the reported wedge was not reproduced.** The embedded state is reachable in
+play — the reporter reached it — but not on a schedule a gate can assert on,
+which is why the mechanism arms seed it.
+
+### Verification
+
+`tests/check_object_wedge.py`, both arms from one binary via
+`MDKR_OBJCOLL=norecover` (composable with `trace`; the seam now matches on
+substring for exactly that reason):
+
+```
+PASS: object wedge check
+  fixed     : recovered points=1 iters=1 embedded_ticks=0 objcoll_hits=11
+  fixed     : escaped -- final waypoint reached @tick 3360
+  fixed     : longest bit-exact freeze while steering = 1 ticks (limit 60), window 3060..3360
+  fixed     : pitch levelled 0 ticks after the last object collision (window 300)
+  norecover : recovered points=0 iters=0 embedded_ticks=1 objcoll_hits=11
+```
+
+The differential is the whole content: the same seed on the same route is ejected
+in one iteration with the pass live, and is **not ejected** without it, where the
+independent arrival probe sees the point still inside on the following tick. The
+probe requires **both** ends inside (`pTgt < -0.1 && pOrg < -0.1`) — requiring
+only the target made it fire six times on one clean head-on bump, every one of
+them a crossing upstream's own code resolved on the same tick.
+
+The escape, freeze and pitch assertions are **regression guards, not witnesses**:
+on this route the kart escapes, never freezes for more than one tick while
+steering, and is already level at the last collision. They would catch a change
+that made the ordinary case wedge; they are not evidence the original report is
+cured.
+
+Two route primitives were added to make the escape expressible at all
+(`platform/mdkr_adventure.c`): `H<frames>` holds the brake, `R<frames>` reverses.
+Before them every step drove forward, and the only path to reverse was an
+automatic stall heuristic — so a route could not distinguish "cannot move" from
+"is not being asked to". `R` is frame-counted rather than position-counted
+because reverse steering is mirrored, so the kart travels *away* from its target;
+a "reverse until you arrive" step is unsatisfiable (measured: stalled at 764
+units and growing).
+
+`[GRND]` gained a trailing `blk=` field (`gRacerInputBlocked`), appended last so
+every existing parser keeps matching. Without it the freeze detector fires on the
+textbox lockout above — correct behaviour — which it did, at 94 ticks.
+
+### Neighbouring gates, re-run
+
+| gate | result |
+|---|---|
+| `check_door_blocks` | PASS — fixed arm 1747 hits (was 1742), locked doors held; legacy arm 0 hits, drove through |
+| `check_collision_gridmask` | PASS — boss 46: broken `truncated=12 airborne=8307 peakY=5 fin=0` / fixed `truncated=0 airborne=14 peakY=4868 fin=1` |
+| `check_determinism` | PASS — 3 fixtures × gl/webgpu, 5 frames identical across runs |
+| `check_adventure_hub` | PASS |
+
+The five extra door hits are the recovery pass acting on the hub tour; the route's
+outcome is unchanged.
+
+### What the next person should watch
+
+- **This changes physics wherever collision-meshed objects exist**, the same blast
+  radius wave "objcoll" recorded. The hub tour moved by 5 hits in 1747; no gate's
+  outcome changed. A route that begins a tick embedded will now be ejected, and
+  that ejection is a real trajectory difference.
+- **The two authored mechanisms above are still live in default play.** A player
+  pressed against a wall still keeps their impact pitch, and the balloon message
+  still holds them immobile for its duration. If #32's reporter is still stuck
+  after this, those are the next suspects and **neither is a port defect** — they
+  need an oracle comparison against the ROM, not a patch.
+- The seed is a test mutation behind `MDKR_INTERNAL_TEST_TOKEN=mdkr64-objcoll-wedge-v1`
+  and moves wheel points, which no production path does. Its depth must stay
+  inside the recovery band: depth 24 produced **zero** probe readings because it
+  landed past the band and was correctly ignored as the far side.
+
 ## SWEPT: three shapes no instrument could see — wave "boundsweep"
 
 Three recorded defects, each the visible member of a class that **no runtime

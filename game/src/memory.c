@@ -110,6 +110,42 @@ s32 gFreeQueueTimer;
 #ifdef NATIVE_PORT
 static FreeQueueSlot *sMdkrFreeQueue = gFreeQueue;
 static s32 sMdkrFreeQueueCapacity = FREE_QUEUE_SIZE;
+/* Rollback-lab diagnostics only: excluded from authority and never read by
+ * simulation. The callback must not re-enter the game allocator. */
+static MdkrMempoolMutationObserver sMdkrMutationObserver;
+static void *sMdkrMutationObserverContext;
+static const void *sMdkrMutationOrigin;
+
+static const void *mdkr_allocation_caller(void) {
+#if defined(__EMSCRIPTEN__)
+    /* Emscripten aborts at runtime unless the large offset-converter feature is
+     * linked. Caller identity is optional laboratory diagnostics, so keep the
+     * web product lean and report an unknown origin there. */
+    return NULL;
+#else
+    return __builtin_extract_return_addr(__builtin_return_address(0));
+#endif
+}
+
+static void mdkr_note_pool_mutation(
+    MemoryPools poolIndex, MdkrMempoolMutationKind kind,
+    const void *address, size_t size, u32 colourTag) {
+    MemoryPool *pool = &gMemoryPools[poolIndex];
+    if (pool->topologyGeneration != UINT64_MAX) {
+        pool->topologyGeneration++;
+    }
+    if (sMdkrMutationObserver != NULL) {
+        sMdkrMutationObserver(
+            poolIndex, kind, pool->topologyGeneration, address, size,
+            colourTag, sMdkrMutationOrigin, sMdkrMutationObserverContext);
+    }
+}
+
+void mdkr_mempool_set_mutation_observer(
+    MdkrMempoolMutationObserver observer, void *context) {
+    sMdkrMutationObserver = observer;
+    sMdkrMutationObserverContext = context;
+}
 
 static void mdkr_free_queue_grow(void) {
     FreeQueueSlot *grown;
@@ -182,6 +218,9 @@ void mdkr_memory_shutdown(void) {
     sMdkrFreeQueueCapacity = FREE_QUEUE_SIZE;
     gFreeQueueCount = 0;
     gFreeQueueTimer = 0;
+    sMdkrMutationObserver = NULL;
+    sMdkrMutationObserverContext = NULL;
+    sMdkrMutationOrigin = NULL;
     memset(gMemoryPools, 0, sizeof(gMemoryPools));
     gNumberOfMemoryPools = -1;
 }
@@ -271,6 +310,9 @@ MemoryPoolSlot *mempool_init(MemoryPoolSlot *slots, s32 poolSize, s32 numSlots) 
     gMemoryPools[poolCount].curNumSlots = 0;
     gMemoryPools[poolCount].slots = slots;
     gMemoryPools[poolCount].size = poolSize;
+#ifdef NATIVE_PORT
+    gMemoryPools[poolCount].topologyGeneration = 0u;
+#endif
     firstSlot = slots;
     for (i = 0; i < gMemoryPools[poolCount].maxNumSlots; i++) {
         firstSlot->index = i;
@@ -311,7 +353,14 @@ MemoryPoolSlot *mempool_init(MemoryPoolSlot *slots, s32 poolSize, s32 numSlots) 
  */
 void *mempool_alloc_safe(s32 size, u32 colourTag) {
     void *addr;
+#ifdef NATIVE_PORT
+    const void *previousOrigin = sMdkrMutationOrigin;
+    sMdkrMutationOrigin = mdkr_allocation_caller();
+#endif
     addr = mempool_slot_find(POOL_MAIN, size, colourTag);
+#ifdef NATIVE_PORT
+    sMdkrMutationOrigin = previousOrigin;
+#endif
     if (addr == NULL) {
         dump_memory_to_cpak(stack_pointer()->sp, size, colourTag);
 #ifdef NATIVE_PORT
@@ -325,7 +374,16 @@ void *mempool_alloc_safe(s32 size, u32 colourTag) {
  * Reserves and returns memory from the main memory pool. Has no assert checks.
  */
 void *mempool_alloc(s32 size, u32 colourTag) {
+#ifdef NATIVE_PORT
+    const void *previousOrigin = sMdkrMutationOrigin;
+    void *result;
+    sMdkrMutationOrigin = mdkr_allocation_caller();
+    result = mempool_slot_find(POOL_MAIN, size, colourTag);
+    sMdkrMutationOrigin = previousOrigin;
+    return result;
+#else
     return mempool_slot_find(POOL_MAIN, size, colourTag);
+#endif
 }
 
 /**
@@ -408,7 +466,16 @@ void *mempool_alloc_pool(MemoryPoolSlot *slots, s32 size) {
     s32 i;
     for (i = gNumberOfMemoryPools; i != 0; i--) {
         if (slots == gMemoryPools[i].slots) {
+#ifdef NATIVE_PORT
+            const void *previousOrigin = sMdkrMutationOrigin;
+            void *result;
+            sMdkrMutationOrigin = mdkr_allocation_caller();
+            result = mempool_slot_find(i, size, 0);
+            sMdkrMutationOrigin = previousOrigin;
+            return result;
+#else
             return mempool_slot_find(i, size, 0);
+#endif
         }
     }
     return (void *) NULL;
@@ -432,6 +499,9 @@ void *mempool_alloc_fixed(s32 size, u8 *address, u32 colorTag) {
         fprintf(stderr, "[MEM] fixed allocation rejected invalid address/size (%p, %d)\n", address, (int) size);
         return NULL;
     }
+    {
+        const void *previousOrigin = sMdkrMutationOrigin;
+        sMdkrMutationOrigin = mdkr_allocation_caller();
 #else
     if (size == 0) {
         stubbed_printf("*** mmAllocAtAddr: size = 0 ***\n");
@@ -474,11 +544,13 @@ void *mempool_alloc_fixed(s32 size, u8 *address, u32 colorTag) {
                 if (offset == 0) {
                     mempool_slot_assign(POOL_MAIN, i, size, 1, 0, colorTag);
                     interrupts_enable(intFlags);
+                    sMdkrMutationOrigin = previousOrigin;
                     return curSlot->data;
                 } else {
                     i = mempool_slot_assign(POOL_MAIN, i, (s32) offset, 0, 1, colorTag);
                     mempool_slot_assign(POOL_MAIN, i, size, 1, 0, colorTag);
                     interrupts_enable(intFlags);
+                    sMdkrMutationOrigin = previousOrigin;
                     return (slots + i)->data;
                 }
 #else
@@ -500,6 +572,10 @@ void *mempool_alloc_fixed(s32 size, u8 *address, u32 colorTag) {
         }
         interrupts_enable(intFlags);
     }
+#ifdef NATIVE_PORT
+        sMdkrMutationOrigin = previousOrigin;
+    }
+#endif
     stubbed_printf("\n*** mm Error *** ---> Can't allocate memory at desired address.\n");
     return NULL;
 }
@@ -768,6 +844,137 @@ s32 mempool_locked_unset(u8 *address) {
 }
 
 #ifdef NATIVE_PORT
+static s32 mdkr_pool_allocation_span(
+    s32 poolIndex, const void *address, void **allocationBase,
+    size_t *allocationSize) {
+    MemoryPool *pool;
+    s32 slotIndex = 0;
+    s32 visited = 0;
+    uintptr_t needle;
+
+    if (!mdkr_pool_is_valid(poolIndex) || address == NULL ||
+        allocationBase == NULL || allocationSize == NULL) {
+        return FALSE;
+    }
+    pool = &gMemoryPools[poolIndex];
+    needle = (uintptr_t)address;
+    while (slotIndex != MEMSLOT_NONE) {
+        MemoryPoolSlot *slot;
+        uintptr_t begin;
+        uintptr_t end;
+        s16 allocationState;
+
+        if (slotIndex < 0 || slotIndex >= pool->maxNumSlots ||
+            visited++ >= pool->maxNumSlots) {
+            return FALSE;
+        }
+        slot = &pool->slots[slotIndex];
+        if (slot->size <= 0 || slot->data == NULL) {
+            return FALSE;
+        }
+        begin = (uintptr_t)slot->data;
+        if ((size_t)slot->size > UINTPTR_MAX - begin) {
+            return FALSE;
+        }
+        end = begin + (size_t)slot->size;
+        allocationState = slot->flags & (s16)~SLOT_LOCKED;
+        if ((allocationState == SLOT_USED || allocationState == SLOT_SAFEGUARD) &&
+            needle >= begin && needle < end) {
+            *allocationBase = slot->data;
+            *allocationSize = (size_t)slot->size;
+            return TRUE;
+        }
+        slotIndex = slot->nextIndex;
+    }
+    return FALSE;
+}
+
+s32 mdkr_mempool_allocation_span_in_pool(
+    MemoryPools poolIndex, const void *address, void **allocationBase,
+    size_t *allocationSize) {
+    if (allocationBase != NULL) {
+        *allocationBase = NULL;
+    }
+    if (allocationSize != NULL) {
+        *allocationSize = 0u;
+    }
+    if (address == NULL || allocationBase == NULL || allocationSize == NULL) {
+        return FALSE;
+    }
+    return mdkr_pool_allocation_span(
+        (s32)poolIndex, address, allocationBase, allocationSize);
+}
+
+/**
+ * Resolve a pointer inside a live pool allocation to the allocation's complete
+ * span. This is intentionally read-only allocator introspection: callers can
+ * register exact simulation allocations without treating an entire arena (and
+ * its presentation or host-linked state) as authoritative rollback memory.
+ */
+s32 mdkr_mempool_allocation_span(
+    const void *address, void **allocationBase, size_t *allocationSize) {
+    s32 poolIndex;
+
+    if (allocationBase != NULL) {
+        *allocationBase = NULL;
+    }
+    if (allocationSize != NULL) {
+        *allocationSize = 0u;
+    }
+    if (address == NULL || allocationBase == NULL || allocationSize == NULL) {
+        return FALSE;
+    }
+    poolIndex = mempool_get_pool((u8 *)address);
+    if (poolIndex == MEMPOOL_INVALID_POOL) {
+        return FALSE;
+    }
+    return mdkr_pool_allocation_span(
+        poolIndex, address, allocationBase, allocationSize);
+}
+
+s32 mdkr_mempool_pool_state_spans(
+    MemoryPools poolIndex,
+    MdkrMemorySpan spans[MDKR_MEMPOOL_STATE_SPAN_COUNT]) {
+    void *backingBase = NULL;
+    size_t backingSize = 0u;
+    s32 parentIndex;
+
+    if (spans != NULL) {
+        memset(spans, 0, sizeof(*spans) * MDKR_MEMPOOL_STATE_SPAN_COUNT);
+    }
+    if (spans == NULL || poolIndex <= POOL_MAIN ||
+        !mdkr_pool_is_valid((s32)poolIndex)) {
+        return FALSE;
+    }
+    for (parentIndex = (s32)poolIndex - 1;
+         parentIndex >= POOL_MAIN; parentIndex--) {
+        if (mdkr_pool_allocation_span(
+                parentIndex, gMemoryPools[poolIndex].slots,
+                &backingBase, &backingSize)) {
+            break;
+        }
+    }
+    if (parentIndex < POOL_MAIN ||
+        backingBase != (void *)gMemoryPools[poolIndex].slots ||
+        backingSize < (size_t)gMemoryPools[poolIndex].size) {
+        return FALSE;
+    }
+    spans[0].base = &gMemoryPools[poolIndex];
+    spans[0].size = sizeof(gMemoryPools[poolIndex]);
+    spans[1].base = backingBase;
+    spans[1].size = backingSize;
+    return TRUE;
+}
+
+s32 mdkr_mempool_topology_generation(
+    MemoryPools poolIndex, u64 *generation) {
+    if (generation == NULL || !mdkr_pool_is_valid((s32)poolIndex)) {
+        return FALSE;
+    }
+    *generation = gMemoryPools[poolIndex].topologyGeneration;
+    return TRUE;
+}
+
 /**
  * One past the last byte of the live pool block containing `address`, or NULL
  * when no in-use slot covers it.
@@ -777,26 +984,13 @@ s32 mempool_locked_unset(u8 *address) {
  * for one -- recover the extent from the slot that owns the address.
  */
 u8 *mempool_block_end(u8 *address) {
-    s32 poolIndex;
-    s32 slotIndex;
-    MemoryPoolSlot *slots;
-    MemoryPoolSlot *slot;
+    void *allocationBase;
+    size_t allocationSize;
 
-    poolIndex = mempool_get_pool(address);
-    if (poolIndex == MEMPOOL_INVALID_POOL) {
+    if (!mdkr_mempool_allocation_span(address, &allocationBase, &allocationSize)) {
         return NULL;
     }
-    slots = gMemoryPools[poolIndex].slots;
-    for (slotIndex = 0; slotIndex != MEMSLOT_NONE; slotIndex = slot->nextIndex) {
-        slot = &slots[slotIndex];
-        if (slot->flags != SLOT_USED && slot->flags != SLOT_SAFEGUARD) {
-            continue;
-        }
-        if (slot->size > 0 && address >= (u8 *) slot->data && address < (u8 *) slot->data + slot->size) {
-            return (u8 *) slot->data + slot->size;
-        }
-    }
-    return NULL;
+    return (u8 *)allocationBase + allocationSize;
 }
 #endif
 
@@ -854,6 +1048,12 @@ void mempool_slot_clear(MemoryPools poolIndex, s32 slotIndex) {
     MemoryPoolSlot *prevSlot;
 
     pool = &gMemoryPools[poolIndex];
+#ifdef NATIVE_PORT
+    mdkr_note_pool_mutation(
+        poolIndex, MDKR_MEMPOOL_MUTATION_FREE, pool->slots[slotIndex].data,
+        (size_t)pool->slots[slotIndex].size,
+        pool->slots[slotIndex].colourTag);
+#endif
     slots = pool->slots;
     pool = pool; // Fakematch
     slot = &slots[slotIndex];
@@ -927,6 +1127,9 @@ s32 mempool_slot_assign(MemoryPools poolIndex, s32 slotIndex, s32 size, s32 slot
     if (size <= 0 || size > poolSize || (size < poolSize && pool->curNumSlots >= pool->maxNumSlots)) {
         return slotIndex;
     }
+    mdkr_note_pool_mutation(
+        poolIndex, MDKR_MEMPOOL_MUTATION_ASSIGN,
+        poolSlots[slotIndex].data, (size_t)size, colourTag);
 #endif
     poolSlots[slotIndex].flags = slotIsTaken;
     poolSize = poolSlots[slotIndex].size;

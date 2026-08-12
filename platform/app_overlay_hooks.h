@@ -21,6 +21,7 @@ extern "C" {
 int  platformOverlayProcessEvent(const void *sdl_event);
 void platformOverlayService(void);
 int  platformOverlayWantsInput(void);
+int  platformOverlayWantsPause(void);
 int  platformOverlayWantsRender(void);
 int  platformOverlayRender(void);
 

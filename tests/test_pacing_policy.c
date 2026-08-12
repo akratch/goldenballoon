@@ -24,6 +24,8 @@ int main(void) {
     MdkrPresentPolicy same;
     MdkrPresentDeadlineClock present_clock;
     MdkrCounterGuard counter = {0};
+    MdkrPresentIntervalClassifier intervals = {0};
+    unsigned i;
 
     expect("original is valid", mdkr_pacing_cadence_valid("original"));
     expect("enhanced is valid", mdkr_pacing_cadence_valid("enhanced"));
@@ -98,6 +100,71 @@ int main(void) {
     expect("null counter guard is a transparent fallback",
            mdkr_counter_guard_commit(NULL, UINT32_C(0xdeadbeef)) ==
                UINT32_C(0xdeadbeef));
+
+    expect("present interval classifier starts warming",
+           intervals.kind == MDKR_PRESENT_INTERVAL_WARMING);
+    for (i = 0u; i < MDKR_PRESENT_INTERVAL_WINDOW; i++) {
+        const int64_t ordinary_jitter =
+            (int64_t)((int)(i % 5u) - 2) * INT64_C(50000);
+        mdkr_present_interval_note(
+            &intervals, (uint64_t)(INT64_C(16666667) + ordinary_jitter));
+    }
+    expect("ordinary fixed-refresh wake jitter classifies fixed",
+           intervals.kind == MDKR_PRESENT_INTERVAL_FIXED &&
+               intervals.jitter_ppm < MDKR_PRESENT_INTERVAL_FIXED_PPM);
+
+    /* Four isolated 60ms scheduler stalls are the exact population trimmed
+     * from each edge. They must not turn a fixed panel into a VRR panel. */
+    for (i = 0u; i < 4u; i++) {
+        mdkr_present_interval_note(&intervals, UINT64_C(60000000));
+    }
+    expect("isolated host stalls do not impersonate VRR",
+           intervals.kind == MDKR_PRESENT_INTERVAL_FIXED);
+
+    /* A broad, sustained retirement distribution survives trimming and must
+     * cross the variable threshold for the required consecutive windows. */
+    for (i = 0u; i < MDKR_PRESENT_INTERVAL_WINDOW +
+                         MDKR_PRESENT_INTERVAL_VARIABLE_CONFIRM; i++) {
+        static const uint64_t variable_ns[] = {
+            UINT64_C(8333333), UINT64_C(10000000), UINT64_C(12500000),
+            UINT64_C(15384615), UINT64_C(11111111), UINT64_C(13888889)
+        };
+        mdkr_present_interval_note(
+            &intervals,
+            variable_ns[i % (sizeof(variable_ns) / sizeof(variable_ns[0]))]);
+    }
+    expect("sustained variable retirement classifies VRR",
+           intervals.kind == MDKR_PRESENT_INTERVAL_VARIABLE &&
+               intervals.jitter_ppm > MDKR_PRESENT_INTERVAL_VARIABLE_PPM &&
+               intervals.transitions == 1u);
+
+    /* Values in the hysteresis band must preserve the established answer. */
+    for (i = 0u; i < MDKR_PRESENT_INTERVAL_WINDOW; i++) {
+        const uint64_t band_ns = (i & 1u) ? UINT64_C(10400000)
+                                          : UINT64_C(9600000);
+        mdkr_present_interval_note(&intervals, band_ns);
+    }
+    expect("borderline cadence cannot flap an established VRR decision",
+           intervals.kind == MDKR_PRESENT_INTERVAL_VARIABLE &&
+               intervals.transitions == 1u);
+
+    for (i = 0u; i < MDKR_PRESENT_INTERVAL_WINDOW +
+                         MDKR_PRESENT_INTERVAL_FIXED_CONFIRM; i++) {
+        mdkr_present_interval_note(
+            &intervals, UINT64_C(16666667) + (i & 1u ? 1000u : 0u));
+    }
+    expect("sustained fixed retirement exits VRR after hysteresis",
+           intervals.kind == MDKR_PRESENT_INTERVAL_FIXED &&
+               intervals.transitions == 2u);
+    mdkr_present_interval_note(
+        &intervals, MDKR_PACING_STALL_REBASE_NS);
+    expect("a suspended timeline resets interval evidence",
+           intervals.kind == MDKR_PRESENT_INTERVAL_WARMING &&
+               intervals.count == 0u && intervals.transitions == 0u);
+    expect("interval kind names are stable telemetry",
+           mdkr_present_interval_kind_name(MDKR_PRESENT_INTERVAL_WARMING)[0] == 'w' &&
+               mdkr_present_interval_kind_name(MDKR_PRESENT_INTERVAL_FIXED)[0] == 'f' &&
+               mdkr_present_interval_kind_name(MDKR_PRESENT_INTERVAL_VARIABLE)[0] == 'v');
 
     expect("initialize below-boundary stall clock",
            mdkr_pacing_clock_init(&stall_below, 60, 2, 6));

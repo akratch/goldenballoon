@@ -1,0 +1,23 @@
+/* Interaction contract shared by the display overlay and phone controller. */
+.touch-controls:not([hidden]) {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.touch-controls button,
+.touch-controls .touch-stick,
+.touch-controls .touch-actions {
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Analog tracking is 1:1 with the captured pointer. Never animate this node. */
+.touch-controls .touch-stick-knob {
+  transition: none;
+}
+
+.touch-controls .touch-stick:focus-visible {
+  outline: 3px solid #ffe06a;
+  outline-offset: 4px;
+}

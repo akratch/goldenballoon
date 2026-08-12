@@ -1,6 +1,8 @@
 #include "menu.h"
 #ifdef NATIVE_PORT
 #include "mdkr_trace.h"
+#include "magic_codes_state.h"
+#include "magic_codes_state_file.h"
 #include "platform_os.h"
 #include "mdkr_adventure.h"
 #include "taj_mod.h"
@@ -9,6 +11,7 @@
 #include "taj_visual.h"
 #include "taj_mod_state_file.h"
 #include "video_config.h"
+#include "net/net_roster_runtime.h"
 extern int g_frameCounter;
 #endif
 #include "asset_enums.h"
@@ -61,6 +64,8 @@ extern int g_frameCounter;
 /**
  * @file Contains all the code used for every menu in the game.
  */
+
+static void cheatlist_apply_exclusivity(s32 code);
 
 /************ .bss ************/
 
@@ -653,6 +658,7 @@ UNUSED s32 unused_800DF490 = 0;
 s32 gIsInAdventureTwo = FALSE;
 s32 gPlayerHasSeenCautionMenu = FALSE;
 s32 *gMenuTextLangTable = NULL;
+static u8 *sMenuTextBlob = NULL;
 
 char **gMenuText = NULL;
 
@@ -2525,7 +2531,6 @@ void load_menu_text(s32 language) {
      * dedicated persistent buffer and materialise the pointer array from the BE
      * offsets (offset 0xFFFFFFFF == "no string"). */
     {
-        static u8 *sMenuTextBlob = NULL;
         s32 count = gMenuTextLangTable[0];
         u8 *blob;
         s32 idx;
@@ -2693,6 +2698,48 @@ void load_menu_text(s32 language) {
         // Caution message lines starting from gMenuText[166]
         gCautionMenuTextElements[langIndex + 2].t.element = menuText[ASSET_MENU_TEXT_CAUTIONMESSAGE_0 + langIndex];
     }
+}
+
+void menu_session_shutdown(void) {
+    s32 index;
+    if (sMenuTextBlob != NULL) {
+        mempool_free(sMenuTextBlob);
+        sMenuTextBlob = NULL;
+    }
+    if (gMenuTextLangTable != NULL) {
+        mempool_free(gMenuTextLangTable);
+        gMenuTextLangTable = NULL;
+    }
+    if (gMenuText != NULL) {
+        mempool_free(gMenuText);
+        gMenuText = NULL;
+    }
+    /* The launcher can boot another engine in this process after the arena is
+     * released. Neutralize every menu/background root that may otherwise be
+     * observed before the next scene has allocated replacements. Do not free
+     * these here: normal menu transitions may already have done so, and the
+     * arena itself is retired immediately after this ownership handoff. */
+    bgdraw_set_func(NULL);
+    bgdraw_texture_init(NULL, NULL, 16u);
+    gTrackSelectBgTriangles[0] = NULL;
+    gTrackSelectBgTriangles[1] = NULL;
+    gTrackSelectBgVertices[0] = NULL;
+    gTrackSelectBgVertices[1] = NULL;
+    for (index = 0; index < ARRAY_COUNT(gTracksMenuBgTextures); index++) {
+        gTracksMenuBgTextures[index] = NULL;
+    }
+    for (index = 0; index < ARRAY_COUNT(gMenuAssets); index++) {
+        gMenuAssets[index] = NULL;
+        gMenuAssetActive[index] = FALSE;
+    }
+    *gAssetsMenuElementIds = NULL;
+    gMenuElementIdCount = 0;
+    gMenuObjectsCount = 0;
+    gMenuImages = NULL;
+    gMenuMosaic1 = NULL;
+    gMenuMosaic2 = NULL;
+    sTajPortraitCommands = NULL;
+    menu_button_free();
 }
 
 /**
@@ -3853,6 +3900,16 @@ s32 menu_logo_screen_loop(s32 updateRate) {
  */
 void init_title_screen_variables(void) {
 #ifdef NATIVE_PORT
+    {
+        uint32_t persistedUnlocked = 0;
+        uint32_t persistedActive = 0;
+        magic_codes_persistence_boot(magic_codes_state_file_storage(),
+                                     &persistedUnlocked, &persistedActive);
+        gUnlockedMagicCodes |= (s32)persistedUnlocked;
+        gActiveMagicCodes |= (s32)persistedActive;
+        MDKR_TRACE("magic_codes_restore: unlocked=%08X active=%08X",
+                   persistedUnlocked, persistedActive);
+    }
     taj_mod_boot(taj_mod_state_file_storage());
     taj_mod_on_title_return();
     /* Reconcile pre-mod/imported Adventure challenge completion before the
@@ -7624,6 +7681,13 @@ void cheatmenu_render(UNUSED s32 updateRate) {
         draw_text(&sMenuCurrDisplayList, POS_CENTRED, 144, gMenuText[ASSET_MENU_TEXT_ALLCODESDELETED],
                   ALIGN_MIDDLE_CENTER); //"All cheats have been deleted"
     }
+#ifdef NATIVE_PORT
+    if (magic_codes_persistence_failed()) {
+        set_text_colour(255, 96, 64, 0, 255);
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 176,
+                  "MAGIC CODE STATE NOT SAVED", ALIGN_MIDDLE_CENTER);
+    }
+#endif
     if (gMenuStage != CHEATMENU_CHOOSE) {
         if (osTvType == OS_TV_TYPE_PAL) {
             offsetY = SCREEN_HEIGHT_HALF + 14;
@@ -7852,10 +7916,16 @@ s32 menu_magic_codes_loop(s32 updateRate) {
 #if VERSION >= VERSION_79
                     gUnlockedMagicCodes |= 1 << gNewCheatID;
                     gActiveMagicCodes |= 1 << gNewCheatID;
+                    cheatlist_apply_exclusivity(1U << gNewCheatID);
                     gNewCheatID *= 3;
 #else
                     gUnlockedMagicCodes |= 1 << (gNewCheatID >> 1);
                     gActiveMagicCodes |= 1 << (gNewCheatID >> 1);
+                    cheatlist_apply_exclusivity(1U << (gNewCheatID >> 1));
+#endif
+#ifdef NATIVE_PORT
+                    (void)magic_codes_persistence_update(
+                        (u32)gUnlockedMagicCodes, (u32)gActiveMagicCodes);
 #endif
                 }
                 gOptionsMenuItemIndex = 4;
@@ -7876,6 +7946,10 @@ s32 menu_magic_codes_loop(s32 updateRate) {
                 gOptionsMenuItemIndex = 6;
                 playSelectSound = TRUE;
                 gUnlockedMagicCodes &= CHEAT_CONTROL_TT | CHEAT_CONTROL_DRUMSTICK;
+#ifdef NATIVE_PORT
+                (void)magic_codes_persistence_update(
+                    (u32)gUnlockedMagicCodes, (u32)gActiveMagicCodes);
+#endif
                 gOpacityDecayTimer = 240;
             } else {
                 playBackSound = TRUE;
@@ -8112,6 +8186,42 @@ void cheatlist_exclusive(s32 code, s32 cheatA, s32 cheatB) {
     }
 }
 
+static void cheatlist_apply_exclusivity(s32 code) {
+    cheatlist_exclusive(code, CHEAT_BIG_CHARACTERS, CHEAT_SMALL_CHARACTERS);
+    cheatlist_exclusive(code, CHEAT_SMALL_CHARACTERS, CHEAT_BIG_CHARACTERS);
+    cheatlist_exclusive(code, CHEAT_DISABLE_BANANAS,
+                        CHEAT_NO_LIMIT_TO_BANANAS | CHEAT_BANANAS_REDUCE_SPEED |
+                            CHEAT_START_WITH_10_BANANAS);
+    cheatlist_exclusive(code,
+                        CHEAT_NO_LIMIT_TO_BANANAS | CHEAT_BANANAS_REDUCE_SPEED |
+                            CHEAT_START_WITH_10_BANANAS,
+                        CHEAT_DISABLE_BANANAS);
+    cheatlist_exclusive(code, CHEAT_DISABLE_WEAPONS,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN |
+                            CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_YELLOW |
+                            CHEAT_ALL_BALLOONS_ARE_RAINBOW | CHEAT_MAXIMUM_POWER_UP);
+    cheatlist_exclusive(code,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN |
+                            CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_YELLOW |
+                            CHEAT_ALL_BALLOONS_ARE_RAINBOW | CHEAT_MAXIMUM_POWER_UP,
+                        CHEAT_DISABLE_WEAPONS);
+    cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_RED,
+                        CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
+                            CHEAT_ALL_BALLOONS_ARE_YELLOW | CHEAT_ALL_BALLOONS_ARE_RAINBOW);
+    cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_GREEN,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_BLUE |
+                            CHEAT_ALL_BALLOONS_ARE_YELLOW | CHEAT_ALL_BALLOONS_ARE_RAINBOW);
+    cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_BLUE,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN |
+                            CHEAT_ALL_BALLOONS_ARE_YELLOW | CHEAT_ALL_BALLOONS_ARE_RAINBOW);
+    cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_YELLOW,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN |
+                            CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_RAINBOW);
+    cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_RAINBOW,
+                        CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN |
+                            CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_YELLOW);
+}
+
 /**
  * Lists each active cheat and allows the player to enable or disable them at will.
  * Some cheats are incompatable with each other, so those are checked to ensure safety.
@@ -8189,37 +8299,15 @@ s32 menu_magic_codes_list_loop(s32 updateRate) {
 #endif
         code = 1U << gUnlockedCheatIDs[gOptionsMenuItemIndex];
         gActiveMagicCodes ^= code;                                               // Toggle active cheats?
-        cheatlist_exclusive(code, CHEAT_BIG_CHARACTERS, CHEAT_SMALL_CHARACTERS); // cheatlist_exclusive() = Clear flags?
-        cheatlist_exclusive(code, CHEAT_SMALL_CHARACTERS, CHEAT_BIG_CHARACTERS);
-        cheatlist_exclusive(code, CHEAT_DISABLE_BANANAS,
-                            CHEAT_NO_LIMIT_TO_BANANAS | CHEAT_BANANAS_REDUCE_SPEED | CHEAT_START_WITH_10_BANANAS);
-        cheatlist_exclusive(code, CHEAT_NO_LIMIT_TO_BANANAS | CHEAT_BANANAS_REDUCE_SPEED | CHEAT_START_WITH_10_BANANAS,
-                            CHEAT_DISABLE_BANANAS);
-        cheatlist_exclusive(code, CHEAT_DISABLE_WEAPONS,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
-                                CHEAT_ALL_BALLOONS_ARE_YELLOW | CHEAT_ALL_BALLOONS_ARE_RAINBOW |
-                                CHEAT_MAXIMUM_POWER_UP);
-        cheatlist_exclusive(code,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
-                                CHEAT_ALL_BALLOONS_ARE_YELLOW | CHEAT_ALL_BALLOONS_ARE_RAINBOW | CHEAT_MAXIMUM_POWER_UP,
-                            CHEAT_DISABLE_WEAPONS);
-        cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_RED,
-                            CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_YELLOW |
-                                CHEAT_ALL_BALLOONS_ARE_RAINBOW);
-        cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_GREEN,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_BLUE | CHEAT_ALL_BALLOONS_ARE_YELLOW |
-                                CHEAT_ALL_BALLOONS_ARE_RAINBOW);
-        cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_BLUE,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_YELLOW |
-                                CHEAT_ALL_BALLOONS_ARE_RAINBOW);
-        cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_YELLOW,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
-                                CHEAT_ALL_BALLOONS_ARE_RAINBOW);
-        cheatlist_exclusive(code, CHEAT_ALL_BALLOONS_ARE_RAINBOW,
-                            CHEAT_ALL_BALLOONS_ARE_RED | CHEAT_ALL_BALLOONS_ARE_GREEN | CHEAT_ALL_BALLOONS_ARE_BLUE |
-                                CHEAT_ALL_BALLOONS_ARE_YELLOW);
+        cheatlist_apply_exclusivity(code);
 #ifdef NATIVE_PORT
         }
+#endif
+#ifdef NATIVE_PORT
+        /* Persist only after all retail exclusivity rules have settled. Taj's
+         * synthetic row leaves these masks unchanged, so this is a no-op. */
+        (void)magic_codes_persistence_update(
+            (u32)gUnlockedMagicCodes, (u32)gActiveMagicCodes);
 #endif
     }
 
@@ -8818,8 +8906,8 @@ void charselect_input(s8 *activePlayers) {
                         gMenuCurrentCharacter.unk1 = 20;
                     }
 #endif
-                }
-            }
+        }
+    }
         }
     }
 }
@@ -15884,6 +15972,11 @@ s32 get_track_id_to_load(void) {
  * Gets the character id from a slot index. Slot should be a value within [0,7]
  */
 s8 get_character_id_from_slot(s32 slot) {
+#ifdef NATIVE_PORT
+    const MdkrMatchSeatSelectionV1 *selection =
+        slot >= 0 ? mdkr_net_roster_runtime_selection((unsigned)slot) : NULL;
+    if (selection != NULL) return (s8)selection->character_id;
+#endif
     return gCharacterIdSlots[slot];
 }
 
@@ -15899,6 +15992,11 @@ s8 get_character_id_from_slot_unused(s32 slot) {
  * 0 = Car, 1 = Hovercraft, 2 = Plane
  */
 s8 get_player_selected_vehicle(s32 playerNum) {
+#ifdef NATIVE_PORT
+    const MdkrMatchSeatSelectionV1 *selection = playerNum >= 0
+        ? mdkr_net_roster_runtime_selection((unsigned)playerNum) : NULL;
+    if (selection != NULL) return (s8)selection->vehicle_id;
+#endif
     return gPlayerSelectVehicle[playerNum];
 }
 

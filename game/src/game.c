@@ -8,6 +8,7 @@
 #include "fast3d/gfx_pc_dkr.h"
 #include "fast3d/gfx_level_lighting.h"
 #include "presentation_snapshot.h"
+#include "net/net_roster_runtime.h"
 #endif
 #include "audio.h"
 #include "audio_spatial.h"
@@ -495,6 +496,21 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
         }
     }
     {
+        /* Production online direct-load seam. The launcher has already
+         * validated and copy-owned this descriptor; the game consumes only
+         * deterministic race choices, never room or service state. Match the
+         * same exact retail race-load call used by the diagnostic hook so menu
+         * backgrounds and track previews remain untouched. */
+        extern s32 gTrackIdToLoad;
+        const MdkrMatchLaunchDescriptorV1 *launch =
+            mdkr_net_roster_runtime_launch_descriptor();
+        if (launch != NULL && numberOfPlayers >= 0 && cutsceneId == 0 &&
+            levelId == gTrackIdToLoad) {
+            levelId = (s32)launch->manifest.track_id;
+            vehicleId = (Vehicle)launch->selections[0].vehicle_id;
+        }
+    }
+    {
         extern int g_frameCounter;
         if (mdkr_trace_enabled()) {
             mdkr_trace("level_load: levelId=%d numPlayers=%d entrance=%d vehicle=%d cutscene=%d @frame~%d",
@@ -731,7 +747,7 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     if (numPlayers && gCurrentLevelHeader->race_type != RACETYPE_CUTSCENE_2) {
         gCurrentLevelHeader->race_type = RACETYPE_CUTSCENE_1;
     }
-    music_voicelimit_set(gCurrentLevelHeader->voiceLimit);
+    music_voicelimit_set_from_level_header(gCurrentLevelHeader->voiceLimit);
     music_volume_reset();
     lights_init(32);
     var_s0 = VEHICLE_CAR;

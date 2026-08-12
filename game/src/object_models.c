@@ -231,6 +231,15 @@ block_30:
  * Returns null if it failed.
  * Official name: createModelInstance
  */
+static void *model_instance_allocate(s32 size) {
+#ifdef NATIVE_PORT
+    if (mdkr_object_model_pool_ready()) {
+        return mdkr_object_model_pool_alloc(size);
+    }
+#endif
+    return mempool_alloc(size, COLOUR_TAG_BLUE);
+}
+
 ModelInstance *model_instance_init(ObjectModel *model, s32 flags) {
     s32 temp;
     ModelInstance *result;
@@ -244,7 +253,8 @@ ModelInstance *model_instance_init(ObjectModel *model, s32 flags) {
 
     if (model->numberOfAnimations != 0 && (flags & OBJECT_BEHAVIOUR_ANIMATION)) {
         temp = ((model->numberOfVertices * 2) * sizeof(Vertex)) + sizeof(ModelInstance);
-        result = (ModelInstance *) mempool_alloc((model->numberOfAnimatedVertices * 6) + temp, COLOUR_TAG_BLUE);
+        result = (ModelInstance *)model_instance_allocate(
+            (model->numberOfAnimatedVertices * 6) + temp);
         if (result == NULL) {
             return NULL;
         }
@@ -255,7 +265,7 @@ ModelInstance *model_instance_init(ObjectModel *model, s32 flags) {
         result->modelType = MODELTYPE_ANIMATED;
     } else if (model->normals != 0 && (flags & OBJECT_BEHAVIOUR_SHADED)) {
         temp = (model->numberOfVertices * sizeof(Vertex)) + sizeof(ModelInstance);
-        result = (ModelInstance *) mempool_alloc(temp, COLOUR_TAG_BLUE);
+        result = (ModelInstance *)model_instance_allocate(temp);
         if (result == NULL) {
             return NULL;
         }
@@ -265,7 +275,8 @@ ModelInstance *model_instance_init(ObjectModel *model, s32 flags) {
         result->vertices[2] = NULL;
         result->modelType = MODELTYPE_SHADE;
     } else {
-        result = (ModelInstance *) mempool_alloc(sizeof(ModelInstance), COLOUR_TAG_BLUE);
+        result = (ModelInstance *)model_instance_allocate(
+            sizeof(ModelInstance));
         if (result == NULL) {
             return NULL;
         }

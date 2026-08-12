@@ -92,7 +92,8 @@ bool AppUi_applyDpiTransition(AppUiDpiState *state, float framebufferScale) {
 
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token, const char *pace, const char *walk) {
+    const char *token, const char *pace, const char *walk,
+    const char *onlineAction) {
     // Exactly one scripted selection, and it must be one of the three the
     // launcher has scripts for. Naming them explicitly is what keeps an
     // inherited variable from attaching synthetic input to a normal session,
@@ -100,8 +101,10 @@ AppUiSmokeInputMode AppUi_validateSmokeInput(
     const bool selectsFrameLimit = selection && selection[0];
     const bool selectsPace = pace && pace[0];
     const bool selectsWalk = walk && walk[0];
+    const bool selectsOnlineAction = onlineAction && onlineAction[0];
     const int scripts = (selectsFrameLimit ? 1 : 0) + (selectsPace ? 1 : 0) +
-                        (selectsWalk ? 1 : 0);
+                        (selectsWalk ? 1 : 0) +
+                        (selectsOnlineAction ? 1 : 0);
     const bool anyInputContract =
         scripts > 0 || (input && input[0]) || (token && token[0]);
     if (!anyInputContract) return AppUiSmokeInputMode::Disabled;
@@ -134,7 +137,8 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_INPUT"),
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"),
         std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE"),
-        std::getenv("MDKR_APP_SMOKE_A11Y_WALK"));
+        std::getenv("MDKR_APP_SMOKE_A11Y_WALK"),
+        std::getenv("MDKR_APP_SMOKE_ONLINE_ACTION"));
 }
 
 bool AppUi_a11yWalkArmed() {

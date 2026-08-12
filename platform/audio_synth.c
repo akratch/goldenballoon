@@ -517,15 +517,22 @@ s32 alSynAllocVoice(ALSynth *s, ALVoice *voice, ALVoiceConfig *config)
         physical = find_stealable_voice(s, config->priority);
         if (physical != NULL) {
             ALVoice *old_voice = physical->vvoice;
+            s16 old_priority = old_voice != NULL ? old_voice->priority : -1;
             ALFilter *filter = physical->channelKnob;
             ALParam *fade = __allocParam();
             ALParam *stop = __allocParam();
 
             if (fade == NULL || stop == NULL) {
+                native_csp_trace_physical_voice("physical_steal_reject",
+                                                old_priority,
+                                                config->priority);
                 __freeParam(fade);
                 __freeParam(stop);
                 return 0;
             }
+
+            native_csp_trace_physical_voice("physical_steal", old_priority,
+                                            config->priority);
 
             physical->offset = 512;
             if (old_voice != NULL) {
@@ -547,6 +554,8 @@ s32 alSynAllocVoice(ALSynth *s, ALVoice *voice, ALVoiceConfig *config)
     }
 
     if (physical == NULL) {
+        native_csp_trace_physical_voice("physical_voice_reject", -1,
+                                        config->priority);
         return 0;
     }
 

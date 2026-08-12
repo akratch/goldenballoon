@@ -63,6 +63,8 @@ u32  amAudioGetFrameSize(void);
 u32  amAudioGetMinFrameSize(void);
 u32  amAudioGetMaxFrameSize(void);
 u32  amAudioGetMaxSamples(void);
+/* Release synth globals before the arena backing them is destroyed. */
+void amAudioSessionShutdown(void);
 #endif
 
 #endif

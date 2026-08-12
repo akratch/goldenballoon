@@ -68,6 +68,8 @@ ROUTES = [
 MENU_RE = re.compile(r"menu_init: menuId=(\d+)")
 LEVEL_RE = re.compile(r"level_load: levelId=(\d+) numPlayers=(-?\d+)")
 MAGIC_CODE_RE = re.compile(r"magic_code_submit: accepted=(\d+) id=(-?\d+)")
+MAGIC_RESTORE_RE = re.compile(
+    r"magic_codes_restore: unlocked=([0-9A-F]{8}) active=([0-9A-F]{8})")
 BAD_RE = re.compile(r"\[FATAL\]|\[CRASH\]|AddressSanitizer|Assertion")
 
 
@@ -89,21 +91,41 @@ def run_magic_code_submission(binary: str, rom: str, scripts: Path,
             print("  $ " + " ".join(cmd))
         p = subprocess.run(cmd, cwd=run_root, env=env, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, timeout=900)
+        out = p.stdout.decode("utf-8", "replace")
+        failures = []
+        if p.returncode != 0:
+            failures.append("%s: exit code %d" % (name, p.returncode))
+        bad = BAD_RE.findall(out)
+        if bad:
+            failures.append("%s: %s in output" % (name, bad[0]))
+        outcomes = [(int(m.group(1)), int(m.group(2)))
+                    for m in MAGIC_CODE_RE.finditer(out)]
+        expected = [(1, 4), (0, -1)]
+        if outcomes != expected:
+            failures.append("%s: outcomes %s, want %s" %
+                            (name, outcomes, expected))
 
-    out = p.stdout.decode("utf-8", "replace")
-    failures = []
-    if p.returncode != 0:
-        failures.append("%s: exit code %d" % (name, p.returncode))
-    bad = BAD_RE.findall(out)
-    if bad:
-        failures.append("%s: %s in output" % (name, bad[0]))
-    outcomes = [(int(m.group(1)), int(m.group(2)))
-                for m in MAGIC_CODE_RE.finditer(out)]
-    expected = [(1, 4), (0, -1)]
-    if outcomes != expected:
-        failures.append("%s: outcomes %s, want %s" % (name, outcomes, expected))
-    elif verbose:
-        print("    %-30s outcomes=%s" % (name, outcomes))
+        sidecar = os.path.join(save, "magic_codes_state.ini")
+        if not os.path.isfile(sidecar):
+            failures.append("%s: accepted code created no sidecar" % name)
+        restart_script = str((scripts / "nav_to_magic_codes.txt").resolve())
+        restart_cmd = [binary, "--headless-frames", "2050", "--input-script",
+                       restart_script, "--rom", rom]
+        restart = subprocess.run(
+            restart_cmd, cwd=run_root, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=900)
+        restart_out = restart.stdout.decode("utf-8", "replace")
+        restored = [(int(m.group(1), 16), int(m.group(2), 16))
+                    for m in MAGIC_RESTORE_RE.finditer(restart_out)]
+        if restart.returncode != 0:
+            failures.append("%s restart: exit code %d" %
+                            (name, restart.returncode))
+        elif not restored or restored[0] != (1 << 4, 1 << 4):
+            failures.append("%s restart: restored %s, want ARNOLD on+unlocked" %
+                            (name, restored))
+        elif verbose:
+            print("    %-30s outcomes=%s restart=%s" %
+                  (name, outcomes, restored[0]))
     return failures
 
 

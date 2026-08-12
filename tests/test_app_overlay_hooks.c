@@ -36,7 +36,7 @@ static void set_overlay_test_environment(int enabled) {
 }
 
 int main(void) {
-    AppOverlayHooks hooks = {process_event, service, yes, no, yes};
+    AppOverlayHooks hooks = {process_event, service, yes, no, no, yes};
     const int event = 7;
 
     platformSetOverlayHooks(NULL);
@@ -45,6 +45,8 @@ int main(void) {
            "renderer diagnostic requests an overlay pass");
     expect(platformOverlayWantsInput() == 0,
            "renderer diagnostic never captures input or pauses simulation");
+    expect(platformOverlayWantsPause() == 0,
+           "renderer diagnostic never requests a pause");
     expect(platformOverlayRender() == 1,
            "absent app renderer is a successful no-op");
 
@@ -56,10 +58,18 @@ int main(void) {
     expect(serviced == 1, "registered hook services safe-boundary work");
     expect(platformOverlayWantsInput() == 1,
            "registered app hook owns input capture");
+    expect(platformOverlayWantsPause() == 0,
+           "registered online-style hook captures without pausing");
     expect(platformOverlayWantsRender() == 0,
            "registered app hook overrides the diagnostic fallback");
     expect(platformOverlayRender() == 1,
            "registered app renderer result is forwarded");
+
+    hooks.wants_pause = yes;
+    platformSetOverlayHooks(&hooks);
+    expect(platformOverlayWantsInput() == 1 &&
+           platformOverlayWantsPause() == 1,
+           "local-style hook may capture input and pause independently");
 
     platformSetOverlayHooks(NULL);
     set_overlay_test_environment(0);
@@ -67,6 +77,8 @@ int main(void) {
            "unregistered production path stays inert");
     expect(platformOverlayWantsInput() == 0,
            "unregistered production input path stays inert");
+    expect(platformOverlayWantsPause() == 0,
+           "unregistered production pause path stays inert");
 
     if (failures) return 1;
     printf("overlay hook boundary passed\n");

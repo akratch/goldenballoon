@@ -3,6 +3,7 @@
 #define MDKR64_UI_OVERLAY_H
 
 struct SDL_Window;
+class MdkrNativePartyHost;
 
 enum class OverlayExitRequest {
     None,
@@ -12,6 +13,13 @@ enum class OverlayExitRequest {
 
 // Register the overlay hooks with the engine. Call before mdkr64_engine_boot().
 void Overlay_install(SDL_Window *window);
+
+// Local menus pause; online Party chrome captures navigation without pausing.
+// The launcher-owned SessionRuntime updates this before an engine session.
+void Overlay_setPauseAllowed(bool allowed);
+
+/* Launcher-owned and process-lived; serviced even while overlay UI is hidden. */
+void Overlay_setPhonePartyHost(MdkrNativePartyHost *host);
 
 // Consume an orderly launcher/restart request made by the overlay. The overlay
 // only asks the engine to quit; main_app performs renderer/audio/log teardown

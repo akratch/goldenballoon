@@ -566,6 +566,14 @@ int mdkr_video_config_handoff_to_engine(int argc, char *const *argv) {
     return 1;
 }
 
+int mdkr_video_config_engine_session_complete(void) {
+    if (!s_video_initialized || !s_engine_handoff_completed) {
+        return 0;
+    }
+    s_engine_handoff_completed = 0;
+    return 1;
+}
+
 const MdkrVideoConfig *mdkr_video_config_current(void) {
     return &s_video;
 }

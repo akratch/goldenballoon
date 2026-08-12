@@ -716,14 +716,9 @@ static void test_camera_fast_pan_snaps(void) {
            "where fov kept blending while only rotation snapped");
 }
 
-/*
- * The per-axis 0x4000 rotation snap is a backstop Task 6 must not remove:
- * pitch, rotation_x and rotation_z are not covered by MDKR_CUT_YAW_DEG (it
- * grades yaw only, via mdkr_yaw_delta_deg), so a hard pitch snap with yaw and
- * FOV both quiet must still take the OLD per-axis path -- capture does not
- * flag a cut, resolve_camera_pair blends, and only the pitch axis snaps to
- * its endpoint while position and FOV keep blending across the same tick.
- */
+/* A hard change on any rendered view axis is one camera cut. Letting only the
+ * changed axis snap while position and lens inputs blend is a shear, not a
+ * useful fallback. */
 static void test_camera_pitch_axis_snap_still_backstops(void) {
     PresentationCameraPose pose;
     PresentationCameraEntry camera_sample;
@@ -745,15 +740,64 @@ static void test_camera_pitch_axis_snap_still_backstops(void) {
 
     expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose),
            "camera pitch snap: viewport 0 resolves");
-    expect(pose.interpolated == 1,
-           "camera pitch snap: no capture-time clause fires for pitch, so "
-           "the pair still blends");
+    expect(pose.interpolated == 0,
+           "camera pitch snap: the whole camera holds atomically");
     expect(pose.pitch == 0x5000,
-           "camera pitch snap: pitch still snaps to its endpoint via the "
-           "per-axis backstop");
-    expect(pose.fov > 60.0f && pose.fov < 70.0f,
-           "camera pitch snap: fov still blends -- this axis is untouched "
-           "by Task 6's yaw/FOV clauses");
+           "camera pitch snap: authored pitch is the current endpoint");
+    expect(pose.fov == 70.0f,
+           "camera pitch snap: lens input holds with the same cut");
+
+    /* Roll is a rendered view axis too, and must take the identical path. */
+    begin();
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 4.0f, 0.0f, 0.0f);
+    camera_sample.rotation_z = 0x4000;
+    camera_sample.fov = 70.0f;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 0 && pose.rotation_z == 0x4000 &&
+               pose.position[0] == 4.0f && pose.fov == 70.0f,
+           "camera roll snap: roll, position and lens hold one endpoint");
+}
+
+/* rotation_x and pitch are authored independently but the renderer sees only
+ * their wrapped sum. Interpolating the components independently can choose a
+ * long or snapped component path whose sum is nowhere near the camera's real
+ * short arc. The canonical view_pitch must own the rendered result. */
+static void test_camera_composed_pitch_uses_one_arc(void) {
+    PresentationCameraPose pose;
+    PresentationCameraEntry camera_sample;
+
+    begin();
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    presentation_snapshot_capture_begin();
+    camera_sample = make_camera(0, 2.0f, 0.0f, 0.0f);
+    camera_sample.rotation_x = 0x5000;
+    camera_sample.pitch = (int16_t)0xC000;
+    presentation_snapshot_capture_camera(&camera_sample);
+    presentation_snapshot_capture_commit();
+
+    expect(presentation_snapshot_resolve_camera(0, 1, 2, &pose) &&
+               pose.interpolated == 1,
+           "camera composed pitch: a 22.5-degree view change still blends");
+    expect(pose.view_pitch == 0x0800,
+           "camera composed pitch: midpoint follows the composed short arc");
+    expect((int16_t)(uint16_t)((uint16_t)pose.rotation_x +
+                               (uint16_t)pose.pitch) != pose.view_pitch,
+           "camera composed pitch: fixture distinguishes component blending "
+           "from the rendered canonical angle");
+    expect(presentation_snapshot_resolve_camera(0, 2, 2, &pose) &&
+               pose.view_pitch == 0x1000,
+           "camera composed pitch: authored endpoint remains exact");
 }
 
 /*
@@ -1530,6 +1574,7 @@ int main(void) {
     test_resolved_fields();
     test_camera_fast_pan_snaps();
     test_camera_pitch_axis_snap_still_backstops();
+    test_camera_composed_pitch_uses_one_arc();
     test_camera_cut_angle_and_fov();
     test_camera_cut_clauses_quiet_on_ordinary_pan();
     test_camera_cut_note_viewport_space();

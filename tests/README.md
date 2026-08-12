@@ -78,6 +78,64 @@ APIs from the simulation-owned sort, LOD, and visibility passes: those consumers
 must retain their legacy logical basis builders or an explicitly named logical
 basis/view replacement.
 
+`water_effect_tick_contract` protects the simulation-owned water texture clock
+extracted from rendering for rollback. Because `gObjPtrList` mixes full objects
+with particle-prefix storage, it requires the production ordering used by
+`shadow_update`: reject particles, check the header's water-effect group, then
+load and dereference the optional `WaterEffect`. In-memory positive controls
+remove the particle gate and move the dereference early so the check cannot
+silently pass after either four-player crash regression returns.
+
+`durable_rollback_firewall` is the ROM-free storage-side contract. It proves
+both EEPROM entry points refuse an online/resimulation progression write before
+candidate mutation, and proves the shared Controller Pak store refuses it
+before directory resolution, encoding, temporary-file creation, replacement or
+browser sync. One positive control removes each storage-family gate.
+
+`rumble_rollback_adapter` protects the first production reversible-effect sink.
+The rollback journal must install its cancellation callback; only vanished
+rumble may reach it, the decoded controller index must be bounded, and the host
+call must stop rather than start vibration. Corrected authoritative rumble state
+is serviced normally after replay, so this callback never edits `RumbleData`.
+
+`rollback_audio` is the ROM-free state-machine proof for versioned SFX custody.
+It covers immediate prediction preview, duplicate suppression, corrected-only
+defer/preview, vanished cancellation, confirmation retirement, invalid request
+rejection and last-value command coalescing.
+
+`session_bridge` includes the vendor-neutral MatchTransport drain contract.
+Local samples are indexed by frozen endpoint seat order and may replace only
+the endpoint's canonical slots; transport-owned remote slots remain byte-exact,
+local confirmation is additive, and malformed/count-mismatched merges leave the
+bridge untouched. `match_transport` consumes that seam from the launcher side:
+authenticated peer masks cannot overwrite local seats, exact epochs and bounded
+tick windows fail closed, remote repeat-last prediction carries no false
+confirmation, late corrections expose the first dirty tick, and a rejected
+drain leaves both history and bridge unchanged. `match_input_runtime` is the
+copy-out C ABI installed only for the bounded engine lifetime. `session_runtime`
+proves the adapter is created at READY, maps physical local-seat order into the
+frozen canonical roster, copies retained replay ticks by exact epoch, and is
+retired/replaced with the engine epoch. The four-process convergence gate now
+feeds all scripted remote ports through authenticated launcher ingress and
+withholds one real A-edge for four ticks; the production snapshot path rewinds
+five ticks and converges again. These gates prove the adapter and engine
+consumption boundary, not a deployed carrier or identity handshake.
+
+`audio_rollback_adapter` protects the production wiring. Table, direct and
+spatial starts must trace before binding and must not reach their raw allocator
+when rollback consumes them; spatial identity includes position. Voice
+cancellation checks its monotonic allocation generation before any stop, and
+volume/pan/pitch/priority/stop commands flush only after event reconciliation.
+The same gate requires spatial-source pool/topology state in the real authority
+registry. Its in-memory mutations break each of those properties independently.
+
+`postrace_rollback_contract` keeps the results transition inside the rollback
+domain. It requires the post-race viewport and both scene-load latches in the
+authority registry, permits an already-authored post-race tick to replay, and
+retains fail-closed admission for recursion, pause, textbox and scene-load
+boundaries. Removing a latch, reintroducing the post-race ban, or weakening a
+scene-load guard fails its mutation controls.
+
 `camera_obstruction_resolver` is the ROM-free policy layer above the immutable
 geometry sweep. It exercises immediate skin-backed retraction, bounded fixed-step
 recovery, last-safe revalidation after projection changes, discontinuity reset,
@@ -399,6 +457,13 @@ production coverage:
   cross-bank blend. Snapshot overflow must remain zero and fixed-ticket/present
   accounting must be exact. The split-screen arms use diagnostic GL for fast,
   synchronous PPM reads; the cutscene arm uses the shipping WebGPU backend.
+  Its long adventure arm continues from the frontend through hub and lobby
+  doors, a race and the post-finish spectator camera. Across those level
+  lifetimes it additionally requires zero uncaptured replay dependencies, zero
+  replay refusals caused by them, zero unconsumed camera-cut notes, and bounded
+  held-frame shares for world scroll, water/waves and object roots. Raw
+  blend/snap counts are used to recompute each reported share before the bound
+  is trusted.
 - `check_hud_render_authority.py` drives the race-start and wrong-way HUD state
   machines through 1P, 2P, and 4P routes. Normal presentation and a schedule
   that skips every odd scene draw must produce byte-identical raw v3 state,
@@ -524,8 +589,14 @@ production coverage:
   interpolated walks to refuse into held authored images rather than read
   live memory. Results in
   `docs/evidence/smoothing-stage-attribution-2026-08-08.md`.
-- `check_effect_shell_envelope.py` holds the shield/magnet effect shell inside
-  the distance a single authored tick can move it. On the diagnosis route it
+- `check_effect_shell_envelope.py` runs independent shield and magnet pixel
+  arms by default and holds each effect shell inside the distance a single
+  authored tick can move it. The shield uses its full connected silhouette;
+  the level-three magnet's lightning is disconnected, so its arm isolates a
+  stable lower-shell region around player one and rejects any centroid that
+  approaches the region boundary. A same-route magnet-off reference must have
+  zero keyed pixels in that region, proving the measured shape is the effect
+  rather than green track art. On the diagnosis route each arm
   measures, at every interpolated present, how far the shell sits from the
   authored pose of the tick its own recipe was copied from, and requires that
   displacement to stay inside the tick's own travel envelope rather than
@@ -533,9 +604,9 @@ production coverage:
   violated: the shell rode a whole tick ahead of its racer at a flat ~51 px on
   a 640x480 frame, which no endpoint check, hash stream or does-this-stage-
   change-pixels control could see, because a wrong pose is as coherent as a
-  right one. The gate also requires the shell's drawn area to recover to the
-  area the game itself draws, so a shell that vanished instead of leading
-  cannot pass.
+  right one. Each arm independently requires stage overrides and owner-tick
+  checks, zero owner mismatches, a non-vacuous pixel area, and no envelope
+  violation, so one effect cannot satisfy the other's coverage.
 - `check_wave_midpoint_envelope.py` holds the water and lava surfaces to the
   midpoint-sensitivity contract: an image reconstructed between two authored
   ticks has to differ from BOTH of them where the reconstruction lives.
@@ -791,6 +862,383 @@ The multiplayer gates extend the same ordering contract to 2P, 3P, and 4P:
 every required viewport/quadrant must remain live while output UI is active,
 with zero late-world draws and begin failures. Each run uses an isolated
 `MDKR_SAVE_DIR`; no multiplayer check reads or writes the player's save.
+
+`check_network_viewport_invariance.py` is the rollback authority companion.
+It locks AI, world lifetime, particle and vehicle-authoring functions to the
+shared canonical-player query and verifies launcher roster install → blocking
+engine boot → clear ordering. Its built-in mutations reintroduce a camera
+layout read into AI, remove the canonical fish-lifetime query and omit roster
+retirement; all three must fail. `net_roster` separately covers slot-0,
+slot-1, 2-local and no-render mappings, copy ownership, mapping accessors and
+invalid remote viewport admission. These are source/unit foundations; the
+real process boundary is owned by `check_online_process_convergence.py`. That
+ROM-backed gate launches four isolated production app/engine processes through
+the launcher-owned online envelope (slot 0, slot 1, 2-local and no-render),
+requires one canonical manifest digest, byte-identical 3,600-row v3/input
+streams and identical canonical transition/world/result event projections, and
+proves a remote viewport fails before boot. The no-render arm executes zero
+world passes and must omit local feedback; sound/music/rumble are intentionally
+not match-authority fields. Nonempty view maps are consumed with separate local
+output-rectangle and canonical-camera identities. Each mapped world command
+uses copy-owned viewport bytes, preventing a later canonical transition from
+rewriting the pointer before the graphics task consumes it. A mapped pixel
+witness requires slot 0 and slot 1 to differ full-screen, rejects uniform
+right/bottom drawable gutters, and requires the 0+2 couch endpoint to contain
+two distinct live halves plus a dark production divider. The global minimap
+must report the frozen local layout (one-view or couch split), and the zero-view
+verifier must emit neither mapped world passes nor global HUD/divider chrome.
+Every mapped output must also emit a non-vacuous HUD shadow-reflow witness:
+canonical animation deltas are rebased onto the one- or two-view preset without
+mutating rollback-owned `HudData`. The same processes require exact endpoint
+listener modes: one-view `spatial`, two-view `shared-center`, and no-view
+`silent`, while voice-lifetime evaluation reports all four canonical cameras.
+The `local_listener_mix` unit pins max-local volume, one-listener pan,
+shared-screen centering, verifier silence and malformed-map rejection. The gate
+also proves launcher transport convergence: every scripted remote port crosses
+authenticated ingress and one delayed edge forces a five-tick rewind before
+streams rejoin. The baseline also runs a hostile launch whose frozen manifest
+names track 6 while the ROM loads track 5. Protocol v1 admits standard races
+only; the engine must reject that mismatch before tick one, exit nonzero without
+an abort, and complete owner-last host teardown. `match_manifest`, `net_roster`
+and `rollback_game_runtime` separately pin atomic manifest+roster publication,
+standard-rules-only validation, track/race-type/regional-cadence matching, and
+wrong-value controls. Passing `--profile` repeats all four isolated endpoints under
+LAN, regional-good, regional-variable, poor, two-second-outage or adversarial
+packet/clock schedules. Ordinary through poor must complete and converge;
+outage/adversarial must preserve the exact pre-fault prefix, detect the first
+irrecoverable gap at the 31-tick replay boundary, unwind cleanly and enter the
+launcher's typed connection-lost scene. Profile-specific counters must be
+nonzero, while invalid/stale/unauthorized/conflicting/out-of-window transport
+counters and atomic-drain rejection stay zero. The same retirement record must
+contain a nonempty capture histogram with p50 ≤ p95 ≤ p99, no 20.48 ms
+histogram overflow, and zero capture/restore samples beyond the explicit
+8.33 ms p99 and 16.67 ms tail thresholds. A restore histogram is required to
+be either internally ordered and nonempty or exactly zero when no correction
+occurred. `rollback_ring` also requires fail-atomic rejection when the selected
+slot count would exceed the explicit 16 MiB authority-memory cap; the current
+32-slot 4P real-game ring is 16,007,200 bytes.
+
+`--ai-takeover-slot N --ai-takeover-tick T` overlays one immutable
+room-authorized disconnect decision on that same four-process proof. All
+endpoints must converge while the chosen slot may be locally owned on one and
+remote on the others. Transport reports one activation per endpoint, ignores
+post-cutoff peer input only where that slot is remote, authors confirmed neutral
+history after the grace interval, and never enters gap recovery. The game keeps
+canonical human identity for cameras/HUD/results while routing the vehicle
+solver through AI; `test_ai_takeover_adapter.py` mutates the exact-tick replay
+mask, temporary CPU dispatch/identity restore, no-double-owner rejection and
+no-handback telemetry. The default cutoff is rollback tick 240/process tick
+2660, where the checked-in fixture authors an A edge for every player; the gate
+requires the selected slot to be present-neutral on that exact row, so the
+takeover proof cannot pass by replacing an already-idle sample.
+
+`check_rollback_track_matrix.py` runs the same production delayed-correction
+and exact-second-replay proof on all 20 standard tracks using a human-driven
+car. It asserts the vehicle actually dispatched by the game rather than trusting
+the launcher request. It requires 180 authored race
+ticks, 189 captures, three restores, a bounded 32-slot ring, ordered nonzero
+capture/restore histograms, clean host teardown and zero timing/journal/I/O
+overflow per track. `--tracks 5,8` is the focused iteration form; the release
+row uses the complete corpus. `check_rollback_vehicle_matrix.py` independently
+decodes each track's legal player-vehicle mask from the ROM, exercises all 47
+standard-track/player-vehicle rows through the explicit Time Trial route, and
+requires the observed in-game vehicle to match each requested car, hovercraft or
+plane. `check_rollback_soak.py` then holds Whale Bay's wave/behaviour-heavy
+hovercraft route for 10,180 authored ticks with the current ring and the same
+exact correction; it also requires an observed hovercraft dispatch. All three
+scripts print artifact-sized snapshot, ring and four-part p99 summaries
+(`capture/restore/resimulated-game-tick/authored-gameplay-frame`) rather than
+relying on historical small-ring prose. Their bounded histograms require p99 at
+or below 8.33 ms, no overflow beyond 20.48 ms and no sample beyond the hard
+16.67 ms authored-tick deadline. Authored gameplay-frame time ends at the
+rollback boundary; renderer/GPU presentation latency is intentionally a
+separate platform gate.
+
+`check_rollback_item_matrix.py` adds the item dimension that track and vehicle
+breadth cannot infer. It grants one real pre-snapshot inventory charge, then
+drives the ordinary Z-release path inside a four-tick delayed correction for all
+15 balloon type/level configurations (14 concrete weapon IDs; missile L1 and L3
+both intentionally map to the standard rocket). The result must consume the
+charge and observe the real boost, shield, magnet feedback, trap spawn or
+projectile spawn before an exact second replay. Match-critical item headers,
+models, sprites, attachments, textures and explosions are leased before tick
+zero; dynamic model instances live in a dedicated snapshotted model subpool,
+attachment objects live in the snapshotted object pool, and shared model
+reference counters are registered separately so discarded replays cannot leak
+references. A suppressed-release mutation must
+fail, while an invalid balloon index and an armed non-correction mode must fail
+closed. Every row also enforces the 16 MiB ring, timing, journal, forbidden-I/O
+and clean-teardown contracts.
+
+`online_lobby_core` is the socket-free launcher room reducer. Its tests cover
+membership, exact compatibility, seat ownership, unique per-seat character and
+vehicle selections, selection revisions, Ready invalidation, voting, barriers,
+reconnect, leader custody, CAS and retry idempotency. `match_launch_descriptor`
+then freezes the Loading lobby into a fixed 148-byte manifest+selection record.
+It requires stable canonical seat order, a neutral unused tail, legal vehicles,
+unique characters and exact lobby/manifest epoch/track/mask/count agreement;
+an exhaustive one-byte mutation loop proves decode/checksum failure is atomic.
+`session_bridge` and `session_runtime` carry that record in the V3 production
+envelope, copy-own it across the persistent launcher/engine loan and reject
+wrong epochs, duplicate characters and non-neutral envelope bytes without
+partial mutation. V2 remains an explicit manifest-only laboratory path and
+cannot expose a launch descriptor. `net_roster` then copy-owns the validated
+descriptor for the engine lifetime. `check_match_launch_direct_load.py` proves a
+real ROM direct-loads its descriptor track and applies all four canonical
+characters/vehicles without `MDKR_LOAD_TRACK`;
+`check_online_process_convergence.py --launch-v3` proves four endpoint processes
+retain identical descriptor identity while their local controller, viewport,
+HUD and listener maps differ safely.
+`check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
+mutable-authority census and its omitted-state positive control.
+
+`online_lobby_view_model` is the socket- and UI-toolkit-free ON-03A projection
+over those actual session/lobby snapshots. Every entry, room, preflight,
+selection, loading, countdown, racing, results and recovery view emits bounded
+title/explanation/status copy, typed primary/secondary/Cancel controls, live
+announcement priority and any timeout outcome. Its exhaustive failure table
+keeps raw provider/transport terms out of player copy, maps unknown reasons to
+one actionable fallback, preserves **Play Here**, rejects mismatched snapshots
+fail-atomically, and proves room data cannot expose **Start Race** before the
+local release gate (which also requires leader, 2+ members and everyone Ready).
+`online_lobby_fake_adapter` is the deterministic ON-03B effect layer beneath
+the real views. It uses the actual session and room reducers for create/join,
+invite, preflight, selections, vote, Ready, loading, racing, results and a
+second round. Revisioned UI requests make exact double actions idempotent and
+reject conflicting/stale/route-confused mutations; versioned callback tokens
+make load cancellation terminal. Its vertical fixture cancels one epoch, races
+2 more with fresh identity, preserves both members and proves a stale engine
+result cannot finish the current race. It also exercises a typed $0-capacity
+refusal whose recovery remains **Play Here**.
+
+The ON-03C native surface starts with four fixture-paired CTests:
+`app_online_room_smoke`/`app_online_room_content` render the 1280×720 launcher,
+while `app_online_room_minimum_smoke`/`app_online_room_minimum_content` render
+640×480 at 200% UI scale. The minimum producer sends a real SDL touch drag
+through ImGui to the active panel's scroll owner and captures the below-fold
+primary action. Both consumers reject stale/missing producers, blank or
+offscreen content, lost contrast and absent action color. The ordinary Settings
+handheld gate uses the same active-panel scroll seam, preventing Online Room
+support from weakening the existing input proof. Run the focused contract with:
+
+```bash
+ctest --test-dir build --output-on-failure \
+  -R 'app_online_room_(smoke|content|minimum_smoke|minimum_content|gallery|accessibility|actions)'
+```
+
+The executable also publishes a versioned 42-case gallery built only through
+fake-adapter commands/callbacks/reducers. `app_online_room_gallery` renders each
+case in an isolated profile and requires all 42 captures to be non-flat and
+byte-distinct. `app_online_room_accessibility` walks every case with actual SDL
+keyboard navigation and requires its title plus every visible action to be
+spoken; recovery titles must be assertive. `app_online_room_actions` discovers
+all 25 action ids from the executable and activates one valid rendered instance
+through both keyboard and a virtual gamepad. Reducer tests separately prove the
+confirmed Leave Race effect ordering and that preflight retry cannot create a
+replacement room. `check_browser_online_room.py` qualifies the browser's
+zero-I/O release gate, launcher-owned ROM/Phone Party handoffs, Escape focus
+restoration and 320×568/200% reflow. `check_browser_online_room_gallery.py`
+then loads the isolated 35 KiB shared-C projection (never the ROM, game engine
+or a provider), compares all 42 browser views with the native executable,
+activates all 25 typed routes through focused native keyboard controls, and
+proves touch, recovery accessibility and every-case portrait/landscape 200%
+reflow (down to 320×568). These
+are product-input gates; none enables production race admission.
+
+`check_browser_online_activation.py` qualifies the publisher-to-launcher seam
+without a hosted service. The shipped static policy is disabled and leaves the
+projection unloaded. When the fixture supplies an enabled same-origin policy,
+a clean 40-hex source provenance and a locally verified supported ROM, the
+launcher derives a versioned build id plus gameplay-contract digest and loads
+the model exactly once. US 1.1 maps to revision 1/30 Hz and PAL 1.1 to revision
+2/25 Hz; dirty provenance and cross-origin service targets fail closed. This
+activation performs no `/api/` request and still cannot enable race admission.
+
+`check_browser_online_match_room.py` enables the otherwise-inert live adapter
+with a MatchRoom-shaped seam. It proves link/code create and join, invite QR and
+generation rotation, local selection/Ready, state-socket reconnect, corrupt
+snapshot recovery, secret-fragment erasure before request and accessible action
+names. An injected service admission field remains powerless: the shared C
+projection receives the locally false policy and never exposes Start Race.
+
+`tests/check_browser_online_two_person.py` starts the real local Worker with
+static assets and fresh Durable Objects, then drives two isolated Chrome
+profiles through create, QR/code/link sharing, `/room/` fragment handoff,
+join, socket outage/recovery, different racer choices, Ready convergence,
+selection backtracking, accessible actions and independent leave. It records
+automation timings, proves wrong `/controller/` links recover without mutating
+the room, keeps local recovery one action away, and requires Start to remain
+absent. The run also guards two cross-client bugs: share APIs have a bounded
+room-code fallback, and Retry must restore both authenticated state and its
+subscription. This is an automated journey—not the outstanding uncoached human
+usability approval.
+
+`tests/check_party_capacity.py` runs two fresh real-Worker environments. The
+first exactly consumes a small admission budget with one MatchRoom and one
+Phone Party, sends a 64-request mixed creation flood, and requires every new
+create/join to return the public `{error: "service_budget_safe"}` response with
+`no-store`. The real Wrangler process then restarts on the same persistent
+state; the refusal latch, MatchRoom and Phone Party must reconstruct without
+reopening admission. A 64-request forged bearer flood across both control APIs
+must reject without consuming one control unit or touching a room. Existing
+authenticated state, mutation, MatchRoom close
+and Phone Party close must still pass from the separate control reserve;
+closing does not
+refund the daily stop line. Static launcher, `/controller/`, and `/room/`
+routes retain their CSP/security headers throughout. A real browser must render
+the assertive **Online Rooms Are Full Right Now** recovery with accessible
+**Choose ROM** and **Try Again** actions. Missing/wrong operations secrets must
+deny the aggregate snapshot. The HTTP controls consume 10 units, including the
+post-restart reconstruction read; the fixture
+then opens both authenticated socket shapes and requires the protected
+snapshot to expose exactly 20 admission units, 42 control units (including the
+socket reservations), the refusal latch and no identity, capability or network
+canary. Its companion health view exposes only fixed reservation buckets,
+reconstructs those units exactly with complete tracking across restart, and
+keeps forged/refused floods at zero observations. The second environment proves literal
+`MAX_ADMISSIONS_PER_DAY=0` refuses the first admission and reports `closed`
+while static/local paths remain available and its health aggregate remains
+empty/complete.
+
+`tests/check_party_internal_api.py` freezes the 15-call Worker→Durable Object
+census and requires every call to use the internal v1 envelope. It also requires
+PartyBudget, PartyRoom, PartyCodeDirectory and MatchRoom to reject an unknown
+version before URL/body parsing or storage access. Service tests exercise all
+four rejection boundaries; existing direct-object tests retain the legacy old-
+Worker arm, while the full Worker tests exercise the versioned new-Worker arm.
+
+`tests/check_party_edge_policy.py` validates the checked-in Free-plan zone
+rate-limit payload: exactly one terminating `/api/` rule, IP/colo counting,
+30 requests per 10 seconds, 10-second mitigation, no deployment identity or
+secret material, and no match for launcher/controller/room/static routes. It
+also freezes the browser mapping from a provider-generated HTML `429` to the
+typed capacity recovery. Actual zone installation and Security Events evidence
+remain human/provisioned work.
+
+`tests/test_party_usage_reconciliation.py` adversarially validates the offline
+operator gate that compares the exact privacy-safe capacity snapshot with a
+normalized provider aggregate. It rejects unknown fields, arithmetic drift,
+date skew, refusal latches, paid plan/billing/overages, nonzero charge,
+unreviewed higher limits, 75% stop lines and absent provider activity. Its CLI
+emits only bounded aggregate pass output or a stable stop code and proves a
+secret-canary value cannot be reflected. This is contract evidence; a hosted
+provider export and seven-day zero-currency ledger remain operational evidence.
+
+`tests/test_party_beta_ledger.py` validates the machine contract for exactly
+seven contiguous hosted beta days. Every day reuses the strict provider
+reconciliation and independently verifies the fixed health-bucket weights,
+complete legacy-free tracking, local-play availability, closed incident state,
+source/deployment digests and daily `GO`. Schema injection, date/window skew,
+charge, incomplete tracking, arithmetic drift, boolean confusion, oversized
+input and secret reflection all stop. Its fixture pass proves only the validator;
+it never counts as hosted seven-day evidence.
+
+`tests/check_web_publish_stamp.py` stages the public shell exactly as the
+publisher does and requires one identical build token on every root launcher,
+Phone Party, controller and `/room/` JavaScript/CSS reference. It also removes
+the room document in a negative fixture and requires publication to fail
+closed, preventing a release from mixing protocol/client generations through
+ordinary browser caches. Each document also receives one explicit build stamp
+for service-worker cache admission.
+
+`tests/check_browser_publish_skew.py` stages two immutable releases and drives
+their real service-worker lifecycle in a clean Chromium profile. It proves the
+old worker remains active while the new worker waits, both caches are isolated,
+and an old worker that has fetched new HTML will not overwrite its offline
+document. With the server forcibly unavailable during that window, navigation
+recovers one complete old build. Closing the old document then activates the
+new worker and deletes only the stale cache—no `skipWaiting`, mixed assets or
+mid-session takeover.
+
+The adjacent browser-party evidence is split by responsibility:
+`check_controller_page.py` owns the engine-free phone surface and neutral
+lifecycle, `check_party_host.py` owns launcher QR/code approval and seat custody,
+and `check_phone_party_webrtc.py` owns authenticated signaling plus direct state
+and control channels. `check_persistent_browser_session.py` separately proves
+two complete engine loans return through one wasm module without surrendering
+launcher or mounted-storage ownership.
+
+The controller gate also drives the shared analog surface through Arrow/WASD,
+requires full cardinal range, radius-clamped diagonals, synchronized spoken
+direction and exact neutral on release. `touch_surface.test.cjs` separately
+proves blur and page lifecycle neutralization without a browser timing race.
+
+The controller/host browser gates also freeze destructive-action UX: Leave and
+End open labelled confirmations with the non-destructive choice focused, cancel
+mutates neither lease nor room, and confirmation produces exact neutral state
+before truthful **Controller disconnected** recovery. The shared document
+contract requires inline code errors, stable dynamic invite-form metadata,
+semantic auxiliary headings, contained modal overscroll, visible focus, and a
+safe-area-aware skip target on the private-room handoff.
+
+The Party service also contains a separate launcher MatchRoom authority in
+`services/party/src/match/`. Its pure reducer and real local SQLite Durable
+Object tests cover link/code create and join, the complete two-endpoint
+selection/vote/load/race/results/rematch path, authenticated actor injection,
+every-phase reconstruction, hibernated WebSocket recovery, exact and conflicting
+replay, simultaneous revision conflict, a shared native/service fingerprint
+vector, leader-only generation-checked invite rotation, expiry deletion,
+canonical non-Join commands, a literal-zero admission
+kill switch and durable-storage absence of raw invite/code/credential values.
+Client state also omits internal receipts, command high-water marks and
+fingerprints. Run all service gates with
+`(cd services/party && npm run check)`. These tests do not switch on production
+online admission.
+
+`test_party_experience_canary.py` pins the zero-analytics operated canary:
+HTTPS-only origin shape, fixed 20-attempt lanes, nearest-rank p95 thresholds,
+aggregate-only output and refusal to overwrite evidence. The production-path
+runner is `tools/run_party_experience_canary.py`; its explicit loopback
+development mode can smoke real Worker/WebSocket/WebRTC behavior but cannot
+produce a ledger-qualified day. `test_party_beta_ledger.py` then requires the
+exact v2 experience aggregate on every one of seven contiguous zero-charge
+days and adversarially rejects under-sampling, success or latency drift.
+
+`net_local_input` is the ROM-free input ownership gate beneath that later
+integration. It merges local-seat-indexed samples into a canonical frame using
+the frozen roster, returns the exact authored-slot mask, and preserves remote
+slots byte-for-byte. Slot-1, two-local-seat and no-local verifier cases pass;
+out-of-range analog, non-neutral absent samples, count mismatches and malformed
+mapping tails must fail atomically without touching the caller's output.
+`match_input_packet` pins the smallest carrier byte boundary: a fixed 24-byte
+big-endian `MINP` v1 payload carries epoch, tick, canonical slot and pad sample,
+requires zero reserved bytes and a valid checksum, and leaves the destination
+unchanged on every malformed byte. `match_input_bundle` pins the loss-resilient
+profile carrier: exactly 64 bytes, one to three implicit consecutive frames for
+all four slots, CRC-16/CCITT, zero-neutral unused fields and fail-atomic decode.
+Its exhaustive one-byte mutation loop rejects every corrupt byte. Peer
+ownership is deliberately absent from both codecs; the launcher supplies an
+authenticated slot mask, and a decoded bundle may only narrow that mask.
+
+`net_impairment` and `net_clock` own deterministic hostile-environment
+schedules. The named LAN/regional/poor/outage/adversarial packet profiles cover
+latency, jitter, loss, duplication, reorder, corruption, a cadence-derived
+two-second outage and bounded deliveries per destination/tick. Clock profiles
+independently vary endpoint offset/drift, long frames, skipped scheduler
+opportunities and sleep/wake; only `tick_offered` increments authored work, so
+host recovery can never disguise a changed simulation timestep. Same-profile,
+same-seed schedules are byte-identical and forced controls prove each branch is
+observable.
+
+`check_persistent_app_session.py` is the fast native ownership proof (three
+five-tick epochs). `check_persistent_rollback_rematch.py` is its ROM-backed
+release counterpart: the same launcher loans one engine three times for full
+8,200-frame 4P races, runs the deep tick-4,800 rollback in every epoch, draws
+the launcher between loans, and requires results plus clean host teardown each
+time. `check_online_profile_rematch.py` keeps that launcher alive for three
+regional-variable online epochs and requires fresh epochs/manifests,
+non-vacuous loss/duplicate/reorder/clock faults, zero stale or unauthorized
+transport ingress, no recovery, stable launcher identity and three clean arena
+teardowns. The ASan arm is load-bearing: it previously found stale audio-player
+list roots, particle-pool pointers and track-menu background roots on later
+loans, plus a seat-count mismatch that dereferenced caller storage before
+structural rejection. Engine teardown now retires the menu/background roots
+before arena release, and the session bridge rejects the count before reading
+samples. The source mutation contract in `test_audio_rollback_adapter.py` now
+also requires the audio roots to be retired before a replacement arena can be
+allocated. The typed app boot seam
+accepts either an authored-tick limit or a presentation-frame limit, never
+both; multiplayer menu fixtures use frames.
 
 `check_runtime_safety.py` is the production-seam companion to the
 `runtime_contracts` CTest. The unit exhausts audio group/sound/vehicle row
@@ -2450,6 +2898,20 @@ tracks 5/32/15. Object
 collision is overwhelmingly a hub-world phenomenon, which is why the pre-fix
 measurement (taken only on race tracks) made the gap look 100x smaller than it was.
 
+## Object-mesh wedge recovery — `tests/check_object_wedge.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_object_wedge.py -v
+```
+
+Pins the complementary failure mode: a racer that begins a tick already inside
+a one-sided object mesh must be ejected rather than remaining embedded. The
+production arm requires embedded-point recovery, post-impact escape and bounded
+pitch levelling. A same-binary `MDKR_OBJCOLL=norecover` positive control seeds
+the identical contact and must remain embedded, so the production arm cannot
+pass merely because the fixture stopped reaching the door. The versioned test
+capability is inert in normal play.
+
 ## Door numerals stay per door — `tests/check_door_glyphs.py`
 
 ```bash
@@ -2861,8 +3323,12 @@ The Original arm also dumps headless PCM to its temporary directory. It pins
 the authored sequence-30 stop and sequence-57 race-cue start (3.204 seconds
 apart, with the race cue 0.968 seconds after GO) while requiring every 250 ms
 window around GO to remain active. This distinguishes the original game's cue
-transition from an audio-device or mixer dropout. Full release/Ares measurements
-and the visible-timer explanation are in
+transition from an audio-device or mixer dropout. The same arm traces every
+compressed-sequence note admission for the music and jingle players. It rejects
+any voice-limit loss or physical-voice steal and reports each player's measured
+peak occupancy, which directly covers the dense Bluey passage and multi-note
+silver-coin jingles from issue #30. Full release/Ares measurements and the
+visible-timer explanation are in
 [`docs/BLUEY2_PARITY.md`](../docs/BLUEY2_PARITY.md).
 
 ## First boss campaign progression — `tests/check_first_boss_progression.py`
@@ -3828,6 +4294,12 @@ and placard to return from durable state. The gate is registered as
 its MEMFS sidecar. It requires the visible C failure path, exact retained bytes,
 a successful ordinary retry flush, the matching IndexedDB record, and a fresh
 document that restores Taj without re-entering `ABRACADABRA`.
+
+`tests/check_browser_magic_codes_persistence.py` applies the same real-browser
+durability fault to the general Magic Codes sidecar: the first IDBFS commit is
+rejected, exact accepted/active bytes remain in memory, an ordinary retry
+persists them, and a fresh document restores the enabled state without entering
+the code again.
 
 ## Adventure trophy series — `tests/check_trophy_series.py`
 

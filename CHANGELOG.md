@@ -8,6 +8,44 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## Unreleased
+
+### Added
+
+- Magic Codes now keep their unlocked and active state between launches. Codes
+  that alter save progression, grant one-time rewards, show credits, or can
+  lock the game are deliberately not restored.
+
+### Fixed
+
+- Rollback races now keep projectile models, glow attachments and shared model
+  lifetimes deterministic across rewinds. A 15-configuration item matrix covers
+  every balloon tier through the real inventory path and guards the fix.
+- On Windows, the launcher can save the ROM path and settings again. The
+  withdrawn 1.2.1 Windows build could not write its settings file at all, so
+  every preference change — including importing or removing a ROM — failed
+  with an error and was lost on restart. Saving no longer depends on the
+  C-runtime flavor the executable was built against.
+- The "Forget Remembered ROM" confirmation dialog now keeps a readable width
+  instead of collapsing into a tall, narrow column on small high-scale
+  displays such as gaming handhelds.
+- A kart that ends up inside a door or scenery object's collision mesh — for
+  example after an angled bounce off a locked balloon door — is now pushed
+  back out the same way terrain already pushes karts out, instead of staying
+  wedged. A connected but idle controller no longer takes the keyboard away
+  from player one.
+- Dense passages in the Bluey rematch no longer lose notes. The same sequence-
+  player initialization fix keeps multi-note jingles—including silver-coin
+  pickup chimes—from dropping everything after their first voice.
+- Interpolated presentation now samples controls immediately before the next
+  gameplay tick. On a measured 60 Hz run this removed roughly one frame of
+  avoidable input wait; Original mode was already sampling at that point.
+- A single delayed or unusually short present no longer makes a fixed-refresh
+  display look variable, and sustained refresh changes no longer flap between
+  timing modes.
+- Camera cuts now treat pitch and roll as part of the same view change as yaw
+  and field of view, so one camera axis cannot blend while another snaps.
+
 ## [1.2.1] — 2026-08-12
 
 ### Fixed

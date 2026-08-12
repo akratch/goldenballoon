@@ -1,0 +1,24 @@
+{
+  "name": "golden-balloon-party-api-rate-limit",
+  "description": "Free-plan edge guard for dynamic multiplayer API requests",
+  "kind": "zone",
+  "phase": "http_ratelimit",
+  "rules": [
+    {
+      "ref": "golden_balloon_party_api_per_ip",
+      "description": "Block one IP above 30 /api requests per 10 seconds",
+      "expression": "starts_with(http.request.uri.path, \"/api/\")",
+      "action": "block",
+      "ratelimit": {
+        "characteristics": [
+          "cf.colo.id",
+          "ip.src"
+        ],
+        "period": 10,
+        "requests_per_period": 30,
+        "mitigation_timeout": 10
+      },
+      "enabled": true
+    }
+  ]
+}

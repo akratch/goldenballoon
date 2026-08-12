@@ -681,6 +681,14 @@ static int run_primary_case(void) {
     }
     expect("one-shot handoff rejects a second transition",
            !mdkr_video_config_handoff_to_engine(3, engine_argv));
+    expect("completed engine session rearms one future handoff",
+           mdkr_video_config_engine_session_complete());
+    expect("engine-session completion cannot be repeated",
+           !mdkr_video_config_engine_session_complete());
+    expect("next engine session receives one handoff",
+           mdkr_video_config_handoff_to_engine(3, engine_argv));
+    expect("next engine session still rejects a duplicate handoff",
+           !mdkr_video_config_handoff_to_engine(3, engine_argv));
 
     expect("returned to original cwd", chdir(original) == 0);
     remove_config_artifacts(temporary);

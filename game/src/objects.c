@@ -16,6 +16,7 @@
 #include "camera_dynamic_occlusion.h"
 #include "enh_draw_distance.h"
 #include "gameplay_event_trace.h"
+#include "rollback/rollback_game_runtime.h"
 #include "fast3d/gfx_level_lighting.h"
 #endif
 /* The level-object-map header is 16 bytes; gObjectMap[] is s32*, so the entries
@@ -37,6 +38,7 @@
 #include "macros.h"
 #include "math_util.h"
 #include "menu.h"
+#include "network_player_authority.h"
 #include "object_functions.h"
 #include "object_layout.h"
 #include "object_models.h"
@@ -73,6 +75,14 @@
 
 void mdkr_objcoll_hit(void);   /* platform/hasm_stubs_temp.c — [OBJCOLL] telemetry */
 int  mdkr_objcoll_legacy(void); /*   ""      — MDKR_OBJCOLL=legacy A/B arm */
+/* Embedded-point recovery in func_80017A18() and the versioned wedge-gate
+ * seams that measure it. All in platform/hasm_stubs_temp.c beside the two
+ * above; all inert unless their variable/token is set. */
+int   mdkr_objcoll_norecover(void);          /* MDKR_OBJCOLL=norecover A/B arm  */
+void  mdkr_objcoll_recovered(int iterations);/* [OBJRECOVER] counters           */
+int   mdkr_objcoll_wedge_test_enabled(void); /* versioned internal test token   */
+void  mdkr_objcoll_embed_probe(int inside);  /* [OBJEMB] arrival probe          */
+float mdkr_objcoll_embed_seed_depth(void);   /* MDKR_TEST_OBJCOLL_EMBED seed    */
 
 static void mdkr_taj_trace_phase(
     const char *phase, s32 vehicle, const s8 *thresholds,
@@ -274,11 +284,20 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model,
  * that failed) — i.e. more than the whole old 0x15800 budget. Slot count is
  * unchanged and was never the limit (peak 296-297 of 512). See docs/OPEN_ITEMS.md. */
 #define OBJECT_POOL_SIZE (0x15800 * (sizeof(void *) / 4))
+#define ROLLBACK_MODEL_POOL_SIZE 0x30000
 #else
 #define OBJECT_POOL_SIZE 0x15800
 #endif
 #define OBJECT_BLUEPRINT_SIZE 0x800
 #define OBJECT_SLOT_COUNT 512
+#ifdef NATIVE_PORT
+/* ModelInstance allocations contain mutable vertex and animation state that
+ * rollback must restore. Keep them in a distinct fixed-address arena: it can
+ * be captured atomically without consuming the bounded object pool or turning
+ * individual, legitimately freed instances into lifetime invariants. 0x30000
+ * supplies 192 KiB of data; mempool_new_sub adds 256 allocator slots. */
+#define ROLLBACK_MODEL_SLOT_COUNT 256
+#endif
 #define OBJECT_COLLISION_COUNT 20
 #define AINODE_COUNT 128
 /* Slots in gParticlePtrList, the deferred-free queue drained by
@@ -536,6 +555,9 @@ s32 gObjectCount;
 s32 gObjectListStart;
 s32 gParticleCount;
 Object *gObjectMemoryPool;
+#ifdef NATIVE_PORT
+static MemoryPoolSlot *sRollbackModelMemoryPool;
+#endif
 Object **gCollisionObjects;
 s32 gCollisionObjectCount;
 Object **D_8011AE74; // Pointer to an array of Animation objects
@@ -561,6 +583,15 @@ s32 gAssetsLvlObjTranslationTableLength;
  * historical "...Length" above is the last nonzero ID and is not a safe array
  * bound. */
 size_t gAssetsLvlObjTranslationTableCapacity;
+
+#define MDKR_ROLLBACK_ASSET_LEASE_MAX 64
+typedef struct MdkrRollbackAssetLease {
+    void *asset;
+    s8 modelType;
+} MdkrRollbackAssetLease;
+static MdkrRollbackAssetLease
+    sRollbackAssetLeases[MDKR_ROLLBACK_ASSET_LEASE_MAX];
+static s32 sRollbackAssetLeaseCount;
 #endif
 s32 gObjectMapIndex;
 Object **gParticlePtrList;
@@ -931,19 +962,26 @@ void dkr_force_boost_hook(Object_Racer *racer) {
     racer->boostType = BOOST_LARGE;
 }
 
-/* Deterministic verification content for the shield/magnet shear path. Both
- * pixel-comparison arms receive this same authored-tick state; only the replay
- * interpolation test seam differs between them. */
-static void dkr_force_shield_hook(Object_Racer *racer) {
+/* Deterministic verification content for the shield/magnet shear path. A
+ * numeric MDKR_FORCE_SHIELD value keeps its historical shield meaning;
+ * `magnet@start:length` drives the other object through the same existing test
+ * seam. This is never a product option: the value is scrubbed by every gate
+ * before explicitly arming its fixture. */
+static void dkr_force_effect_shell_hook(Object_Racer *racer) {
     /* AUTHORED TICKS — see dkr_force_boost_hook. */
     extern int g_simTickCounter;
     static s32 sStart = -2;
     static s32 sLen = 90;
+    static s32 sMagnet = FALSE;
 
     if (sStart == -2) {
         const char *value = getenv("MDKR_FORCE_SHIELD");
         sStart = -1;
         if (value != NULL && value[0] != '\0') {
+            if (strncmp(value, "magnet@", 7) == 0) {
+                sMagnet = TRUE;
+                value += 7;
+            }
             const char *colon = strchr(value, ':');
             sStart = atoi(value);
             if (colon != NULL && colon[1] != '\0') {
@@ -955,8 +993,24 @@ static void dkr_force_shield_hook(Object_Racer *racer) {
         g_simTickCounter >= sStart + sLen) {
         return;
     }
-    racer->shieldTimer = normalise_time(90);
-    racer->shieldType = SHIELD_LEVEL3;
+    if (sMagnet) {
+        /* The magnet sprite is a set of disconnected lightning arcs. Keep the
+         * pixel oracle attributable to one shell instead of overlapping eight
+         * independently moving copies; the shield's older stress fixture keeps
+         * its all-racer coverage. */
+        if (racer->playerIndex != PLAYER_ONE) {
+            return;
+        }
+        /* Drive only the visual lifetime. Setting magnetTimer would enter the
+         * gameplay magnet path on the next tick and move the very camera/world
+         * used as the pixel reference, turning a visual oracle into a physics
+         * comparison. */
+        gRacerFXData[racer->racerIndex].unk3 = 32;
+        racer->magnetModelID = MAGNET_LEVEL3;
+    } else {
+        racer->shieldTimer = normalise_time(90);
+        racer->shieldType = SHIELD_LEVEL3;
+    }
 }
 
 /*
@@ -1090,7 +1144,7 @@ void racerfx_update(s32 updateRate) {
         boostObj = &asset20[racer->racerIndex];
 #ifdef NATIVE_PORT
         dkr_force_boost_hook(racer);
-        dkr_force_shield_hook(racer);
+        dkr_force_effect_shell_hook(racer);
         mdkr_zippad_boost_hook((*gRacers)[i], racer);
         mdkr_boost_trace((*gRacers)[i], racer);
 #endif
@@ -1184,6 +1238,166 @@ Object *racerfx_get_boost(s32 boostID) {
     return gBoostEffectObjects[boostID];
 }
 
+#ifdef NATIVE_PORT
+void *mdkr_object_pool_alloc_rollback(s32 size) {
+    if (gObjectMemoryPool == NULL || size <= 0) {
+        return NULL;
+    }
+    return mempool_alloc_pool((MemoryPoolSlot *) gObjectMemoryPool, size);
+}
+
+s32 mdkr_object_pool_rollback_ready(void) {
+    return gObjectMemoryPool != NULL;
+}
+
+void *mdkr_object_model_pool_alloc(s32 size) {
+    if (sRollbackModelMemoryPool == NULL || size <= 0) {
+        return NULL;
+    }
+    return mempool_alloc_pool(sRollbackModelMemoryPool, size);
+}
+
+s32 mdkr_object_model_pool_ready(void) {
+    return sRollbackModelMemoryPool != NULL;
+}
+
+void mdkr_object_assets_unpin_rollback(void) {
+    while (sRollbackAssetLeaseCount > 0) {
+        MdkrRollbackAssetLease *lease =
+            &sRollbackAssetLeases[--sRollbackAssetLeaseCount];
+        if (lease->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
+            free_3d_model((ModelInstance *) lease->asset);
+        } else if (lease->modelType == OBJECT_MODEL_TYPE_MISC) {
+            tex_free((TextureHeader *) lease->asset);
+        } else if (lease->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+            sprite_free((Sprite *) lease->asset);
+        }
+        *lease = (MdkrRollbackAssetLease){0};
+    }
+}
+
+static s32 mdkr_object_assets_pin_type(s32 objectId) {
+    ObjectHeader *header;
+    s32 behaviorFlags;
+    s32 headerType;
+    s32 index;
+    s32 modelCount;
+    s8 modelType;
+    s32 firstLease = sRollbackAssetLeaseCount;
+
+    if (objectId < 0 ||
+        (size_t) objectId >= gAssetsLvlObjTranslationTableCapacity) {
+        return FALSE;
+    }
+    headerType = gAssetsLvlObjTranslationTable[objectId];
+    if (headerType < 0 || headerType >= gAssetsObjectHeadersTableLength) {
+        return FALSE;
+    }
+    header = load_object_header(headerType);
+    if (header == NULL || header->numberOfModelIds < 0 ||
+        DKR_PTR(s32, header->modelIds) == NULL) {
+        if (header != NULL) try_free_object_header(headerType);
+        return FALSE;
+    }
+    behaviorFlags = obj_init_property_flags(header->behaviorId);
+    modelCount = header->numberOfModelIds;
+    modelType = header->modelType;
+    for (index = 0; index < modelCount; index++) {
+        void *asset = NULL;
+        s32 assetId = DKR_PTR(s32, header->modelIds)[index];
+        if (sRollbackAssetLeaseCount >= MDKR_ROLLBACK_ASSET_LEASE_MAX) {
+            break;
+        }
+        if (modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
+            asset = object_model_init(assetId, behaviorFlags);
+        } else if (modelType == OBJECT_MODEL_TYPE_MISC) {
+            asset = load_texture(assetId);
+        } else if (modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+            asset = tex_load_sprite(assetId, 10);
+        } else {
+            break;
+        }
+        if (asset == NULL) break;
+        sRollbackAssetLeases[sRollbackAssetLeaseCount++] =
+            (MdkrRollbackAssetLease){asset, modelType};
+    }
+    try_free_object_header(headerType);
+    if (index != modelCount) {
+        while (sRollbackAssetLeaseCount > firstLease) {
+            MdkrRollbackAssetLease *lease =
+                &sRollbackAssetLeases[--sRollbackAssetLeaseCount];
+            if (lease->modelType == OBJECT_MODEL_TYPE_3D_MODEL) {
+                free_3d_model((ModelInstance *) lease->asset);
+            } else if (lease->modelType == OBJECT_MODEL_TYPE_MISC) {
+                tex_free((TextureHeader *) lease->asset);
+            } else if (lease->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+                sprite_free((Sprite *) lease->asset);
+            }
+            *lease = (MdkrRollbackAssetLease){0};
+        }
+        return FALSE;
+    }
+    return TRUE;
+}
+
+s32 mdkr_object_assets_pin_rollback(void) {
+    static const s32 kItemSpawnTypes[] = {
+        ASSET_OBJECT_ID_MISSILE,
+        ASSET_OBJECT_ID_HOMING,
+        ASSET_OBJECT_ID_BOMB,
+        ASSET_OBJECT_ID_OILSLICK,
+        ASSET_OBJECT_ID_SMOKECLOUD,
+        ASSET_OBJECT_ID_BUBBLEWEAPON,
+        ASSET_OBJECT_ID_BOMBEXPLOSION,
+        ASSET_OBJECT_ID_MISSILEGLOW,
+        ASSET_OBJECT_ID_HOMINGGLOW,
+    };
+    s32 index;
+
+    mdkr_object_assets_unpin_rollback();
+    for (index = 0; index < ARRAY_COUNT(kItemSpawnTypes); index++) {
+        if (!mdkr_object_assets_pin_type(kItemSpawnTypes[index])) {
+            fprintf(stderr,
+                    "[ROLLBACK] asset pin failed: object=%d lease=%d/%d\n",
+                    kItemSpawnTypes[index], sRollbackAssetLeaseCount,
+                    MDKR_ROLLBACK_ASSET_LEASE_MAX);
+            mdkr_object_assets_unpin_rollback();
+            return FALSE;
+        }
+    }
+    fprintf(stderr,
+            "[ROLLBACK] assets pinned: objectTypes=%zu leases=%d\n",
+            ARRAY_COUNT(kItemSpawnTypes), sRollbackAssetLeaseCount);
+    return TRUE;
+}
+
+s32 mdkr_object_assets_rollback_references(
+    s16 **references, s32 capacity) {
+    s32 count = 0;
+    s32 index;
+    if (references == NULL || capacity < 0) return -1;
+    for (index = 0; index < sRollbackAssetLeaseCount; index++) {
+        ModelInstance *instance;
+        s32 existing;
+        if (sRollbackAssetLeases[index].modelType !=
+            OBJECT_MODEL_TYPE_3D_MODEL) {
+            continue;
+        }
+        instance = (ModelInstance *)sRollbackAssetLeases[index].asset;
+        if (instance == NULL || instance->objModel == NULL) return -1;
+        for (existing = 0; existing < count; existing++) {
+            if (references[existing] == &instance->objModel->references) {
+                break;
+            }
+        }
+        if (existing != count) continue;
+        if (count >= capacity) return -1;
+        references[count++] = &instance->objModel->references;
+    }
+    return count;
+}
+#endif
+
 /**
  * Allocate memory for objects and object related systems.
  * This includes the objects themselves, particles, and all of the pointer lists for tracking objects.
@@ -1196,6 +1410,12 @@ void allocate_object_pools(void) {
 
     set_world_shading(0.67f, 0.33f, 0, -0x2000, 0);
     gObjectMemoryPool = (Object *) mempool_new_sub(OBJECT_POOL_SIZE, OBJECT_SLOT_COUNT);
+#ifdef NATIVE_PORT
+    /* Deliberately the second subpool (POOL_UNUSED_2). Rollback authority
+     * registers both its descriptor and complete backing arena. */
+    sRollbackModelMemoryPool = mempool_new_sub(
+        ROLLBACK_MODEL_POOL_SIZE, ROLLBACK_MODEL_SLOT_COUNT);
+#endif
     gParticlePtrList = mempool_alloc_safe(sizeof(uintptr_t) * FREE_QUEUE_COUNT, COLOUR_TAG_BLUE);
     gCollisionObjects = mempool_alloc_safe(sizeof(uintptr_t) * OBJECT_COLLISION_COUNT, COLOUR_TAG_BLUE);
     D_8011AE74 = mempool_alloc_safe(sizeof(uintptr_t) * ANIMATION_OBJECT_COUNT, COLOUR_TAG_BLUE);
@@ -4338,7 +4558,14 @@ Object *obj_spawn_attachment(s32 objID) {
 #else
     objSize = (objHeader->numberOfModelIds * 4) + 0x80;
 #endif
+#ifdef NATIVE_PORT
+    object = (Object *)(mdkr_rollback_game_runtime_requested() &&
+                            mdkr_object_pool_rollback_ready()
+                            ? mdkr_object_pool_alloc_rollback(objSize)
+                            : mempool_alloc(objSize, COLOUR_TAG_BLUE));
+#else
     object = (Object *) mempool_alloc(objSize, COLOUR_TAG_BLUE);
+#endif
     if (object == NULL) {
         try_free_object_header(objID);
         return NULL;
@@ -5815,9 +6042,11 @@ void render_3d_model(Object *obj) {
                         vtxX = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].x;
                         vtxY = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].y;
                         vtxZ = obj->curVertData[DKR_PTR(s16, objModel->attachPoints)[index]].z;
+#ifndef NATIVE_PORT
                         loopObj->trans.x_position += vtxX;
                         loopObj->trans.y_position += vtxY;
                         loopObj->trans.z_position += vtxZ;
+#endif
                         if (loopObj->header->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
                             flags = (RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_Z_UPDATE);
                         } else {
@@ -5847,17 +6076,43 @@ void render_3d_model(Object *obj) {
                                 gDPSetPrimColor(gObjectCurrDisplayList++, 0, 0, intensity, intensity, intensity,
                                                 opacity);
                             }
+#ifdef NATIVE_PORT
+                            /* Vehicle-part drawing must not feed a camera-side
+                             * result or add/subtract rounding back into the
+                             * shared simulation object. Split-screen otherwise
+                             * lets the last rendered viewport choose wheel
+                             * animation direction, and rollback resimulation
+                             * (which deliberately suppresses presentation)
+                             * cannot reproduce the mutation. Render from a
+                             * local transform; authoritative part animation is
+                             * advanced only by the fixed racer update. */
+                            {
+                                ObjectTransform attachmentTransform = loopObj->trans;
+                                attachmentTransform.x_position += vtxX;
+                                attachmentTransform.y_position += vtxY;
+                                attachmentTransform.z_position += vtxZ;
+                                (void)render_sprite_billboard_transform(
+                                    &gObjectCurrDisplayList,
+                                    &gObjectCurrMatrix,
+                                    &gObjectCurrVertexList,
+                                    &attachmentTransform, loopObj->animFrame,
+                                    something, flags);
+                            }
+#else
                             loopObj->properties.common.unk0 =
                                 render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix,
                                                         &gObjectCurrVertexList, loopObj, something, flags);
+#endif
                             if (isCargo) {
                                 gSPSelectMatrixDKR(gObjectCurrDisplayList++, G_MTX_DKR_INDEX_0);
                                 func_80012CE8(&gObjectCurrDisplayList);
                             }
                         }
+#ifndef NATIVE_PORT
                         loopObj->trans.x_position -= vtxX;
                         loopObj->trans.y_position -= vtxY;
                         loopObj->trans.z_position -= vtxZ;
+#endif
                     }
                 }
             }
@@ -8289,6 +8544,51 @@ s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions, f32 *originPo
         z2 = originPointsZ[i];
         spC0 = collisionRadii[i] * scale;
 
+#ifdef NATIVE_PORT
+        /* Arrival probe: is this point ALREADY inside the mesh before anything
+         * touches it this tick? That question is deliberately asked here and
+         * not after the recovery pass below, because only the arrival state is
+         * arm-independent -- it reports what the PREVIOUS tick left behind, so
+         * both the recovering and the non-recovering arm answer it honestly. A
+         * probe taken after recovery would read zero in the fixed arm by
+         * construction and prove nothing. Inert unless the versioned internal
+         * test token is present; see mdkr_objcoll_embed_probe(). */
+        if (mdkr_objcoll_wedge_test_enabled()) {
+            s32 pj, pk, pInside = FALSE;
+
+            for (pj = 0; pj < arg0->collisionFacetCount && !pInside; pj++) {
+                CollisionFacetPlanes *pn = &DKR_PTR(CollisionFacetPlanes, arg0->collisionFacets)[pj];
+                s32 pb = pn->basePlaneIndex;
+                f32 pA = planes[4 * pb + 0], pB = planes[4 * pb + 1];
+                f32 pC = planes[4 * pb + 2], pD = planes[4 * pb + 3];
+                f32 pTgt = (pA * x1 + pB * y1 + pC * z1 + pD) - spC0;
+                f32 pOrg = (pA * x2 + pB * y2 + pC * z2 + pD) - spC0;
+
+                /* BOTH ends inside is the whole point. A point whose ORIGIN is
+                 * still outside is the ordinary crossing the one-sided walk
+                 * below already resolves, and counting those would make this
+                 * probe fire on every healthy door bump -- measured, it does:
+                 * six readings on one clean head-on impact, every one of them
+                 * ejected by upstream's own code on the same tick. Requiring
+                 * `pOrg < -0.1` narrows it to the states upstream CANNOT reach:
+                 * the point was already inside when the tick began, so no facet
+                 * satisfies `sum1 >= -0.1 && sum2 < -0.1` and the object has
+                 * stopped pushing. That is the defect, and nothing else is. */
+                if (pTgt < -0.1 && pOrg < -0.1 && pTgt > -(spC0 + 3.0f)) {
+                    pInside = TRUE;
+                    for (pk = 0; pk < 3 && pInside; pk++) {
+                        s32 pe = pn->edgeBisectorPlane[pk];
+                        if (planes[4 * pe + 0] * x1 + planes[4 * pe + 1] * y1 +
+                                planes[4 * pe + 2] * z1 + planes[4 * pe + 3] > 4.0f) {
+                            pInside = FALSE;
+                        }
+                    }
+                }
+            }
+            mdkr_objcoll_embed_probe(pInside);
+        }
+#endif
+
         counter = 0;
         do {
             redoLoop = FALSE;
@@ -8332,6 +8632,41 @@ s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions, f32 *originPo
                         }
                     }
 
+#ifdef NATIVE_PORT
+                    /* Wedge-gate seed. It lives HERE, at a real contact, because
+                     * this is the only place the two things a seed needs are
+                     * already known and free: the facet the point is actually
+                     * touching, and (x3, y3, z3), a point on that facet's plane
+                     * that `var_a2` has just proved lies laterally INSIDE the
+                     * triangle. Seeding from outside instead -- displacing wheel
+                     * points toward the object's centre -- was tried and does not
+                     * work: from 90 units out, a displacement small enough to
+                     * stay inside the recovery band does not reach the mesh at
+                     * all, and one large enough to reach it lands past the band
+                     * and is correctly ignored as the far side. Measured: zero
+                     * probe readings at both depths.
+                     *
+                     * Push `seed` units along -N from that interior plane point
+                     * and the result is embedded by a known, in-band depth. Then
+                     * abandon the facet walk for this point, so upstream's own
+                     * one-sided code cannot immediately undo the seed and the
+                     * next tick genuinely begins inside. Fires once per run and
+                     * only with the versioned token. */
+                    if (var_a2) {
+                        f32 seed = mdkr_objcoll_embed_seed_depth();
+                        if (seed != 0.0f) {
+                            x1 = x3 - A * seed;
+                            y1 = y3 - B * seed;
+                            z1 = z3 - C * seed;
+                            counter++; /* raise the bit so the caller writes it back */
+                            targetPointsX[i] = x1;
+                            targetPointsY[i] = y1;
+                            targetPointsZ[i] = z1;
+                            redoLoop = FALSE;
+                            break;
+                        }
+                    }
+#endif
                     if (var_a2) {
                         redoLoop = TRUE;
                         if (B > 0.707) {
@@ -8358,6 +8693,101 @@ s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions, f32 *originPo
                 }
             }
         } while (redoLoop);
+
+#ifdef NATIVE_PORT
+        /* ------------------------------------------------------------------
+         * Embedded-point recovery -- the pass this function has always been
+         * missing, and its terrain sibling has always had.
+         *
+         * The facet walk above is ONE-SIDED by construction: it fires only on
+         * `sum1 >= -0.1 && sum2 < -0.1`, i.e. the point started outside the
+         * plane and ended inside it. A point that is ALREADY inside at the top
+         * of the tick satisfies neither half, so every facet rejects it and the
+         * object stops pushing entirely. Nothing else ejects it either --
+         * resolve_collisions() only ever sees terrain -- so the point stays
+         * inside the mesh for as long as the object exists.
+         *
+         * resolve_collisions() (game/src/hasm/collision.c, "Step 2: ensure
+         * object is fully pushed out from underneath") solves exactly this for
+         * terrain, and this is that pass transcribed onto object meshes: the
+         * same `targetDist < -0.1 && targetDist > -(radius + 3.0f)` band, the
+         * same `target -= N * targetDist` ejection along the plane normal, the
+         * same `> 10` iteration bail back to the origin point. The band is what
+         * keeps it conservative -- a point deeper than one radius plus three
+         * units is not a shallow penetration to be nudged out, it is on the far
+         * side of the object, and is left alone.
+         *
+         * ONE deliberate deviation from the sibling, and it is load-bearing:
+         * resolve_collisions() writes `target` in place, so its Step 2 does not
+         * need to touch the collision mask. Here the CALLER's writeback is
+         * gated -- collision_objectmodel() only transforms a point back out of
+         * object space `if (tempv0 & sp16C)` -- so an ejection whose bit is not
+         * set is silently discarded. The recovery therefore feeds `counter`,
+         * which is what raises that bit below. The knock-on is that a recovered
+         * wheel counts as grounded in func_80054FD0(), which is correct: it is
+         * in contact.
+         *
+         * NOT in the matching build. The N64 arm keeps upstream's body verbatim.
+         * ------------------------------------------------------------------ */
+        if (!mdkr_objcoll_norecover()) {
+            s32 recoverCount = 0;
+            s32 recovered;
+
+            do {
+                recovered = FALSE;
+                for (j = 0; j < arg0->collisionFacetCount; j++) {
+                    node = &DKR_PTR(CollisionFacetPlanes, arg0->collisionFacets)[j];
+                    closestTri = node->basePlaneIndex;
+
+                    A = planes[4 * closestTri + 0];
+                    B = planes[4 * closestTri + 1];
+                    C = planes[4 * closestTri + 2];
+                    D = planes[4 * closestTri + 3];
+                    sum2 = (A * x1 + B * y1 + C * z1 + D) - spC0;
+
+                    if (sum2 < -0.1 && sum2 > -(spC0 + 3.0f)) {
+                        var_a2 = TRUE;
+                        for (k = 0; k < 3 && var_a2 == TRUE; k++) {
+                            closestTri = node->edgeBisectorPlane[k];
+
+                            A1 = planes[4 * closestTri + 0];
+                            B1 = planes[4 * closestTri + 1];
+                            C1 = planes[4 * closestTri + 2];
+                            D1 = planes[4 * closestTri + 3];
+                            t = A1 * x1 + B1 * y1 + C1 * z1 + D1;
+                            if (t > 4.0f) {
+                                var_a2 = FALSE;
+                            }
+                        }
+
+                        if (var_a2) {
+                            recovered = TRUE;
+                            x1 -= sum2 * A;
+                            y1 -= sum2 * B;
+                            z1 -= sum2 * C;
+                            recoverCount++;
+                            if (recoverCount > 10) {
+                                recovered = FALSE;
+                                x1 = x2;
+                                y1 = y2;
+                                z1 = z2;
+                            }
+                            counter++;
+                            targetPointsX[i] = x1;
+                            targetPointsY[i] = y1;
+                            targetPointsZ[i] = z1;
+
+                            j = arg0->collisionFacetCount; // break
+                        }
+                    }
+                }
+            } while (recovered);
+
+            if (recoverCount > 0) {
+                mdkr_objcoll_recovered(recoverCount);
+            }
+        }
+#endif
 
         if (counter > 0) {
             (*numCollisions)++;
@@ -9738,7 +10168,8 @@ void race_check_finish(s32 updateRate) {
                 race_finish_adventure(TRUE);
             }
             gRaceFinishTriggered = -1; // -1 doesn't do anything different.
-            if (get_number_of_active_players() == 1) {
+            if (mdkr_authoritative_player_count(
+                    get_number_of_active_players()) == 1) {
                 race_finish_time_trial();
             }
         }
@@ -9978,7 +10409,8 @@ void race_finish_time_trial(void) {
     for (i = 0; i < gNumRacers; i++) {
         curRacer = gRacersByPosition[i]->racer;
         if (curRacer->racerIndex >= 0) {
-            if (curRacer->racerIndex < get_number_of_active_players()) {
+            if (curRacer->racerIndex < mdkr_authoritative_player_count(
+                    get_number_of_active_players())) {
                 settings->racers[curRacer->racerIndex].best_times = 0;
                 vehicleID = curRacer->vehicleIDPrev;
                 if (vehicleID >= VEHICLE_CAR && vehicleID < NUMBER_OF_PLAYER_VEHICLES) {

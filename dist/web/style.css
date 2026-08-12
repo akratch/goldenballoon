@@ -308,6 +308,7 @@ code {
 
 .btn {
   font: inherit; font-weight: 800; cursor: pointer; border: 0;
+  touch-action: manipulation;
   transition: filter .12s var(--ease-out), opacity .12s var(--ease-out),
               transform .1s var(--ease-out), background-color .1s var(--ease-out),
               border-color .1s var(--ease-out), box-shadow .1s var(--ease-out);
@@ -639,6 +640,10 @@ kbd {
    * zoom the viewport mid-race. Mouse/keyboard input is unaffected. */
   touch-action: none;
 }
+#canvas:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: -3px;
+}
 
 /* Same floating-material recipe as the touch overlay chrome (blur + bright
    top edge) so the fullscreen control reads as one family of glass, whether
@@ -666,6 +671,50 @@ kbd {
 }
 .fs-btn:active { opacity: 1; transform: scale(.92); background: rgba(8, 22, 44, .85); }
 .fs-btn { touch-action: manipulation; }
+
+.party-stage-button {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(68px, calc(env(safe-area-inset-right) + 61px));
+  z-index: 15;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: rgba(8, 22, 44, .68);
+  border: 1px solid rgba(150, 185, 230, .3);
+  border-radius: 999px;
+  box-shadow: var(--glass-edge);
+  backdrop-filter: blur(14px) saturate(145%);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
+  font: 700 12px/1 system-ui, sans-serif;
+  opacity: .42;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: opacity .16s var(--ease-out), transform .1s var(--ease-out),
+              background-color .1s var(--ease-out);
+}
+.party-stage-button strong {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  place-items: center;
+  color: #061525;
+  background: #86d9ff;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.party-stage-button:hover,
+.party-stage-button:focus-visible { opacity: 1; }
+.party-stage-button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+  box-shadow: var(--glass-edge), 0 0 0 4px rgba(6, 21, 41, .8);
+}
+.party-stage-button:active { opacity: 1; transform: scale(.96); }
 /* With the touch overlay active, the bottom-right corner belongs to the
  * Go/Brake action cluster (z-index 13, pointer-events auto) — the fullscreen
  * button underneath it was unreachable on phones. Move it to the free
@@ -676,6 +725,12 @@ kbd {
   bottom: auto;
   z-index: 16;
   opacity: .55;
+}
+#stage.touch-ui-active .party-stage-button {
+  top: max(12px, env(safe-area-inset-top));
+  right: max(66px, calc(env(safe-area-inset-right) + 59px));
+  z-index: 16;
+  opacity: .62;
 }
 #stage.touch-ui-active #stage-status {
   /* Keep a fullscreen failure message below the top touch chrome rather than
@@ -993,6 +1048,7 @@ kbd {
   }
   .touch-rotate-hint { display: block; }
   .touch-toggle-label { display: none; }
+  .party-stage-button > span:nth-child(2) { display: none; }
   .touch-toggle:not([hidden]) {
     width: 42px;
     justify-content: center;

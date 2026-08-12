@@ -180,6 +180,22 @@ compiled into or shipped alongside the app: Dear ImGui for the native app shell,
 content packs, `dr_wav` for decoding the music inside them, and the SDL
 game-controller database. Each retains its upstream license.
 
+`third_party/qrcodegen/qrcodegen.ts`, its C++ port and the generated browser
+artifact `dist/web/party/qrcodegen.js` are Project Nayuki's QR Code generator library at
+commit `2c9044de6b049ca25cb3cd1649ed7e27aa055138`, under the MIT License. Both
+language ports and the browser artifact retain the complete notice. The launcher uses it only to render a
+short-lived controller capability URL; QR decoding is a development-only test.
+
+Native Phone Party statically links the pinned, media-disabled libdatachannel
+0.24.3 graph and Mbed TLS 3.6.7, and embeds a hash-pinned Mozilla CA extract for
+verified WSS without a machine-specific TLS dependency. One hash-pinned MPL
+source patch preserves explicit-CA Mbed TLS verification on Windows; its exact
+source form ships through the public repository. Exact commits, patch/archive
+hashes, immutable source-form URLs, license choices and full applicable license
+texts are recorded in `third_party/native_phone_party/NOTICE.txt`. That notice
+is hash-checked and shipped in every macOS, Windows and Linux native package;
+the complete component mapping is in [THIRD_PARTY.md](THIRD_PARTY.md).
+
 `lib/stb/stb_image.h` is stb_image v2.30 by Sean Barrett, vendored from
 `nothings/stb` at commit `f58f558c120e9b32c217290b80bad1a0729fbb2c`; the
 vendored file's SHA-256 is

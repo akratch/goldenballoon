@@ -50,6 +50,12 @@ typedef struct GameplayEventObserver {
 
 void gameplay_event_trace_set_observer(const GameplayEventObserver *observer);
 
+/* Rollback is a second, independent consumer. Accessibility may already own
+ * the public observer; installing rollback must never disconnect narration or
+ * make feature ordering observable. */
+void gameplay_event_trace_set_rollback_observer(
+    const GameplayEventObserver *observer);
+
 /* Arguments are stable scalar identities only; never pass host pointers. */
 void gameplay_event_trace_emit(
     GameplayEventKind kind, int32_t a, int32_t b, int32_t c, int32_t d);

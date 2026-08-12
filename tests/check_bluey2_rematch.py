@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import argparse
 import array
+from collections import Counter
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path
@@ -140,6 +142,7 @@ class RaceResult:
     update_rates: frozenset[int]
     output: str
     audio: bytes | None
+    note_events: tuple[dict[str, object], ...]
 
 
 def checkpoint_image(eligible: list[int]) -> bytes:
@@ -220,7 +223,8 @@ def parse_rows(output: str) -> list[Row]:
     return rows
 
 
-def analyse_race(label: str, output: str, audio: bytes | None) -> RaceResult:
+def analyse_race(label: str, output: str, audio: bytes | None,
+                 note_events: tuple[dict[str, object], ...]) -> RaceResult:
     bluey = [
         row for row in parse_rows(output)
         if row.slot == 1 and row.racer_index == 1
@@ -267,6 +271,7 @@ def analyse_race(label: str, output: str, audio: bytes | None) -> RaceResult:
         update_rates=frozenset(row.update_rate for row in race_rows),
         output=output,
         audio=audio,
+        note_events=note_events,
     )
 
 
@@ -285,6 +290,7 @@ def invoke(
         save_dir.mkdir()
         (save_dir / "eeprom.bin").write_bytes(checkpoint)
         wav_path = run_dir / "bluey2.wav"
+        note_path = run_dir / "bluey2-notes.jsonl"
 
         env = {
             key: value for key, value in os.environ.items()
@@ -309,6 +315,7 @@ def invoke(
             env.update(
                 MDKR_AUDIO_DUMP=str(wav_path),
                 MDKR_AUDIO_RMS="1",
+                MDKR_MUSIC_MIDI_TRACE_JSONL=str(note_path),
             )
         command = [
             str(binary), "--headless-frames", str(frames),
@@ -354,7 +361,16 @@ def invoke(
                 or not slot_checksum_valid(saved[:SLOT_BYTES])):
             raise RuntimeError(f"{label}: persisted EEPROM checksum is invalid")
         audio = wav_path.read_bytes() if wav_path.is_file() else None
-        return analyse_race(label, output, audio)
+        note_events: tuple[dict[str, object], ...] = ()
+        if note_path.is_file():
+            try:
+                note_events = tuple(
+                    json.loads(line) for line in note_path.read_text().splitlines()
+                    if line.strip()
+                )
+            except (json.JSONDecodeError, OSError) as exc:
+                raise RuntimeError(f"{label}: invalid MIDI trace: {exc}") from exc
+        return analyse_race(label, output, audio, note_events)
 
 
 # The authored ceiling is sqrt(((20 * 0.025) + 0.561) / 0.004) ~= 16.3, plus
@@ -457,6 +473,24 @@ def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
     if fmt != (22050, 2, 2):
         failures.append(f"Original audio format {fmt}, want (22050, 2, 2)")
         return failures, {}
+
+    admission_failures = [
+        event for event in result.note_events
+        if event.get("event") in {
+            "physical_steal", "physical_steal_reject",
+            "physical_voice_reject",
+        }
+        or (event.get("event") == "note_reject"
+            and event.get("reason") not in {"channel-disabled"})
+    ]
+    if admission_failures:
+        summary = Counter(
+            str(event.get("reason", event.get("event", "unknown")))
+            for event in admission_failures
+        )
+        failures.append(
+            "Original sequence audio lost or stole authored voices: " + str(dict(summary))
+        )
 
     total = TOTAL_RE.search(result.output)
     guard = GUARD_RE.search(result.output)
@@ -591,6 +625,32 @@ def main() -> int:
             f"gap RMS={audio['gap_rms']:.1f}, "
             f"minimum 250ms RMS={audio['min_window_rms']:.1f}"
         )
+    note_census = Counter(
+        f"{event.get('player', 'unknown')}:"
+        f"{event.get('reason', event.get('event', 'unknown'))}"
+        for event in original.note_events
+        if event.get("event") != "note_on"
+    )
+    accepted_notes = sum(
+        event.get("event") == "note_on" for event in original.note_events)
+    music_mapped_peak = max(
+        (int(event.get("mapped", 0)) for event in original.note_events
+         if event.get("event") == "note_on"
+         and event.get("player") == "music"), default=0)
+    jingle_mapped_peak = max(
+        (int(event.get("mapped", 0)) for event in original.note_events
+         if event.get("event") == "note_on"
+         and event.get("player") == "jingle"), default=0)
+    print(f"  note admission: accepted={accepted_notes} "
+          f"musicPeak={music_mapped_peak}/26 jinglePeak={jingle_mapped_peak}/16 "
+          f"residuals={dict(note_census)}")
+    rejected_notes = [
+        event for event in original.note_events
+        if event.get("event") == "note_reject"
+        and event.get("reason") != "channel-disabled"
+    ]
+    if rejected_notes:
+        print(f"  unintended note rejects: {rejected_notes[:8]}")
     if failures:
         print(f"check_bluey2_rematch: FAIL ({len(failures)} issue(s))")
         for failure in failures:

@@ -15,6 +15,7 @@
 #include "gfx_shadow_frame.h"
 #include "mdkr_bounds.h"
 #include "platform_os.h"
+#include "net/net_roster_runtime.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
 #include "taj_visual.h"
@@ -1218,6 +1219,8 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     s32 posY;
     s32 j;
 #ifdef NATIVE_PORT
+    static s8 sReportedCanonicalByOutput[4] = {-1, -1, -1, -1};
+    static s8 sReportedLayoutByOutput[4] = {-1, -1, -1, -1};
     /* Test-only render-starvation seam. Authoritative tick work has already
      * completed before this function; skipping here must therefore leave the
      * raw simulation state byte-identical. */
@@ -1231,9 +1234,26 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
             mdkr_test_render_impurity_inject();
         }
     }
+    /* A verifier endpoint with an explicitly empty viewport map must perform
+     * no hidden world/HUD rendering. All authored work formerly nested under
+     * this function has a fixed-tick owner and the render-purity gate already
+     * proves this body cannot change v3 authority. The roster lives for the
+     * complete blocking engine loan, so this read is stable for the frame. */
+    if (mdkr_net_roster_runtime_active() &&
+        mdkr_net_roster_runtime_viewport_count(1u) == 0u) {
+        static s32 reportedNoRender;
+        if (!reportedNoRender) {
+            fprintf(stderr,
+                    "[NET-VIEW] endpoint=no-render hidden-world-passes=0\n");
+            reportedNoRender = TRUE;
+        }
+        return;
+    }
 #endif
 #ifdef NATIVE_PORT
     s32 savedCutsceneCamera;
+    s32 endpointMappedViews;
+    uint8_t canonicalViewport;
     camera_obstruction_presentation_begin();
     /* Latch Enhancements.DrawDistance and Enhancements.LodBias for this whole
      * drawn frame. Reading them once here, rather than per object, is what
@@ -1250,7 +1270,20 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     gDisableShadows = FALSE;
     D_8011B0C0 = 0;
     gIsNearCurrBBox = FALSE;
+#ifdef NATIVE_PORT
+    endpointMappedViews = mdkr_net_roster_runtime_active();
+    if (endpointMappedViews) {
+        /* Keep the canonical four-player layout installed for fixed-tick
+         * authority. Only the number/placement of presentation passes is
+         * endpoint-local. A zero-view endpoint returned above. */
+        numViewports =
+            (s32)mdkr_net_roster_runtime_viewport_count(0u);
+    } else {
+        numViewports = cam_set_layout(gScenePlayerViewports);
+    }
+#else
     numViewports = cam_set_layout(gScenePlayerViewports);
+#endif
     if (is_game_paused()) {
         tempUpdateRate = 0;
     } else {
@@ -1259,7 +1292,15 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     if (gWaveBlockCount) {
         waves_update(tempUpdateRate);
     }
+#ifdef NATIVE_PORT
+    /* Gameplay water clocks now advance in scene_authoritative_render_tick().
+     * Menu scenes retain their authored render-driven animation cadence. */
+    shadow_update(
+        SHADOW_ACTORS, SHADOW_ACTORS,
+        get_game_mode() == GAMEMODE_INGAME ? LOGIC_NULL : updateRate);
+#else
     shadow_update(SHADOW_ACTORS, SHADOW_ACTORS, updateRate);
+#endif
 #ifndef NATIVE_PORT
     for (i = 0; i < 7; i++) {
         if ((s32) gCurrentLevelHeader2->unk74[i] != -1) {
@@ -1317,7 +1358,36 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     if (gCurrentLevelModel->numberOfAnimatedTextures > 0) {
         track_tex_anim(tempUpdateRate);
     }
-    for (j = gSceneCurrentPlayerID = 0; j < numViewports; gSceneCurrentPlayerID++, j = gSceneCurrentPlayerID) {
+#ifdef NATIVE_PORT
+#define MDKR_SCENE_VIEW_LOOP for (j = 0; j < numViewports; j++)
+#else
+#define MDKR_SCENE_VIEW_LOOP                                                        \
+    for (j = gSceneCurrentPlayerID = 0; j < numViewports;                          \
+         gSceneCurrentPlayerID++, j = gSceneCurrentPlayerID)
+#endif
+    MDKR_SCENE_VIEW_LOOP {
+#ifdef NATIVE_PORT
+        gSceneCurrentPlayerID = j;
+        if (endpointMappedViews) {
+            if (!mdkr_net_roster_runtime_viewport_to_canonical(
+                    (unsigned)j, &canonicalViewport) ||
+                !cam_output_view_begin(j, numViewports - 1)) {
+                fprintf(stderr,
+                        "[FATAL] invalid endpoint viewport during scene draw "
+                        "output=%d count=%d\n", j, numViewports);
+                break;
+            }
+            gSceneCurrentPlayerID = canonicalViewport;
+            if (sReportedCanonicalByOutput[j] != gSceneCurrentPlayerID ||
+                sReportedLayoutByOutput[j] != numViewports - 1) {
+                fprintf(stderr,
+                        "[NET-VIEW] output=%d canonical=%d layout=%d\n",
+                        j, gSceneCurrentPlayerID, numViewports - 1);
+                sReportedCanonicalByOutput[j] = (s8)gSceneCurrentPlayerID;
+                sReportedLayoutByOutput[j] = (s8)(numViewports - 1);
+            }
+        }
+#endif
         if (gCurrentLevelHeader2 && !gCurrentLevelHeader2 && !gCurrentLevelHeader2) {} // Fakematch
         if (j == 0) {
             if (is_player_two_in_control() && numViewports == 1) {
@@ -1368,9 +1438,19 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         lensflare_render(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, cam_get_active_camera());
         hud_render_player(&gTrackDL, &gTrackMtxPtr, &gTrackVtxPtr, get_racer_object_by_port(gSceneCurrentPlayerID),
                           updateRate);
+#ifdef NATIVE_PORT
+        if (endpointMappedViews) {
+            cam_output_view_end();
+        }
+#endif
     }
+#undef MDKR_SCENE_VIEW_LOOP
     // Show TT Cam toggle for the fourth viewport when playing 3 player.
-    if (numViewports == 3 && level_type() != RACETYPE_CHALLENGE_EGGS && level_type() != RACETYPE_CHALLENGE_BATTLE &&
+    if (
+#ifdef NATIVE_PORT
+        !endpointMappedViews &&
+#endif
+        numViewports == 3 && level_type() != RACETYPE_CHALLENGE_EGGS && level_type() != RACETYPE_CHALLENGE_BATTLE &&
         level_type() != RACETYPE_CHALLENGE_BANANAS) {
         if (hud_setting() == 0) {
             if (flip) {
@@ -3460,6 +3540,49 @@ void scene_authoritative_render_tick(s32 updateRate) {
             scene_weather_tick(weatherUpdateRate);
         }
         return;
+    }
+    /* Animated water frames used to advance inside shadow_update(), making a
+     * rendered frame part of the next simulation snapshot. Advance that small
+     * authored clock here once per tick instead; shadow mesh generation can
+     * then remain presentation-only and rollback resimulation need not author
+     * a display list. This matches the former SHADOW_ACTORS pass exactly. */
+    if (get_game_mode() == GAMEMODE_INGAME) {
+        s32 waterIndex;
+        s32 waterCount;
+        Object **waterObjects = objGetObjList(&waterIndex, &waterCount);
+        while (waterObjects != NULL && waterIndex < waterCount) {
+            Object *waterObject = waterObjects[waterIndex++];
+            WaterEffect *waterEffect;
+            TextureHeader *waterTexture;
+            if (waterObject == NULL || waterObject->header == NULL) {
+                continue;
+            }
+            /* gObjPtrList is a mixed object/particle list. Particle storage is
+             * only Object-compatible through the transform prefix, so its
+             * apparent header and waterEffect fields are not object pointers.
+             * Match shadow_update's particle gate before inspecting either,
+             * then use the object-header discriminator before dereferencing
+             * the optional water-effect allocation. */
+            if (waterObject->trans.flags & OBJ_FLAGS_PARTICLE) {
+                continue;
+            }
+            if (waterObject->header->waterEffectGroup != SHADOW_ACTORS) {
+                continue;
+            }
+            waterEffect = waterObject->waterEffect;
+            if (waterEffect == NULL || waterEffect->scale <= 0.0f) {
+                continue;
+            }
+            waterTexture = waterEffect->texture;
+            if (waterTexture != NULL && updateRate != 0 &&
+                waterTexture->numOfTextures != 0x100) {
+                waterEffect->textureFrame += waterEffect->animationSpeed;
+                while (waterTexture->numOfTextures <
+                       waterEffect->textureFrame) {
+                    waterEffect->textureFrame -= waterTexture->numOfTextures;
+                }
+            }
+        }
     }
     savedCamera = get_current_viewport();
     numViewports = scene_visibility_viewport_count();

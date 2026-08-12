@@ -72,6 +72,16 @@ extern int g_frameCounter;
  */
 extern uint64_t g_surfaceFrameCounter;
 /*
+ * Start a new engine epoch inside a persistent launcher process. This clears
+ * every platform value whose lifetime is one engine invocation while retaining
+ * launcher-owned SDL/window/device state. It must run before argument parsing,
+ * because headless and renderer options are themselves epoch-scoped inputs.
+ * Returns zero only when the prior epoch released every engine-owned handle.
+ */
+int platform_engine_session_begin(void);
+/* Reset cooperative libultra shim state that originally relied on process BSS. */
+void platform_libultra_session_begin(void);
+/*
  * Cooperative process exit. Frame/input code requests termination and the
  * game loop unwinds to main(), which tears down renderer, audio, and SDL in
  * dependency order instead of calling exit() from inside a frame.
@@ -166,16 +176,15 @@ unsigned platform_present_display_rate(void);
 uint64_t platform_present_display_quantum_units(void);
 
 /*
- * The squared coefficient of variation of the last (up to 32) measured
- * present-to-present intervals, in parts-per-million of the mean interval
- * squared -- 2500 is exactly 5% relative jitter (0.05^2 * 1e6). This is what
- * platform_present_display_quantum_units() itself compares against 2500 to
- * decline quantizing a variable-refresh panel onto a grid it is not actually
- * following; exposed separately so a trace line can report the measurement
- * that drove the decision. 0 before the window has 32 samples or when the
- * pacer is not in realtime mode.
+ * The trimmed squared coefficient of variation used by the present-interval
+ * classifier, in parts-per-million of the mean interval squared. Exposed with
+ * the classifier state so a trace records the complete evidence behind a
+ * grid/free decision instead of asking a consumer to reimplement hysteresis.
  */
 uint64_t platform_present_quantum_variance_ppm(void);
+unsigned platform_present_quantum_sample_count(void);
+uint64_t platform_present_quantum_transition_count(void);
+const char *platform_present_quantum_timing_name(void);
 
 /* True when the player selected the Enhanced simulation cadence (1 field per
  * authored tick, 60 Hz) rather than Original (2 fields, the authored 30 Hz).
@@ -337,7 +346,7 @@ int platform_content_pack_name_disabled(const char *list, const char *name);
 void platform_input_init(void);
 void platform_input_pump(void);
 /* Just-in-time host sample, taken at the tick boundary immediately before the
- * ticket is committed. Inert unless MDKR_INPUT_JIT is armed. */
+ * ticket is committed. MDKR_INPUT_JIT=0 is the diagnostic opt-out. */
 void platform_input_sample_late(void);
 void platform_input_commit_tick(uint64_t ticket);
 void platform_input_queue_summary(void);
@@ -348,6 +357,8 @@ int          platform_pad_present(int port);
 int          platform_pad_rumble_supported(int port);
 int          platform_pad_rumble(int port, int enabled);
 void         platform_pad_rumble_preferences_changed(void);
+/* Stop a vanished predicted effect without editing restored RumbleData. */
+void         mdkr_rollback_rumble_cancel_preview(unsigned controller_index);
 unsigned int platform_pad_buttons(int port);
 void         platform_pad_stick(int port, int *sx, int *sy);
 

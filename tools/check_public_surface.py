@@ -115,6 +115,21 @@ PRIVATE_DOC_NAME_RE = re.compile(
     r"(?:^|[-_.])(BACKLOG|HANDOFF|SESSION|WORKING[-_]?PLAN|ENGINEERING[-_]?PLAN)(?:[-_.]|$)",
     re.IGNORECASE,
 )
+# Product documentation whose names legitimately carry the word "session" as
+# an engine/launcher term (a game session), reviewed individually. This is a
+# closed list on purpose: a NEW file matching PRIVATE_DOC_NAME_RE still fails
+# until a human reads it and adds it here, so the working-document rule keeps
+# its teeth.
+PRIVATE_DOC_NAME_ALLOWLIST = frozenset({
+    "docs/ref/session-protocol-v1.md",
+    "docs/sprints/S10-multiplayer-session-foundation.md",
+    # Reviewed 2026-08-12: A0 evidence record; "session" is the engine term.
+    "docs/evidence/multiplayer/session.md",
+    # Reviewed 2026-08-12: the published multiplayer delivery queue, linked
+    # from docs/multiplayer/README.md beside STATUS.md; content passes the
+    # text denylist and names no private paths.
+    "docs/multiplayer/OPERATIONAL_BACKLOG.md",
+})
 ALLOWED_EMAIL_RE = re.compile(
     r"^(?:[^@]+@users\.noreply\.github\.com|noreply@github\.com|[^@]+@example\.invalid)$",
     re.IGNORECASE,
@@ -174,6 +189,8 @@ def forbidden_path_reason(path: str) -> str | None:
         if normalized.startswith(prefix):
             return "private working-document directory"
     if normalized.lower().endswith((".md", ".markdown")):
+        if normalized in PRIVATE_DOC_NAME_ALLOWLIST:
+            return None
         name = PurePosixPath(normalized).name
         if PRIVATE_DOC_NAME_RE.search(name):
             return "private planning/handoff filename"

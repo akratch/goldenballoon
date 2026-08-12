@@ -82,7 +82,7 @@ FATAL_RE = fatal_re(r"\[FX BUG\]", "Assertion", "Validation Error")
 ROW_RE = re.compile(
     r"\[SMOOTH-VERDICT\] class=(\S+) blend=(\d+) snap=(\d+) "
     r"top_reason=(\S+) pandemoted=(\d+) noowner=(\d+) "
-    r"topomismatch=(\d+)"
+    r"topomismatch=(\d+) heldpermille=(\d+)"
 )
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
 PAN_FORCED_YAW_RE = re.compile(r"\[PAN-DEMOTE-TEST\] forced_yaw=([0-9.]+)")
@@ -200,21 +200,28 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
 
 def parse_rows(
         output: str,
-        failures: list[str]) -> dict[str, tuple[int, int, str, int, int, int]]:
-    rows: dict[str, tuple[int, int, str, int, int, int]] = {}
+        failures: list[str]) -> dict[str, tuple[int, int, str, int, int, int, int]]:
+    rows: dict[str, tuple[int, int, str, int, int, int, int]] = {}
     for match in ROW_RE.finditer(output):
         (cls, blend_s, snap_s, top_reason, pandemoted_s, noowner_s,
-         topomismatch_s) = match.groups()
+         topomismatch_s, held_permille_s) = match.groups()
         blend, snap, pandemoted = int(blend_s), int(snap_s), int(pandemoted_s)
         noowner, topomismatch = int(noowner_s), int(topomismatch_s)
+        held_permille = int(held_permille_s)
         # Multiple rows for the same class would mean [SMOOTH-VERDICT] fired
         # more than once per process, which the flush contract (once, at
         # present_sched_trace_summary) forbids.
         if cls in rows:
             failures.append(f"class={cls} printed more than one row")
             continue
+        expected_held_permille = snap * 1000 // (blend + snap)
+        if held_permille != expected_held_permille:
+            failures.append(
+                f"class={cls}: heldpermille={held_permille}, want exact "
+                f"snap/(blend+snap)={expected_held_permille}"
+            )
         rows[cls] = (blend, snap, top_reason, pandemoted, noowner,
-                     topomismatch)
+                     topomismatch, held_permille)
     return rows
 
 
@@ -572,7 +579,7 @@ def main() -> int:
         if cls not in rows:
             failures.append(f"no [SMOOTH-VERDICT] row for class={cls}")
             continue
-        blend, snap, top_reason, pandemoted, noowner, _ = rows[cls]
+        blend, snap, top_reason, pandemoted, noowner, _, _ = rows[cls]
         n = blend + snap
         if n <= 0:
             failures.append(f"class={cls}: blend+snap={n} is not positive")
@@ -688,7 +695,7 @@ def main() -> int:
         # Default-off proof (Step 3): with the env unset, the choke point's
         # demotion clause can never fire, for ANY class.
         for cls, (blend, snap, top_reason, pandemoted, _,
-                  _topo) in rows.items():
+                  _topo, _held_permille) in rows.items():
             if pandemoted != 0:
                 failures.append(
                     f"class={cls}: MDKR_SMOOTH_PAN_DEMOTE is unset but "
@@ -705,7 +712,8 @@ def main() -> int:
     summary = "; ".join(
         f"{cls} blend={rows[cls][0]} snap={rows[cls][1]} "
         f"top_reason={rows[cls][2]} pandemoted={rows[cls][3]} "
-        f"noowner={rows[cls][4]} topomismatch={rows[cls][5]}"
+        f"noowner={rows[cls][4]} topomismatch={rows[cls][5]} "
+        f"heldpermille={rows[cls][6]}"
         for cls in required if cls in rows
     )
     print(f"check_smooth_verdict: PASS — {summary}")

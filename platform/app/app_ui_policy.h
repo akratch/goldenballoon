@@ -87,12 +87,14 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 // inherited variable can never attach a virtual controller to normal gameplay.
 //
 // `selection` is the scripted Frame limit value, `pace` the scripted
-// Presentation pace choice, and `walk` the accessibility keyboard walk.
-// EXACTLY ONE must be present: they are three scripts for three different
+// Presentation pace choice, `walk` the accessibility keyboard walk, and
+// `onlineAction` a token-gated Online Room action id.
+// EXACTLY ONE must be present: they are scripts for different
 // jobs, and a run claiming two would be driving neither deterministically.
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
-    const char *token, const char *pace, const char *walk = nullptr);
+    const char *token, const char *pace, const char *walk = nullptr,
+    const char *onlineAction = nullptr);
 AppUiSmokeInputMode AppUi_smokeInputMode();
 
 // True while the scripted accessibility walk is armed. The walk needs two

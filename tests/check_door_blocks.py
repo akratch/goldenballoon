@@ -85,6 +85,16 @@ def run(binary: str, rom: str, save_dir: str, legacy: bool, verbose: bool):
         MDKR_TRACE="1",
         MDKR_DRIVE_ROUTE=ROUTE,
         MDKR_SAVE_DIR=save_dir,
+        # Isolate the video config for the same reason the save dir is isolated.
+        # This check builds its env inline rather than through
+        # harness_utils.save_env(), which pins this centrally; without it a
+        # repo-root mdkr64.ini holding FrameLimit=uncapped reaches the engine,
+        # --headless-frames starts counting 1 ms presents instead of authored
+        # ticks, and the 9000-frame budget buys ~540 of them -- so the frontend
+        # script never gets far enough to press START and both arms report
+        # levels=[21, 39] with zero hits. Measured: that exact failure, cured by
+        # this line alone. See harness_utils.save_env() for the mechanism.
+        MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"),
     )
     if legacy:
         env["MDKR_OBJCOLL"] = "legacy"

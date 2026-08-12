@@ -6,9 +6,10 @@
 // DKR ADAPTATION: mgb64's launcher carries Launch (level/difficulty/players)
 // and Modes (engine toggle hatches) panels. Neither exists here — DKR's engine
 // exposes no level or difficulty CLI, and its presentation modes are already
-// first-class schema keys — so the panel set is ROM / Settings / Diagnostics /
-// About rather than mgb64's six. Panels DKR has no analogue for are absent, not
-// present and inert.
+// first-class schema keys — so the panel set is ROM / Online Room / Settings /
+// Diagnostics / About rather than mgb64's six. Online Room is launcher-owned and stays
+// visibly gated until the multiplayer release decision; panels DKR has no
+// analogue for are absent, not present and inert.
 #ifndef MDKR64_UI_LAUNCHER_H
 #define MDKR64_UI_LAUNCHER_H
 
@@ -16,15 +17,23 @@
 #include "rom_validate.h"   // RomInfo
 
 #include <string>
+#include <memory>
 
 /* GetModuleFileNameW permits 32,767 UTF-16 code units; UTF-8 needs at most
  * four bytes per unit. Keep a finite UI/input contract below that OS boundary.
  * The preference writer reserves enough escaped-line capacity for this value. */
 constexpr size_t kLauncherRomPathMaxBytes = 32767u * 4u;
-constexpr int kLauncherPanelCount = 4;
+constexpr int kLauncherPanelGameRom = 0;
+constexpr int kLauncherPanelOnlineRoom = 1;
+constexpr int kLauncherPanelSettings = 2;
+constexpr int kLauncherPanelDiagnostics = 3;
+constexpr int kLauncherPanelAbout = 4;
+constexpr int kLauncherPanelCount = 5;
 
 struct SDL_Window;
 class AppHost;
+class MdkrNativePartyHost;
+class MdkrPartyTransport;
 
 enum class LauncherActionType { None, Play, Quit };
 
@@ -38,6 +47,8 @@ struct LauncherState {
     /* Borrowed for the current draw only. Window-mode settings use it for the
      * SDL transition; Launcher never owns or destroys the host window. */
     SDL_Window *hostWindow = nullptr;
+    /* Process-owned by Launcher; borrowed by the Play Here panel. */
+    MdkrNativePartyHost *phoneParty = nullptr;
     // Paths stay dynamically owned by the launcher until engine boot. The UTF-8
     // filesystem boundary supports Windows extended paths, so a fixed MAX_PATH
     // or 4 KiB UI buffer must never turn a valid picked file into another path.
@@ -112,6 +123,8 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out);
 
 class Launcher {
 public:
+    Launcher();
+    ~Launcher();
     LauncherAction draw(AppHost &host);
     void setBootError(const char *message);
 
@@ -130,6 +143,8 @@ public:
     int activePanelForSmoke() const { return active_; }
 
 private:
+    std::unique_ptr<MdkrPartyTransport> partyTransport_;
+    std::unique_ptr<MdkrNativePartyHost> phoneParty_;
     LauncherState state_;
     int  active_ = 0;               // index into the panel table
     bool panelEnvChecked_ = false;  // MDKR_APP_PANEL design-review/CI hook
@@ -146,5 +161,12 @@ bool Launcher_smokeTopTabCenter(int panel, int *x, int *y);
 bool Launcher_smokeSettingsScrollRect(int *minX, int *minY,
                                       int *maxX, int *maxY);
 float Launcher_smokeSettingsScrollY();
+
+// Active panel scroll owner. Settings has a nested owner, while every other
+// panel uses the shared content child; this seam resolves that distinction so
+// a production-input touch gate can qualify any launcher destination.
+bool Launcher_smokePanelScrollRect(int *minX, int *minY,
+                                   int *maxX, int *maxY);
+float Launcher_smokePanelScrollY();
 
 #endif  // MDKR64_UI_LAUNCHER_H

@@ -12,6 +12,7 @@
 # The app ships NO game data (bring-your-own-ROM); nothing here embeds ROM bytes.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+readonly PHONE_PARTY_NOTICE_SHA256="dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd"
 
 binary="build/mdkr64"
 version="dev"
@@ -61,6 +62,7 @@ verify_linux_tarball() {
     printf '%s\n' \
       Golden-Balloon.AppDir/AppRun \
       Golden-Balloon.AppDir/LICENSE \
+      Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt \
       Golden-Balloon.AppDir/README.md \
       Golden-Balloon.AppDir/RUN_ME.txt \
       Golden-Balloon.AppDir/mdkr64.desktop \
@@ -81,6 +83,16 @@ verify_linux_tarball() {
     diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$archive_manifest") >&2 || true
     return 1
   fi
+  local staged_notice_hash archive_notice_hash
+  staged_notice_hash="$(sha256sum \
+    "$staged/NativePhoneParty-NOTICES.txt" | awk '{print $1}')"
+  archive_notice_hash="$(tar -xOzf "$archive" \
+    Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt | sha256sum | awk '{print $1}')"
+  if [[ "$staged_notice_hash" != "$PHONE_PARTY_NOTICE_SHA256" ||
+        "$archive_notice_hash" != "$PHONE_PARTY_NOTICE_SHA256" ]]; then
+    echo "ERROR: Linux package carries an unreviewed native Phone Party notice." >&2
+    return 1
+  fi
 }
 
 if [[ "$self_test" == true ]]; then
@@ -92,6 +104,8 @@ if [[ "$self_test" == true ]]; then
   for path in AppRun LICENSE README.md RUN_ME.txt mdkr64.desktop mdkr64.png; do
     : >"$test_appdir/$path"
   done
+  cp third_party/native_phone_party/NOTICE.txt \
+    "$test_appdir/NativePhoneParty-NOTICES.txt"
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
   : >"$test_appdir/usr/bin/mdkr64"
   : >"$test_appdir/usr/lib/libSDL2-2.0.so.0"
@@ -202,6 +216,15 @@ if ! cp LICENSE README.md "$appdir/"; then
     echo "WARN: LICENSE or README is unavailable in developer package." >&2
   else
     echo "ERROR: tracked LICENSE and README are required in the release package." >&2
+    exit 1
+  fi
+fi
+if ! cp third_party/native_phone_party/NOTICE.txt \
+    "$appdir/NativePhoneParty-NOTICES.txt"; then
+  if [[ "$dev" == true ]]; then
+    echo "WARN: native Phone Party notices are unavailable in developer package." >&2
+  else
+    echo "ERROR: native Phone Party notices are required in the release package." >&2
     exit 1
   fi
 fi

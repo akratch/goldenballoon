@@ -37,6 +37,10 @@ let romSessionOnlyWarning = ""; // visible if a fresh pick could not reach IDBFS
 let romPersistencePending = false; // a retry can promote this in-memory ROM
 let romStorageMounted = false;
 let romSelectionEpoch = 0; // latest user pick wins across async read/hash work
+let validatedOnlineRomBuild = ""; // set only by the full-image SHA-256 gate
+let onlineBuildInfo = null; // clean publisher provenance from build-info.json
+let onlineActivationGeneration = 0;
+let onlineActivationKey = "";
 
 // #forget is the documented recovery control for a stored ROM this browser can
 // no longer boot from. It must therefore be reachable from the moment a stored
@@ -52,10 +56,27 @@ function revealForgetControl() {
 function setStoredRomAvailable(available) {
   storedRomAvailable = available;
   if (available) revealForgetControl();
+  publishPartyRomReady();
 }
 let module = null;       // the instantiated engine Module
 let booted = false;
 let savedOnce = false;
+// A clean engine return keeps the one wasm instance and its mounted, validated
+// ROM alive behind the launcher. This is separate from `storedRomAvailable`:
+// a spectator tab may legally replay the in-memory cartridge without claiming
+// that it wrote anything to IndexedDB.
+let engineRomAvailable = false;
+let engineRunGeneration = 0;
+let handledEngineRunGeneration = 0;
+let wasmModuleCreations = 0;
+
+function publishPartyRomReady() {
+  const blocked = $("play")?.dataset.blocked === "1";
+  const ready = !blocked &&
+    Boolean(romBytes || storedRomAvailable || engineRomAvailable);
+  globalThis.MDKRPartyHost?.setRomReady(ready);
+  void publishOnlineCompatibility(ready);
+}
 
 // One plain object is shared with the wasm input sampler. Pointer callbacks only
 // mutate browser state; C reads one coherent snapshot at its ordinary per-frame
@@ -69,6 +90,7 @@ const touchPadState = {
   overflow: 0,
   sequence: 0,
 };
+globalThis.__mdkrLocalTouchActive = false;
 
 const TOUCH_EDGE_CAPACITY = 128;
 let lastTouchSnapshot = null;
@@ -140,6 +162,7 @@ const testState = testConfig ? {
   errors: [],
   storage: null,
   module: null,
+  runs: [],
 } : null;
 if (testState) globalThis.__mdkrTestState = testState;
 
@@ -433,7 +456,7 @@ function testRefreshExitState() {
   if (Number.isInteger(module.__mdkrExitCode) &&
       module.__mdkrShutdownComplete === true) {
     testState.exitCode = module.__mdkrExitCode;
-    testMark("exited");
+    if (!graphicsRecoveryQueued) testMark("exited");
   }
 }
 
@@ -464,6 +487,8 @@ if (testState) {
       persistenceWait: testState.persistenceWait
         ? { ...testState.persistenceWait } : null,
       audio: testAudioInfo(),
+      engineRuns: testState.runs.slice(),
+      wasmModuleCreations,
     };
   };
 }
@@ -532,6 +557,9 @@ async function validateRom(bytes, name) {
       "complete SHA-256 does not match the supported reference image. The dump " +
       "is modified or damaged; choose a clean copy of your cartridge.";
   }
+  // Do not retain or derive anything from the ROM body. The already-public
+  // revision enum is enough for room compatibility after the full hash gate.
+  validatedOnlineRomBuild = res.id.decompBuild;
   return null;
 }
 
@@ -677,11 +705,68 @@ const BUILD_QUERY = (() => {
 })();
 globalThis.__mdkrBuildQuery = BUILD_QUERY;
 
+async function onlineDigest(label, fields) {
+  const material = ["golden-balloon", label, "v1", ...fields].join("\n");
+  const digest = await globalThis.crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode(material));
+  return [...new Uint8Array(digest)];
+}
+
+async function publishOnlineCompatibility(romReady = null) {
+  const policy = globalThis.__mdkrOnlineControlReleasePolicy;
+  const room = globalThis.MDKROnlineRoom;
+  // Disabled releases stay exactly as shipped: do not load the model, hash a
+  // compatibility record, consume a staged invite, or perform network I/O.
+  if (!room || !policy || policy.enabled !== true) return false;
+  const generation = ++onlineActivationGeneration;
+  const ready = romReady === null
+    ? Boolean(romBytes || storedRomAvailable || engineRomAvailable) &&
+      $("play")?.dataset.blocked !== "1"
+    : romReady;
+  const info = onlineBuildInfo;
+  const build = validatedOnlineRomBuild;
+  const revision = {"us.v80": 1, "pal.v80": 2}[build] || 0;
+  const cadenceHz = build === "us.v80" ? 30 : build === "pal.v80" ? 25 : 0;
+  const clean = info && info.source_dirty === false &&
+    typeof info.version === "string" && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.version) &&
+    typeof info.source_commit === "string" &&
+    /^[0-9a-f]{40}$/.test(info.source_commit);
+  if (!ready || !clean || !revision || !cadenceHz ||
+      !globalThis.crypto?.subtle) {
+    onlineActivationKey = "";
+    room.disable();
+    return false;
+  }
+  const buildDigest = await onlineDigest("online-build", [
+    info.version, info.source_commit,
+  ]);
+  const gameplayDigest = await onlineDigest("gameplay-contract", [
+    info.source_commit, "protocol=1", "rules=standard-race",
+    "rollback=bounded-v1",
+  ]);
+  if (generation !== onlineActivationGeneration) return false;
+  const compatibility = Object.freeze({
+    protocolVersion: 1,
+    buildId: Object.freeze(buildDigest.slice(0, 16)),
+    gameplayDigest: Object.freeze(gameplayDigest),
+    romRevision: revision,
+    cadenceHz,
+  });
+  const key = [info.source_commit, build, ...compatibility.buildId,
+    ...compatibility.gameplayDigest].join(":");
+  if (key === onlineActivationKey && room.enabled()) return true;
+  const activated = await room.configure({compatibility});
+  if (generation !== onlineActivationGeneration) return false;
+  onlineActivationKey = activated ? key : "";
+  return activated;
+}
+
 (async () => {
   try {
     const response = await fetch("build-info.json" + BUILD_QUERY, { cache: "no-cache" });
     if (!response.ok) return;
     const info = await response.json();
+    onlineBuildInfo = info && typeof info === "object" ? info : null;
     const tag = document.getElementById("build-tag");
     const version = typeof info.version === "string" && info.version
       ? info.version : "?";
@@ -694,6 +779,7 @@ globalThis.__mdkrBuildQuery = BUILD_QUERY;
       tag.hidden = false;
     }
     console.info("[shell] " + text);
+    void publishOnlineCompatibility();
   } catch (_) {}
 })();
 
@@ -989,7 +1075,7 @@ function retireEngineModule(previous) {
   if (testState) testState.module = null;
 }
 
-async function beginEnginePersistenceSession() {
+async function beginEnginePersistenceSession(reuseModule = false) {
   if (persistenceTimer !== null) {
     clearInterval(persistenceTimer);
     persistenceTimer = null;
@@ -997,14 +1083,18 @@ async function beginEnginePersistenceSession() {
   // A fast retry can begin before the preceding final IDBFS transaction's
   // callback hands save tooling back. Never let two module views overlap.
   await persistTail.catch(() => {});
-  retireEngineModule(module);
+  if (!reuseModule) {
+    retireEngineModule(module);
+    engineRomAvailable = false;
+    publishPartyRomReady();
+  }
   persistRequested = 0;
   persistCommitted = 0;
   persistTail = Promise.resolve();
   enginePersistenceActive = true;
   savedOnce = false;
   graphicsRecoveryQueued = false;
-  module = null;
+  if (!reuseModule) module = null;
 }
 
 function armEnginePersistenceListeners() {
@@ -1224,11 +1314,76 @@ function wireCanvasResize() {
   armViewportSettleWatch(3000);
 }
 
+async function finishEngineRun(generation) {
+  if (generation !== engineRunGeneration ||
+      generation <= handledEngineRunGeneration || !module ||
+      module.__mdkrShutdownComplete !== true ||
+      !Number.isInteger(module.__mdkrExitCode)) {
+    return;
+  }
+  handledEngineRunGeneration = generation;
+  const code = Number(module.__mdkrExitCode);
+  if (testState) {
+    testState.exitCode = code;
+    testState.runs.push({
+      generation,
+      exitCode: code,
+      shutdownComplete: true,
+      frames: Number(module.__mdkrFrames) || 0,
+    });
+    if (!graphicsRecoveryQueued) testMark("exited");
+  }
+  clearTouchPad();
+
+  // C has released every per-race child, but the wasm heap, IDBFS mounts and
+  // validated ROM remain launcher-owned. Finish the durable save handoff before
+  // making Play available or allowing the save-tools module to mutate /save.
+  await quiesceEnginePersistence("engine-return").catch((error) => {
+    testError("engine-return persistence failed: " +
+      String(error && error.message ? error.message : error));
+  });
+  if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
+
+  if (code !== 0) return; // the onExit failure path owns its specific recovery
+  engineRomAvailable = testFileInfo(ROM_PATH, false).size === DKR_ROM_SIZE;
+  publishPartyRomReady();
+  $("stage").hidden = true;
+  $("gate").hidden = false;
+  const status = $("gate-msg");
+  status.className = "status-line ok";
+  status.textContent = engineRomAvailable
+    ? "Race ended. Your controllers and settings are ready for another race."
+    : "Race ended, but the in-memory ROM is unavailable. Choose your ROM again.";
+  const play = $("play");
+  play.disabled = play.dataset.blocked === "1" ||
+    (!romBytes && !storedRomAvailable && !engineRomAvailable);
+  booted = false;
+  requestAnimationFrame(() => {
+    if (!$("gate").hidden && !play.disabled) play.focus({preventScroll: true});
+  });
+}
+
+function monitorEngineRun(generation) {
+  const inspect = () => {
+    if (generation !== engineRunGeneration ||
+        generation <= handledEngineRunGeneration) return;
+    if (module && module.__mdkrShutdownComplete === true &&
+        Number.isInteger(module.__mdkrExitCode)) {
+      void finishEngineRun(generation);
+      return;
+    }
+    requestAnimationFrame(inspect);
+  };
+  requestAnimationFrame(inspect);
+}
+
 // ---- Boot ------------------------------------------------------------------
 async function boot() {
   if (booted) return;
   booted = true;
-  await beginEnginePersistenceSession();
+  const reusableModule = module !== null && engineRomAvailable &&
+    module.__mdkrShutdownComplete === true && module.__mdkrExitCode === 0;
+  await beginEnginePersistenceSession(reusableModule);
   // Decide write ownership BEFORE anything mounts /save, so a spectator tab has
   // already been switched off the persistence path by the time the engine can
   // ask for a flush.
@@ -1256,17 +1411,20 @@ async function boot() {
       "). Try again; your stored ROM and saves were not changed.";
     const play = $("play");
     play.disabled = play.dataset.blocked === "1" ||
-                    (!romBytes && !storedRomAvailable);
+                    (!romBytes && !storedRomAvailable && !engineRomAvailable);
     quiesceEnginePersistence("save-ui-release-failure", () => {
       if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
     });
     return;
   }
   testMark("boot-started");
-  status.textContent = "Downloading engine…";
+  status.textContent = reusableModule
+    ? "Preparing the next race…"
+    : "Downloading engine…";
 
   // Size the surface first so SDL and the first WebGPU configure agree.
   const dim = sizeCanvas();
+  const qs = new URLSearchParams(location.search);
   // Diagnostic only: gated behind the same ?trace= flag that arms the engine's
   // own traces, so a normal boot writes nothing to the console.
   if (new URLSearchParams(location.search).get("trace")) {
@@ -1275,6 +1433,7 @@ async function boot() {
   }
 
   let createMDKR64;
+  if (!reusableModule) {
   try {
     createMDKR64 = await loadEngineFactory();
     testMark("factory-loaded");
@@ -1288,7 +1447,7 @@ async function boot() {
       "). Try again or reload the page.";
     const play = $("play");
     play.disabled = play.dataset.blocked === "1" ||
-                    (!romBytes && !storedRomAvailable);
+                    (!romBytes && !storedRomAvailable && !engineRomAvailable);
     quiesceEnginePersistence("factory-failure", () => {
       if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
     });
@@ -1301,7 +1460,6 @@ async function boot() {
   // per-frame time (dtms) and the updateRate the game is using (R=). That is the
   // decisive diagnostic for "is the game running too fast?" -- a healthy 60 Hz run
   // shows dtms~16.7 with R=1. ?trace=2 adds the display-list opcode trace.
-  const qs = new URLSearchParams(location.search);
   const traceLevel = qs.get("trace");
   // ?objcoll=legacy restores the pre-wave-"objcoll" behaviour, where
   // func_80017A18 returned 0 and every collision-meshed object was intangible.
@@ -1344,6 +1502,7 @@ async function boot() {
     // preRun runs BEFORE the createMDKR64 promise resolves, so `module` is still
     // null here — take the Module from the callback argument instead.
     preRun: [function (m) {
+      m.__mdkrRemotePads = globalThis.MDKRPartyHost?.remotePads() || [];
       if (traceLevel && m && m.ENV) {
         try { m.ENV.MDKR_TRACE = String(traceLevel); } catch (e) {}
       }
@@ -1371,13 +1530,17 @@ async function boot() {
     onExit: (code) => {
       if (testState) {
         testState.exitCode = Number(code);
-        testMark("exited");
+        // mdkr64ShowError owns graphics recovery. WebGPU bring-up then exits
+        // main(1) cooperatively; relabeling that terminal state as a generic
+        // engine exit races the accessible GPU panel and makes the regression
+        // snapshot (and, below, the visible UI) blame a valid ROM.
+        if (!graphicsRecoveryQueued) testMark("exited");
       }
       // The engine's main() returns nonzero when rom_io.c refuses the ROM. The
       // stored copy stops being bootable but still OCCUPIES storage, so this
       // clears only the "can press Play" claim — #forget was revealed when the
       // copy was stored and must stay reachable on exactly this screen.
-      if (code && code !== 0) {
+      if (code && code !== 0 && !graphicsRecoveryQueued) {
         setStoredRomAvailable(false);
         $("gate").hidden = false;
         $("stage").hidden = true;
@@ -1418,6 +1581,7 @@ async function boot() {
       });
     },
     });
+    wasmModuleCreations++;
   } catch (error) {
     booted = false;
     const detail = String(error && error.message ? error.message : error);
@@ -1430,14 +1594,16 @@ async function boot() {
     $("gate").hidden = false;
     const play = $("play");
     play.disabled = play.dataset.blocked === "1" ||
-                    (!romBytes && !storedRomAvailable);
+                    (!romBytes && !storedRomAvailable && !engineRomAvailable);
     focusLauncherRecovery(status);
     quiesceEnginePersistence("module-failure", () => {
       if (globalThis.MDKRSaveUI) globalThis.MDKRSaveUI.resume();
     });
     return;
   }
+  } // one-time wasm module creation
   publishTouchPad();
+  module.__mdkrRemotePads = globalThis.MDKRPartyHost?.remotePads() || [];
   if (testState) testState.module = module;
   testMark("module-ready");
 
@@ -1445,8 +1611,13 @@ async function boot() {
   // IDBFS-backed ROM + save dirs. syncfs(true) pulls any persisted copies in.
   let storageMounted = false;
   try {
-    module.FS.mkdir("/rom");  module.FS.mount(module.IDBFS, {}, "/rom");
-    module.FS.mkdir("/save"); module.FS.mount(module.IDBFS, {}, "/save");
+    if (module.__mdkrStorageMounted !== true) {
+      module.FS.mkdir("/rom");  module.FS.mount(module.IDBFS, {}, "/rom");
+      module.FS.mkdir("/save"); module.FS.mount(module.IDBFS, {}, "/save");
+      module.__mdkrStorageMounted = true;
+    }
+    // On a later race this pull imports any save-management operation the
+    // returned launcher completed while the engine view was quiescent.
     await new Promise((resolve, reject) => module.FS.syncfs(
       true, (err) => err ? reject(err) : resolve()
     ));
@@ -1504,6 +1675,11 @@ async function boot() {
     // The in-memory engine copy is valid even when persistence is unavailable;
     // only advertise a reusable stored copy after IDBFS was actually mounted.
     setStoredRomAvailable(storageMounted && romPersisted);
+  }
+  engineRomAvailable = testFileInfo(ROM_PATH, false).size === DKR_ROM_SIZE;
+  publishPartyRomReady();
+  if (!engineRomAvailable) {
+    throw new Error("the validated in-memory ROM was unavailable before engine start");
   }
 
   // The engine's post-EEPROM-write sync calls this, so the whole page shares one
@@ -1649,6 +1825,16 @@ async function boot() {
     };
   }
   testMark("main-started");
+  const generation = ++engineRunGeneration;
+  module.__mdkrExitCode = null;
+  module.__mdkrExitRequested = false;
+  module.__mdkrShutdownComplete = false;
+  module.__mdkrFrames = 0;
+  if (testState) {
+    testState.exitCode = null;
+    testState.abortReason = null;
+  }
+  monitorEngineRun(generation);
   try {
     const result = module.callMain(mainArgs);
     if (result && typeof result.then === "function") await result;
@@ -1813,6 +1999,7 @@ function wireRomUi() {
       return;
     }
     romBytes = buf;
+    publishPartyRomReady();
     selectedRomName = file.name || "Selected ROM";
     romStatus.className = "ok";
     if (play.dataset.blocked) {
@@ -1853,7 +2040,7 @@ function wireRomUi() {
     window.addEventListener(ev, (e) => { e.preventDefault(); }));
 
   play.addEventListener("click", () => {
-    if (!romBytes && !storedRomAvailable) {
+    if (!romBytes && !storedRomAvailable && !engineRomAvailable) {
       romStatus.className = "err";
       romStatus.textContent = "Choose a clean supported ROM before playing.";
       play.disabled = true;
@@ -1915,6 +2102,8 @@ function wireRomUi() {
     const ok = await idbClear("/rom");
     if (ok) {
       setStoredRomAvailable(false);
+      engineRomAvailable = false;
+      publishPartyRomReady();
       romPersistencePending = false;
       romStorageMounted = false;
       clearRomSessionOnlyWarning();
@@ -1935,7 +2124,7 @@ function wireRomUi() {
       : "Couldn't clear the stored ROM. Try again; if it keeps failing, " +
         "clear this site's data in your browser settings.";
     $("play").disabled = $("play").dataset.blocked === "1" ||
-                          (!romBytes && !storedRomAvailable);
+                          (!romBytes && !storedRomAvailable && !engineRomAvailable);
     if (ok) $("drop").focus();
   });
 
@@ -2075,14 +2264,15 @@ function wireTouchControls() {
     } catch (_) {}
     return;
   }
-  let stickPointer = null;
-  let accessibilityButtons = 0;
-  const pressedPointers = new Map();
-  const pressedClasses = new Set();
-  const pulseTimers = new Map();
-  const actionButtons = [
-    ...controls.querySelectorAll("[data-touch-button]")
-  ];
+  if (typeof globalThis.MDKRTouchSurface !== "function") {
+    throw new Error("touch-surface.js failed to load");
+  }
+  const surface = new globalThis.MDKRTouchSurface({
+    controls, stick, knob, state: touchPadState,
+    publish: publishTouchPad, clear: clearTouchPad,
+  });
+  globalThis.__mdkrNeutralizeLocalTouch = () => surface.releaseAll();
+  globalThis.__mdkrRefreshPressRects = () => surface.refreshRects();
 
   const hasGamepad = () => {
     try {
@@ -2092,53 +2282,6 @@ function wireTouchControls() {
       return false;
     }
   };
-
-  function recomputeButtons() {
-    let buttons = accessibilityButtons;
-    pressedPointers.forEach((press) => {
-      buttons |= press.bits;
-    });
-    touchPadState.buttons = buttons >>> 0;
-    publishTouchPad();
-  }
-
-  function refreshButtonClasses() {
-    actionButtons.forEach((button) => {
-      const buttonBit = Number(button.dataset.touchButton) >>> 0;
-      const active = (accessibilityButtons & buttonBit) !== 0 ||
-        [...pressedPointers.values()].some(
-          (press) => (press.bits & buttonBit) === buttonBit);
-      button.classList.toggle("is-pressed", active);
-      if (active) pressedClasses.add(button);
-      else pressedClasses.delete(button);
-    });
-  }
-
-  function releaseButtonPointer(pointerId) {
-    if (!pressedPointers.delete(pointerId)) return;
-    refreshButtonClasses();
-    recomputeButtons();
-  }
-
-  function resetStick() {
-    stickPointer = null;
-    touchPadState.stickX = 0;
-    touchPadState.stickY = 0;
-    knob.style.transform = "translate3d(0, 0, 0)";
-    stick.classList.remove("is-active");
-    publishTouchPad();
-  }
-
-  function releaseAll() {
-    pressedPointers.clear();
-    accessibilityButtons = 0;
-    pulseTimers.forEach((timer) => clearTimeout(timer));
-    pulseTimers.clear();
-    pressedClasses.forEach((el) => el.classList.remove("is-pressed"));
-    pressedClasses.clear();
-    resetStick();
-    clearTouchPad();
-  }
 
   function setVisible(visible, remember = false) {
     controls.hidden = !visible;
@@ -2150,7 +2293,9 @@ function wireTouchControls() {
       visible ? "Controls" : "Show controls";
     stage.classList.toggle("touch-ui-active", visible);
     touchPadState.enabled = visible;
-    if (!visible) releaseAll();
+    globalThis.__mdkrLocalTouchActive = visible;
+    globalThis.MDKRPartyHost?.refreshSources();
+    if (!visible) surface.releaseAll();
     publishTouchPad();
     if (remember) {
       preference = visible ? "shown" : "hidden";
@@ -2158,213 +2303,7 @@ function wireTouchControls() {
     }
   }
 
-  function updateStick(event) {
-    const rect = stick.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const radius = Math.max(24, Math.min(rect.width, rect.height) * 0.31);
-    let dx = event.clientX - centerX;
-    let dy = event.clientY - centerY;
-    const distance = Math.hypot(dx, dy);
-    if (distance > radius) {
-      dx = dx * radius / distance;
-      dy = dy * radius / distance;
-    }
-
-    // Eight percent center deadzone, then rescale the remaining travel so the
-    // outer ring still reaches the full N64 range. This prevents thumb tremor
-    // from steering while retaining continuous low-speed control.
-    const normalized = Math.min(1, Math.hypot(dx, dy) / radius);
-    const deadzone = 0.08;
-    const magnitude = normalized <= deadzone
-      ? 0 : (normalized - deadzone) / (1 - deadzone);
-    const angle = Math.atan2(dy, dx);
-    touchPadState.stickX = Math.round(Math.cos(angle) * magnitude * 80);
-    touchPadState.stickY = Math.round(-Math.sin(angle) * magnitude * 80);
-    knob.style.transform =
-      `translate3d(${dx.toFixed(1)}px, ${dy.toFixed(1)}px, 0)`;
-    publishTouchPad();
-  }
-
-  stick.addEventListener("pointerdown", (event) => {
-    if (stickPointer !== null) return;
-    event.preventDefault();
-    stickPointer = event.pointerId;
-    // Capture is an optimization; the window-level tracking below owns the
-    // lifecycle (see the pad comment — Safari can decline capture, and a
-    // steering thumb that wanders off the stick must never freeze steering).
-    try { stick.setPointerCapture(event.pointerId); } catch (_) {}
-    stick.classList.add("is-active");
-    updateStick(event);
-  });
-  addEventListener("pointermove", (event) => {
-    if (event.pointerId !== stickPointer) return;
-    event.preventDefault();
-    updateStick(event);
-  }, true);
-  const endStick = (event) => {
-    if (event.pointerId !== stickPointer) return;
-    resetStick();
-  };
-  addEventListener("pointerup", endStick, true);
-  addEventListener("pointercancel", endStick, true);
-
-  // ---- The throttle pad: slide-to-chord ----------------------------------
-  // Human-factors model: the action cluster IS the accelerator. Touching any
-  // zone holds A instantly; the zone under the thumb selects the modifier, so
-  // drifting or firing never requires lifting off the throttle:
-  //   Go -> A         Drift -> A+R      Item -> A+Z      Look -> A+C
-  //   Brake -> B      (braking is off-throttle by definition)
-  // Zone changes use nearest-target hysteresis with retention: crossing a gap
-  // or overshooting keeps the last chord, so a mid-corner slide can never
-  // stall the kart; only lifting releases. A second finger still lands as an
-  // independent tap on any zone (bits union across pointers). Pause sits
-  // outside the pad and stays a plain tap without the throttle latch.
-  const N64_A = 32768;
-  const N64_BRAKE = 16384;
-  const N64_PAUSE = 4096;
-  const actions = controls.querySelector(".touch-actions");
-  const clusterButtons = actions
-    ? [...actions.querySelectorAll("[data-touch-button]")]
-    : [];
-
-  function chordBits(bit) {
-    if (bit === N64_A || bit === N64_BRAKE) return bit;
-    return bit | N64_A;
-  }
-
-  function padRects() {
-    return clusterButtons.map((button) => ({
-      button,
-      bit: Number(button.dataset.touchButton) >>> 0,
-      rect: button.getBoundingClientRect(),
-    }));
-  }
-  globalThis.__mdkrRefreshPressRects = () => {
-    pressedPointers.forEach((press) => {
-      if (press.rects) press.rects = padRects();
-    });
-  };
-
-  function zoneAt(rects, x, y, reach) {
-    const limit = reach == null ? 14 : reach;
-    let best = null;
-    let bestScore = Infinity;
-    for (const entry of rects) {
-      const r = entry.rect;
-      const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
-      const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
-      const outside = Math.max(dx, dy);
-      if (outside > limit) continue;
-      const cx = x - (r.left + r.right) / 2;
-      const cy = y - (r.top + r.bottom) / 2;
-      // Strictly-inside beats padded reach; ties resolve to nearest center.
-      const score = outside * 1e7 + cx * cx + cy * cy;
-      if (score < bestScore) {
-        bestScore = score;
-        best = entry;
-      }
-    }
-    return best;
-  }
-
-  function padVibrate(ms, type) {
-    try {
-      if (navigator.vibrate && type !== "mouse") navigator.vibrate(ms);
-    } catch (_) {}
-  }
-
-  if (actions) {
-    actions.addEventListener("pointerdown", (event) => {
-      const rects = padRects();
-      // Any touch inside the cluster box engages the nearest zone: the box
-      // IS the pad, and an inert patch would swallow the tap (the box is a
-      // hit target so it never falls through to the canvas).
-      const zone = zoneAt(rects, event.clientX, event.clientY, Infinity);
-      if (!zone) return;
-      event.preventDefault();
-      // Capture is an optimization only. Release correctness must NEVER
-      // depend on it: Safari declines capture in configurations Chrome
-      // accepts, and a declined capture meant a thumb that slid off its
-      // starting button hit-tested its pointerup into the canvas — the
-      // pad's handlers never saw it and the throttle latched forever
-      // (the shipped stuck-Go defect). The window-level tracking below is
-      // the authoritative lifecycle.
-      try { actions.setPointerCapture(event.pointerId); } catch (_) {}
-      pressedPointers.set(event.pointerId, {
-        rects,
-        bits: chordBits(zone.bit),
-        zone: zone.button,
-      });
-      refreshButtonClasses();
-      recomputeButtons();
-      padVibrate(8, event.pointerType);
-    });
-  }
-
-  // Authoritative pointer lifecycle: once a pad (or pause) pointer is down,
-  // its moves and its release are tracked at the WINDOW in the capture
-  // phase, so no hit-testing quirk, overlay boundary, or declined capture
-  // can ever eat the release. blur/pagehide/visibilitychange releaseAll
-  // remains the backstop.
-  addEventListener("pointermove", (event) => {
-    const press = pressedPointers.get(event.pointerId);
-    if (!press || !press.rects) return;
-    const zone = zoneAt(press.rects, event.clientX, event.clientY);
-    if (!zone || zone.button === press.zone) return;
-    press.zone = zone.button;
-    press.bits = chordBits(zone.bit);
-    refreshButtonClasses();
-    recomputeButtons();
-    padVibrate(5, event.pointerType);
-  }, true);
-  ["pointerup", "pointercancel"].forEach((name) => {
-    addEventListener(name, (event) =>
-      releaseButtonPointer(event.pointerId), true);
-  });
-
-  actionButtons.forEach((button) => {
-    const bit = Number(button.dataset.touchButton) >>> 0;
-    if (bit === N64_PAUSE) {
-      button.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        try { button.setPointerCapture(event.pointerId); } catch (_) {}
-        pressedPointers.set(event.pointerId, { bits: bit, zone: button });
-        refreshButtonClasses();
-        recomputeButtons();
-        padVibrate(8, event.pointerType);
-        // Release rides the window-level pointerup/pointercancel tracking.
-      });
-    }
-    // Screen readers and switch controls may activate a button without Pointer
-    // Events. Hold it long enough to cross at least one authored 30 Hz sample.
-    button.addEventListener("click", (event) => {
-      if (event.detail !== 0) return;
-      const pulseBits = bit === N64_PAUSE ? bit : chordBits(bit);
-      const priorTimer = pulseTimers.get(bit);
-      if (priorTimer) clearTimeout(priorTimer);
-      accessibilityButtons |= pulseBits;
-      button.classList.add("is-pressed");
-      recomputeButtons();
-      pulseTimers.set(bit, setTimeout(() => {
-        accessibilityButtons &= ~pulseBits;
-        pulseTimers.delete(bit);
-        refreshButtonClasses();
-        recomputeButtons();
-      }, 90));
-    });
-  });
-
-  toggle.addEventListener("click", () => {
-    setVisible(controls.hidden, true);
-  });
-  addEventListener("blur", releaseAll);
-  addEventListener("pagehide", releaseAll);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") releaseAll();
-  });
-  document.addEventListener("fullscreenchange", releaseAll);
-
+  toggle.addEventListener("click", () => setVisible(controls.hidden, true));
   addEventListener("gamepadconnected", () => {
     if (!preference) setVisible(false, false);
   });
@@ -2593,6 +2532,7 @@ function registerServiceWorker() {
     play.disabled = true;
     play.dataset.blocked = "1";     // keep it disabled even after a valid ROM
     play.title = err;
+    publishPartyRomReady();
     await probeStoredRom();         // still show Forget, so storage stays clearable
     return;
   }

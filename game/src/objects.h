@@ -575,6 +575,25 @@ void func_8001E89C(void);
 CheckpointNode *func_800230D0(Object *, Object_Racer *);
 void obj_update(s32 updateRate);
 void func_800159C8(Object *, Object *);
+#ifdef NATIVE_PORT
+/* Allocate rollback-owned dynamic object state from the object subpool. The
+ * rollback registry snapshots this arena as one stable authority range. */
+void *mdkr_object_pool_alloc_rollback(s32 size);
+s32 mdkr_object_pool_rollback_ready(void);
+/* Native ModelInstance state lives in a dedicated subpool so allocator
+ * topology and freed/reused instance bytes restore as one authority unit. */
+void *mdkr_object_model_pool_alloc(s32 size);
+s32 mdkr_object_model_pool_ready(void);
+/* Lease the complete standard-item spawn asset set before tick zero. Shared
+ * caches then stay address-stable while per-spawn instances live in the
+ * snapshotted object pool. */
+s32 mdkr_object_assets_pin_rollback(void);
+void mdkr_object_assets_unpin_rollback(void);
+/* Enumerate the unique shared-model reference counters held by the leases.
+ * These small mutable lifetime fields are rollback authority; model geometry
+ * and textures remain immutable shared assets. Returns -1 on bad arguments. */
+s32 mdkr_object_assets_rollback_references(s16 **references, s32 capacity);
+#endif
 #ifndef NATIVE_PORT
 void obj_door_number(ObjectModel *, Object *);
 #endif

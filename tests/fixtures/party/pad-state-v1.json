@@ -1,0 +1,17 @@
+{
+  "description": "C/JavaScript cross-codec vector: current accelerate+stick with recovered press and release",
+  "packet": {
+    "flags": 5,
+    "connectionSequence": 16909060,
+    "sampleSequence": 100,
+    "senderTimeMs": 123456,
+    "buttons": 32768,
+    "stickX": 40,
+    "stickY": -20,
+    "edges": [
+      {"sequenceDelta": 2, "buttons": 32768, "stickX": 20, "stickY": 0},
+      {"sequenceDelta": 1, "buttons": 0, "stickX": 0, "stickY": 0}
+    ]
+  },
+  "encodedHex": "474201010501020304000000640001e240800028ec02028000140001000000006a3c"
+}

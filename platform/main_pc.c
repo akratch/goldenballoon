@@ -51,6 +51,12 @@
 #include "camera_dynamic_occlusion.h"
 #include "camera_obstruction_runtime.h"
 
+/* Game audio owns this teardown; keep the platform TU out of PR/os_libc.h,
+ * whose N64 libc declarations intentionally conflict with host fortified libc. */
+extern void amAudioSessionShutdown(void);
+extern void reset_particles_with_assets(void);
+extern void menu_session_shutdown(void);
+
 /*
  * Fatal-crash write mirror. The app shell's DiagLog tee (platform/app/
  * diag_log.cpp) redirects stdout/stderr through a pipe drained by a reader
@@ -159,6 +165,8 @@ extern void gfx_shutdown(void);
 extern void gfx_set_dimensions(unsigned int width, unsigned int height);
 
 extern void mdkr_memory_shutdown(void);
+extern void mdkr_rollback_game_runtime_level_end(void);
+extern void transition_workspace_shutdown(void);
 /* game/src/memory.c — pending entries in the deferred-free queue. Read (not
  * assumed) by the shutdown report so a non-empty queue is visible. */
 extern int32_t gFreeQueueCount;
@@ -220,6 +228,9 @@ int main(int argc, char **argv) {
     int exitCode = 0;
     bool audioInitialized = false;
 
+    if (platform_engine_session_begin() != 0) {
+        return EXIT_FAILURE;
+    }
     SDL_SetMainReady();
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
@@ -558,6 +569,16 @@ shutdown:
     camera_obstruction_perf_summary();
     /* MOTION-01 motion-quality census, same placement and reason. */
     camera_obstruction_motion_summary();
+    /* Retire every arena-backed particle pool and dummy-sprite handle, not
+     * only its asset tables. A persistent launcher may allocate the next arena
+     * at a different address; leaving any buffer pointer non-NULL would make
+     * the next boot's reset traverse freed memory. */
+    reset_particles_with_assets();
+    menu_session_shutdown();
+    /* The synth graph is arena-backed. Unlink its process-global root before
+     * the arena is released so a later launcher-owned engine epoch starts from
+     * an empty graph rather than traversing freed voices and players. */
+    amAudioSessionShutdown();
     if (audioInitialized) {
         dkr_audio_out_shutdown();
     }
@@ -571,6 +592,12 @@ shutdown:
      * the store for pixels. Safe on the early-failure paths above, where the
      * scan never ran. */
     platform_content_packs_shutdown();
+    /* Headless/process shutdown can end while a level is still loaded, without
+     * taking unload_level_game(). Retire the host snapshot ring explicitly. */
+    mdkr_rollback_game_runtime_level_end();
+    /* The pinned transition workspace belongs to this arena epoch. Forget its
+     * pointers before a persistent launcher can start a new engine epoch. */
+    transition_workspace_shutdown();
     mdkr_memory_shutdown();
     dkr_arena_shutdown();
     platform_rom_shutdown();

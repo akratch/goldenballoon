@@ -179,8 +179,8 @@ MDKR_INPUT_LATENCY=1 MDKR_PACE_REALTIME=1 \
   ./build-rel/mdkr64 --rom baserom.us.v80.z64 2>&1 | grep INPUT-LATENCY
 ```
 
-Play the run by hand — the `queue` and `sample` rows need real host events, and
-`--input-script` deliberately produces none. Vary `MDKR_PRESENT_RATE`
+Play the run by hand to populate `queue`; `sample` is measured from ordinary
+host-state captures even without an input edge. Vary `MDKR_PRESENT_RATE`
 (`original`, `60`, `120`) to move the `sample` term and confirm it tracks the
 present interval. **`MDKR_PACE_REALTIME=1` is not optional**: under the
 synthetic pacer every wall-clock number in this census is meaningless (§0 of
@@ -200,41 +200,47 @@ for (;;) {
 ... platform_input_commit_tick(ticket);
 ```
 
-Every host capture runs from `platform_input_pump`, and the pump runs only from
-`platform_frame_sync_impl`. The loop breaks straight out of the wait, so **no
-capture happens between the last present opportunity and the commit**. The
-`sample` term is therefore one present interval by construction:
+Every host capture runs from `platform_input_pump`, and the pump runs from
+`platform_frame_sync_impl`. In the presentation subloop, the loop breaks
+straight out of the wait, so **no capture happens between the last intermediate
+present and the commit**. Original takes a different path: it paces first and
+then pumps the authored endpoint immediately before the commit. The measured
+shape follows that control flow:
 
 | presentation | `sample`, structurally |
 |---|---|
-| Frame limit Original (30 Hz) | one authored quantum, ~33 ms — the subloop runs zero iterations |
+| Frame limit Original (30 Hz) | census floor, ~0.1 ms — pump follows the pacing wait |
 | 60 Hz | ~16.7 ms |
 | 120 Hz | ~8.3 ms |
 
-**So the pipeline does not dominate the tick quantum, and the reducible term is
-not small.** `present` is bounded below by one queued frame and one refresh —
-8–17 ms on a 60–120 Hz panel with `frameLatency` pinned to 1 — while `sample`
-is 33 ms at the shipping default. At the default the largest single term in the
-whole budget is dead waiting, not the pipeline and not the quantum.
+**The reducible term is material specifically when the presentation subloop is
+active.** At 60 Hz it is almost one display interval; at Original it is already
+gone. `present` remains bounded by the backend queue and scanout, with WebGPU's
+`frameLatency` pinned to 1.
 
-**M3 does not earn its cost for latency.** Halving the quantum removes ~17 ms of
-a term that is *authored*; removing the `sample` dead time takes 33 ms off a
-term that is *accidental*, changes no simulation state, and is available in
-Original. Latency is not an argument for the cadence work.
+**M3 does not earn its cost for latency.** At Interpolated 60 Hz, late sampling
+removes the measured ~16 ms accidental wait without changing authoritative
+cadence or simulation state. Latency therefore does not justify changing the
+gameplay tick rate.
 
-**Implemented: `platform_input_sample_late()`** (`MDKR_INPUT_JIT=1`, default
-off), called at the tick boundary immediately before the commit. It reruns the
+**Implemented: `platform_input_sample_late()`** (default on;
+`MDKR_INPUT_JIT=0` is the diagnostic opt-out), called at the tick boundary
+immediately before the commit. It reruns the
 same event dispatch and the same capture through the same
 `present_sched_input_target_tick()` accessor, so it adds host captures — which
 the bounded queue already accepts in unbounded number per tick and coalesces —
 and adds no ticket, no consume and no controller read. The DKR-visible contract
 is one published pad sample per authored tick, unchanged.
 
-**Bar to default it on:** `sample` p50 measured before and after on the same
-route and host, with `check_arbitrary_presentation_rates` green; and
-`--input-script` runs byte-identical with `MDKR_INPUT_JIT` set and unset, which
-is a strong control because scripted inputs are time-independent, so any
-divergence is proof the change touched processing rather than timing.
+**Default-on evidence (2026-08-12, same Mac/ProMotion host):** at the shipped
+Interpolated/display policy resolving to 60 Hz, the `sample` p50 fell from
+16.1 ms to the census floor of 0.1 ms (p99 17.3 ms to 0.1 ms). Original was
+already at the 0.1 ms floor because its pump occurs after the authored pacing
+wait, so the extra sample is intentionally redundant there. The arbitrary-rate
+gate runs its 60 Hz scripted arm both ways and requires the state, ordered-event,
+consumed-input and PCM streams to remain byte-identical; scripted inputs are
+time-independent, so any divergence proves the change touched processing rather
+than timing.
 
 ---
 

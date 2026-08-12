@@ -35,6 +35,11 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
     owned.push_back("mdkr64");
 
     if (cfg != nullptr) {
+        if (cfg->automation_ticks > 0 && cfg->automation_frames > 0) {
+            std::fprintf(stderr,
+                         "[app] boot rejected conflicting tick/frame limits\n");
+            return 2;
+        }
         if (cfg->rom_path != nullptr && cfg->rom_path[0] != '\0') {
             owned.push_back("--rom");
             owned.push_back(cfg->rom_path);
@@ -52,6 +57,10 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
             owned.push_back("--headless-ticks");
             owned.push_back(std::to_string(cfg->automation_ticks));
         }
+        if (cfg->automation_frames > 0) {
+            owned.push_back("--headless-frames");
+            owned.push_back(std::to_string(cfg->automation_frames));
+        }
         if (cfg->input_script != nullptr && cfg->input_script[0] != '\0') {
             owned.push_back("--input-script");
             owned.push_back(cfg->input_script);
@@ -59,7 +68,7 @@ int mdkr64_engine_boot(const MdkrBootConfig *cfg) {
         // Automation-only: let an app-shell run capture frames the same way the
         // CLI does, so a gate can inspect what the app actually presents while
         // its overlay is open. Inert unless the variable is set.
-        if (cfg->automation_ticks > 0) {
+        if (cfg->automation_ticks > 0 || cfg->automation_frames > 0) {
             const char *dump = std::getenv("MDKR_APP_AUTOPLAY_DUMP_FRAMES");
             if (dump != nullptr && dump[0] != '\0') {
                 owned.push_back("--dump-frames");

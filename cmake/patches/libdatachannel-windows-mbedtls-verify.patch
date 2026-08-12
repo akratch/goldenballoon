@@ -1,0 +1,16 @@
+diff --git a/src/impl/websocket.cpp b/src/impl/websocket.cpp
+index 86b63fe..23db615 100644
+--- a/src/impl/websocket.cpp
++++ b/src/impl/websocket.cpp
+@@ -370,7 +370,10 @@ void WebSocket::open(const string &url) {
+ 
+ 		bool verify = mHostname.has_value() && !config.disableTlsVerification;
+ 
+-#ifdef _WIN32
++// Golden Balloon always supplies an explicit CA PEM to the Mbed TLS backend,
++// whose VerifiedTlsTransport supports parsing and hostname verification on
++// Windows. Keep upstream's fail-open platform fallback for other backends.
++#if defined(_WIN32) && !USE_MBEDTLS
+ 		if (std::exchange(verify, false)) {
+ 			PLOG_WARNING << "TLS certificate verification with root CA is not supported on Windows";
+ 		}

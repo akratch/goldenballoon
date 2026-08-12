@@ -4,6 +4,8 @@
 #include "save_layout.h"
 #include "thread3_main.h"
 #ifdef NATIVE_PORT
+#include <string.h>
+
 #include "input_consumption_trace.h"
 #endif
 
@@ -271,3 +273,86 @@ s8 input_clamp_stick_mag(s8 stickMag) {
 void drm_disable_input(void) {
     gButtonMask = 0;
 }
+
+#ifdef NATIVE_PORT
+void input_rollback_capture(MdkrInputSample out[MDKR_INPUT_PORTS]) {
+    unsigned port;
+    if (out == NULL) return;
+    for (port = 0u; port < MDKR_INPUT_PORTS; port++) {
+        out[port] = (MdkrInputSample){
+            gControllerCurrData[port].button,
+            gControllerCurrData[port].stick_x,
+            gControllerCurrData[port].stick_y,
+            (gControllerCurrData[port].errno & CONT_NO_RESPONSE_ERROR) == 0};
+    }
+}
+
+void input_rollback_apply(const MdkrInputSample input[MDKR_INPUT_PORTS]) {
+    unsigned port;
+    if (input == NULL) return;
+    for (port = 0u; port < MDKR_INPUT_PORTS; port++) {
+        gControllerPrevData[port] = gControllerCurrData[port];
+        gControllerCurrData[port].button =
+            input[port].present ? input[port].buttons : 0u;
+        gControllerCurrData[port].stick_x =
+            input[port].present ? input[port].stick_x : 0;
+        gControllerCurrData[port].stick_y =
+            input[port].present ? input[port].stick_y : 0;
+        gControllerCurrData[port].errno =
+            input[port].present ? 0 : CONT_NO_RESPONSE_ERROR;
+        gControllerButtonsPressed[port] =
+            ((gControllerCurrData[port].button ^
+              gControllerPrevData[port].button) &
+             gControllerCurrData[port].button) & gButtonMask;
+        gControllerButtonsReleased[port] =
+            ((gControllerCurrData[port].button ^
+              gControllerPrevData[port].button) &
+             gControllerPrevData[port].button) & gButtonMask;
+    }
+}
+
+static void input_rollback_write_pad(
+    OSContPad *pad, const MdkrInputSample *sample) {
+    memset(pad, 0, sizeof(*pad));
+    pad->button = sample->present ? sample->buttons : 0u;
+    pad->stick_x = sample->present ? sample->stick_x : 0;
+    pad->stick_y = sample->present ? sample->stick_y : 0;
+    pad->errno = sample->present ? 0 : CONT_NO_RESPONSE_ERROR;
+}
+
+void input_rollback_apply_from_previous(
+    const MdkrInputSample input[MDKR_INPUT_PORTS],
+    const MdkrInputSample previous[MDKR_INPUT_PORTS]) {
+    unsigned port;
+    if (input == NULL || previous == NULL) return;
+    for (port = 0u; port < MDKR_INPUT_PORTS; port++) {
+        input_rollback_write_pad(&gControllerPrevData[port], &previous[port]);
+        input_rollback_write_pad(&gControllerCurrData[port], &input[port]);
+        input_rollback_compute_edges(
+            &input[port], &previous[port], gButtonMask,
+            &gControllerButtonsPressed[port],
+            &gControllerButtonsReleased[port]);
+    }
+}
+
+s32 input_rollback_state_spans(
+    MdkrInputRollbackSpan spans[MDKR_INPUT_ROLLBACK_STATE_SPAN_COUNT]) {
+    size_t count = 0u;
+#define ADD_INPUT_STATE(value)                                      \
+    do {                                                            \
+        spans[count++] = (MdkrInputRollbackSpan){                   \
+            &(value), sizeof(value)};                               \
+    } while (0)
+    if (spans == NULL) return FALSE;
+    ADD_INPUT_STATE(sNoControllerPluggedIn);
+    ADD_INPUT_STATE(gButtonMask);
+    ADD_INPUT_STATE(gControllerStatus);
+    ADD_INPUT_STATE(gControllerCurrData);
+    ADD_INPUT_STATE(gControllerPrevData);
+    ADD_INPUT_STATE(gControllerButtonsPressed);
+    ADD_INPUT_STATE(gControllerButtonsReleased);
+    ADD_INPUT_STATE(sPlayerID);
+#undef ADD_INPUT_STATE
+    return count == MDKR_INPUT_ROLLBACK_STATE_SPAN_COUNT;
+}
+#endif

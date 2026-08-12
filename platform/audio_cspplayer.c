@@ -135,8 +135,18 @@ static void native_csp_handle_meta(ALCSPlayer *seqp, ALEvent *event)
 }
 
 #ifdef NATIVE_PORT
+extern ALCSPlayer *gMusicPlayer;
+extern ALCSPlayer *gJinglePlayer;
+
 static FILE *s_native_csp_trace_fp = NULL;
 static int s_native_csp_trace_init = 0;
+
+static const char *native_csp_trace_player(const ALCSPlayer *seqp)
+{
+    if (seqp == gMusicPlayer) return "music";
+    if (seqp == gJinglePlayer) return "jingle";
+    return "other";
+}
 
 static FILE *native_csp_trace_fp(void)
 {
@@ -276,9 +286,10 @@ static void native_csp_trace_control(ALCSPlayer *seqp, const char *event,
     }
 
     fprintf(fp,
-            "{\"event\":\"%s\",\"cur_time\":%d,\"seq_ticks\":%u,"
+            "{\"event\":\"%s\",\"player\":\"%s\",\"cur_time\":%d,\"seq_ticks\":%u,"
             "\"chan\":%u,\"key\":%u,\"value\":%u}\n",
             event,
+            native_csp_trace_player(seqp),
             seqp->curTime,
             seqp->target != NULL ? seqp->target->lastTicks : 0,
             (u32)chan,
@@ -317,8 +328,9 @@ static void native_csp_trace_note_on(ALCSPlayer *seqp, u8 chan, u8 key,
     }
 
     fprintf(fp,
-            "{\"event\":\"note_on\",\"cur_time\":%d,\"seq_ticks\":%u,"
-            "\"chan\":%u,\"key\":%u,\"velocity\":%u,\"duration_ticks\":%u,"
+            "{\"event\":\"note_on\",\"player\":\"%s\",\"cur_time\":%d,\"seq_ticks\":%u,"
+            "\"chan\":%u,\"key\":%u,\"velocity\":%u,\"mapped\":%u,"
+            "\"duration_ticks\":%u,"
             "\"program\":%d,\"sound_index\":%d,"
             "\"chan_volume\":%u,\"chan_pan\":%u,\"chan_fxmix\":%u,"
             "\"computed_pitch\":%.9g,\"computed_volume\":%d,"
@@ -330,11 +342,13 @@ static void native_csp_trace_note_on(ALCSPlayer *seqp, u8 chan, u8 key,
             "\"attack_volume\":%u,\"decay_volume\":%u,"
             "\"wave_type\":%u,\"wave_base\":%llu,\"wave_len\":%d,"
             "\"loop_start\":%d,\"loop_end\":%d,\"loop_count\":%d}\n",
+            native_csp_trace_player(seqp),
             seqp->curTime,
             seqp->target != NULL ? seqp->target->lastTicks : 0,
             (u32)chan,
             (u32)key,
             (u32)vel,
+            (u32)seqp->mappedVoices,
             duration_ticks,
             native_csp_program_for_instrument(seqp, instrument),
             native_csp_sound_index(instrument, sound),
@@ -373,6 +387,31 @@ static void native_csp_trace_note_on(ALCSPlayer *seqp, u8 chan, u8 key,
                 : raw_loop != NULL ? raw_loop->count : 0);
 }
 
+static void native_csp_trace_note_reject(ALCSPlayer *seqp, u8 chan, u8 key,
+                                         u8 vel, const char *reason) {
+    FILE *fp = native_csp_trace_fp();
+    if (fp == NULL || seqp == NULL || reason == NULL) return;
+    fprintf(fp,
+            "{\"event\":\"note_reject\",\"player\":\"%s\",\"cur_time\":%d,"
+            "\"seq_ticks\":%u,\"chan\":%u,\"key\":%u,"
+            "\"velocity\":%u,\"mapped\":%u,\"limit\":%u,"
+            "\"reason\":\"%s\"}\n",
+            native_csp_trace_player(seqp), seqp->curTime,
+            seqp->target != NULL ? seqp->target->lastTicks : 0,
+            (u32)chan, (u32)key, (u32)vel, (u32)seqp->mappedVoices,
+            (u32)seqp->voiceLimit, reason);
+}
+
+void native_csp_trace_physical_voice(const char *event, s16 old_priority,
+                                     s16 new_priority) {
+    FILE *fp = native_csp_trace_fp();
+    if (fp == NULL || event == NULL) return;
+    fprintf(fp,
+            "{\"event\":\"%s\",\"old_priority\":%d,"
+            "\"new_priority\":%d}\n",
+            event, (int)old_priority, (int)new_priority);
+}
+
 static void native_csp_trace_note_off(ALCSPlayer *seqp, u8 chan, u8 key)
 {
     native_csp_trace_control(seqp, "note_off", chan, key, 0);
@@ -380,8 +419,15 @@ static void native_csp_trace_note_off(ALCSPlayer *seqp, u8 chan, u8 key)
 #else
 #define native_csp_trace_control(seqp, event, chan, key, value) ((void)0)
 #define native_csp_trace_note_on(seqp, chan, key, vel, sound, pitch, vol, pan, fxmix, delta_time, duration_ticks) ((void)0)
+#define native_csp_trace_note_reject(seqp, chan, key, vel, reason) ((void)0)
 #define native_csp_trace_note_off(seqp, chan, key) ((void)0)
 #define native_csp_program_should_play(seqp, chan) (1)
+void native_csp_trace_physical_voice(const char *event, s16 old_priority,
+                                     s16 new_priority) {
+    (void)event;
+    (void)old_priority;
+    (void)new_priority;
+}
 #endif
 
 static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
@@ -446,6 +492,10 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
         status != AL_MIDI_ProgramChange &&
         status != AL_MIDI_ControlChange &&
         status != AL_MIDI_PitchBendChange) {
+        if (status == AL_MIDI_NoteOn && vel != 0) {
+            native_csp_trace_note_reject(seqp, chan, key, vel,
+                                         "channel-disabled");
+        }
         return;
     }
 
@@ -464,6 +514,8 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
                 ALPan pan;
 
                 if (seqp->state != AL_PLAYING) {
+                    native_csp_trace_note_reject(seqp, chan, key, vel,
+                                                 "player-stopped");
                     return;
                 }
 
@@ -472,16 +524,24 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
                 if (sound == NULL || sound->keyMap == NULL ||
                     sound->envelope == NULL || sound->wavetable == NULL ||
                     CSP_CHAN(seqp)[chan].instrument == NULL) {
+                    native_csp_trace_note_reject(seqp, chan, key, vel,
+                                                 "invalid-sound");
                     return;
                 }
 
                 if (!native_csp_program_should_play(seqp, chan)) {
+                    native_csp_trace_note_reject(seqp, chan, key, vel,
+                                                 "program-filter");
                     return;
                 }
 
                 voice_state =
                     __mapVoice((ALSeqPlayer *)seqp, key, vel, chan);
                 if (voice_state == NULL) {
+                    native_csp_trace_note_reject(
+                        seqp, chan, key, vel,
+                        seqp->voiceLimit < seqp->mappedVoices
+                            ? "voice-limit" : "voice-pool");
                     return;
                 }
 
@@ -490,6 +550,8 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
                 config.unityPitch = 0;
                 voice = &voice_state->voice;
                 if (!alSynAllocVoice(seqp->drvr, voice, &config)) {
+                    native_csp_trace_note_reject(seqp, chan, key, vel,
+                                                 "physical-voice");
                     __unmapVoice((ALSeqPlayer *)seqp, voice);
                     return;
                 }
@@ -1017,6 +1079,7 @@ void alCSPNew(ALCSPlayer *seqp, ALSeqpConfig *config)
     seqp->frameTime = AL_USEC_PER_FRAME;
     seqp->maxChannels = config->maxChannels;
     seqp->debugFlags = config->debugFlags;
+    seqp->voiceLimit = config->voiceLimit;
     seqp->initOsc = (ALOscInit)config->initOsc;
     seqp->updateOsc = (ALOscUpdate)config->updateOsc;
     seqp->stopOsc = (ALOscStop)config->stopOsc;

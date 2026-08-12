@@ -4,6 +4,14 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+EM_JS(int, browserPartyOverlayOpen, (), {
+    return globalThis.__mdkrPartyOverlayOpen === true ? 1 : 0;
+});
+#endif
+
 static AppOverlayHooks g_hooks;
 static int g_haveHooks = 0;
 
@@ -27,9 +35,27 @@ void platformOverlayService(void) {
 
 int platformOverlayWantsInput(void) {
     if (g_haveHooks && g_hooks.wants_input) return g_hooks.wants_input();
+#ifdef __EMSCRIPTEN__
+    /* The browser's launcher-owned Local Party sheet uses the same engine
+     * boundary as the native F1 overlay. It never reaches through wasm to
+     * mutate gameplay state; this read-only latch makes the next ordinary
+     * input capture neutral while the modal owns focus. */
+    return browserPartyOverlayOpen();
+#endif
     /* Rendering a diagnostic overlay is not input capture. In particular, the
      * browser backend's otherwise-inert overlay fault gate must never pause or
      * swallow input in a build that has no app-shell hooks registered. */
+    return 0;
+}
+
+int platformOverlayWantsPause(void) {
+    if (g_haveHooks && g_hooks.wants_pause) return g_hooks.wants_pause();
+#ifdef __EMSCRIPTEN__
+    /* Phone setup is local-only, so pausing is honest and prevents the race
+     * from continuing behind an opaque modal. Future online chrome must use a
+     * separate non-pausing session intent and must not set this latch. */
+    return browserPartyOverlayOpen();
+#endif
     return 0;
 }
 

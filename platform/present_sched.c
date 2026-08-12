@@ -1401,6 +1401,7 @@ void present_sched_trace_summary(void) {
             for (cls = 0u; cls < (unsigned)MDKR_SURF_CLASS_COUNT; cls++) {
                 uint32_t blend = packet_stats.verdict_blend[cls];
                 uint32_t snap = packet_stats.verdict_snap[cls];
+                uint32_t held_permille;
                 unsigned top_reason = 0u;
                 unsigned reason;
 
@@ -1416,6 +1417,8 @@ void present_sched_trace_summary(void) {
                         top_reason = reason;
                     }
                 }
+                held_permille = (uint32_t)(((uint64_t)snap * 1000u) /
+                                           ((uint64_t)blend + snap));
                 /*
                  * pandemoted breaks out MDKR_VERDICT_PAN_RATE_DEMOTED from the
                  * reason breakdown explicitly, alongside top_reason rather
@@ -1438,7 +1441,7 @@ void present_sched_trace_summary(void) {
                 fprintf(stderr,
                         "[SMOOTH-VERDICT] class=%s blend=%u snap=%u "
                         "top_reason=%s pandemoted=%u noowner=%u "
-                        "topomismatch=%u\n",
+                        "topomismatch=%u heldpermille=%u\n",
                         surface_class_names[cls], (unsigned)blend,
                         (unsigned)snap, verdict_reason_names[top_reason],
                         (unsigned)packet_stats
@@ -1447,7 +1450,8 @@ void present_sched_trace_summary(void) {
                             .verdict_reason[cls][MDKR_VERDICT_NO_OWNER],
                         (unsigned)packet_stats
                             .verdict_reason[cls]
-                                           [MDKR_VERDICT_TOPOLOGY_MISMATCH]);
+                                           [MDKR_VERDICT_TOPOLOGY_MISMATCH],
+                        (unsigned)held_permille);
             }
             gfx_presentation_packet_reset_verdict_stats();
         }
@@ -1477,10 +1481,14 @@ void present_sched_trace_summary(void) {
                     camera_endpoint_stats.mutation_control_rejections);
     }
     fprintf(stderr,
-            "[ALPHA-QUANTUM] units=%llu variance_ppm=%llu mode=%s\n",
+            "[ALPHA-QUANTUM] units=%llu variance_ppm=%llu mode=%s "
+            "timing=%s samples=%u transitions=%llu\n",
             (unsigned long long)s_alpha_last_quantum,
             (unsigned long long)platform_present_quantum_variance_ppm(),
-            s_alpha_last_quantum != 0u ? "grid" : "free");
+            s_alpha_last_quantum != 0u ? "grid" : "free",
+            platform_present_quantum_timing_name(),
+            platform_present_quantum_sample_count(),
+            (unsigned long long)platform_present_quantum_transition_count());
     fprintf(stderr,
             "[PRESENTSCHED-SUMMARY] entries=%llu ticks=%llu presents=%d "
             "surfaceupdates=%llu "
@@ -1530,4 +1538,75 @@ void present_sched_trace_summary(void) {
             present_sched_present_requested_rate(), s_bootstrap_update,
             s_bootstrap_effective);
     fflush(stderr);
+}
+
+void present_sched_engine_session_begin(void) {
+    memset(&s_driver, 0, sizeof(s_driver));
+    s_ready = 0;
+    s_trace = -1;
+    s_smooth_verdict = -1;
+    g_simTickCounter = 0;
+
+    s_entries = 0;
+    s_zero_due = 0;
+    s_multi_due = 0;
+    s_worst_lead = 0;
+    s_worst_lag = 0;
+    s_interpolated = 0;
+    s_interpolated_views = 0;
+    s_stale = 0;
+    s_real_endpoints = 0;
+    s_replayed_endpoints = 0;
+    s_elided = 0;
+    s_render_elided = false;
+    s_surface_elided = false;
+    s_game_updates = 0;
+    s_bad_game_updates = 0;
+    s_game_update_min = 0;
+    s_game_update_max = 0;
+    s_bootstrap_update = 0;
+    s_effective_updates = 0;
+    s_effective_diverged = 0;
+    s_effective_update_min = 0;
+    s_effective_update_max = 0;
+    s_bootstrap_effective = 0;
+
+    s_present_policy.kind = MDKR_PRESENT_ORIGINAL;
+    s_present_policy.rate = 0u;
+    s_present_requested_policy.kind = MDKR_PRESENT_ORIGINAL;
+    s_present_requested_policy.rate = 0u;
+    s_present_policy_ready = 0;
+    s_test_replay_walk = -1;
+    s_snapshot_forced = 0;
+    s_smoothing = -1;
+    s_allow_tearing = -1;
+    s_test_presentation_replay = -1;
+    s_internal_replay_test = -1;
+
+    s_alpha_grid_tick = 0u;
+    s_alpha_grid_last = 0u;
+    s_alpha_last_quantum = 0u;
+    s_perf = -1;
+    memset(s_perf_ns, 0, sizeof(s_perf_ns));
+    memset(s_perf_hits, 0, sizeof(s_perf_hits));
+    memset(s_reject_bin, 0, sizeof(s_reject_bin));
+    s_reject_worst = 0u;
+    s_reject_total = 0u;
+    memset(&s_hist_present, 0, sizeof(s_hist_present));
+    memset(&s_hist_displayed, 0, sizeof(s_hist_displayed));
+    memset(&s_hist_alpha, 0, sizeof(s_hist_alpha));
+    s_hist_last_present_ns = 0u;
+    s_hist_last_displayed_ns = 0u;
+    s_hist_last_phase_ppm = 0u;
+    s_hist_phase_valid = 0;
+    s_hist_phase_regressions = 0u;
+    s_hist_phase_stalls = 0u;
+    s_hist_present_count = 0u;
+    s_hist_displayed_count = 0u;
+    s_depth_samples = 0u;
+    s_depth_sum = 0u;
+    s_depth_max = 0u;
+
+    /* A new match must never interpolate against the old match's last frame. */
+    presentation_snapshot_shutdown();
 }

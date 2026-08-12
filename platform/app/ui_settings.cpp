@@ -70,6 +70,7 @@ bool g_uiScaleRectValid = false;
 ImVec2 g_uiScaleRectMin;
 ImVec2 g_uiScaleRectMax;
 bool g_smokeGamepadFocusUsed = false;
+bool g_controllerSectionRequested = false;
 // Rendered rectangle of each presentation-pace choice, for smoke observation
 // only. Indexed by MdkrPresentationPace, so slot 0 (Custom) stays unused —
 // Custom is a reading of the two keys and never a control to press.
@@ -1853,6 +1854,10 @@ bool Settings_restartPending() {
     return mdkr_video_config_restart_pending() != 0;
 }
 
+void Settings_requestControllerSection() {
+    g_controllerSectionRequested = true;
+}
+
 int Settings_collectStagedOverrides(const char **out, int cap) {
     // Static storage: the caller (the launcher's boot config) holds these
     // pointers until mdkr64_engine_boot copies them, which happens on the same
@@ -2161,15 +2166,22 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     }
 
     // --- Controller ---------------------------------------------------------
+    if (g_controllerSectionRequested) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    }
     if (drawSettingsSectionHeader(
             "Controller",
             "Rumble, and which N64 button each control presses. The left "
             "stick is always steering.",
             flagsFor(controllerSettingsSmoke), compact)) {
+        if (g_controllerSectionRequested) ImGui::SetScrollHereY(0.0f);
         row(MDKR_INPUT_RUMBLE_ENABLED);
         row(MDKR_INPUT_RUMBLE_PROFILE);
         if (visible(MDKR_INPUT_RUMBLE_ENABLED)) controllerRumbleWidgets++;
         if (visible(MDKR_INPUT_RUMBLE_PROFILE)) controllerRumbleWidgets++;
+        if (g_controllerSectionRequested) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        }
         if (ImGui::TreeNodeEx("Button mapping",
                               ImGuiTreeNodeFlags_SpanAvailWidth |
                                   flagsFor(controllerSettingsSmoke))) {
@@ -2196,6 +2208,7 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         }
         ImGui::Unindent(ui::kGapM);
     }
+    g_controllerSectionRequested = false;
 
     // --- Advanced graphics --------------------------------------------------
     if (drawSettingsSectionHeader(

@@ -479,9 +479,36 @@ def test_save_dir() -> str:
 
 
 def save_env(env: dict[str, str], save_dir: str) -> dict[str, str]:
-    """Point the engine at ``save_dir``; the caller reads results from there."""
+    """Point the engine at ``save_dir``; the caller reads results from there.
+
+    Also isolates the VIDEO CONFIG, for the same reason and in the same breath.
+    ``platform/user_paths.c`` resolves a non-packaged build's config to the bare
+    name ``mdkr64.ini``, i.e. relative to the cwd -- which for a test run is the
+    repository root, where a maintainer's playable preferences live. A developer
+    file with ``FrameLimit=uncapped`` then reaches the engine, and under
+    ``--headless-frames`` that is not a cosmetic difference: an uncapped policy
+    resolves to 1 ms presentation opportunities, ``--headless-frames`` counts
+    PRESENTS while simulation advances on field-accumulator tickets, and the
+    ratio becomes 1000/60. A 9000-frame budget then buys ~540 authoritative
+    ticks, every frame-timed input script runs out of road, and the check fails
+    for a reason that has nothing to do with the code under test.
+
+    Measured on ``check_door_blocks.py``: it failed standalone from a repo root
+    holding such a file and passed with nothing changed but this path. It stayed
+    green in the suite the whole time, because ``tools/run_checks.py`` already
+    exports ``MDKR_VIDEO_CONFIG_PATH=os.devnull`` for every task -- so this is
+    the standalone half of an isolation the suite has had since 1.0.1.
+
+    Pinned HERE rather than in each check because 82 of them never set it, and
+    three recent commits fixed the same defect one check at a time. A caller that
+    genuinely wants a config still wins: an already-set value is left alone.
+    """
 
     env["MDKR_SAVE_DIR"] = os.path.abspath(save_dir)
+    env.setdefault(
+        "MDKR_VIDEO_CONFIG_PATH",
+        os.path.join(os.path.abspath(save_dir), "video.ini"),
+    )
     return env
 
 

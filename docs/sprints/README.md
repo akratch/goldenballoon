@@ -1,7 +1,11 @@
-# Sprint plans — closing the native-port feature gap
+# Sprint plans — product and platform delivery
 
-Nine scoped sprints, written 2026-08-09 against `main` at v1.1.0+15. Each one is
-independently executable and produces working, shippable software on its own.
+Thirteen scoped sprints. S1–S9 were written 2026-08-09 against `main` at
+v1.1.0+15 to close the native-port feature gap. S10–S13 were added/revised
+2026-08-11 as the gated implementation sequence for the launcher/session
+foundation, local phone controllers and zero-cost private online multiplayer.
+Each sprint produces independently testable evidence; S11's browser Phone Party
+slice is independently shippable before rollback exists.
 
 These plans exist because a survey of the Harbour Masters port family (Ship of
 Harkinian, 2 Ship 2 Harkinian, Starship, SpaghettiKart, Ghostship, Lighthouse)
@@ -67,8 +71,51 @@ correct fix, are in [`../open-items/`](../open-items/).
 | [S7](S7-docs-and-community.md) | Documentation site, modding guides, contribution funnel | M | S1 |
 | [S8](S8-accessibility.md) | Accessibility: screen-reader and speech output | M | — |
 | [S9](S9-campaign-residuals.md) | Campaign residuals: rematch door, trophy chaining, credits tail | S | — |
+| [S10](S10-multiplayer-session-foundation.md) | Launcher/session foundation, shared state authority and persistent lifecycle proof | XL | — |
+| [S11](S11-local-party-controllers.md) | Phone Party: QR-paired, zero-install browser controllers for local split-screen | XL | S10 contracts/GO |
+| [S12](S12-rollback-multiplayer-core.md) | Deterministic rollback core, snapshots and local-viewport separation | XL | S10 bridge, S11 pad contract |
+| [S13](S13-zero-cost-online-operations.md) | Zero-cost private online rooms, operations and staged beta | XL | S10–S12 gates |
+
+## Multiplayer critical path
+
+The governing program, achievement gates, shared Definition of Ready/Done and
+evidence catalog live in [`../multiplayer/README.md`](../multiplayer/README.md).
+
+1. Complete S10 A0 first: freeze ownership/state/ABI, prove one persistent
+   native/browser session through race/results/rematch and enforce the online
+   non-pausing overlay.
+2. Ship S11 A1 browser Phone Party, then qualify A2 native Phone Party. S12 may
+   begin after S10's bridge and S11's pad sample freeze; it need not wait for
+   every native transport enhancement.
+3. S12 must prove restore identity, canonical-player/local-viewport separation,
+   strict cross-platform determinism and bounded rollback before online races.
+4. S13 may prototype its pure reducer and launcher UI against fake adapters
+   early. Production room/transport integration waits for S12 `GO`.
+5. Release private direct/one-hop rooms first. Admit encrypted fallback only
+   after its capacity proof and kill switch pass. Public matching and mandatory
+   TURN/SFU stay outside guaranteed-$0.
+
+A multiplayer ticket is ready only when its dependencies are green, protocol
+and UI/error states are enumerated, the test seam and negative control are
+named, privacy/cost effects are bounded, and an owner can complete it without a
+new architectural decision. It is done only with the positive gate, deliberately
+broken negative control, lifecycle/error coverage, and updated operator/player
+documentation.
 
 ## Execution status
+
+S10–S13 are active, gated implementation work. Their live ticket states and
+repeatable evidence commands are maintained in the
+[multiplayer operational ledger](../multiplayer/STATUS.md); their sprint files
+remain the acceptance specifications. Do not infer `DONE` from the presence of
+code, and do not use the historical S1–S9 table below as multiplayer status.
+
+The multiplayer dependency graph deliberately has two lanes: automated
+session/rollback/launcher work continues while physical-device, cross-platform
+or provisioned-service evidence waits, but an achievement cannot ship until
+both its automated and human gates pass.
+
+The table below records the S1–S9 execution branch only.
 
 Landed on `worktree-hm-parity-sprints`, each with a CTest gate and each
 mutation-checked — the implementation was deliberately broken and the suite

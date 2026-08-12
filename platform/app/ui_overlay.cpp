@@ -26,6 +26,8 @@
 #include "app_window.h"
 #include "dev_tools.h"      // DevTools_draw: the in-game diagnostic surface
 #include "engine_entry.h"   // AppOverlayHooks, platformSetOverlayHooks
+#include "ui_phone_party.h"
+#include "party/native_party_host.h"
 #include "ui_common.h"
 #include "ui_settings.h"
 
@@ -66,6 +68,7 @@ struct OverlayState {
     ConfirmAction confirm = ConfirmAction::None;
     bool justOpened = false;
     bool audioPaused = false;
+    bool pauseAllowed = true;
     SDL_Window *window = nullptr;
     OverlayExitRequest exitRequest = OverlayExitRequest::None;
     bool previousRelativeMouse = false;
@@ -95,6 +98,7 @@ struct OverlayState {
 };
 
 OverlayState g_overlay;
+MdkrNativePartyHost *g_phonePartyHost = nullptr;
 
 // --- Bindings (app prefs, defaults matching mgb64) --------------------------
 int prefInt(const char *key, int fallback) {
@@ -265,6 +269,9 @@ static int onProcessEvent(const void *ev) {
 // The input-swallowing contract: while the overlay is up, the engine's pump
 // drops input events instead of feeding them to the pad.
 static int onWantsInput(void) { return g_overlay.open ? 1 : 0; }
+static int onWantsPause(void) {
+    return (g_overlay.open && g_overlay.pauseAllowed) ? 1 : 0;
+}
 // Tools.Enabled joins the render predicate but NOT the input one. The overlay
 // swallows the pad because it is a menu the player is operating; a diagnostic
 // window is an observer, and a surface that took input away from the game would
@@ -282,6 +289,9 @@ static int onWantsRender(void) {
 static void onService(void) {
     AppWindow_servicePending();
     mdkr_a11y_speech_service_pump();
+    if (g_phonePartyHost != nullptr) {
+        g_phonePartyHost->service(static_cast<uint64_t>(SDL_GetTicks64()));
+    }
 }
 
 }  // extern "C"
@@ -668,6 +678,10 @@ void drawOverlayMenu(float uiScale) {
         }
     }
 
+    if (g_phonePartyHost != nullptr) {
+        PhoneParty_drawOverlay(*g_phonePartyHost, MDKR_PARTY_ORIGIN);
+    }
+
     ui::Gap(ui::kGapM);
     const OverlayButtonPair exitActions =
         fitButtonPair(ui::kBtnWide(), ui::kBtnWide(), uiScale);
@@ -771,9 +785,18 @@ void Overlay_install(SDL_Window *window) {
     hooks.process_event = onProcessEvent;
     hooks.service       = onService;
     hooks.wants_input   = onWantsInput;
+    hooks.wants_pause   = onWantsPause;
     hooks.wants_render  = onWantsRender;
     hooks.render        = onRender;
     platformSetOverlayHooks(&hooks);
+}
+
+void Overlay_setPauseAllowed(bool allowed) {
+    g_overlay.pauseAllowed = allowed;
+}
+
+void Overlay_setPhonePartyHost(MdkrNativePartyHost *host) {
+    g_phonePartyHost = host;
 }
 
 OverlayExitRequest Overlay_consumeExitRequest() {

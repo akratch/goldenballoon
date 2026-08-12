@@ -12,7 +12,7 @@ supported-ROM policy are in [`../README.md`](../README.md).
 | **Fixing a bug** | [`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md) — especially §3 · [`open-items/`](open-items/README.md) — is it already known? · [`../tests/README.md`](../tests/README.md) — the check that must catch it |
 | **Contributing a change** | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — build, the hard audio-safety rule, and what a fix must ship with |
 | **Working on one subsystem** | [`architecture/`](architecture/README.md) — input, WebGPU, audio, race, web |
-| **Looking for something to do** | [`../ROADMAP.md`](../ROADMAP.md) — the deferred work, honestly scoped · [`sprints/`](sprints/README.md) — the feature-gap backlog, scoped into executable sprints |
+| **Looking for something to do** | [`../ROADMAP.md`](../ROADMAP.md) — the deferred work, honestly scoped · [`sprints/`](sprints/README.md) — product/platform backlogs scoped into executable sprints |
 | **Cutting a release** | [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — the clean-room and artifact gates |
 | **Checking the legal position** | [`../DISCLAIMER.md`](../DISCLAIMER.md), [`../NOTICE.md`](../NOTICE.md), [`../LICENSE`](../LICENSE) |
 
@@ -42,7 +42,11 @@ behind nearly every hard defect in this port, several of them completely silent.
 - **[`architecture/`](architecture/README.md)** — one specification per subsystem
   of the port layer: [input](architecture/input.md),
   [WebGPU](architecture/webgpu.md), [audio](architecture/audio.md),
-  [race](architecture/race.md), [web](architecture/web.md), and the open
+  [race](architecture/race.md), [web](architecture/web.md), the proposed
+  [online multiplayer](architecture/online-multiplayer.md) product/architecture,
+  its implemented launcher
+  [lobby reducer protocol](ref/online-lobby-protocol-v1.md),
+  and the open
   [camera-obstruction modernization plan](architecture/camera-obstruction.md).
 - **[`DEVELOPER_HANDBOOK.md`](DEVELOPER_HANDBOOK.md)** — what exists and what
   demonstrates it, the dominant bug class, the testing rules, decomp sync, and
@@ -96,17 +100,22 @@ behind nearly every hard defect in this port, several of them completely silent.
 - **[`DEFINITION_OF_DONE.md`](DEFINITION_OF_DONE.md)** — the 1.1.0 closure
   ledger: every claim a skeptic might test, the gate that checks it, and the
   named residuals that need hardware this project's machines lack.
+- **[`evidence/fps-interpolation-audit-2026-08-12.md`](evidence/fps-interpolation-audit-2026-08-12.md)**
+  — current presentation/FPS architecture, measured wins, rejected shortcuts,
+  and the remaining hardware and route-breadth gaps.
 - **[`open-items/`](open-items/README.md)** — every known and fixed defect, by
   subsystem, each with its mechanism, the measurement that found it, the fix, and
   how it was verified. **Nothing is deleted when it is fixed**: read the entry for
   a subsystem before changing it, because most of these defects were silent.
   ([`OPEN_ITEMS.md`](OPEN_ITEMS.md) is the pointer left behind by the split.)
-- **[`sprints/`](sprints/README.md)** — nine scoped sprints closing the
-  feature-surface gap against the comparable native-port family: content packs,
-  enhancements, in-app tools, platform and region breadth, release engineering,
-  documentation, accessibility, and the campaign residuals. Each carries
-  milestones, acceptance criteria, user stories and task-level detail. Scope
-  documents, not promises — the same standing as `ROADMAP.md`.
+- **[`multiplayer/README.md`](multiplayer/README.md)** — governing achievement
+  ladder, ownership boundary, golden local/online journeys, UI standard,
+  security/cost invariants and shared ticket readiness/done rules.
+- **[`sprints/`](sprints/README.md)** — thirteen scoped sprints: nine closing the
+  feature-surface gap against the comparable native-port family, followed by
+  S10–S13's launcher foundation, Phone Party, rollback and zero-cost private
+  online sequence. Each carries milestones, acceptance criteria and ticket-level
+  gates. Scope documents, not promises—the same standing as `ROADMAP.md`.
 - **[`../ROADMAP.md`](../ROADMAP.md)** — what is deferred and why, with the
   condition under which each item would be taken up.
 - **[`STATUS.md`](STATUS.md)** — the long-form per-milestone engineering log.

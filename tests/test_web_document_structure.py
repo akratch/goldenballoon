@@ -81,6 +81,30 @@ def main() -> int:
             "fullscreen failures need visible live status")
     require("#stage.touch-ui-active #stage-status" in style,
             "touch fullscreen errors must reserve space below the top controls")
+    online_dialog = document.elements.get("online-room-dialog")
+    online_title = document.elements.get("online-room-title")
+    require(online_dialog is not None and online_dialog.get("tag") == "dialog" and
+            online_dialog.get("aria-labelledby") == "online-room-title",
+            "online entry must use a labelled native modal dialog")
+    require(online_title is not None and online_title.get("tabindex") == "-1",
+            "online status heading must accept initial non-destructive focus")
+    for action_id in ("online-room-close", "online-room-local",
+                      "online-room-controllers"):
+        action = document.elements.get(action_id)
+        require(action is not None and action.get("tag") == "button",
+                f"{action_id} must remain a native keyboard action")
+    party_end_dialog = document.elements.get("party-end-dialog")
+    require(party_end_dialog is not None and
+            party_end_dialog.get("aria-labelledby") == "party-end-title",
+            "ending every phone session needs a labelled confirmation dialog")
+    for action_id in ("party-end-cancel", "party-end-confirm"):
+        require(document.elements.get(action_id, {}).get("tag") == "button",
+                f"{action_id} must remain a native confirmation action")
+    launcher_stick = document.elements.get("touch-stick")
+    require(launcher_stick is not None and launcher_stick.get("tabindex") == "0" and
+            launcher_stick.get("aria-valuetext") == "Centered" and
+            "arrow keys" in launcher_stick.get("aria-label", ""),
+            "launcher analog control needs discoverable keyboard steering")
 
     # The numbered launcher sections are peers. Their headings cannot be h3
     # children of the preceding hidden How to play h2.
@@ -88,6 +112,64 @@ def main() -> int:
             "Known issues must be a top-level launcher section heading")
     require(document.headings.get("data-title") == "h2",
             "Stored data must be a top-level launcher section heading")
+
+    controller = Document()
+    controller.feed((ROOT / "dist" / "web" / "controller" / "index.html")
+                    .read_text(encoding="utf-8"))
+    room_code = controller.elements.get("room-code")
+    require(room_code is not None and room_code.get("aria-invalid") == "false" and
+            room_code.get("aria-describedby") == "code-error" and
+            room_code.get("translate") == "no",
+            "controller code entry needs inline error and identifier semantics")
+    leave_dialog = controller.elements.get("leave-dialog")
+    require(leave_dialog is not None and
+            leave_dialog.get("aria-labelledby") == "leave-title",
+            "leaving a controller needs a labelled confirmation dialog")
+    for action_id in ("leave-cancel", "leave-confirm"):
+        require(controller.elements.get(action_id, {}).get("tag") == "button",
+                f"{action_id} must remain a native confirmation action")
+    controller_stick = controller.elements.get("phone-touch-stick")
+    require(controller_stick is not None and
+            controller_stick.get("tabindex") == "0" and
+            controller_stick.get("aria-valuetext") == "Centered" and
+            "arrow keys" in controller_stick.get("aria-label", ""),
+            "phone analog control needs discoverable keyboard steering")
+
+    room = Document()
+    room.feed((ROOT / "dist" / "web" / "room" / "index.html")
+              .read_text(encoding="utf-8"))
+    require(room.skip_target == "#room-entry-main" and
+            room.elements.get("room-entry-main", {}).get("tabindex") == "-1",
+            "private-room handoff needs keyboard bypass focus")
+
+    controller_style = (ROOT / "dist" / "web" / "controller" /
+                        "controller.css").read_text(encoding="utf-8")
+    party_style = (ROOT / "dist" / "web" / "party" /
+                   "party-host.css").read_text(encoding="utf-8")
+    online_style = (ROOT / "dist" / "web" / "online" /
+                    "online-room.css").read_text(encoding="utf-8")
+    room_style = (ROOT / "dist" / "web" / "room" /
+                  "room-entry.css").read_text(encoding="utf-8")
+    touch_style = (ROOT / "dist" / "web" / "input" /
+                   "touch-surface.css").read_text(encoding="utf-8")
+    require("overscroll-behavior: contain" in controller_style and
+            "overscroll-behavior: contain" in party_style and
+            "overscroll-behavior: contain" in online_style,
+            "every multiplayer modal must contain overscroll")
+    require("env(safe-area-inset-top)" in room_style and
+            ".skip-link:focus-visible" in room_style,
+            "room handoff must honor notches and visible skip focus")
+    require("a:hover" in room_style and "a:active" in room_style,
+            "room handoff link needs hover and pressed feedback")
+    require(".touch-controls .touch-stick:focus-visible" in touch_style,
+            "keyboard steering needs a shared visible focus treatment")
+
+    online_script = (ROOT / "dist" / "web" / "online" /
+                     "online-room.js").read_text(encoding="utf-8")
+    require('input.name = "room-invitation"' in online_script and
+            'input.placeholder = "Paste link or enter 123 456…"' in online_script and
+            'document.createElement("h3")' in online_script,
+            "dynamic room forms need stable metadata and semantic headings")
     print("web document structure passed")
     return 0
 

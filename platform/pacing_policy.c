@@ -22,6 +22,139 @@ static int present_ci_equal(const char *left, const char *right) {
     return *left == '\0' && *right == '\0';
 }
 
+static void present_interval_sort(uint64_t *values, unsigned count) {
+    unsigned i;
+
+    for (i = 1u; i < count; i++) {
+        const uint64_t value = values[i];
+        unsigned position = i;
+        while (position > 0u && values[position - 1u] > value) {
+            values[position] = values[position - 1u];
+            position--;
+        }
+        values[position] = value;
+    }
+}
+
+static uint64_t present_interval_jitter_ppm(
+    const MdkrPresentIntervalClassifier *classifier) {
+    uint64_t ordered[MDKR_PRESENT_INTERVAL_WINDOW];
+    uint64_t sum = 0u;
+    uint64_t sum_sq = 0u;
+    uint64_t mean;
+    uint64_t mean_sq;
+    uint64_t scaled_mean_sq;
+    unsigned i;
+    const unsigned first = MDKR_PRESENT_INTERVAL_TRIM;
+    const unsigned last = MDKR_PRESENT_INTERVAL_WINDOW -
+                          MDKR_PRESENT_INTERVAL_TRIM;
+    const unsigned retained = last - first;
+
+    if (classifier == NULL ||
+        classifier->count < MDKR_PRESENT_INTERVAL_WINDOW) {
+        return 0u;
+    }
+    memcpy(ordered, classifier->intervals_ns, sizeof(ordered));
+    present_interval_sort(ordered, MDKR_PRESENT_INTERVAL_WINDOW);
+    for (i = first; i < last; i++) {
+        sum += ordered[i];
+    }
+    mean = sum / retained;
+    if (mean == 0u || mean > UINT32_MAX) {
+        return 0u;
+    }
+    for (i = first; i < last; i++) {
+        const uint64_t sample = ordered[i];
+        const uint64_t delta = sample > mean ? sample - mean : mean - sample;
+        if (delta > UINT32_MAX) {
+            return UINT64_MAX;
+        }
+        sum_sq += delta * delta;
+    }
+    mean_sq = mean * mean;
+    scaled_mean_sq = mean_sq / UINT64_C(1000000);
+    if (scaled_mean_sq == 0u) {
+        return 0u;
+    }
+    return (sum_sq / retained) / scaled_mean_sq;
+}
+
+void mdkr_present_interval_reset(MdkrPresentIntervalClassifier *classifier) {
+    if (classifier != NULL) {
+        memset(classifier, 0, sizeof(*classifier));
+    }
+}
+
+void mdkr_present_interval_note(MdkrPresentIntervalClassifier *classifier,
+                                uint64_t elapsed_ns) {
+    MdkrPresentIntervalKind next;
+    unsigned required;
+
+    if (classifier == NULL || elapsed_ns == 0u) {
+        return;
+    }
+    if (mdkr_pacing_interval_requires_rebase(elapsed_ns)) {
+        mdkr_present_interval_reset(classifier);
+        return;
+    }
+    classifier->intervals_ns[classifier->head] = elapsed_ns;
+    classifier->head = (classifier->head + 1u) %
+                       MDKR_PRESENT_INTERVAL_WINDOW;
+    if (classifier->count < MDKR_PRESENT_INTERVAL_WINDOW) {
+        classifier->count++;
+    }
+    if (classifier->count < MDKR_PRESENT_INTERVAL_WINDOW) {
+        classifier->kind = MDKR_PRESENT_INTERVAL_WARMING;
+        classifier->jitter_ppm = 0u;
+        return;
+    }
+
+    classifier->jitter_ppm = present_interval_jitter_ppm(classifier);
+    if (classifier->kind == MDKR_PRESENT_INTERVAL_WARMING) {
+        classifier->kind =
+            classifier->jitter_ppm > MDKR_PRESENT_INTERVAL_VARIABLE_PPM
+                ? MDKR_PRESENT_INTERVAL_VARIABLE
+                : MDKR_PRESENT_INTERVAL_FIXED;
+        classifier->contrary_count = 0u;
+        return;
+    }
+
+    next = classifier->kind;
+    required = 0u;
+    if (classifier->kind == MDKR_PRESENT_INTERVAL_FIXED &&
+        classifier->jitter_ppm > MDKR_PRESENT_INTERVAL_VARIABLE_PPM) {
+        next = MDKR_PRESENT_INTERVAL_VARIABLE;
+        required = MDKR_PRESENT_INTERVAL_VARIABLE_CONFIRM;
+    } else if (classifier->kind == MDKR_PRESENT_INTERVAL_VARIABLE &&
+               classifier->jitter_ppm < MDKR_PRESENT_INTERVAL_FIXED_PPM) {
+        next = MDKR_PRESENT_INTERVAL_FIXED;
+        required = MDKR_PRESENT_INTERVAL_FIXED_CONFIRM;
+    }
+
+    if (next == classifier->kind) {
+        classifier->contrary_count = 0u;
+        return;
+    }
+    classifier->contrary_count++;
+    if (classifier->contrary_count >= required) {
+        classifier->kind = next;
+        classifier->contrary_count = 0u;
+        classifier->transitions++;
+    }
+}
+
+const char *mdkr_present_interval_kind_name(MdkrPresentIntervalKind kind) {
+    switch (kind) {
+        case MDKR_PRESENT_INTERVAL_FIXED:
+            return "fixed";
+        case MDKR_PRESENT_INTERVAL_VARIABLE:
+            return "variable";
+        case MDKR_PRESENT_INTERVAL_WARMING:
+        default:
+            return "warming";
+    }
+}
+
 int mdkr_present_policy_parse(const char *value, MdkrPresentPolicy *out) {
     MdkrPresentPolicy parsed = { MDKR_PRESENT_ORIGINAL, 0u };
     char *end = NULL;

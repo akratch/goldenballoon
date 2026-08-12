@@ -678,6 +678,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "GoldenBalloon/",
         "GoldenBalloon/GoldenBalloon.exe",
         "GoldenBalloon/LICENSE",
+        "GoldenBalloon/NativePhoneParty-NOTICES.txt",
         "GoldenBalloon/README.md",
         "GoldenBalloon/RUN_ME.txt",
         "GoldenBalloon/gamecontrollerdb.txt",
@@ -705,6 +706,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     expected_linux_entries = {
         "Golden-Balloon.AppDir/AppRun",
         "Golden-Balloon.AppDir/LICENSE",
+        "Golden-Balloon.AppDir/NativePhoneParty-NOTICES.txt",
         "Golden-Balloon.AppDir/README.md",
         "Golden-Balloon.AppDir/RUN_ME.txt",
         "Golden-Balloon.AppDir/mdkr64.desktop",

@@ -72,6 +72,10 @@ ROM_BYTES = 12 * 1024 * 1024
 PAD_RE = re.compile(
     r"osContGetReadData P1 btn=0x([0-9a-fA-F]{4}) sx=(-?\d+) sy=(-?\d+)"
 )
+PAD_ANY_RE = re.compile(
+    r"osContGetReadData P([1-4]) btn=0x([0-9a-fA-F]{4}) "
+    r"sx=(-?\d+) sy=(-?\d+)"
+)
 INPUT_RE = re.compile(
     r"\[INPUTHASH\].*p1=(\d),([0-9a-fA-F]{4}),"
     r"([0-9a-fA-F]{4}),([0-9a-fA-F]{4}),(-?\d+),(-?\d+)"
@@ -150,7 +154,32 @@ def wait_pad(
         time.sleep(0.1)
     raise CheckFailure(
         f"{label}: no matching pad row within {timeout:.0f}s; "
-        f"last rows: {pad_rows(cdp, start)[-6:]}"
+        f"last rows: {pad_rows(cdp, start)[-6:]}; "
+        f"console tail: {cdp.console[-12:]}"
+    )
+
+
+def wait_four_remote_pads(cdp: CDPClient, start: int, timeout: float) -> None:
+    expected = {
+        1: (0x8000, 11), 2: (0x4000, 22),
+        3: (0x2000, 33), 4: (0x0010, 44),
+    }
+    seen: set[int] = set()
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for line in cdp.console[start:]:
+            match = PAD_ANY_RE.search(line)
+            if not match:
+                continue
+            port = int(match.group(1))
+            value = (int(match.group(2), 16), int(match.group(3)))
+            if value == expected[port]:
+                seen.add(port)
+        if seen == set(expected):
+            return
+        time.sleep(0.05)
+    raise CheckFailure(
+        f"four-phone bridge: observed matching ports {sorted(seen)}, expected 1–4"
     )
 
 
@@ -452,6 +481,123 @@ def check_input_arm(
                 f"touch edge queue is not bounded/clean: {queue_state}",
             )
 
+            # In-game controller management is a real local overlay boundary:
+            # opening it releases a held touch, C neutralizes the routed port,
+            # and closing cannot resurrect the pre-overlay throttle. This uses
+            # the linked wasm implementation of platformOverlayWantsPause/Input,
+            # not merely the DOM latch checked by check_party_host.py.
+            dispatch_touch(cdp, "touchStart",
+                           [{"x": go_x, "y": go_y, "id": 12}])
+            marker = len(cdp.console)
+            wait_pad(cdp, marker, lambda row: (row[0] & N64_A) == N64_A,
+                     "pre-overlay held throttle", timeout)
+            cdp.evaluate("globalThis.MDKRPartyHost.open()")
+            overlay = wait_value(cdp, """({
+              open:globalThis.__mdkrPartyOverlayOpen,
+              dialog:document.getElementById('party-dialog').open
+            })""", lambda value: isinstance(value, dict) and
+                value.get("open") is True and value.get("dialog") is True,
+                "linked-wasm Party overlay", timeout)
+            require(overlay["open"], f"Party overlay did not open: {overlay}")
+            marker = len(cdp.console)
+            wait_pad(cdp, marker, lambda row: row == (0, 0, 0),
+                     "Party overlay fail-neutral", timeout)
+            cdp.evaluate("document.getElementById('party-close').click()")
+            wait_value(cdp, "!globalThis.__mdkrPartyOverlayOpen", bool,
+                       "Party overlay release", timeout)
+            marker = len(cdp.console)
+            wait_pad(cdp, marker, lambda row: row == (0, 0, 0),
+                     "no resurrected throttle after Party overlay", timeout)
+            dispatch_touch(cdp, "touchEnd", [])
+
+            # Phone-controller wasm bridge: publish one real v1 binary packet
+            # through the launcher-owned queue. C must claim the seat, decode
+            # it with remote_pad.c, expose it to osContGetReadData, then expire
+            # it to exact neutral after 250 ms without a refresh.
+            marker = len(cdp.console)
+            injected = cdp.evaluate("""(() => {
+              const pads = globalThis.MDKRPartyHost.remotePads();
+              Object.assign(pads[0], {active:true, owner:123,
+                connectionSequence:1});
+              pads[0].packets.length = 0;
+              pads[0].packets.push(globalThis.MDKRPartyProtocol.encode({
+                flags:1, connectionSequence:1, sampleSequence:1,
+                senderTimeMs:Math.floor(performance.now())>>>0,
+                buttons:32768, stickX:42, stickY:0, edges:[]
+              }));
+              return {same:pads === globalThis.__mdkrTestState.module.__mdkrRemotePads,
+                depth:pads[0].packets.length};
+            })()""")
+            require(injected == {"same": True, "depth": 1},
+                    f"launcher/wasm remote queue was not shared: {injected}")
+            wait_pad(cdp, marker,
+                     lambda row: (row[0] & N64_A) == N64_A and row[1] == 42,
+                     "validated phone packet at P1", timeout)
+            marker = len(cdp.console)
+            wait_pad(cdp, marker, lambda row: row == (0, 0, 0),
+                     "250 ms remote-phone fail-neutral", timeout)
+            # Transport loss must not silently give an approved phone's slot
+            # to the keyboard/touch fallback. Keep the lease reserved, press
+            # local Go, and require a sustained neutral stream; only explicit
+            # host release may make the local source visible again.
+            cdp.evaluate("""(() => {
+              const p=globalThis.MDKRPartyHost.remotePads()[0];
+              p.active=false; p.reserved=true;
+            })()""")
+            marker = len(cdp.console)
+            dispatch_touch(cdp, "touchStart",
+                           [{"x": go_x, "y": go_y, "id": 13}])
+            time.sleep(0.35)
+            reserved_rows = pad_rows(cdp, marker)
+            require(reserved_rows and all((row[0] & N64_A) == 0
+                                          for row in reserved_rows),
+                    "local throttle took over a reconnecting phone lease: "
+                    f"{reserved_rows[-8:]}")
+            marker = len(cdp.console)
+            cdp.evaluate("globalThis.MDKRPartyHost.remotePads()[0].reserved=false")
+            wait_pad(cdp, marker, lambda row: (row[0] & N64_A) == N64_A,
+                     "explicit phone-seat release to local touch", timeout)
+            dispatch_touch(cdp, "touchEnd", [])
+            marker = len(cdp.console)
+            wait_pad(cdp, marker, lambda row: row == (0, 0, 0),
+                     "post-release local touch neutral", timeout)
+            remote_state = cdp.evaluate("""(() => {
+              const p=globalThis.MDKRPartyHost.remotePads()[0];
+              p.active=false; p.reserved=false;
+              return {depth:p.packets.length,drops:p.drops};
+            })()""")
+            require(remote_state["depth"] == 0 and remote_state["drops"] == 0,
+                    f"remote queue did not drain cleanly: {remote_state}")
+
+            # Four-seat bridge arm. One launcher queue per approved phone must
+            # reach the matching N64 port without OR-ing sources or collapsing
+            # every phone onto P1.
+            marker = len(cdp.console)
+            four = cdp.evaluate("""(() => {
+              const buttons=[32768,16384,8192,16];
+              const sticks=[11,22,33,44];
+              const pads=globalThis.MDKRPartyHost.remotePads();
+              for(let i=0;i<4;i++) {
+                Object.assign(pads[i], {active:true, owner:500+i,
+                  connectionSequence:7, drops:0});
+                pads[i].packets.length=0;
+                pads[i].packets.push(globalThis.MDKRPartyProtocol.encode({
+                  flags:1, connectionSequence:7, sampleSequence:10+i,
+                  senderTimeMs:Math.floor(performance.now())>>>0,
+                  buttons:buttons[i], stickX:sticks[i], stickY:0, edges:[]
+                }));
+              }
+              return pads.map(p => p.packets.length);
+            })()""")
+            require(four == [1, 1, 1, 1],
+                    f"four-phone queues were not independently populated: {four}")
+            wait_four_remote_pads(cdp, marker, timeout)
+            cdp.evaluate("""(() => {
+              for(const pad of globalThis.MDKRPartyHost.remotePads()) {
+                pad.active=false; pad.packets.length=0;
+              }
+            })()""")
+
             # The shell routes wasm stderr into testState.errors, so trace
             # rows land there under MDKR_TRACE; only genuine failure markers
             # count.
@@ -526,9 +672,12 @@ def main() -> int:
         "media queries; a CDP three-finger chord reaches osContGetReadData "
         "P1 with A+R plus a decisive stick; and a one-finger slide from Go "
         "onto Drift and back chords A+R then releases R without the throttle "
-        "ever dropping; a press+release between rAF callbacks survives as one "
+        "ever dropping; the in-game Party modal neutralizes and cannot "
+        "resurrect held input; a reconnecting phone lease stays neutral until "
+        "explicit release; a press+release between rAF callbacks survives as one "
         "consumed press/release; all paths end neutral with a bounded clean "
-        "queue and zero page errors"
+        "queue; four independent phone queues reach P1–P4; and the run ends "
+        "with zero page errors"
     )
     return 0
 

@@ -35,6 +35,7 @@ typedef struct {
     int   window_width;        // <= 0 => engine default
     int   window_height;
     int   automation_ticks;    // <= 0 => interactive; launcher regression seam
+    int   automation_frames;   // mutually exclusive presentation-frame seam
     const char *input_script;  // automation-only deterministic controller fixture
     // Staged RESTART-scope settings, as "Video.Key=Value" strings. The settings
     // panel writes these when the player changes a restart-scope key before
@@ -96,6 +97,10 @@ typedef struct {
     /* Called at the event-pump boundary before a new frame begins. */
     AppOverlayServiceFn      service;
     AppOverlayQueryFn        wants_input;
+    /* Input capture and simulation pause are deliberately independent. An
+     * online Party overlay consumes navigation input without stopping one
+     * endpoint's authoritative clock. */
+    AppOverlayQueryFn        wants_pause;
     AppOverlayQueryFn        wants_render;
     AppOverlayRenderFn       render;  // zero reports a fatal overlay-render failure
 } AppOverlayHooks;

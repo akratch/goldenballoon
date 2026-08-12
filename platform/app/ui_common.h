@@ -99,6 +99,15 @@ void SettingLabel(const char *label, const char *description,
 // the player needs to see it without hunting for it.
 void CautionBox(const char *title, const char *body);
 
+// Call immediately before BeginPopupModal for a confirmation dialog, and do
+// NOT pass ImGuiWindowFlags_AlwaysAutoResize with it. Auto-resize sizes the
+// window to its widest unwrapped item while TextWrapped wraps to the window,
+// so a modal whose widest item is one button converges into a tall, one-word-
+// per-line column (worst on small high-scale displays such as gaming
+// handhelds). This pins a readable width — clamped to the work area — and
+// leaves the height auto-fitted.
+void ConfirmModalSize();
+
 // --- Self-voicing ----------------------------------------------------------
 // ImGui exposes no accessibility tree, so the shell says out loud what it has
 // put the keyboard on. THE TWO Speak FUNCTIONS BELOW ARE THE ONLY PLACE IN THE

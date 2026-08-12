@@ -151,6 +151,7 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "video_config.h"   /* the live-settings apply boundary, below */
 #include "presentation_snapshot.h"
 #include "gameplay_event_trace.h"
+#include "rollback/rollback_game_runtime.h"
 #include "input_consumption_trace.h"
 #include "audi_port_dkr.h"
 #include "mdkr_bounds.h"
@@ -944,7 +945,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * host captures, which the bounded queue already coalesces and
              * already accepts in unbounded number per tick; it does not add a
              * ticket, a consume, or a controller read, so the game still sees
-             * one published pad sample per authored tick. Inert unless armed.
+             * one published pad sample per authored tick. The diagnostic
+             * MDKR_INPUT_JIT=0 opt-out is the only path that skips it.
              */
             platform_input_sample_late();
 
@@ -1862,6 +1864,12 @@ s32 osEepromWrite(OSMesgQueue *mq, u8 addr, u8 *buf) {
     if (!eeprom_bounds(addr, EEPROM_BLOCK_SIZE, buf, &offset)) {
         return -1;
     }
+    /* Online rollback owns no campaign progression. Consume a valid request
+     * without publishing it to disk/IDBFS; malformed requests still fail
+     * above. This lowest durable boundary also covers future call sites. */
+    if (!mdkr_rollback_game_runtime_host_io_allowed(true)) {
+        return 0;
+    }
     memcpy(candidate, s_eeprom, sizeof(candidate));
     memcpy(candidate + offset, buf, EEPROM_BLOCK_SIZE);
     if (!eeprom_store_image(candidate)) {
@@ -1887,6 +1895,9 @@ s32 osEepromLongWrite(OSMesgQueue *mq, u8 addr, u8 *buf, s32 n) {
     eeprom_load();
     if (!eeprom_bounds(addr, n, buf, &offset)) {
         return -1;
+    }
+    if (!mdkr_rollback_game_runtime_host_io_allowed(true)) {
+        return 0;
     }
     memcpy(candidate, s_eeprom, sizeof(candidate));
     memcpy(candidate + offset, buf, (size_t) n);
@@ -1957,7 +1968,19 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
 #ifndef __EMSCRIPTEN__
     int directory_sync_failed = 0;
 #endif
-    if (pak == NULL || !virtual_pak_paths(channel) ||
+    if (pak == NULL) {
+        return 0;
+    }
+    /* Controller Pak allocation, deletion, writes and reformatting all
+     * converge here. An online rollback timeline owns no durable progression,
+     * and resimulation may perform no host I/O at all. Gate before even
+     * resolving/creating the save directory so a refused operation cannot
+     * leave a filesystem or IDBFS side effect. Callers commit their candidate
+     * in-memory Pak only after this function succeeds. */
+    if (!mdkr_rollback_game_runtime_host_io_allowed(true)) {
+        return 0;
+    }
+    if (!virtual_pak_paths(channel) ||
         mdkr_virtual_pak_encode(pak, image, sizeof(image)) != MDKR_VPAK_OK) {
         return 0;
     }
@@ -2303,6 +2326,12 @@ s32 osMotorStop(OSPfs *pfs) {
     return 0;
 }
 
+void mdkr_rollback_rumble_cancel_preview(unsigned controller_index) {
+    if (controller_index < MAXCONTROLLERS) {
+        (void)platform_pad_rumble((int)controller_index, 0);
+    }
+}
+
 /* ======================================================================== *
  *  Misc / debug
  * ======================================================================== */
@@ -2593,6 +2622,45 @@ int  mdkr_bound_min(int slot) {
 }
 long mdkr_bound_clamped(int slot) {
     return (slot >= 0 && slot < MDKR_BOUND_SLOTS) ? s_boundClamped[slot] : -1;
+}
+
+void platform_libultra_session_begin(void) {
+    memset(&s_activeSentinel, 0, sizeof(s_activeSentinel));
+    s_schedInterruptQ = NULL;
+    s_videoClientQueue = NULL;
+    s_lastRealWalkCount = 0u;
+    s_testDelayedEndpointReplay = -1;
+    s_viFieldsPending = 0;
+    s_audioRebasePending = false;
+    s_framebuffer = NULL;
+    s_timeBase = 0u;
+
+    /* Save media are durable, but their in-memory paths and decoded mirrors
+     * belong to the active launcher profile and must be reopened per epoch. */
+    memset(s_eeprom, 0, sizeof(s_eeprom));
+    s_eepromLoaded = 0;
+    s_eepromPathsReady = 0;
+    memset(s_eepromDir, 0, sizeof(s_eepromDir));
+    memset(s_eepromPath, 0, sizeof(s_eepromPath));
+    memset(s_eepromTmpPath, 0, sizeof(s_eepromTmpPath));
+    memset(s_eepromBadPath, 0, sizeof(s_eepromBadPath));
+    memset(s_eepromSnapshotPath, 0, sizeof(s_eepromSnapshotPath));
+    memset(s_eepromSnapshotTmpPath, 0, sizeof(s_eepromSnapshotTmpPath));
+    memset(s_virtualPaks, 0, sizeof(s_virtualPaks));
+    memset(s_virtualPakState, 0, sizeof(s_virtualPakState));
+    memset(s_virtualPakPath, 0, sizeof(s_virtualPakPath));
+    memset(s_virtualPakTmpPath, 0, sizeof(s_virtualPakTmpPath));
+
+    s_collMaxCandidates = 0;
+    s_collTruncations = 0;
+    s_collAllocLowered = -1;
+    s_collCanaryCand = NULL;
+    s_collCanarySurf = NULL;
+    s_collCanaryTrips = 0;
+    memset(s_boundMax, 0, sizeof(s_boundMax));
+    memset(s_boundMin, 0, sizeof(s_boundMin));
+    memset(s_boundSlack, 0, sizeof(s_boundSlack));
+    memset(s_boundClamped, 0, sizeof(s_boundClamped));
 }
 
 /* ======================================================================== *

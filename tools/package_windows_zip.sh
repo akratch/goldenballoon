@@ -16,6 +16,7 @@
 # The app ships NO game data (bring-your-own-ROM); nothing here embeds ROM bytes.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+readonly PHONE_PARTY_NOTICE_SHA256="dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd"
 
 binary="build/mdkr64.exe"
 version="dev"
@@ -45,6 +46,7 @@ verify_windows_archive() {
     GoldenBalloon/ \
     GoldenBalloon/GoldenBalloon.exe \
     GoldenBalloon/LICENSE \
+    GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
     GoldenBalloon/gamecontrollerdb.txt | LC_ALL=C sort)"
@@ -58,6 +60,13 @@ verify_windows_archive() {
     echo "ERROR: Windows archive contains a DLL; SDL2 must remain statically linked." >&2
     return 1
   fi
+  local notice_hash
+  notice_hash="$(unzip -p "$archive" \
+    GoldenBalloon/NativePhoneParty-NOTICES.txt | sha256sum | awk '{print $1}')"
+  if [[ "$notice_hash" != "$PHONE_PARTY_NOTICE_SHA256" ]]; then
+    echo "ERROR: Windows archive carries an unreviewed native Phone Party notice." >&2
+    return 1
+  fi
 }
 
 if [[ "$self_test" == true ]]; then
@@ -66,6 +75,8 @@ if [[ "$self_test" == true ]]; then
   mkdir -p "$test_root/GoldenBalloon"
   : >"$test_root/GoldenBalloon/GoldenBalloon.exe"
   : >"$test_root/GoldenBalloon/LICENSE"
+  cp third_party/native_phone_party/NOTICE.txt \
+    "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
@@ -98,6 +109,8 @@ mkdir -p "$stage"
 cp "$binary" "$stage/GoldenBalloon.exe"
 
 cp LICENSE README.md "$stage/"
+cp third_party/native_phone_party/NOTICE.txt \
+  "$stage/NativePhoneParty-NOTICES.txt"
 # Community controller-mapping DB (MC.2), next to the exe where SDL_GetBasePath()
 # resolves it at controller init.
 cp lib/sdl_gamecontrollerdb/gamecontrollerdb.txt "$stage/"

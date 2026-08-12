@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "golden-balloon-party",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": false,
+  "limits": { "cpu_ms": 10 },
+  "assets": {
+    "directory": "../../dist/web",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "PARTY_ROOMS", "class_name": "PartyRoom" },
+      { "name": "PARTY_BUDGETS", "class_name": "PartyBudget" },
+      { "name": "PARTY_CODES", "class_name": "PartyCodeDirectory" },
+      { "name": "MATCH_ROOMS", "class_name": "MatchRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PartyRoom", "PartyBudget"] },
+    { "tag": "v2", "new_sqlite_classes": ["PartyCodeDirectory"] },
+    { "tag": "v3", "new_sqlite_classes": ["MatchRoom"] }
+  ],
+  "vars": {
+    "PARTY_ORIGIN": "https://party.example.invalid",
+    "MAX_ADMISSIONS_PER_DAY": "10000",
+    "CONTROL_RESERVE_PER_DAY": "5000"
+  },
+  "observability": { "enabled": false }
+}

@@ -129,10 +129,23 @@ run.
 
 ```bash
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
-python3 tools/run_checks.py \
+python3 tools/run_checks.py --jobs 6 \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
+
+`--jobs` pools the parallel-safe tasks; every gate whose verdict is a
+wall-clock or host-load measurement (realtime pacing, adopted-window
+handoffs, replay-cost ceilings), plus the instrumented/layout compiles and
+the port-bound browser lane, still runs sequentially after the pool drains —
+see `SERIAL_ROLES`/`SERIAL_NAMES` in the runner. Each pooled task gets its own
+scratch save directory, so the historical "several checks share
+`save/eeprom.bin`" constraint no longer forces the whole manifest through one
+lane. A `--jobs` run is still the complete suite: the verdict line stays
+`complete suite, N/N tasks`. If any pooled task fails in a way that smells
+like host contention rather than a code defect, re-run that task alone
+(`--only <name>`) before treating it as a regression — the same discipline
+the GPU-labelled ctests already require.
 
 That run's `rom_free_units` task invokes CTest against the same build directory
 with no label filter, so the GPU-labelled launcher tests already execute inside

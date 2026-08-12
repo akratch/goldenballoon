@@ -37,6 +37,9 @@
 extern "C" {
 #endif
 
+/* Reset all clock, policy, replay, and telemetry state for a new engine epoch. */
+void present_sched_engine_session_begin(void);
+
 /*
  * Advance the authoritative driver by one committed host-time sample and
  * return newly due fixed-step tickets. Ordinary multi-tick debt is retained

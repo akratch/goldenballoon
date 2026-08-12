@@ -51,6 +51,14 @@ function documentKey(url) {
 }
 const SHELL_DOCUMENT_KEY = documentKey("./");
 
+async function putMatchingDocument(cache, key, response) {
+  if (!response.ok || response.type !== "basic") return;
+  const markup = await response.clone().text();
+  if (markup.includes('data-build-stamp="' + BUILD + '"')) {
+    await cache.put(key, response.clone());
+  }
+}
+
 // Everything a home-screen launch needs before the player supplies a ROM.
 // The whole set is ~2.5 MB, so it is precached at install: the worker is
 // registered after the page's own fetches (which bypass it -- no
@@ -58,6 +66,22 @@ const SHELL_DOCUMENT_KEY = documentKey("./");
 // made launchable offline.
 const PRECACHE = [
   "style.css?v=" + BUILD,
+  "input/touch-surface.css?v=" + BUILD,
+  "input/touch-surface.js?v=" + BUILD,
+  "party/party-host.css?v=" + BUILD,
+  "party/party-host.js?v=" + BUILD,
+  "party/party-protocol.js?v=" + BUILD,
+  "party/party-sas.js?v=" + BUILD,
+  "party/qrcodegen.js?v=" + BUILD,
+  "online/online-room.css?v=" + BUILD,
+  "online/online-control-config.js?v=" + BUILD,
+  "online/online-room.js?v=" + BUILD,
+  "room/index.html?v=" + BUILD,
+  "room/room-entry.css?v=" + BUILD,
+  "room/room-entry.js?v=" + BUILD,
+  "controller/index.html?v=" + BUILD,
+  "controller/controller.css?v=" + BUILD,
+  "controller/controller.js?v=" + BUILD,
   "manifest.webmanifest?v=" + BUILD,
   "mdkr64-shell.js?v=" + BUILD,
   "mdkr-save-ui.js?v=" + BUILD,
@@ -77,7 +101,9 @@ self.addEventListener("install", (event) => {
     try {
       const cache = await caches.open(CACHE);
       const response = await fetch("./", { cache: "reload" });
-      if (response.ok) await cache.put(SHELL_DOCUMENT_KEY, response);
+      // A second deploy can overtake this install. Cache the document only if
+      // it still belongs to the worker being installed.
+      await putMatchingDocument(cache, SHELL_DOCUMENT_KEY, response);
       // Fetch each asset individually so one miss does not abandon the rest;
       // anything missed here is still captured by the runtime fetch path.
       await Promise.all(PRECACHE.map(async (url) => {
@@ -121,9 +147,10 @@ async function networkFirstDocument(request) {
   const key = documentKey(request.url);
   try {
     const response = await fetch(request);
-    if (response.ok && response.type === "basic") {
-      await cache.put(key, response.clone());
-    }
+    // A live old worker may fetch the newly deployed document before the new
+    // worker can activate. Never overwrite this build's offline document with
+    // markup that points at another build's assets.
+    await putMatchingDocument(cache, key, response);
     return response;
   } catch (error) {
     // Offline: fall back to THIS page's own cached copy, never another page's.

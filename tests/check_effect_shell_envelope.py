@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hold the shield/magnet effect shell inside the interpolation envelope.
+"""Hold both shield and magnet effect shells inside the interpolation envelope.
 
 An interpolated present is a reconstruction of an image between two authored
 ones. Whatever else that reconstruction is free to do, it is not free to put an
@@ -47,10 +47,10 @@ Two conditions, and a deliberate asymmetry between them:
   when (b) does not apply, (a) has already passed with room to spare, which is
   the same statement.
 
-One arm, because condition (a) needs only the production build. The contrast
-arms that made the diagnosis readable (effect-off, all-off, 60 Hz) are in the
-note; re-running them here would triple the gate's cost to re-derive a number
-that is not the pass criterion.
+Two production arms, one shield and one magnet, because they share the replay
+code but not the rendered geometry. The contrast arms that made the diagnosis
+readable (effect-off, all-off, 60 Hz) are in the note; re-running those for each
+effect would re-derive a number that is not the pass criterion.
 
 Always muted + headless. Exit 0 = pass.
 """
@@ -88,7 +88,7 @@ DUMP_FRAMES = 120
 # hook counts g_simTickCounter it does NOT need rescaling when the present rate
 # changes -- the present-counted form lost a whole 60 Hz arm (effectreg=0) to
 # exactly that trap in the 2026-08 diagnosis.
-FORCE_SHIELD = "3170:150"
+FORCE_SHELL = "3170:150"
 
 # The additive green shell against the level. Fixed thresholds, not adaptive:
 # the shell is drawn additively over whatever is behind it, so a relative
@@ -107,6 +107,14 @@ SHELL_MIN_PIXELS = 200
 # low before catching it.
 WINDOW_Y0, WINDOW_Y1 = 150, 480
 WINDOW_X0, WINDOW_X1 = 120, 600
+
+# The magnet is several disconnected lightning arcs. This region follows the
+# player-one lower shell, excluding the waterfall above and the rival racers to
+# the left. Its centroid stays at least 50 px inside every edge on the measured
+# route; the gate enforces a conservative 20 px margin below.
+MAGNET_WINDOW_Y0, MAGNET_WINDOW_Y1 = 230, 335
+MAGNET_WINDOW_X0, MAGNET_WINDOW_X1 = 220, 430
+MAGNET_CENTROID_MARGIN = 20
 
 # Segmentation tolerance on condition (a). The measured quantity is a centroid
 # of a thresholded blob whose silhouette changes as it rotates, so two frames
@@ -161,21 +169,28 @@ def read_ppm(path: Path) -> tuple[int, int, memoryview]:
     return width, height, memoryview(data)[offset + 1 :]
 
 
-def shell_mask(width: int, height: int, pixels: memoryview) -> set[int]:
+def shell_mask(width: int, height: int, pixels: memoryview,
+               effect: str) -> set[int]:
     """Pixel indices of the additive green shell inside the crop window."""
 
     mask: set[int] = set()
-    y1 = min(height, WINDOW_Y1)
-    x1 = min(width, WINDOW_X1)
-    for y in range(WINDOW_Y0, y1):
+    x0, raw_x1, y0, raw_y1 = (
+        (WINDOW_X0, WINDOW_X1, WINDOW_Y0, WINDOW_Y1)
+        if effect == "shield" else
+        (MAGNET_WINDOW_X0, MAGNET_WINDOW_X1,
+         MAGNET_WINDOW_Y0, MAGNET_WINDOW_Y1))
+    y1 = min(height, raw_y1)
+    x1 = min(width, raw_x1)
+    for y in range(y0, y1):
         row = y * width
         base = row * 3
-        for x in range(WINDOW_X0, x1):
+        for x in range(x0, x1):
             index = base + x * 3
             g = pixels[index + 1]
-            if (g > pixels[index] + SHELL_G_OVER_R
-                    and g > pixels[index + 2] + SHELL_G_OVER_B
-                    and g > SHELL_G_MIN):
+            changed = (g > pixels[index] + SHELL_G_OVER_R
+                       and g > pixels[index + 2] + SHELL_G_OVER_B
+                       and g > SHELL_G_MIN)
+            if changed:
                 mask.add(row + x)
     return mask
 
@@ -207,7 +222,7 @@ def largest_component(mask: set[int], width: int) -> set[int]:
     return best
 
 
-def shell(path: Path) -> tuple[int, float, float] | None:
+def shell(path: Path, effect: str) -> tuple[int, float, float] | None:
     """(area, cx, cy) of the shell in FULL-FRAME pixels, or None if absent.
 
     Raises when the component touches a crop edge: past that point the area and
@@ -216,27 +231,46 @@ def shell(path: Path) -> tuple[int, float, float] | None:
     """
 
     width, height, pixels = read_ppm(path)
-    mask = shell_mask(width, height, pixels)
+    mask = shell_mask(width, height, pixels, effect)
     if len(mask) < SHELL_MIN_PIXELS:
         return None
-    component = largest_component(mask, width)
+    component = largest_component(mask, width) if effect == "shield" else mask
+    x0, raw_x1, y0, raw_y1 = (
+        (WINDOW_X0, WINDOW_X1, WINDOW_Y0, WINDOW_Y1)
+        if effect == "shield" else
+        (MAGNET_WINDOW_X0, MAGNET_WINDOW_X1,
+         MAGNET_WINDOW_Y0, MAGNET_WINDOW_Y1))
     ys = [index // width for index in component]
     xs = [index % width for index in component]
-    if (min(ys) <= WINDOW_Y0 or max(ys) >= min(height, WINDOW_Y1) - 1
-            or min(xs) <= WINDOW_X0 or max(xs) >= min(width, WINDOW_X1) - 1):
+    if effect == "shield" and (
+            min(ys) <= y0 or max(ys) >= min(height, raw_y1) - 1
+            or min(xs) <= x0 or max(xs) >= min(width, raw_x1) - 1):
         raise RuntimeError(
             f"{path.name}: the shell component's bounding box "
             f"(y {min(ys)}..{max(ys)}, x {min(xs)}..{max(xs)}) touches the "
-            f"measurement window (y {WINDOW_Y0}..{WINDOW_Y1}, "
-            f"x {WINDOW_X0}..{WINDOW_X1}). Every figure this gate would report "
+            f"measurement window (y {y0}..{raw_y1}, "
+            f"x {x0}..{raw_x1}). Every figure this gate would report "
             "is a property of the crop, not of the shell. Widen the window and "
             "re-derive the envelope before trusting either verdict")
-    return len(component), sum(xs) / len(xs), sum(ys) / len(ys)
+    centroid_x = sum(xs) / len(xs)
+    centroid_y = sum(ys) / len(ys)
+    if effect == "magnet" and not (
+            x0 + MAGNET_CENTROID_MARGIN < centroid_x <
+            raw_x1 - MAGNET_CENTROID_MARGIN and
+            y0 + MAGNET_CENTROID_MARGIN < centroid_y <
+            raw_y1 - MAGNET_CENTROID_MARGIN):
+        raise RuntimeError(
+            f"{path.name}: magnet ROI centroid ({centroid_x:.1f}, "
+            f"{centroid_y:.1f}) entered the {MAGNET_CENTROID_MARGIN}px crop "
+            "margin; the fixed lower-shell region no longer identifies the "
+            "same visual feature")
+    return len(component), centroid_x, centroid_y
 
 
 def run(binary: Path, rom: Path, root: Path, timeout: int,
-        verbose: bool) -> tuple[str, Path]:
-    run_dir = root / "route-effect-envelope"
+        verbose: bool, effect: str, forced: bool = True) -> tuple[str, Path]:
+    suffix = "envelope" if forced else "pixel-reference"
+    run_dir = root / f"route-{effect}-{suffix}"
     save_dir = run_dir / "save"
     save_dir.mkdir(parents=True)
     frame_dir = run_dir / "frames"
@@ -262,9 +296,11 @@ def run(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_PRESENT_RATE=PRESENT_RATE,
         MDKR_PRESENT_SMOOTHING="interpolate",
         MDKR_PRESENT_SCHED_TRACE="1",
-        MDKR_FORCE_SHIELD=FORCE_SHIELD,
         MDKR_DUMP_FROM=str(ROUTE_TICKS * PRESENTS_PER_TICK - DUMP_FRAMES),
     )
+    if forced:
+        env["MDKR_FORCE_SHIELD"] = (
+            FORCE_SHELL if effect == "shield" else f"magnet@{FORCE_SHELL}")
     command = [
         str(binary), "--headless-ticks", str(ROUTE_TICKS),
         "--input-script", str(SCRIPT), "--rom", str(rom),
@@ -305,10 +341,41 @@ def main() -> int:
                         default="webgpu",
                         help="backend under test (default: the shipped one)")
     parser.add_argument("--timeout", type=int, default=1200)
+    parser.add_argument("--effect", choices=("both", "shield", "magnet"),
+                        default="both",
+                        help="shell fixture to verify (default: both)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     global RENDERER
     RENDERER = args.renderer
+
+    # Keep the measurement implementation single-arm and let the public gate
+    # compose the two independent fixtures. This keeps each failure's pixels,
+    # counters and diagnostics attributable to one effect while ensuring the
+    # default CI invocation can never cover the shield and silently skip the
+    # magnet.
+    if args.effect == "both":
+        failed = False
+        for effect in ("shield", "magnet"):
+            command = [
+                sys.executable, str(Path(__file__).resolve()),
+                "--build", args.build, "--rom", args.rom,
+                "--renderer", args.renderer, "--timeout", str(args.timeout),
+                "--effect", effect,
+            ]
+            if args.verbose:
+                command.append("--verbose")
+            process = subprocess.run(
+                command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, check=False)
+            print(process.stdout or "", end="")
+            failed = failed or process.returncode != 0
+        if failed:
+            print("FAIL: at least one effect-shell envelope failed",
+                  file=sys.stderr)
+            return 1
+        print("PASS: shield and magnet stay inside the interpolation envelope")
+        return 0
 
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
@@ -323,7 +390,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="mdkr-effect-envelope-") as tmp:
         try:
             output, frame_dir = run(
-                binary, rom, Path(tmp), args.timeout, args.verbose)
+                binary, rom, Path(tmp), args.timeout, args.verbose,
+                args.effect)
+            reference_dir = None
+            if args.effect == "magnet":
+                _, reference_dir = run(
+                    binary, rom, Path(tmp), args.timeout, args.verbose,
+                    args.effect, forced=False)
         except Exception as error:  # noqa: BLE001 - reported, not swallowed
             print(f"FAIL: {error}", file=sys.stderr)
             return 1
@@ -344,7 +417,7 @@ def main() -> int:
                 "FAIL: effectoverride=0 — the effect stage never substituted "
                 "anything on this route, so every displacement measured below "
                 "belongs to a stage that did not run. MDKR_FORCE_SHIELD is in "
-                "PRESENT indices and needs rescaling if the rate moved",
+                "authored-tick indices and needs rescaling if the route moved",
                 file=sys.stderr)
             return 1
         # The structural witness for the same defect. Cheap here, and it says
@@ -385,9 +458,34 @@ def main() -> int:
                 file=sys.stderr)
             return 1
 
+        if reference_dir is not None:
+            reference_frames = sorted(
+                reference_dir.glob("*.ppm"),
+                key=lambda p: int(p.stem.split("_")[1]))
+            if len(reference_frames) != DUMP_FRAMES:
+                print(
+                    f"FAIL: magnet reference dumped {len(reference_frames)} "
+                    f"frames, expected {DUMP_FRAMES}", file=sys.stderr)
+                return 1
+            contaminated = []
+            for path in reference_frames:
+                width, height, pixels = read_ppm(path)
+                count = len(shell_mask(width, height, pixels, "magnet"))
+                if count:
+                    contaminated.append((path.name, count))
+            if contaminated:
+                first, count = contaminated[0]
+                print(
+                    f"FAIL: magnet pixel reference has {count} keyed pixels "
+                    f"in {first} ({len(contaminated)}/{DUMP_FRAMES} frames); "
+                    "the fixed ROI no longer isolates the effect",
+                    file=sys.stderr)
+                return 1
+
         try:
             poses = {
-                int(path.stem.split("_")[1]): shell(path) for path in frames}
+                int(path.stem.split("_")[1]): shell(path, args.effect)
+                for path in frames}
         except RuntimeError as error:
             print(f"FAIL: {error}", file=sys.stderr)
             return 1
@@ -397,7 +495,7 @@ def main() -> int:
     if missing_shell:
         print(
             f"FAIL: no shell segmented on {len(missing_shell)} frames "
-            f"(first {missing_shell[0]}). The colour key or the forced-shield "
+            f"(first {missing_shell[0]}). The colour key or forced-{args.effect} "
             "window has drifted from the route",
             file=sys.stderr)
         return 1
@@ -523,7 +621,7 @@ def main() -> int:
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         return 1
-    print("PASS: the effect shell stays inside the interpolation envelope")
+    print(f"PASS: the {args.effect} shell stays inside the interpolation envelope")
     return 0
 
 

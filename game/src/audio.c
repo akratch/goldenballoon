@@ -3,6 +3,7 @@
 #include "memory.h"
 #ifdef NATIVE_PORT
 #include "gameplay_event_trace.h"
+#include "rollback/rollback_game_runtime.h"
 #include <stdlib.h>   /* getenv (MDKR_AUDIO_REVERB toggle) */
 #include <string.h>
 #endif
@@ -39,7 +40,7 @@ u8 gBlockVoiceLimitChange = FALSE;
 u8 gDkrReverbEnabled = TRUE;    /* M5: native reverb ON (MDKR_AUDIO_REVERB=0 disables) */
 static u8 sOverlayPauseMix;
 #define MDKR_PHYSICAL_VOICE_CAPACITY 40u
-#define MDKR_MUSIC_VOICE_CAPACITY 24u
+#define MDKR_MUSIC_VOICE_CAPACITY 26u
 #define MDKR_JINGLE_VOICE_CAPACITY 16u
 #define MDKR_SFX_STATE_CAPACITY 32u
 #endif
@@ -308,10 +309,16 @@ void audio_init(OSSched *sc) {
      * docs/OPEN_ITEMS.md) -- but a drop still silences that player's music
      * until the next music change, so the queue should not be running dry. */
     gMusicPlayer = sound_seqplayer_init(MDKR_MUSIC_VOICE_CAPACITY, 256);
+    /* __mapVoice() intentionally uses `voiceLimit < mappedVoices`, so one less
+     * than capacity admits the complete logical pool. Bluey 2's production
+     * rematch reaches 25 mapped music voices; 24 drops authored note-ons,
+     * while 26 admits the passage with one logical slot of measured headroom.
+     * The shared 40-voice physical budget remains unchanged. */
+    set_voice_limit(gMusicPlayer, MDKR_MUSIC_VOICE_CAPACITY - 1);
 #else
     gMusicPlayer = sound_seqplayer_init(24, 120);
-#endif
     set_voice_limit(gMusicPlayer, 18);
+#endif
     gJinglePlayer = sound_seqplayer_init(16, 50);
     gMusicSequenceData = mempool_alloc_safe(seqLength, COLOUR_TAG_CYAN);
     gJingleSequenceData = mempool_alloc_safe(seqLength, COLOUR_TAG_CYAN);
@@ -684,6 +691,24 @@ void music_voicelimit_set(u8 voiceLimit) {
     if (gBlockVoiceLimitChange == FALSE) {
         set_voice_limit(gMusicPlayer, voiceLimit);
     }
+}
+
+/*
+ * Entry point for the three level-header call sites only. Level headers carry
+ * the N64's concurrency budget, not a musical instruction to omit notes: the
+ * Bluey rematch's 19-voice header rejected seven authored note-ons that the
+ * native 26-slot logical pool has room for (measured peak 25). Menus and race
+ * cues that pass authored literals keep them verbatim — raising those would
+ * give music extra claim on the shared 40-voice physical pool exactly when
+ * the game pairs music with time-critical SFX/voice cues.
+ */
+void music_voicelimit_set_from_level_header(u8 voiceLimit) {
+#ifdef NATIVE_PORT
+    if (voiceLimit < MDKR_MUSIC_VOICE_CAPACITY - 1) {
+        voiceLimit = MDKR_MUSIC_VOICE_CAPACITY - 1;
+    }
+#endif
+    music_voicelimit_set(voiceLimit);
 }
 
 /**
@@ -1295,13 +1320,91 @@ u16 sound_distance(u16 soundId) {
     return gSoundTable[soundId].range;
 }
 
+static void sound_play_table_raw(u16 soundID, SoundHandle *handlePtr) {
+    f32 pitch = gSoundTable[soundID].pitch / 100.0f;
+    sndp_play_with_priority(
+        gSoundBank->bankArray[0], gSoundTable[soundID].soundBite,
+        gSoundTable[soundID].priority, handlePtr);
+    if (*handlePtr != NULL) {
+        sndp_set_param(
+            *handlePtr, AL_SNDP_VOL_EVT,
+            gSoundTable[soundID].volume * 256);
+        sndp_set_param(
+            *handlePtr, AL_SNDP_PITCH_EVT, *((u32 *) &pitch));
+    }
+}
+
+static void sound_play_direct_raw(u16 soundID, SoundHandle *handlePtr) {
+    sndp_play(gSoundBank->bankArray[0], (s16)soundID, handlePtr);
+}
+
+#ifdef NATIVE_PORT
+static u32 sound_position_hash(f32 x, f32 y, f32 z) {
+    const f32 coords[3] = {x, y, z};
+    u32 hash = 2166136261u;
+    u32 bits;
+    u32 coord;
+    u32 byte;
+    for (coord = 0; coord < ARRAY_COUNT(coords); coord++) {
+        memcpy(&bits, &coords[coord], sizeof(bits));
+        for (byte = 0; byte < sizeof(bits); byte++) {
+            hash ^= (u8)(bits >> (byte * 8u));
+            hash *= 16777619u;
+        }
+    }
+    return hash;
+}
+
+static void rollback_sound_start(
+    const MdkrRollbackAudioRequest *request,
+    MdkrRollbackAudioVoice *voice, void *context) {
+    SoundHandle *handlePtr = (SoundHandle *)request->handle_slot;
+    (void)context;
+    if (request->mode == MDKR_ROLLBACK_AUDIO_DIRECT) {
+        sound_play_direct_raw((u16)request->sound_id, handlePtr);
+    } else {
+        sound_play_table_raw((u16)request->sound_id, handlePtr);
+        if (request->mode == MDKR_ROLLBACK_AUDIO_SPATIAL &&
+            *handlePtr != NULL) {
+            audspat_calculate_echo(
+                *handlePtr, request->x, request->y, request->z);
+        }
+    }
+    voice->handle = *handlePtr;
+    voice->generation = sndp_rollback_generation(*handlePtr);
+}
+
+static void rollback_sound_cancel(
+    const MdkrRollbackAudioRequest *request,
+    MdkrRollbackAudioVoice voice, void *context) {
+    (void)context;
+    sndp_stop_rollback_voice(
+        (SoundHandle)voice.handle, voice.generation,
+        (SoundHandle *)request->handle_slot);
+}
+
+static bool rollback_sound_request(
+    MdkrRollbackAudioMode mode, u16 soundID, SoundHandle *handlePtr,
+    f32 x, f32 y, f32 z) {
+    MdkrRollbackAudioRequest request = {0};
+    request.sound_id = soundID;
+    request.mode = (u8)mode;
+    request.x = x;
+    request.y = y;
+    request.z = z;
+    request.handle_slot = handlePtr;
+    request.start = rollback_sound_start;
+    request.cancel = rollback_sound_cancel;
+    return mdkr_rollback_game_runtime_sound_request(&request);
+}
+#endif
+
 /**
  * Add the requested sound to the queue and update the mask to show that this sound is playing at that source.
  * If no soundmask is provided, then instead use the global mask.
  * Official Name: amSndPlay
  */
 void sound_play(u16 soundID, SoundHandle *handlePtr) {
-    f32 pitch;
     s32 soundBite;
 
     if (!mdkr_sound_id_valid(soundID, gSoundCount)) {
@@ -1318,25 +1421,17 @@ void sound_play(u16 soundID, SoundHandle *handlePtr) {
         }
         return;
     }
+    if (handlePtr == NULL) handlePtr = &gGlobalSoundMask;
 #ifdef NATIVE_PORT
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_SOUND, soundID, soundBite, 0, 0);
-#endif
-    pitch = gSoundTable[soundID].pitch / 100.0f;
-    if (handlePtr != NULL) {
-        sndp_play_with_priority(gSoundBank->bankArray[0], soundBite, gSoundTable[soundID].priority, handlePtr);
-        if (*handlePtr != NULL) {
-            sndp_set_param(*handlePtr, AL_SNDP_VOL_EVT, gSoundTable[soundID].volume * 256);
-            sndp_set_param(*handlePtr, AL_SNDP_PITCH_EVT, *((u32 *) &pitch));
-        }
-    } else {
-        handlePtr = &gGlobalSoundMask;
-        sndp_play_with_priority(gSoundBank->bankArray[0], soundBite, gSoundTable[soundID].priority, &gGlobalSoundMask);
-        if (*handlePtr != NULL) {
-            sndp_set_param(*handlePtr, AL_SNDP_VOL_EVT, gSoundTable[soundID].volume * 256);
-            sndp_set_param(*handlePtr, AL_SNDP_PITCH_EVT, *((u32 *) &pitch));
-        }
+    if (rollback_sound_request(
+            MDKR_ROLLBACK_AUDIO_TABLE, soundID, handlePtr,
+            0.0f, 0.0f, 0.0f)) {
+        return;
     }
+#endif
+    sound_play_table_raw(soundID, handlePtr);
 }
 
 /**
@@ -1345,12 +1440,30 @@ void sound_play(u16 soundID, SoundHandle *handlePtr) {
  * If it is not given a mask, then it will use the global mask.
  */
 void sound_play_spatial(u16 soundID, f32 x, f32 y, f32 z, SoundHandle *handlePtr) {
+    s32 soundBite;
+    if (!mdkr_sound_id_valid(soundID, gSoundCount)) {
+        if (handlePtr != NULL) *handlePtr = NULL;
+        stubbed_printf("amSndPlay: Illegal sound effects table index\n");
+        return;
+    }
+    soundBite = gSoundTable[soundID].soundBite;
+    if (soundBite == 0) {
+        if (handlePtr != NULL) *handlePtr = NULL;
+        return;
+    }
     if (handlePtr == NULL) {
         handlePtr = &gSpatialSoundMask;
     }
-
-    sound_play(soundID, handlePtr);
-
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_SOUND, soundID, soundBite, 2,
+        (s32)sound_position_hash(x, y, z));
+    if (rollback_sound_request(
+            MDKR_ROLLBACK_AUDIO_SPATIAL, soundID, handlePtr, x, y, z)) {
+        return;
+    }
+#endif
+    sound_play_table_raw(soundID, handlePtr);
     if (*handlePtr != NULL) {
         audspat_calculate_echo(*handlePtr, x, y, z);
     }
@@ -1367,15 +1480,17 @@ void sound_play_direct(u16 soundID, SoundHandle *handlePtr) {
         }
         return;
     }
+    if (handlePtr == NULL) handlePtr = &gRacerSoundMask;
 #ifdef NATIVE_PORT
     GAMEPLAY_EVENT_TRACE(
         GAMEPLAY_EVENT_SOUND, soundID, soundID, 1, 0);
-#endif
-    if (handlePtr) {
-        sndp_play(gSoundBank->bankArray[0], (s16) soundID, handlePtr);
-    } else {
-        sndp_play(gSoundBank->bankArray[0], (s16) soundID, &gRacerSoundMask);
+    if (rollback_sound_request(
+            MDKR_ROLLBACK_AUDIO_DIRECT, soundID, handlePtr,
+            0.0f, 0.0f, 0.0f)) {
+        return;
     }
+#endif
+    sound_play_direct_raw(soundID, handlePtr);
 }
 
 /**

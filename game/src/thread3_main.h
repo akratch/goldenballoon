@@ -4,6 +4,9 @@
 #include "types.h"
 #include "macros.h"
 #include "structs.h"
+#ifdef NATIVE_PORT
+#include "input_tick_queue.h"
+#endif
 
 typedef enum GameMode {
     GAMEMODE_INTRO = -1,
@@ -126,6 +129,10 @@ void mode_intro(void);
 s32 is_controller_missing(void);
 s32 drm_validate_imem(void);
 void mode_game(s32 updateRate);
+#ifdef NATIVE_PORT
+s32 mdkr_game_resimulate_tick(
+    s32 updateRate, const MdkrInputSample input[MDKR_INPUT_PORTS]);
+#endif
 void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicleId, s32 cutsceneId);
 void level_global_init(void);
 void alloc_displaylist_heap(s32 numberOfPlayers);

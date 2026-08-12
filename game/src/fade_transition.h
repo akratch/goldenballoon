@@ -4,6 +4,9 @@
 #include "types.h"
 #include "structs.h"
 #include "PR/gbi.h"
+#ifdef NATIVE_PORT
+#include <stddef.h>
+#endif
 
 #define FADE_FULLSCREEN          0
 #define FADE_BARNDOOR_HORIZONTAL 1
@@ -73,5 +76,20 @@ void transition_init_shape(FadeTransition *transition, s32 numVerts, s32 numTris
 void transition_update_circle(s32 updateRate);
 void transition_render_waves(Gfx **dList, UNUSED Mtx **mtx, UNUSED Vertex **vtx);
 void transition_init_circle(FadeTransition *transition);
+#ifdef NATIVE_PORT
+/* Rollback lab: pin one maximum-sized presentation workspace before tick zero
+ * so transition simulation never changes allocator topology mid-resimulation. */
+#define MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT 34u
+typedef struct MdkrTransitionRollbackSpan {
+    void *address;
+    size_t size;
+} MdkrTransitionRollbackSpan;
+s32 transition_workspace_preload(void);
+void *transition_workspace_address(void);
+void transition_workspace_shutdown(void);
+s32 transition_rollback_state_spans(
+    MdkrTransitionRollbackSpan
+        spans[MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT]);
+#endif
 
 #endif

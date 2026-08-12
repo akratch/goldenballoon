@@ -32,6 +32,7 @@
 #include "math_util.h"
 #include "memory.h"
 #include "menu.h"
+#include "network_player_authority.h"
 #include "object_models.h"
 #include "objects.h"
 #include "particles.h"
@@ -58,6 +59,7 @@
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <stdlib.h>
+#include "net/net_roster_runtime.h"
 #include "platform_os.h"
 #include "app_overlay_hooks.h"
 #include "waves.h"
@@ -65,6 +67,7 @@
 #include "present_sched.h"
 #include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
+#include "rollback/rollback_game_runtime.h"
 #include "taj_mod.h"
 #endif
 
@@ -122,6 +125,12 @@ FadeTransition D_800DD424 = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FAD
 
 /************ .bss ************/
 
+#ifdef NATIVE_PORT
+/* Diagnostic/rollback execution mode. It is not simulation authority: it only
+ * suppresses presentation while the already-registered state is replayed. */
+static s32 sRollbackResimulating;
+#endif
+
 Gfx *gDisplayLists[2];
 Gfx *gCurrDisplayList;
 UNUSED s32 D_801211FC;
@@ -174,6 +183,47 @@ UNUSED s32 D_80123568[3]; // BSS Padding
  * Official Name: mainThread
  */
 void thread3_main(UNUSED void *unused) {
+    /* These values live in the original cartridge's .data, whose initializer
+     * ran once per process. A persistent launcher can invoke the engine more
+     * than once, so restore the boot contract explicitly before init_game(). */
+    gSaveDataFlags = 0;
+    gScreenStatus = OSMESG_SWAP_BUFFER;
+    sControllerStatus = 0;
+    gSkipGfxTask = FALSE;
+    gDrumstickSceneLoadTimer = 0;
+    gLevelLoadTimer = 0;
+    gPauseLockTimer = 0;
+    gFutureFunLandLevelTarget = FALSE;
+    gDmemInvalid = FALSE;
+    gDrawFrameTimer = 0;
+    sLogicUpdateRate = LOGIC_5FPS;
+    bzero(gLevelSettings, sizeof(gLevelSettings));
+    gSPTaskNum = 0;
+    gGameMode = 0;
+    gRenderMenu = 0;
+    gPlayableMapId = 0;
+    gGameNumPlayers = 0;
+    gGameCurrentEntrance = 0;
+    gGameCurrentCutscene = 0;
+    gPrevPlayerCount = 0;
+    gSettingsPtr = NULL;
+    sWriteSaveSource = NULL;
+    gIsLoading = FALSE;
+    gIsPaused = FALSE;
+    gPostRaceViewPort = 0;
+    gLevelDefaultVehicleID = VEHICLE_CAR;
+    gMenuVehicleID = VEHICLE_CAR;
+    sBootDelayTimer = 0;
+    gLevelLoadType = 0;
+    gNextMap = 0;
+    gCurrNumF3dCmdsPerPlayer = 0;
+    gCurrNumHudMatPerPlayer = 0;
+    gCurrNumHudTrisPerPlayer = 0;
+    gCurrNumHudVertsPerPlayer = 0;
+    bzero(gNMISched, sizeof(gNMISched));
+    bzero(&gNMIMesgQueue, sizeof(gNMIMesgQueue));
+    gNMIOSMesg = NULL;
+    gNMIMesgBuf = 0;
     init_game();
     gSaveDataFlags = input_update(gSaveDataFlags, 0);
     sBootDelayTimer = 0;
@@ -355,10 +405,11 @@ void main_game_loop(void) {
      * capture. Keep polling input and rendering the held scene, but advance
      * every time-based game/menu/audio/transition consumer with a zero rate.
      * is_game_paused() below exposes the same state to subsystems with their own
-     * pause gates. Without registered app-shell hooks the input-capture query
-     * is constant-zero, so CLI/browser/oracle behavior remains unchanged. */
+     * pause gates. Input capture is a separate query: online Party chrome may
+     * consume navigation without stopping this endpoint's authored clock.
+     * Without registered hooks both queries are constant-zero. */
     {
-        const s32 overlayPaused = platformOverlayWantsInput();
+        const s32 overlayPaused = platformOverlayWantsPause();
         /* A cutscene camera is a one-frame pulse. The app overlay opens from
          * presentation, so unlike the authored START pause it reaches this
          * input boundary one tick after that pulse was cleared. Restore the
@@ -384,6 +435,14 @@ void main_game_loop(void) {
         if (overlayPaused) {
             logicUpdateRate = 0;
         }
+    }
+#endif
+#ifdef NATIVE_PORT
+    if (!mdkr_rollback_game_runtime_prepare_tick(
+            (unsigned)logicUpdateRate)) {
+        fprintf(stderr,
+                "[FATAL] rollback lab could not prepare canonical input\n");
+        abort();
     }
 #endif
     if (get_lockup_status()) {
@@ -430,6 +489,18 @@ void main_game_loop(void) {
     if (sBootDelayTimer >= 8 && is_controller_missing()) {
         menu_missing_controller(&gCurrDisplayList, logicUpdateRate);
     }
+#ifdef NATIVE_PORT
+    /* The rollback boundary is the completed authored pass, not merely the
+     * end of mode_game(): transition_update above owns gameplay-readable fade
+     * timers and must be included in the same tick snapshot. Presentation has
+     * finished authoring and fb_update has not issued the next ticket yet. */
+    if (!mdkr_rollback_game_runtime_validate_boundary(
+            (unsigned)logicUpdateRate)) {
+        fprintf(stderr,
+                "[FATAL] rollback lab lost a registered authority allocation\n");
+        abort();
+    }
+#endif
 
     gDPFullSync(gCurrDisplayList++);
     gSPEndDisplayList(gCurrDisplayList++);
@@ -532,6 +603,17 @@ void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle v
     osSetTime(0);
     mempool_free_timer(2);
     rumble_init(TRUE);
+#ifdef NATIVE_PORT
+    if (!mdkr_rollback_game_runtime_level_ready()) {
+        fprintf(stderr,
+                "[ROLLBACK] engine startup rejected before authored tick one\n");
+        /* The level itself is completely initialized and can follow the normal
+         * owner-last host teardown. A startup/admission failure must never turn
+         * an unsupported online room into an abort or crash loop. */
+        platform_request_exit(EXIT_FAILURE);
+        return;
+    }
+#endif
 }
 
 #ifdef NATIVE_PORT
@@ -572,6 +654,9 @@ static void presentation_history_retire(void) {
  */
 void unload_level_game(void) {
     mempool_free_timer(0);
+#ifdef NATIVE_PORT
+    mdkr_rollback_game_runtime_level_end();
+#endif
     if (gSkipGfxTask == FALSE) {
         if (gDrawFrameTimer != 1) {
             gfxtask_wait();
@@ -607,7 +692,8 @@ void mode_game(s32 updateRate) {
     buttonPressedInputs = 0;
 
     // Get input data for all 4 players.
-    for (i = 0; i < get_active_player_count(); i++) {
+    for (i = 0; i < mdkr_authoritative_player_count(
+                        get_active_player_count()); i++) {
         buttonHeldInputs |= input_held(i);
         buttonPressedInputs |= input_pressed(i);
     }
@@ -727,7 +813,7 @@ void mode_game(s32 updateRate) {
     scene_authoritative_render_tick(updateRate);
     /* Hash authoritative state around the render traversal, so a render-side
      * mutation of it is detectable (no-op unless MDKR_RENDER_CENSUS=1). */
-    {
+    if (!sRollbackResimulating) {
         extern void mdkr_render_census_pre(void);
         extern void mdkr_render_census_post(void);
         mdkr_render_census_pre();
@@ -842,10 +928,19 @@ void mode_game(s32 updateRate) {
                 break;
         }
     }
-    rdp_init(&gCurrDisplayList);
-    divider_draw(&gCurrDisplayList);
-    hud_render_general(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList, updateRate);
-    divider_clear_coverage(&gCurrDisplayList);
+    if (!sRollbackResimulating
+#ifdef NATIVE_PORT
+        && (!mdkr_net_roster_runtime_active() ||
+            mdkr_net_roster_runtime_viewport_count(1u) > 0u)
+#endif
+    ) {
+        rdp_init(&gCurrDisplayList);
+        divider_draw(&gCurrDisplayList);
+        hud_render_general(
+            &gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList,
+            updateRate);
+        divider_clear_coverage(&gCurrDisplayList);
+    }
     if (gFutureFunLandLevelTarget) {
         if (func_800214C4() != 0) {
             gPlayableMapId = ASSET_LEVEL_FUTUREFUNLANDHUB;
@@ -1037,6 +1132,43 @@ void mode_game(s32 updateRate) {
     }
 #endif
 }
+
+#ifdef NATIVE_PORT
+s32 mdkr_game_resimulate_tick(
+    s32 updateRate, const MdkrInputSample input[MDKR_INPUT_PORTS]) {
+    s32 ok;
+    if (sRollbackResimulating || input == NULL || updateRate <= 0 ||
+        gGameMode != GAMEMODE_INGAME || gIsPaused ||
+        D_801234FC != 0 || D_801234F8 || gLevelLoadTimer != 0 ||
+        textbox_visible() != 0) {
+        fprintf(stderr,
+                "[ROLLBACK] game-tick admission rejected active=%d input=%d "
+                "rate=%d mode=%d paused=%d postrace=%d loadA=%d loadB=%d "
+                "levelTimer=%d textbox=%d\n",
+                sRollbackResimulating, input != NULL, updateRate, gGameMode,
+                gIsPaused, gPostRaceViewPort, D_801234FC, D_801234F8,
+                gLevelLoadTimer, textbox_visible());
+        return FALSE;
+    }
+    input_rollback_apply(input);
+    sRollbackResimulating = TRUE;
+    mode_game(updateRate);
+    if (gGameMode == GAMEMODE_INGAME) {
+        (void)transition_update(updateRate);
+    }
+    ok = gGameMode == GAMEMODE_INGAME && !gIsPaused &&
+         D_801234FC == 0 && !D_801234F8;
+    if (!ok) {
+        fprintf(stderr,
+                "[ROLLBACK] game-tick completion rejected mode=%d paused=%d "
+                "postrace=%d loadA=%d loadB=%d\n",
+                gGameMode, gIsPaused, gPostRaceViewPort,
+                D_801234FC, D_801234F8);
+    }
+    sRollbackResimulating = FALSE;
+    return ok;
+}
+#endif
 
 /**
  * Reset dialogue and set the transition effect for the cutscene showing an unlocked Drumstick.
@@ -1500,7 +1632,8 @@ void calc_and_alloc_heap_for_settings(void) {
  */
 void init_racer_headers(void) {
     s32 i, j;
-    gSettingsPtr->gNumRacers = get_number_of_active_players();
+    gSettingsPtr->gNumRacers = mdkr_authoritative_player_count(
+        get_number_of_active_players());
     for (i = 0; i < 8; i++) {
         gSettingsPtr->racers[i].best_times = 0;
         gSettingsPtr->racers[i].character = get_character_id_from_slot(i);
@@ -1520,6 +1653,27 @@ void init_racer_headers(void) {
             gSettingsPtr->racers[i].lap_times[j] = 0;
         }
     }
+#ifdef NATIVE_PORT
+    {
+        const MdkrMatchLaunchDescriptorV1 *launch =
+            mdkr_net_roster_runtime_launch_descriptor();
+        if (launch != NULL) {
+            fprintf(stderr,
+                    "[NET-SELECTIONS] epoch=%u racers="
+                    "0:%u/%u,1:%u/%u,2:%u/%u,3:%u/%u "
+                    "source=launch-descriptor\n",
+                    launch->manifest.match_epoch,
+                    (unsigned)gSettingsPtr->racers[0].character,
+                    (unsigned)get_player_selected_vehicle(0),
+                    (unsigned)gSettingsPtr->racers[1].character,
+                    (unsigned)get_player_selected_vehicle(1),
+                    (unsigned)gSettingsPtr->racers[2].character,
+                    (unsigned)get_player_selected_vehicle(2),
+                    (unsigned)gSettingsPtr->racers[3].character,
+                    (unsigned)get_player_selected_vehicle(3));
+        }
+    }
+#endif
     gSettingsPtr->timeTrialRacer = 0;
     gSettingsPtr->unk115[0] = 0;
     gSettingsPtr->unk115[1] = 0;
@@ -1603,7 +1757,7 @@ Settings *get_settings(void) {
  */
 s8 is_game_paused(void) {
 #ifdef NATIVE_PORT
-    if (platformOverlayWantsInput()) {
+    if (platformOverlayWantsPause()) {
         return TRUE;
     }
 #endif

@@ -211,6 +211,7 @@
 #include "camera.h"
 #include "game.h"
 #include "object_behaviors.h"
+#include "object_models.h"
 #include "particles.h"
 #include "textures_sprites.h"
 #include "thread3_main.h"
@@ -1107,8 +1108,29 @@ static uint64_t sim_hash_models_v3(uint64_t hash, const Object *object) {
         SIM_HASH_FIELD(hash, instance, offsetZ);
         SIM_HASH_FIELD(hash, instance, headTilt);
         SIM_HASH_FIELD(hash, instance, modelType);
-        SIM_HASH_FIELD(hash, instance, animationTaskNum);
+        /* animationTaskNum is the address-selection phase of the model's
+         * double buffer, not model state. Rollback resimulation intentionally
+         * authors no GPU task, so it may reach the same animation pose with
+         * the opposite buffer index. Hash the selected geometry by value below
+         * instead: this preserves collision/attach-point coverage while
+         * normalizing which equivalent host buffer contains that pose. */
         SIM_HASH_FIELD(hash, instance, animUpdateTimer);
+        if (instance->modelType == MODELTYPE_ANIMATED &&
+            instance->objModel != NULL &&
+            instance->objModel->numberOfVertices > 0 &&
+            instance->animationTaskNum >= 0 &&
+            instance->animationTaskNum < 3 &&
+            instance->vertices[instance->animationTaskNum] != NULL) {
+            const Vertex *vertices =
+                instance->vertices[instance->animationTaskNum];
+            const s16 vertex_count = instance->objModel->numberOfVertices;
+            hash = fnv1a64(hash, &vertex_count, sizeof(vertex_count));
+            for (s32 vertex = 0; vertex < vertex_count; vertex++) {
+                SIM_HASH_FIELD(hash, &vertices[vertex], x);
+                SIM_HASH_FIELD(hash, &vertices[vertex], y);
+                SIM_HASH_FIELD(hash, &vertices[vertex], z);
+            }
+        }
     }
     return hash;
 }

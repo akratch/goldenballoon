@@ -361,6 +361,29 @@ u32 amAudioGetFrameSize(void)    { return frameSize; }
 u32 amAudioGetMinFrameSize(void) { return minFrameSize; }
 u32 amAudioGetMaxFrameSize(void) { return maxFrameSize; }
 u32 amAudioGetMaxSamples(void)   { return PORT_MAX_FRAME_SAMPLES; }
+
+void amAudioSessionShutdown(void) {
+    gDkrAudioReady = 0;
+    alClose(&__am.g);
+    bzero(&__am, sizeof(__am));
+    bzero(&dmaState, sizeof(dmaState));
+    bzero(dmaBuffs, sizeof(dmaBuffs));
+    bzero(audDMAIOMesgBuf, sizeof(audDMAIOMesgBuf));
+    bzero(&audDMAMessageQ, sizeof(audDMAMessageQ));
+    bzero(audDMAMessageBuf, sizeof(audDMAMessageBuf));
+    bzero(sPortOutBuf, sizeof(sPortOutBuf));
+    sPortOutIdx = 0u;
+    sPortAcmdIdx = 0u;
+    audFrameCt = 0u;
+    nextDMA = 0u;
+    curAcmdList = 0u;
+    minFrameSize = 0u;
+    frameSize = 0u;
+    maxFrameSize = 0u;
+    gAudioCmdLen = 0;
+    gLastAudioPtr = NULL;
+    gLastAudioFrameSamples = 0;
+}
 #endif
 
 /******************************************************************************

@@ -21,6 +21,8 @@
 #include "taj_mod.h"
 #include "taj_physics.h"
 #include "taj_visual.h"
+#include "net/net_roster_runtime.h"
+#include <stdio.h>
 #include <stdlib.h>
 #endif
 #include "PRinternal/viint.h"
@@ -39,6 +41,7 @@ static s32 sTajMinimapIdentityTraced;
 static u32 sTajMinimapTracedEpoch;
 #else
 #define hud_rand_range rand_range
+#define hud_presentation_viewport_layout() gHUDNumPlayers
 #endif
 
 /************ .data ************/
@@ -279,6 +282,189 @@ Mtx *gHudMtx;
 Vertex *gHudVtx;
 s32 gHudCurrentViewport;
 s32 gHUDNumPlayers;
+#ifdef NATIVE_PORT
+/* Global HUD simulation keeps the canonical race layout.  The minimap is a
+ * draw-only composition choice, so an admitted endpoint places it using only
+ * the frozen local viewport count.  A verifier with no views has no split and
+ * falls back to the one-view geometry if this draw is ever reached. */
+static s32 hud_presentation_viewport_layout(void) {
+    if (mdkr_net_roster_runtime_active()) {
+        const u8 count = mdkr_net_roster_runtime_viewport_count(0u);
+        return count > 0u ? (s32)count - 1 : VIEWPORT_LAYOUT_1_PLAYER;
+    }
+    return gHUDNumPlayers;
+}
+
+static s32 hud_element_is_texture(const HudElement *element) {
+    return (gAssetHudElementIds[element->spriteID] & ASSET_MASK_TEXTURE) ==
+           ASSET_MASK_TEXTURE;
+}
+
+static void hud_baseline_apply_multiplayer_assets(
+    HudElement *element, s32 elementIndex, s32 layout) {
+    if (layout == VIEWPORT_LAYOUT_1_PLAYER) return;
+    if (element->spriteID == HUD_ASSET_NUMBERS) {
+        element->spriteID = HUD_ASSET_NUMBERS_SMALL;
+    } else if (element->spriteID == HUD_ASSET_4) {
+        element->spriteID = HUD_ASSET_15;
+    } else if (element->spriteID == HUD_ASSET_SEPERATOR) {
+        element->spriteID = HUD_ASSET_SEPERATOR_SMALL;
+    } else if (element->spriteID == HUD_ASSET_18) {
+        element->spriteID = HUD_ASSET_28;
+    } else if (element->spriteID == HUD_ASSET_54) {
+        element->scale *= 0.6f;
+    } else if (elementIndex != HUD_RACE_POSITION &&
+               elementIndex != HUD_RACE_POSITION_END &&
+               elementIndex != HUD_WEAPON_DISPLAY &&
+               elementIndex != HUD_PRO_AM_LOGO &&
+               elementIndex != HUD_CHALLENGE_FINISH_POS_1 &&
+               elementIndex != HUD_CHALLENGE_FINISH_POS_2 &&
+               elementIndex != HUD_LAP_COUNT_LABEL &&
+               elementIndex != HUD_CHALLENGE_PORTRAIT &&
+               elementIndex != HUD_EGG_CHALLENGE_ICON &&
+               ((elementIndex < HUD_BATTLE_BANANA_ICON ||
+                 elementIndex > HUD_BATTLE_BANANA_COUNT_2) ||
+                elementIndex == HUD_BANANA_COUNT_SPARKLE ||
+                elementIndex == HUD_BANANA_COUNT_NUMBER_2)) {
+        element->scale *= 0.75f;
+    }
+    if (layout >= VIEWPORT_LAYOUT_3_PLAYERS) {
+        switch (elementIndex) {
+            case HUD_LAP_TEXT_LAP:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_LAP_LAP_SMALL;
+                break;
+            case HUD_LAP_TEXT_TWO:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_LAP_2_SMALL;
+                break;
+            case HUD_LAP_TEXT_FINAL:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_LAP_FINAL_SMALL;
+                break;
+            case HUD_RACE_START_GO:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_GO_SMALL;
+                break;
+            case HUD_RACE_START_READY:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_GET_READY_SMALL;
+                break;
+            case HUD_WRONGWAY_1:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_WRONG_SMALL;
+                break;
+            case HUD_WRONGWAY_2:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_WAY_SMALL;
+                break;
+            case HUD_RACE_END_FINISH:
+                element->scale = 1.0f;
+                element->spriteID = HUD_SPRITE_FINISH_SMALL;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+static HudElement hud_initialized_baseline(
+    s32 layout, s32 viewport, s32 elementIndex) {
+    HudElement baseline = gHudElementBase[elementIndex];
+    if (layout == VIEWPORT_LAYOUT_2_PLAYERS) {
+        HudPresets2P *preset;
+        for (preset = gHudPresets2P; preset->assetID != -1; preset++) {
+            if (preset->assetID != elementIndex) continue;
+            baseline.pos.x = preset->x;
+            if (hud_element_is_texture(&baseline)) {
+                baseline.pos.y = viewport == PLAYER_ONE
+                    ? preset->y : preset->y + 108;
+            } else {
+                baseline.pos.y = viewport == PLAYER_ONE
+                    ? preset->y + 60 : preset->y - 48;
+            }
+            break;
+        }
+    } else if (layout >= VIEWPORT_LAYOUT_3_PLAYERS) {
+        HudPresets4P *preset;
+        for (preset = gHudPresets4P; preset->assetID != -1; preset++) {
+            if (preset->assetID != elementIndex) continue;
+            if (hud_element_is_texture(&baseline)) {
+                baseline.pos.x = (viewport == PLAYER_ONE ||
+                                  viewport == PLAYER_THREE)
+                    ? preset->xLeft : preset->xRight + 160;
+                baseline.pos.y = (viewport == PLAYER_ONE ||
+                                  viewport == PLAYER_TWO)
+                    ? preset->y : preset->y + 108;
+            } else {
+                baseline.pos.x = (viewport == PLAYER_ONE ||
+                                  viewport == PLAYER_THREE)
+                    ? preset->xLeft - 80 : preset->xRight + 80;
+                baseline.pos.y = (viewport == PLAYER_ONE ||
+                                  viewport == PLAYER_TWO)
+                    ? preset->y + 60 : preset->y - 48;
+            }
+            break;
+        }
+    }
+    hud_baseline_apply_multiplayer_assets(
+        &baseline, elementIndex, layout);
+    return baseline;
+}
+
+/* Rebase an element's draw-time deltas from the canonical four-player preset
+ * onto this endpoint's actual output preset. The live HudData remains the
+ * rollback-owned canonical object; only this stack copy reaches the renderer. */
+static s32 hud_endpoint_reflow_element(
+    const HudElement *source, HudElement *output) {
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    uintptr_t sourceAddress;
+    uintptr_t firstAddress;
+    uintptr_t endAddress;
+    s32 elementIndex;
+    s32 outputViewport = -1;
+    s32 index;
+    HudElement canonicalBaseline;
+    HudElement endpointBaseline;
+    if (roster == NULL || roster->viewport_count == 0u ||
+        gCurrentHud == NULL || source == NULL || output == NULL) return FALSE;
+    sourceAddress = (uintptr_t)source;
+    firstAddress = (uintptr_t)&gCurrentHud->entry[0];
+    endAddress = (uintptr_t)&gCurrentHud->entry[HUD_ELEMENT_COUNT];
+    if (sourceAddress < firstAddress || sourceAddress >= endAddress ||
+        (sourceAddress - firstAddress) % sizeof(HudElement) != 0u) return FALSE;
+    elementIndex = (s32)((sourceAddress - firstAddress) / sizeof(HudElement));
+    /* The minimap and projected reticle already consume endpoint-local screen
+     * geometry immediately before drawing. Rebasing them a second time would
+     * be presentation feedback, not layout adaptation. */
+    if (elementIndex == HUD_MINIMAP_MARKER ||
+        elementIndex == HUD_MAGNET_RETICLE) return FALSE;
+    for (index = 0; index < roster->viewport_count; index++) {
+        if (roster->viewport_to_canonical[index] == gHudCurrentViewport) {
+            outputViewport = index;
+            break;
+        }
+    }
+    if (outputViewport < 0) return FALSE;
+    canonicalBaseline = hud_initialized_baseline(
+        gHUDNumPlayers, gHudCurrentViewport, elementIndex);
+    endpointBaseline = hud_initialized_baseline(
+        (s32)roster->viewport_count - 1, outputViewport, elementIndex);
+    *output = *source;
+    output->pos.x = endpointBaseline.pos.x +
+                    (source->pos.x - canonicalBaseline.pos.x);
+    output->pos.y = endpointBaseline.pos.y +
+                    (source->pos.y - canonicalBaseline.pos.y);
+    if (canonicalBaseline.scale != 0.0f) {
+        output->scale = endpointBaseline.scale *
+                        (source->scale / canonicalBaseline.scale);
+    }
+    if (source->spriteID == canonicalBaseline.spriteID) {
+        output->spriteID = endpointBaseline.spriteID;
+    }
+    return TRUE;
+}
+#endif
 s32 gHudController;
 s32 D_80126D14;
 s32 D_80126D18;
@@ -4247,6 +4433,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
     s32 tempVar2;
     s32 sp144;
     s32 racerCount;
+    s32 presentationLayout;
     UNUSED s32 pad2;
     Camera *someObjSeg;
     Object **racerGroup;
@@ -4516,7 +4703,8 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
     someObjSeg = cam_get_active_camera();
     cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
     minimap = DKR_PTR(Sprite, lvlMdl->minimapSpriteIndex);
-    switch (gHUDNumPlayers) {
+    presentationLayout = hud_presentation_viewport_layout();
+    switch (presentationLayout) {
         case TWO_PLAYERS:
             gMinimapScreenX = 135;
             gMinimapScreenY = -gMinimapDotOffsetY / 2;
@@ -4540,6 +4728,22 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
             gMinimapScreenY = -98;
             break;
     }
+#ifdef NATIVE_PORT
+    if (mdkr_net_roster_runtime_active()) {
+        static s8 reportedCanonical = -1;
+        static s8 reportedPresentation = -1;
+        if (reportedCanonical != gHUDNumPlayers ||
+            reportedPresentation != presentationLayout) {
+            fprintf(stderr,
+                    "[NET-HUD] canonical-layout=%d output-layout=%d "
+                    "minimap=%d,%d\n",
+                    gHUDNumPlayers, presentationLayout,
+                    gMinimapScreenX, gMinimapScreenY);
+            reportedCanonical = (s8)gHUDNumPlayers;
+            reportedPresentation = (s8)presentationLayout;
+        }
+    }
+#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         gMinimapScreenY *= 1.2;
     }
@@ -4778,6 +4982,32 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
     Sprite *sprite;
     UNUSED s32 pad4[2];
     s32 spriteElementId;
+#ifdef NATIVE_PORT
+    HudElement endpointHud;
+    if (hud_endpoint_reflow_element(hud, &endpointHud)) {
+        static u8 reportedOutput[MAXCONTROLLERS];
+        const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+        s32 outputIndex;
+        for (outputIndex = 0; outputIndex < roster->viewport_count;
+             outputIndex++) {
+            if (roster->viewport_to_canonical[outputIndex] ==
+                gHudCurrentViewport) break;
+        }
+        if (outputIndex < roster->viewport_count &&
+            !reportedOutput[outputIndex]) {
+            fprintf(stderr,
+                    "[NET-HUD-REFLOW] output=%d canonical=%d layout=%u "
+                    "moved=%d scaled=%d shadow=1\n",
+                    outputIndex, gHudCurrentViewport,
+                    (unsigned)(roster->viewport_count - 1u),
+                    endpointHud.pos.x != hud->pos.x ||
+                        endpointHud.pos.y != hud->pos.y,
+                    endpointHud.scale != hud->scale);
+            reportedOutput[outputIndex] = TRUE;
+        }
+        hud = &endpointHud;
+    }
+#endif
 
     spriteID = hud->spriteID;
     spriteElementId = gAssetHudElementIds[spriteID];

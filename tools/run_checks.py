@@ -57,6 +57,30 @@ BUILDING_TASK_TIMEOUT = 10800
 # role so its task list cannot drift from this manifest.
 BROWSER_ROLES = ("wasm", "browser", "browser_save")
 
+# --jobs classification. Everything is parallel-safe unless listed here,
+# because each task already runs against its own scratch save directory (see
+# main()) and the checks own their run_dir isolation internally. What CANNOT
+# run beside other tasks:
+#
+#   * instrumented/layout — configure and compile their own trees; two at once
+#     contend for the same tree and the host's whole core budget;
+#   * wasm/browser/browser_save — the wasm build tree is one directory, and
+#     the browser gates bind local ports and spawn real Chromium profiles;
+#   * SERIAL_NAMES — gates whose VERDICT is a wall-clock or host-load
+#     measurement (realtime pacing arms, adopted-window handoffs, replay-cost
+#     ceilings). Running them beside other work turns host contention into a
+#     false failure — the same effect docs/TEST_SUITE_ECONOMICS.md §1 measured
+#     between its loaded and quiet runs.
+SERIAL_ROLES = frozenset({"instrumented", "layout", "wasm", "browser", "browser_save"})
+SERIAL_NAMES = frozenset({
+    "pacing_quality",        # realtime arms assert displayed-interval tails
+    "boost_magnitude",       # MDKR_PACE_REALTIME arm
+    "webgpu_recovery",       # realtime WebGPU arm
+    "presentation_matrix",   # presentation perf census cost gate
+    "app_adopted_pacing",    # real windows + adopted realtime pacing
+    "motion_quality_battery",  # replay-cost ceiling is a CPU-time measurement
+})
+
 # Distinct from any check's own exit status, so a wedged task cannot be
 # mistaken for a task that ran and reported.
 TIMEOUT_EXIT = 124
@@ -335,10 +359,34 @@ CHECKS = (
           "WebGPU lifecycle fault injection and fail-closed recovery policy"),
     Check("webgpu_fault_matrix", "check_webgpu_fault_matrix.py", "source",
           "every WebGPU fault point wired and product-route classified"),
+    Check("rollback_authority", "check_rollback_authority_wrapper.py", "source",
+          "frozen mutable-authority census, rollback exclusions and omitted-state control",
+          ("--self-test",)),
+    Check("match_launch_direct_load", "check_match_launch_direct_load.py", "native",
+          "V3 descriptor direct-load track and canonical racer selections"),
+    Check("online_process_convergence", "check_online_process_convergence.py", "native",
+          "four isolated endpoint authority/input/event convergence"),
+    Check("online_profile_rematch", "check_online_profile_rematch.py", "native",
+          "multi-epoch impaired carrier with persistent launcher identity"),
+    Check("persistent_rollback_rematch", "check_persistent_rollback_rematch.py", "asan",
+          "three rollback epochs and deep teardown under AddressSanitizer"),
+    Check("rollback_soak", "check_rollback_soak.py", "native",
+          "long rollback race convergence and retained-history recovery"),
+    Check("rollback_track_matrix", "check_rollback_track_matrix.py", "native",
+          "all standard tracks correct and replay a delayed input"),
+    Check("rollback_item_matrix", "check_rollback_item_matrix.py", "native",
+          "all 15 standard-race balloon levels activate inside a corrected "
+          "input window with real effects and a suppressed-release control"),
+    Check("rollback_vehicle_matrix", "check_rollback_vehicle_matrix.py", "native",
+          "every ROM-derived legal standard-track vehicle pairing"),
     Check("ci_contract", "check_ci_contract.py", "source",
           "push/PR native, sanitizer, wasm, save-custody, and ROM policy"),
     Check("release_ready_web_provenance", "check_release_ready_web_provenance.py", "source",
           "candidate staged-web source-commit and clean-provenance fixtures"),
+    Check("web_publish_stamp", "check_web_publish_stamp.py", "source",
+          "single-build cache stamps across launcher, controller and room routes"),
+    Check("browser_publish_skew", "check_browser_publish_skew.py", "source",
+          "waiting-worker deploy skew, build-isolated caches and atomic offline fallback"),
     Check("address_domains", "check_address_domains.py", "source",
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
@@ -454,6 +502,9 @@ CHECKS = (
           "Adventure Two unlock/save identity and all twenty mirrored tracks"),
     Check("door_blocks", "check_door_blocks.py", "native",
           "locked-door object collision and legacy positive control"),
+    Check("object_wedge", "check_object_wedge.py", "native",
+          "embedded-point recovery in object-mesh collision, its norecover "
+          "positive control, and post-impact escape/pitch recovery"),
     Check("door_glyphs", "check_door_glyphs.py", "native",
           "per-door balloon numeral binding across shared models and GL/WebGPU"),
     Check("adventure_race_loop", "check_adventure_race_loop.py", "native",
@@ -513,6 +564,8 @@ CHECKS = (
           "RAW16 endian boundary under AddressSanitizer"),
     Check("filename_entry", "check_filename_entry.py", "native",
           "new-save filename UI in selected build"),
+    Check("persistent_app_session", "check_persistent_app_session.py", "native",
+          "two complete engine epochs through one native launcher runtime"),
     Check("filename_entry_asan", "check_filename_entry.py", "asan",
           "new-save filename UI under AddressSanitizer"),
     Check("widescreen_shadow_asan", "check_widescreen_shadow.py", "asan",
@@ -529,8 +582,37 @@ CHECKS = (
           "ROM/WebGPU-free save custody, hostile inputs, faults, and accessibility"),
     Check("browser_resource_plateau", "check_browser_resource_plateau.py", "browser",
           "repeated wasm stage/audio/WebGPU/host ownership conservation"),
+    Check("persistent_browser_session", "check_persistent_browser_session.py", "browser",
+          "two complete engine epochs through one wasm module and returned launcher"),
     Check("touch_controls", "check_touch_controls.py", "browser",
           "bounded touch edge transport, overlay gating/persistence, chord and neutral"),
+    Check("controller_page", "check_controller_page.py", "source",
+          "engine-free phone controller approval, touch and reconnect UX"),
+    Check("party_host", "check_party_host.py", "source",
+          "launcher-owned QR pairing, approval, seats, expiry and mobile layout"),
+    Check("browser_online_room", "check_browser_online_room.py", "source",
+          "zero-I/O online gate, local-owner handoffs, focus and mobile reflow"),
+    Check("browser_online_activation", "check_browser_online_activation.py", "source",
+          "clean-build/local-ROM release handoff, idempotence, region mapping, "
+          "dirty and cross-origin refusal"),
+    Check("browser_online_room_gallery", "check_browser_online_room_gallery.py",
+          "source", "shared-C 42-state browser room model, 25 keyboard routes, "
+          "touch, accessibility and zoomed mobile reflow"),
+    Check("browser_online_match_room", "check_browser_online_match_room.py",
+          "source", "explicit live MatchRoom create/join/share/rotate/select/ready, "
+          "reconnect, corrupt-state recovery and pre-GO admission gate"),
+    Check("browser_online_two_person", "check_browser_online_two_person.py",
+          "source", "two clean profiles over the real local Worker: share/join, "
+          "outage, selection, Ready backtrack, accessibility and leave"),
+    Check("party_capacity", "check_party_capacity.py", "source",
+          "real-Worker admission/forged-control floods, restart, weighted "
+          "HTTP/socket reserve, telemetry, static recovery and zero kill switch"),
+    Check("party_internal_api", "check_party_internal_api.py", "source",
+          "versioned Worker/Durable Object envelope and pre-storage skew rejection"),
+    Check("party_edge_policy", "check_party_edge_policy.py", "source",
+          "free-plan /api-only edge rate limit and static local-play isolation"),
+    Check("phone_party_webrtc", "check_phone_party_webrtc.py", "source",
+          "direct phone state/control channels, input-test RTT and wasm handoff queue"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
           "and explicit uncapped/display-margin-to-display semantics"),
@@ -541,6 +623,10 @@ CHECKS = (
     Check("browser_taj_persistence", "check_browser_taj_persistence.py",
           "browser", "real rejected Taj IDBFS commit, exact retry bytes, and "
           "durable unlock restoration after document reload"),
+    Check("browser_magic_codes_persistence",
+          "check_browser_magic_codes_persistence.py", "browser",
+          "real rejected Magic Code IDBFS commit, exact sidecar bytes, and "
+          "enabled-state restoration after document reload"),
     Check("browser_runtime", "check_browser_runtime.py", "browser",
           "real Chromium WebGPU, Modern camera geometry, pacing, rendering, IDBFS, and privacy",
           ("--camera-obstruction", "modern")),
@@ -550,9 +636,14 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    "check_multiplayer_boundaries.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",
+    "check_network_viewport_invariance.py",
+    "check_online_room_a11y.py",
+    "check_online_room_actions.py",
+    "check_online_room_gallery.py",
     "check_overlay_input_handoff.py",
 }
 
@@ -998,6 +1089,13 @@ def main() -> int:
         help="reuse existing UBSan and layout instrumented builds",
     )
     parser.add_argument("--fail-fast", action="store_true")
+    parser.add_argument(
+        "--jobs", type=int, default=1,
+        help="run parallel-safe tasks with this many workers; tasks whose "
+             "verdicts depend on wall-clock measurements, a quiet GPU, a "
+             "shared build tree, or a fixed local port stay sequential "
+             "regardless (see SERIAL_ROLES/SERIAL_NAMES). --jobs 1 is "
+             "byte-for-byte today's sequential runner.")
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
 
@@ -1079,17 +1177,17 @@ def main() -> int:
         f"release={release}; asan={asan}; wasm={wasm}",
         flush=True,
     )
-    results: list[tuple[Check, int, float]] = []
-    suite_start = time.monotonic()
-    for index, check in enumerate(checks, 1):
+    def task_timeout(check: Check) -> int:
+        budget = check.timeout
+        if check.role in {"instrumented", "layout"}:
+            # These configure and compile an instrumented tree before the run.
+            budget = max(budget, BUILDING_TASK_TIMEOUT)
+        return max(1, int(round(budget * args.timeout_scale)))
+
+    def run_streaming(index: int, check: Check) -> tuple[int, float]:
+        """Sequential execution, byte-for-byte the pre---jobs behavior."""
         cmd = command_for(
-            check,
-            native,
-            release,
-            asan,
-            rom,
-            roms,
-            wasm,
+            check, native, release, asan, rom, roms, wasm,
             args.no_rebuild_instrumented,
         )
         print(
@@ -1098,11 +1196,7 @@ def main() -> int:
             flush=True,
         )
         started = time.monotonic()
-        budget = check.timeout
-        if check.role in {"instrumented", "layout"}:
-            # These configure and compile an instrumented tree before the run.
-            budget = max(budget, BUILDING_TASK_TIMEOUT)
-        timeout = max(1, int(round(budget * args.timeout_scale)))
+        timeout = task_timeout(check)
         try:
             proc = subprocess.run(
                 cmd, cwd=ROOT, env=environment, check=False, timeout=timeout
@@ -1118,11 +1212,7 @@ def main() -> int:
                 file=sys.stderr,
                 flush=True,
             )
-        except KeyboardInterrupt:
-            print("\nrun_checks: interrupted", file=sys.stderr)
-            return 130
         elapsed = time.monotonic() - started
-        results.append((check, returncode, elapsed))
         if returncode == 0:
             label = "PASS"
         elif returncode == TIMEOUT_EXIT:
@@ -1131,8 +1221,101 @@ def main() -> int:
             label = f"FAIL (exit {returncode})"
         print(f"[{index}/{len(checks)}] {check.name}: {label} in "
               f"{format_duration(elapsed)}", flush=True)
-        if returncode != 0 and args.fail_fast:
-            break
+        return returncode, elapsed
+
+    def run_captured(check: Check, log_dir: str) -> tuple[int, float, str]:
+        """Parallel execution: own save scratch, output captured to a log.
+
+        Interleaved live streams from concurrent engines are unreadable and
+        un-diffable, so a pooled task writes its complete output to one file
+        and the scheduler prints the header/verdict when it finishes. A
+        failure replays the log tail so the console still tells the story.
+        """
+        cmd = command_for(
+            check, native, release, asan, rom, roms, wasm,
+            args.no_rebuild_instrumented,
+        )
+        log_path = os.path.join(log_dir, f"{check.name}.log")
+        started = time.monotonic()
+        timeout = task_timeout(check)
+        with tempfile.TemporaryDirectory(
+                prefix=f"mdkr64-save-{check.name}-") as task_save, \
+                open(log_path, "wb") as log:
+            task_env = dict(environment)
+            task_env["MDKR_SAVE_DIR"] = task_save
+            task_env["MDKR_TEST_SAVE_DIR"] = task_save
+            log.write((shlex.join(cmd) + "\n").encode())
+            log.flush()
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=ROOT, env=task_env, check=False,
+                    timeout=timeout, stdout=log, stderr=subprocess.STDOUT,
+                )
+                returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                returncode = TIMEOUT_EXIT
+        return returncode, time.monotonic() - started, log_path
+
+    results: list[tuple[Check, int, float]] = []
+    suite_start = time.monotonic()
+    jobs = max(1, args.jobs)
+    try:
+        if jobs == 1:
+            for index, check in enumerate(checks, 1):
+                returncode, elapsed = run_streaming(index, check)
+                results.append((check, returncode, elapsed))
+                if returncode != 0 and args.fail_fast:
+                    break
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            pooled = [c for c in checks
+                      if c.role not in SERIAL_ROLES and c.name not in SERIAL_NAMES]
+            serial = [c for c in checks
+                      if c.role in SERIAL_ROLES or c.name in SERIAL_NAMES]
+            log_scratch = tempfile.mkdtemp(prefix="mdkr64-run-checks-logs-")
+            print(f"run_checks: --jobs {jobs}: {len(pooled)} pooled task(s), "
+                  f"{len(serial)} sequential; task logs in {log_scratch}",
+                  flush=True)
+            done = 0
+            failed_early = False
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                futures = {pool.submit(run_captured, c, log_scratch): c
+                           for c in pooled}
+                from concurrent.futures import as_completed
+                for future in as_completed(futures):
+                    check = futures[future]
+                    returncode, elapsed, log_path = future.result()
+                    done += 1
+                    results.append((check, returncode, elapsed))
+                    label = "PASS" if returncode == 0 else (
+                        "FAIL (timeout)" if returncode == TIMEOUT_EXIT
+                        else f"FAIL (exit {returncode})")
+                    print(f"[{done}/{len(checks)}] {check.name}: {label} in "
+                          f"{format_duration(elapsed)}", flush=True)
+                    if returncode != 0:
+                        with open(log_path, "rb") as log:
+                            tail = log.read().decode(errors="replace").splitlines()
+                        for line in tail[-60:]:
+                            print(f"    | {line}", flush=True)
+                        if args.fail_fast:
+                            failed_early = True
+                            pool.shutdown(cancel_futures=True)
+                            break
+            # The measurement-sensitive tail runs alone, in manifest order, on
+            # a host the pool has finished loading.
+            if not failed_early:
+                for check in serial:
+                    done += 1
+                    returncode, elapsed = run_streaming(done, check)
+                    results.append((check, returncode, elapsed))
+                    if returncode != 0 and args.fail_fast:
+                        break
+            # Manifest order keeps the summary comparable across runs.
+            order = {c.name: i for i, c in enumerate(checks)}
+            results.sort(key=lambda row: order[row[0].name])
+    except KeyboardInterrupt:
+        print("\nrun_checks: interrupted", file=sys.stderr)
+        return 130
 
     failures = [(check, rc, elapsed) for check, rc, elapsed in results if rc != 0]
     print("\nrun_checks: summary", flush=True)

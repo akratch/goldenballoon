@@ -129,7 +129,10 @@ extern "C" {
  * Neither clause replaces the position clause or the per-axis rotation
  * snap: both stay as backstops for the cuts these two do not name.
  */
-#define MDKR_CUT_YAW_DEG 67.5f
+#define MDKR_CUT_VIEW_ANGLE_DEG 67.5f
+/* Kept as an API spelling for existing telemetry/tests; yaw is one of the
+ * three view axes governed by the common threshold. */
+#define MDKR_CUT_YAW_DEG MDKR_CUT_VIEW_ANGLE_DEG
 #define MDKR_CUT_FOV_DEG 20.0f
 
 /* One captured object pose. Native-only; no original struct is embedded. */
@@ -315,6 +318,10 @@ typedef struct PresentationCameraPose {
     int16_t rotation_y;
     int16_t rotation_z;
     int16_t pitch;
+    /* Canonical authored view pitch: rotation_x + pitch, wrapped once before
+     * interpolation. Rendering consumes this field so two independently
+     * chosen shortest arcs can never compose into the long arc. */
+    int16_t view_pitch;
     float shake_magnitude;
     int32_t apply_shake;
     float fov;

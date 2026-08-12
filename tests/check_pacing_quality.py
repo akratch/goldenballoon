@@ -204,12 +204,6 @@ DISPLAY_SWITCH_TICKS = 140
 # checking would agree with any value the source happened to hold.
 DISPLAY_MARGIN_HZ = 3
 
-# platform/platform_sdl_min.c's own quantum-decline threshold
-# (variance_ppm > 2500 -> mode=free), duplicated as a number on purpose (see
-# DISPLAY_MARGIN_HZ above): a gate that read the constant out of the source it
-# is checking would agree with any value the source happened to hold.
-ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM = 2500
-
 # [PRESENTSCHED-SUMMARY] presentkind, as published by MdkrPresentPolicyKind.
 KIND_ORIGINAL = 0
 KIND_CAPPED = 1
@@ -634,17 +628,16 @@ def check_alpha_quantum_strict(result: Run) -> list[str]:
 
 
 def check_alpha_quantum_honest(result: Run) -> list[str]:
-    """[ALPHA-QUANTUM]'s reported mode must match what its own variance_ppm implies.
+    """[ALPHA-QUANTUM]'s mode must match its published classifier state.
 
     This is the Task 5 path itself, run WITHOUT MDKR_PRESENT_QUANTUM_STRICT:
     the quantizer declines to project onto a grid the measured present
-    interval is not actually holding to. The assertion is tied to the
-    MEASURED variance_ppm rather than a hardcoded expectation, so it can never
-    be vacuous: on a genuinely fixed panel (variance at or below the
-    threshold) it demands mode=grid, and on this project's own M3
-    Max/ProMotion development machine (variance measured well above the
-    threshold) it demands mode=free units=0 -- the real positive witness for
-    the new path that this specific machine happens to provide.
+    interval is not actually holding to. The state, robust jitter metric,
+    sample count and transition count are emitted by the production
+    classifier itself. Checking the state rather than re-deriving one threshold
+    here is load-bearing: the classifier deliberately uses trimming,
+    hysteresis and sustained contrary evidence, so a consumer that infers its
+    answer from the latest scalar would recreate the flapping defect.
     """
     label = result.label
     fields = alpha_quantum_row(result.output)
@@ -658,15 +651,23 @@ def check_alpha_quantum_honest(result: Run) -> list[str]:
         return [f"{label}: [ALPHA-QUANTUM] variance_ppm={variance_raw!r} is "
                 "not a parseable non-negative integer"]
     variance_ppm = int(variance_raw)
-    expected_mode = ("free"
-                      if variance_ppm > ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM
-                      else "grid")
+    timing = fields.get("timing")
+    if timing not in {"warming", "fixed", "variable"}:
+        return [f"{label}: [ALPHA-QUANTUM] timing={timing!r} is not a "
+                "published classifier state"]
+    samples_raw = fields.get("samples")
+    transitions_raw = fields.get("transitions")
+    if (samples_raw is None or not samples_raw.isdigit() or
+            transitions_raw is None or not transitions_raw.isdigit()):
+        return [f"{label}: [ALPHA-QUANTUM] classifier evidence is not "
+                f"parseable: samples={samples_raw!r} "
+                f"transitions={transitions_raw!r}"]
+    expected_mode = "free" if timing == "variable" else "grid"
     if mode != expected_mode:
         return [
-            f"{label}: [ALPHA-QUANTUM] variance_ppm={variance_ppm} implies "
-            f"mode={expected_mode} (threshold "
-            f"{ALPHA_QUANTUM_VARIANCE_THRESHOLD_PPM}ppm) but reported "
-            f"mode={mode}"]
+            f"{label}: [ALPHA-QUANTUM] timing={timing} "
+            f"variance_ppm={variance_ppm} requires mode={expected_mode} "
+            f"but reported mode={mode}"]
     if mode == "free" and units != "0":
         return [f"{label}: [ALPHA-QUANTUM] mode=free but units={units}, "
                 "expected 0"]

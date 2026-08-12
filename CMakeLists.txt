@@ -121,6 +121,36 @@ else()
     set_target_properties(mdkr_save_tools PROPERTIES
         OUTPUT_NAME "mdkr-save-tools"
         SUFFIX ".js")
+
+    # ROM-, renderer-, provider- and storage-free Online Room projection. The
+    # browser launcher loads this only through its explicit preview/evidence
+    # adapter while production admission is closed. Linking the same C reducers
+    # as native prevents a second JavaScript room state machine.
+    add_executable(mdkr_online_tools
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_browser_wasm.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_online_tools PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_options(mdkr_online_tools PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    target_link_options(mdkr_online_tools PRIVATE
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createMDKROnlineTools"
+        "-sINVOKE_RUN=0"
+        "-sEXIT_RUNTIME=0"
+        "-sFILESYSTEM=0"
+        "-sMALLOC=emmalloc"
+        "-sINITIAL_MEMORY=2097152"
+        "-sSTACK_SIZE=65536"
+        "-sEXPORTED_FUNCTIONS=_mdkr_online_browser_version,_mdkr_online_browser_count,_mdkr_online_browser_select,_mdkr_online_browser_slug,_mdkr_online_browser_title,_mdkr_online_browser_explanation,_mdkr_online_browser_status,_mdkr_online_browser_timeout_title,_mdkr_online_browser_timeout_explanation,_mdkr_online_browser_kind,_mdkr_online_browser_failure,_mdkr_online_browser_announcement,_mdkr_online_browser_member_count,_mdkr_online_browser_seat_count,_mdkr_online_browser_ready_count,_mdkr_online_browser_requires_admission,_mdkr_online_browser_local_play_available,_mdkr_online_browser_timeout_visible,_mdkr_online_browser_control_action,_mdkr_online_browser_control_label,_mdkr_online_browser_control_enabled,_mdkr_online_browser_dispatch,_mdkr_online_browser_pending,_mdkr_online_browser_complete,_mdkr_online_browser_live_project"
+        "-sEXPORTED_RUNTIME_METHODS=cwrap"
+        "-sENVIRONMENT=web")
+    set_target_properties(mdkr_online_tools PROPERTIES
+        OUTPUT_NAME "mdkr-online-tools"
+        SUFFIX ".js")
 endif()
 
 # --- WebGPU backend (M4.5 / M8) -------------------------------------------
@@ -158,6 +188,21 @@ if(MDKR_APP)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
+option(MDKR_NATIVE_PHONE_PARTY
+       "Build the native WSS/WebRTC Phone Party transport" ON)
+set(MDKR_PARTY_ORIGIN "" CACHE STRING
+    "Production HTTPS origin for browser phone controllers")
+if(MDKR_PARTY_ORIGIN AND NOT MDKR_PARTY_ORIGIN MATCHES "^https://")
+    message(FATAL_ERROR "MDKR_PARTY_ORIGIN must be empty or begin with https://")
+endif()
+set(MDKR_PARTY_COMPILED_ORIGIN "")
+if(MDKR_NATIVE_PHONE_PARTY)
+    set(MDKR_PARTY_COMPILED_ORIGIN "${MDKR_PARTY_ORIGIN}")
+endif()
+if(MDKR_APP AND MDKR_NATIVE_PHONE_PARTY)
+    include(cmake/datachannel.cmake)
+endif()
+
 # --- Sources --------------------------------------------------------------
 # Game logic (decompiled C). hasm/ supplies the NON_MATCHING C bodies for
 # math_util.c + collision.c; hasm_native/ contains the native C replacements
@@ -188,6 +233,9 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/camera_obstruction_query.c # pure track/object sweep composition
     ${CMAKE_SOURCE_DIR}/platform/camera_target_visibility.c # target readability classification
     ${CMAKE_SOURCE_DIR}/platform/config_ini.c       # INI engine (game-agnostic)
+    ${CMAKE_SOURCE_DIR}/platform/text_state_file.c  # atomic versioned text-sidecar backend
+    ${CMAKE_SOURCE_DIR}/platform/magic_codes_state.c # persistent safe retail Magic Codes
+    ${CMAKE_SOURCE_DIR}/platform/magic_codes_state_file.c # desktop/Web Magic Code backend
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state.c    # versioned global Taj unlock sidecar
     ${CMAKE_SOURCE_DIR}/platform/taj_mod_state_file.c # atomic desktop/Web state backend
     # Content packs: a read-only override layer in front of the ROM asset path.
@@ -210,6 +258,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing
     ${CMAKE_SOURCE_DIR}/platform/video_config.c     # presentation modes (pure core)
     ${CMAKE_SOURCE_DIR}/platform/video_config_runtime.c  # ini/env/argv + g_pc* publication
+    ${CMAKE_SOURCE_DIR}/platform/port_env.c        # cached environment feature gates
     ${CMAKE_SOURCE_DIR}/platform/a11y_model.c       # what the shell would say, as text
     ${CMAKE_SOURCE_DIR}/platform/a11y_race.c        # race events -> the same text stream
     ${CMAKE_SOURCE_DIR}/platform/a11y_speech_worker.c # drain thread: says it, off the render thread
@@ -219,6 +268,9 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # exact fixed-authority accumulator
     ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c # exact host-time -> fixed tick tickets
     ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c  # bounded host edges -> tick pad state
+    ${CMAKE_SOURCE_DIR}/platform/pad_router.c        # one-owner local/remote controller ports
+    ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c # fixed, validated Phone Party wire codec
+    ${CMAKE_SOURCE_DIR}/platform/party/remote_pad.c  # bounded history/dedupe/timeout core
     ${CMAKE_SOURCE_DIR}/platform/controller_mapping.c # normalized SDL controls -> player N64 bindings
     ${CMAKE_SOURCE_DIR}/platform/viewport_route_cache.c  # object x viewport draw admission
     ${CMAKE_SOURCE_DIR}/platform/audio_service_clock.c # host audio time -> bounded PCM debt
@@ -231,6 +283,33 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/gameplay_event_trace.c # ordered transient authority events
     ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/input_latency_census.c # input -> commit -> present budget (M4)
+    ${CMAKE_SOURCE_DIR}/platform/session/session_core.c # shared launcher/session reducer
+    ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c # versioned engine session ABI
+    ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c # launcher-owned private-room reducer
+    ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c # sanitized launcher UX projection
+    ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c # deterministic ON-03B adapter
+    ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+    ${CMAKE_SOURCE_DIR}/platform/online/match_launch_builder.c
+    ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c # frozen rollback match identity
+    ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c # launcher-owned authenticated input drain
+    ${CMAKE_SOURCE_DIR}/platform/net/match_input_runtime.c # copy-out launcher-to-engine input provider
+    ${CMAKE_SOURCE_DIR}/platform/net/match_input_packet.c # fixed hostile-input-safe carrier codec
+    ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c # redundant three-frame carrier bundle
+    ${CMAKE_SOURCE_DIR}/platform/net/net_input.c      # canonical predicted/confirmed input history
+    ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c # endpoint seats -> canonical slots
+    ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c     # canonical players vs local viewports
+    ${CMAKE_SOURCE_DIR}/platform/net/net_roster_runtime.c # immutable launcher roster publication
+    ${CMAKE_SOURCE_DIR}/platform/net/local_listener_mix.c # endpoint-only physical audio listener policy
+    ${CMAKE_SOURCE_DIR}/platform/net/net_impairment.c  # named deterministic carrier fault profiles
+    ${CMAKE_SOURCE_DIR}/platform/net/net_clock.c       # named endpoint clock/opportunity profiles
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_snapshot.c # bounded in-process authority snapshots
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_ring.c     # preallocated snapshot history
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_events.c   # confirmed side-effect journal
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_audio.c    # versioned rollback-safe sound previews
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_driver.c   # restore/resimulation scheduler
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_engine_registry.c # exact engine allocation adapter
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_game_authority.c # concrete v3 game range registry
+    ${CMAKE_SOURCE_DIR}/platform/rollback/rollback_game_runtime.c # feature-off real-level rollback lab
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c       # presentation shadow state (Phase 3 Wave A)
     ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot_walk.c  # its gObjPtrList/camera capture wiring
     ${CMAKE_SOURCE_DIR}/platform/platform_sdl_min.c
@@ -336,12 +415,10 @@ if(MDKR_WEBGPU_BACKEND)
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_fault.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_surface_policy.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_shader.c)
-    # Backend support TUs (only meaningful with the webgpu code):
-    #   port_env.c         — port_env_bool used by the (dormant) pipeline prewarm
-    #   gfx_webgpu_stubs.c — inert satisfiers for mgb64-shell symbols (overlay,
+    # Backend support TU (only meaningful with the webgpu code):
+    #   gfx_webgpu_stubs.c — inert satisfier for mgb64-shell symbols (overlay,
     #                        host handoff, minimap, savedir) DKR has no analogue for
     list(APPEND PLATFORM_SOURCES
-        ${CMAKE_SOURCE_DIR}/platform/port_env.c
         ${CMAKE_SOURCE_DIR}/platform/gfx_webgpu_stubs.c)
 endif()
 
@@ -640,12 +717,58 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/engine_boot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/main_app.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/rom_validate.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_common.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_diag.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_launcher.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_online_room.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_overlay.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_phone_party.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_rom.cpp
-            ${CMAKE_SOURCE_DIR}/platform/app/ui_settings.cpp)
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_settings.cpp
+            ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+            ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp)
+
+        if(MDKR_NATIVE_PHONE_PARTY)
+            list(APPEND APP_SOURCES
+                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp)
+        else()
+            list(APPEND APP_SOURCES
+                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp)
+        endif()
+
+        add_library(mdkr_qrcodegen STATIC
+            ${CMAKE_SOURCE_DIR}/third_party/qrcodegen/qrcodegen.cpp)
+        target_include_directories(mdkr_qrcodegen PUBLIC
+            ${CMAKE_SOURCE_DIR}/third_party/qrcodegen)
+        target_compile_features(mdkr_qrcodegen PRIVATE cxx_std_17)
+        if(BUILD_TESTING)
+            add_executable(mdkr_native_party_qr_test
+                ${CMAKE_SOURCE_DIR}/tests/test_native_party_qr.cpp)
+            target_link_libraries(mdkr_native_party_qr_test PRIVATE mdkr_qrcodegen)
+            target_compile_features(mdkr_native_party_qr_test PRIVATE cxx_std_17)
+            add_test(NAME native_party_qr COMMAND mdkr_native_party_qr_test)
+
+            if(MDKR_NATIVE_PHONE_PARTY)
+                add_executable(mdkr_native_party_sas_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_native_party_sas.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp)
+                target_include_directories(mdkr_native_party_sas_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_compile_features(mdkr_native_party_sas_test PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_native_party_sas_test PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+                if(MSVC)
+                    target_compile_options(mdkr_native_party_sas_test PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_native_party_sas_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME native_party_sas COMMAND mdkr_native_party_sas_test)
+            endif()
+        endif()
 
         # Native "open file" panel, one implementation per platform. A
         # user-selected file is permission-exempt, which is why this replaced
@@ -667,6 +790,13 @@ if(NOT EMSCRIPTEN)
 
         add_library(mdkr64_app STATIC ${IMGUI_SOURCES} ${APP_SOURCES})
         target_compile_features(mdkr64_app PRIVATE cxx_std_17)
+        if(MDKR_NATIVE_PHONE_PARTY)
+            target_include_directories(mdkr64_app PRIVATE
+                ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                ${MDKR_PARTY_GENERATED_INCLUDE})
+            target_link_libraries(mdkr64_app PRIVATE
+                LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
+        endif()
         # Keep warnings strict on the launcher code we own without inheriting
         # that policy into vendored Dear ImGui.  The engine's maintained C
         # sources use the same fail-closed baseline above; app-shell C++ should
@@ -691,7 +821,8 @@ if(NOT EMSCRIPTEN)
             MDKR_APP
             GL_SILENCE_DEPRECATION
             MDKR_APP_VERSION_STR="${MDKR_VERSION}"
-            MDKR_APP_BUILD_STAMP="${MDKR_BUILD_STAMP}")
+            MDKR_APP_BUILD_STAMP="${MDKR_BUILD_STAMP}"
+            MDKR_PARTY_ORIGIN="${MDKR_PARTY_COMPILED_ORIGIN}")
         target_include_directories(mdkr64_app PRIVATE
             ${IMGUI_DIR}
             ${IMGUI_DIR}/backends
@@ -700,6 +831,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/lib/glad/include
             ${SDL2_INCLUDE_DIRS})
         target_link_directories(mdkr64_app PRIVATE ${SDL2_LIBRARY_DIRS})
+        target_link_libraries(mdkr64_app PRIVATE mdkr_qrcodegen)
         if(MINGW)
             # Same static-SDL2 rule as the engine target: SDL2_LIBRARIES here
             # carries mingw32/SDL2main, whose WinMain shim demands an SDL_main
@@ -759,6 +891,23 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/app)
             target_compile_features(mdkr_app_shell_test PRIVATE cxx_std_17)
             add_test(NAME app_shell COMMAND mdkr_app_shell_test)
+
+            add_executable(mdkr_session_runtime_test
+                ${CMAKE_SOURCE_DIR}/tests/test_session_runtime.cpp
+                ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
+                ${CMAKE_SOURCE_DIR}/platform/session/session_core.c
+                ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c
+                ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+                ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+                ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c
+                ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c
+                ${CMAKE_SOURCE_DIR}/platform/net/net_input.c
+                ${CMAKE_SOURCE_DIR}/platform/net/match_transport.c)
+            target_include_directories(mdkr_session_runtime_test PRIVATE
+                ${CMAKE_SOURCE_DIR}/platform
+                ${CMAKE_SOURCE_DIR}/platform/app)
+            target_compile_features(mdkr_session_runtime_test PRIVATE cxx_std_17)
+            add_test(NAME session_runtime COMMAND mdkr_session_runtime_test)
 
             add_executable(mdkr_app_ui_policy_test
                 ${CMAKE_SOURCE_DIR}/tests/test_app_ui_policy.cpp
@@ -854,6 +1003,10 @@ if(NOT EMSCRIPTEN)
                     "${MDKR_APP_TEST_ROOT}/shell/saves"
                     "${MDKR_APP_TEST_ROOT}/settings/prefs"
                     "${MDKR_APP_TEST_ROOT}/settings/saves"
+                    "${MDKR_APP_TEST_ROOT}/online/prefs"
+                    "${MDKR_APP_TEST_ROOT}/online/saves"
+                    "${MDKR_APP_TEST_ROOT}/online-min/prefs"
+                    "${MDKR_APP_TEST_ROOT}/online-min/saves"
                     "${MDKR_APP_TEST_ROOT}/top-tabs/prefs"
                     "${MDKR_APP_TEST_ROOT}/top-tabs/saves"
                     "${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs"
@@ -873,6 +1026,8 @@ if(NOT EMSCRIPTEN)
                 file(REMOVE
                     "${MDKR_APP_TEST_ROOT}/shell/video.ini"
                     "${MDKR_APP_TEST_ROOT}/settings/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/online/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/online-min/video.ini"
                     "${MDKR_APP_TEST_ROOT}/top-tabs/video.ini"
                     "${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini"
                     "${MDKR_APP_TEST_ROOT}/controller/video.ini"
@@ -885,6 +1040,10 @@ if(NOT EMSCRIPTEN)
                     "# isolated first-run shell\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/settings/prefs/mdkr64_app.ini"
                     "# isolated first-run settings\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/online/prefs/mdkr64_app.ini"
+                    "# isolated launcher-owned online preview\n")
+                file(WRITE "${MDKR_APP_TEST_ROOT}/online-min/prefs/mdkr64_app.ini"
+                    "# minimum online preview\nui_scale=2.00\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/top-tabs/prefs/mdkr64_app.ini"
                     "# intermediate-width navigation qualification\n")
                 file(WRITE "${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs/mdkr64_app.ini"
@@ -941,6 +1100,92 @@ if(NOT EMSCRIPTEN)
                     DEPENDS app_settings_smoke
                     LABELS gpu
                     TIMEOUT 60)
+
+                # The launcher-owned Online Room is a real UI surface even
+                # while public online racing remains release-gated. Exercise
+                # it through the deterministic reducer adapter so screenshots
+                # never depend on a provider, a network, or mutable service
+                # state. The production build still makes no network request
+                # unless this explicit test-only preview flag is present.
+                add_test(NAME app_online_room_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_online_room_smoke PROPERTIES
+                    FIXTURES_SETUP app_online_room_capture
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=8;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Online Room;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                add_test(NAME app_online_room_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_online_room.bmp
+                        --self-test)
+                set_tests_properties(app_online_room_content PROPERTIES
+                    FIXTURES_REQUIRED app_online_room_capture
+                    DEPENDS app_online_room_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                # Minimum supported logical window at maximum UI scale. This
+                # is the hostile-but-supported configuration for long failure
+                # copy, large controls and the dense section selector.
+                add_test(NAME app_online_room_minimum_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_online_room_minimum_smoke PROPERTIES
+                    FIXTURES_SETUP app_online_room_minimum_capture
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Online Room;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
+                    LABELS gpu
+                    TIMEOUT 180)
+
+                add_test(NAME app_online_room_minimum_content
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_app_capture.py
+                        ${CMAKE_CURRENT_BINARY_DIR}/app_online_room_minimum.bmp
+                        --compact-palette
+                        --self-test)
+                set_tests_properties(app_online_room_minimum_content PROPERTIES
+                    FIXTURES_REQUIRED app_online_room_minimum_capture
+                    DEPENDS app_online_room_minimum_smoke
+                    LABELS gpu
+                    TIMEOUT 60)
+
+                # Discover the scenario list from the product binary, then
+                # launch one isolated renderer process per case. This is the
+                # deterministic storybook gate for every view and typed
+                # failure; it cannot silently omit a newly published case.
+                add_test(NAME app_online_room_gallery
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_online_room_gallery.py
+                        --build $<TARGET_FILE:${MDKR_TARGET}>)
+                set_tests_properties(app_online_room_gallery PROPERTIES
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION
+                        "PASS online room gallery: cases=42 views=10 failures=17 unique-captures=42"
+                    TIMEOUT 300)
+
+                add_test(NAME app_online_room_accessibility
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_online_room_a11y.py
+                        --build $<TARGET_FILE:${MDKR_TARGET}>)
+                set_tests_properties(app_online_room_accessibility PROPERTIES
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION
+                        "PASS online room accessibility: cases=42 titles=42 keyboard-action-sets=42"
+                    TIMEOUT 300)
+
+                # One representative rendered case for every public action,
+                # activated once through SDL keyboard and once through the
+                # deterministic virtual gamepad. The executable publishes the
+                # action inventory, so adding a CTA without a working route
+                # fails this gate automatically.
+                add_test(NAME app_online_room_actions
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_online_room_actions.py
+                        --build $<TARGET_FILE:${MDKR_TARGET}>)
+                set_tests_properties(app_online_room_actions PROPERTIES
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION
+                        "PASS online room actions: actions=25 keyboard=25 gamepad=25"
+                    TIMEOUT 300)
 
                 # The responsive launcher has three distinct navigation modes.
                 # Wide sidebar and dense dropdown coverage existed already;

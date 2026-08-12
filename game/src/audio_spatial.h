@@ -1,6 +1,8 @@
 #ifndef _AUDIO_SPATIAL_H_
 #define _AUDIO_SPATIAL_H_
 
+#include <stddef.h>
+
 #include "types.h"
 #include "structs.h"
 #include "PR/gbi.h"
@@ -11,6 +13,21 @@
 #define AUDIO_POINT_FLAG_1 1 // Unused
 #define AUDIO_POINT_FLAG_SINGLE_PLAYER 2
 #define AUDIO_POINT_FLAG_ONE_TIME_TRIGGER 4
+
+#ifdef NATIVE_PORT
+#define MDKR_AUDIO_SPATIAL_ROLLBACK_ALLOCATION_COUNT 3
+#define MDKR_AUDIO_SPATIAL_ROLLBACK_STATE_SPAN_COUNT 6
+typedef struct MdkrAudioSpatialRollbackSpan {
+    void *address;
+    size_t size;
+} MdkrAudioSpatialRollbackSpan;
+typedef struct MdkrAudioSpatialRollbackView {
+    void *allocations[MDKR_AUDIO_SPATIAL_ROLLBACK_ALLOCATION_COUNT];
+    MdkrAudioSpatialRollbackSpan
+        state[MDKR_AUDIO_SPATIAL_ROLLBACK_STATE_SPAN_COUNT];
+} MdkrAudioSpatialRollbackView;
+s32 audspat_rollback_view(MdkrAudioSpatialRollbackView *view);
+#endif
 
 /* Size: 0x24 / 36 bytes */
 typedef struct AudioPoint {

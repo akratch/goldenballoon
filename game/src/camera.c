@@ -942,6 +942,29 @@ f32 gEffectiveCamAspect = CAMERA_ASPECT;
 static MdkrCameraProjection sNativeProjectionByViewport[4];
 static bool sNativeProjectionValid[4];
 static s32 sNativeOrthoDrawSpace = G_MTX_DKR_SPACE_SAFE_2D;
+typedef struct MdkrOutputViewState {
+    s32 viewport;
+    s32 layout;
+} MdkrOutputViewState;
+
+/* Presentation-only capsule. Function-local static storage keeps it outside
+ * the rollback declaration inventory, and no caller can borrow or mutate the
+ * record directly. Its public bracket is reset at every camera/engine init. */
+static MdkrOutputViewState *cam_output_view_state(void) {
+    static MdkrOutputViewState state = {-1, -1};
+    return &state;
+}
+
+/* A display-list viewport command retains a pointer, not a value.  Endpoint
+ * mapping therefore cannot borrow gViewportStack[0..3]: transition_render()
+ * restores the canonical viewport after the scene and can rewrite that same
+ * slot before the asynchronous graphics task consumes the earlier command.
+ * Keep one copy-owned slot per local output.  These bytes are presentation
+ * state only; they are never read by a fixed tick or rollback snapshot. */
+static Vp *cam_output_viewport_stack(void) {
+    static Vp stack[4];
+    return stack;
+}
 #endif
 
 /******************************/
@@ -961,9 +984,9 @@ extern s32 D_B0000578; // Used as a symbol for anti-piracy checks in the game.
  * the resolver ask for different regions of the same viewport; a safe-region
  * view is never a gameplay lens.
  */
-static bool cam_projection_for_viewport_region(
-    s32 viewport, s32 cameraID, bool gameplayCamera, s32 safeWorldRegion,
-    MdkrCameraProjection *out) {
+static bool cam_projection_for_layout_region(
+    s32 viewportLayout, s32 viewport, s32 cameraID, bool gameplayCamera,
+    s32 safeWorldRegion, MdkrCameraProjection *out) {
     MdkrDisplayLayout layout;
     MdkrCameraProjectionRequest request;
 
@@ -977,7 +1000,7 @@ static bool cam_projection_for_viewport_region(
     request.near_plane = CAMERA_NEAR;
     request.far_plane = CAMERA_FAR;
     request.display_generation = mdkr_display_config_generation();
-    request.viewport_layout = gViewportLayout;
+    request.viewport_layout = viewportLayout;
     request.viewport = viewport;
     request.camera_id = cameraID;
     request.widescreen_enabled = mdkr_display_widescreen_enabled();
@@ -986,6 +1009,14 @@ static bool cam_projection_for_viewport_region(
      * between camera selection and this query. */
     request.gameplay_camera = gameplayCamera && !safeWorldRegion;
     return mdkr_display_calculate_camera_projection(&request, out);
+}
+
+static bool cam_projection_for_viewport_region(
+    s32 viewport, s32 cameraID, bool gameplayCamera, s32 safeWorldRegion,
+    MdkrCameraProjection *out) {
+    return cam_projection_for_layout_region(
+        gViewportLayout, viewport, cameraID, gameplayCamera, safeWorldRegion,
+        out);
 }
 
 bool cam_effective_projection_for_viewport_context(
@@ -1142,6 +1173,10 @@ void cam_init(void) {
 
     gCutsceneCameraActive = FALSE;
 #ifdef NATIVE_PORT
+    cam_output_view_state()->viewport = -1;
+    cam_output_view_state()->layout = -1;
+    memset(cam_output_viewport_stack(), 0,
+           sizeof(Vp) * 4u);
     sCutsceneCameraActiveLastFrame = FALSE;
 #endif
     gActiveCameraID = 0;
@@ -1285,6 +1320,97 @@ s32 cam_get_viewport_layout(void) {
 s32 get_current_viewport(void) {
     return gActiveCameraID;
 }
+
+#ifdef NATIVE_PORT
+s32 cam_output_view_begin(s32 outputViewport, s32 outputLayout) {
+    MdkrOutputViewState *state = cam_output_view_state();
+    if (state->viewport >= 0 || outputViewport < 0 ||
+        outputViewport >= 4 || outputLayout < VIEWPORT_LAYOUT_1_PLAYER ||
+        outputLayout > VIEWPORT_LAYOUT_4_PLAYERS ||
+        outputViewport > outputLayout) {
+        return FALSE;
+    }
+    state->viewport = outputViewport;
+    state->layout = outputLayout;
+    return TRUE;
+}
+
+void cam_output_view_end(void) {
+    MdkrOutputViewState *state = cam_output_view_state();
+    state->viewport = -1;
+    state->layout = -1;
+}
+
+s32 cam_get_output_viewport(void) {
+    const MdkrOutputViewState *state = cam_output_view_state();
+    return state->viewport >= 0 ? state->viewport : gActiveCameraID;
+}
+
+s32 cam_get_output_viewport_layout(void) {
+    const MdkrOutputViewState *state = cam_output_view_state();
+    return state->layout >= 0 ? state->layout : gViewportLayout;
+}
+
+/* Canonical fixed-tick camera obstruction is solved for every participant so
+ * endpoint layout can never affect authority. Before presenting that camera in
+ * a different local rectangle, prove the local layout describes the same lens.
+ * If a future layout policy changes aspect/FOV semantics, fail closed instead
+ * of silently drawing a camera wider than the resolver validated. */
+static bool cam_output_projection_compatible(
+    s32 outputViewport, s32 outputLayout, s32 canonicalViewport,
+    s32 cameraID, s32 safeWorldRegion) {
+    MdkrCameraProjection canonical;
+    MdkrCameraProjection output;
+    const bool gameplayCamera =
+        cameraID >= 0 && cameraID < 4 && get_game_mode() == GAMEMODE_INGAME &&
+        !gCutsceneCameraActive;
+    s8 *reportedCanonical;
+    s8 *reportedLayout;
+
+    /* The first presentation opportunity can precede the fixed-tick publish,
+     * and a cutscene-bank change can invalidate the prior record for one draw.
+     * Existing rendering already withholds projection rebuild in that state;
+     * it is not evidence of an incompatible local layout. */
+    if (!cam_get_latched_effective_projection_for_viewport(
+            canonicalViewport, &canonical) ||
+        canonical.camera_id != cameraID ||
+        !camera_obstruction_projection_matches_render(
+            canonicalViewport, cameraID, canonical.generation)) {
+        return true;
+    }
+    if (!cam_projection_for_layout_region(
+            outputLayout, outputViewport, cameraID, gameplayCamera,
+            safeWorldRegion, &output) ||
+        fabsf(canonical.aspect - output.aspect) > 0.0001f ||
+        fabsf(canonical.vertical_fov - output.vertical_fov) > 0.0001f ||
+        fabsf(canonical.horizontal_fov - output.horizontal_fov) > 0.0001f ||
+        canonical.horizontal_fov_capped != output.horizontal_fov_capped ||
+        canonical.near_plane != output.near_plane ||
+        canonical.far_plane != output.far_plane) {
+        return false;
+    }
+
+    /* Diagnostic suppression is endpoint presentation state, not rollback
+     * authority. Keep it inside this function-local capsule. */
+    {
+        static s8 canonicalByOutput[4] = {-1, -1, -1, -1};
+        static s8 layoutByOutput[4] = {-1, -1, -1, -1};
+        reportedCanonical = canonicalByOutput;
+        reportedLayout = layoutByOutput;
+    }
+    if (reportedCanonical[outputViewport] != canonicalViewport ||
+        reportedLayout[outputViewport] != outputLayout) {
+        fprintf(stderr,
+                "[NET-LENS] output=%d canonical=%d layout=%d "
+                "aspect=%.6f vfov=%.6f compatible=1\n",
+                outputViewport, canonicalViewport, outputLayout,
+                output.aspect, output.vertical_fov);
+        reportedCanonical[outputViewport] = (s8)canonicalViewport;
+        reportedLayout[outputViewport] = (s8)outputLayout;
+    }
+    return true;
+}
+#endif
 
 /**
  * Initialises the camera object for the tracks menu.
@@ -1786,14 +1912,45 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
     s32 originalCameraID;
     s32 savedCameraID;
     s32 tempCameraID;
+#ifdef NATIVE_PORT
+    s32 outputViewport;
+    s32 outputLayout;
+    s32 projectionViewport;
+#endif
 
     originalCameraID = gActiveCameraID;
+#ifdef NATIVE_PORT
+    outputViewport = cam_get_output_viewport();
+    outputLayout = cam_get_output_viewport_layout();
+    projectionViewport = cam_output_view_state()->viewport >= 0
+        ? originalCameraID : outputViewport;
+    savedCameraID = outputViewport;
+#else
     savedCameraID = gActiveCameraID;
+#endif
 
     if (is_player_two_in_control() && gViewportLayout == VIEWPORT_LAYOUT_1_PLAYER) {
         gActiveCameraID = 1;
         savedCameraID = 0;
     }
+#ifdef NATIVE_PORT
+    if (cam_output_view_state()->viewport >= 0) {
+        const s32 cameraID =
+            gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
+        const s32 safeWorldRegion =
+            viewport_world_region_uses_safe_aperture(savedCameraID);
+        if (!cam_output_projection_compatible(
+                outputViewport, outputLayout, projectionViewport, cameraID,
+                safeWorldRegion)) {
+            fprintf(stderr,
+                    "[FATAL] endpoint output lens is incompatible with "
+                    "canonical camera output=%d canonical=%d layout=%d\n",
+                    outputViewport, projectionViewport, outputLayout);
+            gActiveCameraID = originalCameraID;
+            return;
+        }
+    }
+#endif
     widthAndHeight = fb_size();
     videoHeight = GET_VIDEO_HEIGHT(widthAndHeight);
     videoWidth = GET_VIDEO_WIDTH(widthAndHeight);
@@ -1804,7 +1961,7 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
          * has to tell the renderer which region this image draws into. */
         s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
 
-        cam_rebuild_native_projection(savedCameraID, cameraID);
+        cam_rebuild_native_projection(projectionViewport, cameraID);
         gDkrSetWorldRegion((*dlist)++,
                            viewport_world_region_uses_safe_aperture(savedCameraID));
 #endif
@@ -1822,7 +1979,11 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
         return;
     }
 
+#ifdef NATIVE_PORT
+    viewports = outputLayout;
+#else
     viewports = gViewportLayout;
+#endif
     if (viewports == VIEWPORT_LAYOUT_3_PLAYERS) {
         viewports = VIEWPORT_LAYOUT_4_PLAYERS;
     }
@@ -1850,7 +2011,12 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
             // 2 players = split screen horizontally
             // first player has top half
             posX = sp54_width;
-            posY = gActiveCameraID;
+            posY =
+#ifdef NATIVE_PORT
+                outputViewport;
+#else
+                gActiveCameraID;
+#endif
             if (posY == 0) {
                 posY = videoHeight >> 2;
                 if (osTvType == OS_TV_TYPE_PAL) {
@@ -1873,7 +2039,13 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
             posY = sp58_height;
             // 3 player splits screen in 4 parts, first player = top left, second = top right, third = bottom left and
             // bottom right has map of race track
-            if (gActiveCameraID == 0) {
+            if (
+#ifdef NATIVE_PORT
+                outputViewport
+#else
+                gActiveCameraID
+#endif
+                == 0) {
                 posX = videoWidth >> 2;
                 gDPSetScissor((*dlist)++, SCISSOR_INTERLACE, 0, 0, x - (videoWidth >> 8), videoHeight);
             } else {
@@ -1889,7 +2061,13 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
             sp54_width >>= 1;
             tempY = 0;
             tempX = 0;
-            switch (gActiveCameraID) {
+            switch (
+#ifdef NATIVE_PORT
+                outputViewport
+#else
+                gActiveCameraID
+#endif
+            ) {
                 case 0:
                     // Using tempX and tempY here is not smart since IDO can't optimize out the zero now.
                     // Why here of all places did they do this instead of just setting zero like everywhere else?
@@ -1928,7 +2106,13 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
             posY = tempX + sp58_height;
             posX = tempY + sp54_width;
             if (osTvType == OS_TV_TYPE_PAL) {
-                if (gActiveCameraID <= 1) {
+                if (
+#ifdef NATIVE_PORT
+                    outputViewport
+#else
+                    gActiveCameraID
+#endif
+                    <= 1) {
                     posY -= 20;
                 } else {
                     posY -= 6;
@@ -1947,7 +2131,7 @@ void viewport_main(Gfx **dlist, Mtx **mats) {
 #ifdef NATIVE_PORT
     {
         s32 cameraID = gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
-        cam_rebuild_native_projection(savedCameraID, cameraID);
+        cam_rebuild_native_projection(projectionViewport, cameraID);
     }
     gDkrSetWorldRegion((*dlist)++, FALSE);
 #endif
@@ -2062,6 +2246,7 @@ void viewport_scissor(Gfx **dList) {
  * pattern: the #ifndef NATIVE_PORT arm keeps the original function body verbatim,
  * so the matching build is untouched. */
 static void mdkr_snapshot_authored_camera_record(s32 viewport,
+                                                 s32 projectionViewport,
                                                  s32 cameraId) {
     const Camera *camera;
     const ScreenViewport *screen;
@@ -2096,7 +2281,8 @@ static void mdkr_snapshot_authored_camera_record(s32 viewport,
     sample.discontinuity =
         (uint8_t) camera_obstruction_snapshot_discontinuous(cameraId);
     sample.fov = gCurCamFOV;
-    if (cam_get_latched_effective_projection_for_viewport(viewport, &projection) &&
+    if (cam_get_latched_effective_projection_for_viewport(
+            projectionViewport, &projection) &&
         projection.camera_id == cameraId) {
         sample.vertical_fov = projection.vertical_fov;
         sample.aspect = projection.aspect;
@@ -2123,9 +2309,16 @@ static void mdkr_snapshot_authored_camera_record(s32 viewport,
 
 void cam_build_view_basis(void) {
     s32 originalCamID;
+    s32 registerViewport;
     Camera *activeCamera;
 
     originalCamID = gActiveCameraID;
+    /* Latch the shadow-register viewport BEFORE the cutscene bank offset:
+     * cam_get_output_viewport() falls back to the live gActiveCameraID, and
+     * a 4-7 slot value would be rejected by gfx_shadow_frame's bounds
+     * checks, silently disabling interpolated view-projection substitution
+     * for every cutscene shot. */
+    registerViewport = cam_get_output_viewport();
     if (gCutsceneCameraActive) {
         gActiveCameraID += 4;
     }
@@ -2148,7 +2341,7 @@ void cam_build_view_basis(void) {
     /* From here until something else overwrites gViewProjMatrixF, every
      * registered matrix belongs to this viewport's gameplay camera and is a
      * legal target for an interpolated view-projection (Wave B). */
-    sShadowRegisterViewport = originalCamID;
+    sShadowRegisterViewport = registerViewport;
     sShadowRegisterGameplayVp = 1;
 
     gCameraTransform.rotation.y_rotation = -0x8000 - activeCamera->trans.rotation.y_rotation;
@@ -2188,7 +2381,8 @@ void cam_build_view_basis(void) {
  */
 void camSetProjMtx(Gfx **dList, UNUSED Mtx **mtx) {
 #ifdef NATIVE_PORT
-    const s32 viewport = gActiveCameraID;
+    const s32 viewport = cam_get_output_viewport();
+    const s32 projectionViewport = gActiveCameraID;
     const s32 cameraId =
         gActiveCameraID + (gCutsceneCameraActive ? 4 : 0);
 
@@ -2197,7 +2391,8 @@ void camSetProjMtx(Gfx **dList, UNUSED Mtx **mtx) {
     /* Unlike logic-only cam_build_view_basis() calls, this path emits the
      * projection normalization into the task and supplies the VP used by its
      * registered gameplay matrices. Latch only this authored recipe. */
-    mdkr_snapshot_authored_camera_record(viewport, cameraId);
+    mdkr_snapshot_authored_camera_record(
+        viewport, projectionViewport, cameraId);
 #else
     s32 originalCamID;
 
@@ -2391,7 +2586,7 @@ static void mdkr_camera_pose_view_projection(
     memset(&transform, 0, sizeof(transform));
     transform.scale = 1.0f;
     transform.rotation.y_rotation = 0x8000 + pose->rotation_y;
-    transform.rotation.x_rotation = pose->rotation_x + pose->pitch;
+    transform.rotation.x_rotation = pose->view_pitch;
     transform.rotation.z_rotation = pose->rotation_z;
     transform.x_position = -pose->position[0];
     transform.y_position = -pose->position[1];
@@ -2511,6 +2706,14 @@ void mtx_perspective(Gfx **dList, Mtx **mtx) {
  */
 void viewport_rsp_set(Gfx **dList, s32 halfWidth, s32 halfHeight, s32 centerX, s32 centerY) {
     s32 tempWidth = (get_filtered_cheats() & CHEAT_MIRRORED_TRACKS) ? -halfWidth : halfWidth;
+#ifdef NATIVE_PORT
+    const s32 outputViewport = cam_get_output_viewport();
+    Vp *outputStack = cam_output_view_state()->viewport >= 0
+        ? &cam_output_viewport_stack()[outputViewport]
+        : &gViewportStack[outputViewport];
+#else
+#define outputViewport gActiveCameraID
+#endif
 #ifdef ANTI_TAMPER
     // Antipiracy measure. Flips the screen upside down.
     if (gAntiPiracyViewport) {
@@ -2518,15 +2721,37 @@ void viewport_rsp_set(Gfx **dList, s32 halfWidth, s32 halfHeight, s32 centerX, s
         tempWidth = -halfWidth;
     }
 #endif
-    if (!(gScreenViewports[gActiveCameraID].flags & VIEWPORT_EXTRA_BG)) {
-        gViewportStack[gActiveCameraID].vp.vtrans[0] = centerX * 4;
-        gViewportStack[gActiveCameraID].vp.vtrans[1] = centerY * 4;
-        gViewportStack[gActiveCameraID].vp.vscale[0] = tempWidth * 4;
-        gViewportStack[gActiveCameraID].vp.vscale[1] = halfHeight * 4;
-        gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(&gViewportStack[gActiveCameraID]));
+    if (!(gScreenViewports[outputViewport].flags & VIEWPORT_EXTRA_BG)) {
+#ifdef NATIVE_PORT
+        outputStack->vp.vtrans[0] = centerX * 4;
+        outputStack->vp.vtrans[1] = centerY * 4;
+        outputStack->vp.vscale[0] = tempWidth * 4;
+        outputStack->vp.vscale[1] = halfHeight * 4;
+        gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(outputStack));
+#else
+        gViewportStack[outputViewport].vp.vtrans[0] = centerX * 4;
+        gViewportStack[outputViewport].vp.vtrans[1] = centerY * 4;
+        gViewportStack[outputViewport].vp.vscale[0] = tempWidth * 4;
+        gViewportStack[outputViewport].vp.vscale[1] = halfHeight * 4;
+        gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(&gViewportStack[outputViewport]));
+#endif
     } else {
-        gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(&gViewportStack[gActiveCameraID + 10 + (gViewportWithBG * 5)]));
+#ifdef NATIVE_PORT
+        if (cam_output_view_state()->viewport >= 0) {
+            *outputStack =
+                gViewportStack[outputViewport + 10 + (gViewportWithBG * 5)];
+            gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(outputStack));
+        } else {
+            gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(
+                &gViewportStack[outputViewport + 10 + (gViewportWithBG * 5)]));
+        }
+#else
+        gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(&gViewportStack[outputViewport + 10 + (gViewportWithBG * 5)]));
+#endif
     }
+#ifndef NATIVE_PORT
+#undef outputViewport
+#endif
 }
 
 /**

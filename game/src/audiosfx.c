@@ -6,6 +6,9 @@
 #include "objects.h"
 #include "PR/libaudio.h"
 #include "video.h"
+#ifdef NATIVE_PORT
+#include "rollback/rollback_game_runtime.h"
+#endif
 
 #define SOUND_PARAM_DURATION(m) (m->velocityMax * 33333)
 #define SOUND_PARAM_NEXT_SOUND(m) (m->velocityMin + (m->keyMin & 0xC0) * 4)
@@ -28,6 +31,58 @@ static u16 gSoundGroupCount;
  * walk/post into a partially constructed player. */
 static s32 gSoundPlayerReady;
 #ifdef NATIVE_PORT
+static u64 sRollbackSoundGeneration;
+enum {
+    ROLLBACK_AUDIO_COMMAND_STOP = 1,
+    ROLLBACK_AUDIO_COMMAND_DETACH,
+    ROLLBACK_AUDIO_COMMAND_PRIORITY,
+    ROLLBACK_AUDIO_COMMAND_PARAM_BASE = 0x10000
+};
+
+static void sndp_stop_raw(ALSoundState *state);
+static void sndp_set_priority_raw(ALSoundState *sndp, u8 priority);
+static void sndp_set_param_raw(
+    SoundHandle soundMask, s16 type, u32 paramValue);
+
+static void apply_rollback_audio_command(
+    const MdkrRollbackAudioCommand *command, void *context) {
+    SoundHandle handle = (SoundHandle)command->resource;
+    (void)context;
+    if (handle == NULL || handle->state == SOUND_STATE_NONE ||
+        handle->rollbackGeneration != command->generation) {
+        return;
+    }
+    if (command->operation == ROLLBACK_AUDIO_COMMAND_STOP) {
+        sndp_stop_raw(handle);
+    } else if (command->operation == ROLLBACK_AUDIO_COMMAND_DETACH) {
+        sndp_stop_raw(handle);
+        if (handle->userHandle == (SoundHandle *)command->handle_slot) {
+            handle->userHandle = NULL;
+        }
+    } else if (command->operation == ROLLBACK_AUDIO_COMMAND_PRIORITY) {
+        sndp_set_priority_raw(handle, (u8)command->value);
+    } else if (command->operation >= ROLLBACK_AUDIO_COMMAND_PARAM_BASE) {
+        sndp_set_param_raw(
+            handle,
+            (s16)(command->operation - ROLLBACK_AUDIO_COMMAND_PARAM_BASE),
+            command->value);
+    }
+}
+
+static bool defer_rollback_audio_command(
+    SoundHandle handle, u32 operation, u32 value,
+    SoundHandle *handlePtr) {
+    MdkrRollbackAudioCommand command;
+    if (handle == NULL) return false;
+    command.resource = handle;
+    command.generation = handle->rollbackGeneration;
+    command.operation = operation;
+    command.value = value;
+    command.handle_slot = handlePtr;
+    command.apply = apply_rollback_audio_command;
+    command.context = NULL;
+    return mdkr_rollback_game_runtime_defer_audio_command(&command);
+}
 /* App-overlay ducking is an output layer, not an authored group-volume mode.
  * Keeping it separate means a paused menu may update its desired group state
  * without making live race effects audible through the overlay. */
@@ -83,6 +138,9 @@ void sndp_set_global_volume(u32 volume) {
     OSIntMask mask;
     ALSoundState *state;
     ALSndpEvent evt;
+#ifdef NATIVE_PORT
+    if (!mdkr_rollback_game_runtime_presentation_allowed()) return;
+#endif
 
     if (volume > 256) {
         volume = 256;
@@ -186,9 +244,21 @@ void sndp_init_player(audioMgrConfig *c) {
     ALEvent evt;
     ALEventListItem *items;
 
-    /* Do not let a settings publish observe a half-constructed event queue if
-     * initialization is ever made re-entrant. */
+    /* A launcher-owned process can boot more than one arena-backed engine.
+     * Every pointer in these process globals belonged to the prior arena, so
+     * retire the complete graph before allocating this epoch's player. Keep
+     * only the scalar user volume and monotonic rollback generation. */
     gSoundPlayerReady = FALSE;
+    gSoundStateLists.allocHead = NULL;
+    gSoundStateLists.allocTail = NULL;
+    gSoundStateLists.freeHead = NULL;
+    gSoundGroupVolume = NULL;
+    gSoundGroupCount = 0u;
+    gNumActiveSounds = 0;
+#ifdef NATIVE_PORT
+    sSoundOverlayPaused = FALSE;
+#endif
+    *gSoundPlayerPtr = (SoundPlayer){0};
 
     /*
      * Init member variables
@@ -744,6 +814,11 @@ ALSoundState *sndp_allocate(UNUSED ALBank *bank, ALSound *sound) {
         state->pitch = 1.0f;
         state->flags = SOUND_PARAM_FLAGS(keyMap);
         state->userHandle = NULL;
+#ifdef NATIVE_PORT
+        sRollbackSoundGeneration++;
+        if (sRollbackSoundGeneration == 0) sRollbackSoundGeneration++;
+        state->rollbackGeneration = sRollbackSoundGeneration;
+#endif
         if (state->flags & SOUND_FLAG_PITCH_SLIDE) {
             state->slideMult = alCents2Ratio(SOUND_PARAM_PITCH(keyMap));
         } else {
@@ -816,11 +891,43 @@ void sndp_stop_and_detach(SoundHandle *handlePtr) {
     if (state == NULL) {
         return;
     }
-    sndp_stop(state);
+    /* Sever the back-pointer and the caller's slot NOW, unconditionally.
+     * Detaching is a memory-safety contract with a caller that is about to
+     * free the storage holding the slot; only the audible stop may be
+     * deferred for resimulation. A deferred command that is later DISCARDED
+     * (rollback forget_all) never runs its apply callback, so deferring the
+     * detach itself would leave the live voice's userHandle aimed into freed
+     * memory and sndp_deallocate() would write through it at voice end. */
     if (state->userHandle == handlePtr) {
         state->userHandle = NULL;
     }
     *handlePtr = NULL;
+    if (defer_rollback_audio_command(
+            state, ROLLBACK_AUDIO_COMMAND_DETACH, 0u, NULL)) {
+        return;
+    }
+    sndp_stop(state);
+}
+
+u64 sndp_rollback_generation(SoundHandle handle) {
+    return handle != NULL ? handle->rollbackGeneration : 0;
+}
+
+/** Stop only the exact host voice previewed by a rollback event.
+ *
+ * ALSoundState comes from a fixed pool. A pointer alone is therefore subject
+ * to ABA reuse after a short one-shot ends; generation makes cancellation a
+ * no-op instead of stopping the unrelated replacement voice. */
+void sndp_stop_rollback_voice(
+    SoundHandle handle, u64 generation, SoundHandle *handlePtr) {
+    if (handle == NULL || generation == 0 ||
+        handle->rollbackGeneration != generation ||
+        handle->state == SOUND_STATE_NONE) {
+        return;
+    }
+    sndp_stop(handle);
+    if (handle->userHandle == handlePtr) handle->userHandle = NULL;
+    if (handlePtr != NULL && *handlePtr == handle) *handlePtr = NULL;
 }
 #endif
 
@@ -828,10 +935,16 @@ void sndp_stop_and_detach(SoundHandle *handlePtr) {
  * Sets the priority for voice allocation and for preempting another sound.
  * Official Name: gsSndpSetPriority
  */
+static void sndp_set_priority_raw(ALSoundState *sndp, u8 priority) {
+    if (sndp != NULL) sndp->priority = priority;
+}
+
 void sndp_set_priority(ALSoundState *sndp, u8 priority) {
-    if (sndp != NULL) {
-        sndp->priority = priority;
-    }
+#ifdef NATIVE_PORT
+    if (defer_rollback_audio_command(
+            sndp, ROLLBACK_AUDIO_COMMAND_PRIORITY, priority, NULL)) return;
+#endif
+    sndp_set_priority_raw(sndp, priority);
 }
 
 /**
@@ -966,7 +1079,7 @@ ALSoundState *sndp_play_with_priority(ALBank *bank, s16 sndIndx, u8 priority, AL
  * Schedules a stop event for the given sound state and disables the retrigger flag.
  * Official Name: gsSndpStop
  */
-void sndp_stop(ALSoundState *state) {
+static void sndp_stop_raw(ALSoundState *state) {
     ALSndpEvent alEvent;
 
     alEvent.common.type = AL_SNDP_STOP_EVT;
@@ -980,6 +1093,14 @@ void sndp_stop(ALSoundState *state) {
     }
 }
 
+void sndp_stop(ALSoundState *state) {
+#ifdef NATIVE_PORT
+    if (defer_rollback_audio_command(
+            state, ROLLBACK_AUDIO_COMMAND_STOP, 0u, NULL)) return;
+#endif
+    sndp_stop_raw(state);
+}
+
 /**
  * Schedules a stop event for all sound states that have the specified flags set.
  */
@@ -987,6 +1108,10 @@ void sndp_stop_with_flags(u8 flags) {
     OSIntMask mask;
     ALSndpEvent evt;
     ALSoundState *soundState;
+
+#ifdef NATIVE_PORT
+    if (!mdkr_rollback_game_runtime_presentation_allowed()) return;
+#endif
 
     mask = osSetIntMask(OS_IM_NONE);
     soundState = gSoundStateLists.allocHead;
@@ -1030,7 +1155,8 @@ void sndp_stop_all_looped(void) {
  * Send a message to the sound player to update an existing property of the sound entry.
  * Official Name: gsSndpSetParam
  */
-void sndp_set_param(SoundHandle soundMask, s16 type, u32 paramValue) {
+static void sndp_set_param_raw(
+    SoundHandle soundMask, s16 type, u32 paramValue) {
     ALSndpEvent evt;
     evt.common.type = type;
     evt.common.state = soundMask;
@@ -1041,6 +1167,15 @@ void sndp_set_param(SoundHandle soundMask, s16 type, u32 paramValue) {
         // From JFG
         // osSyncPrintf("WARNING: Attempt to modify NULL sound aborted\n");
     }
+}
+
+void sndp_set_param(SoundHandle soundMask, s16 type, u32 paramValue) {
+#ifdef NATIVE_PORT
+    if (defer_rollback_audio_command(
+            soundMask, ROLLBACK_AUDIO_COMMAND_PARAM_BASE + (u16)type,
+            paramValue, NULL)) return;
+#endif
+    sndp_set_param_raw(soundMask, type, paramValue);
 }
 
 /**
@@ -1068,6 +1203,10 @@ void sndp_set_group_volume(u8 groupID, u16 volume) {
     ALSoundState *state;
     UNUSED s32 pad;
     ALSndpEvent evt;
+
+#ifdef NATIVE_PORT
+    if (!mdkr_rollback_game_runtime_presentation_allowed()) return;
+#endif
 
     mask = osSetIntMask(OS_IM_NONE);
     if (!mdkr_audio_group_valid(groupID) || groupID >= gSoundGroupCount) {

@@ -82,6 +82,7 @@ void music_change_off(void);
 void music_change_on(void);
 void music_play(u8 seqID);
 void music_voicelimit_set(u8 voiceLimit);
+void music_voicelimit_set_from_level_header(u8 voiceLimit);
 void music_voicelimit_change_off(void);
 void music_voicelimit_change_on(void);
 void music_jingle_voicelimit_set(u8 voiceLimit);

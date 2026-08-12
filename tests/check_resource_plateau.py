@@ -111,11 +111,11 @@ def plateau_error(rows: list[tuple[int, ...]]) -> str | None:
         valid = row[21]
         if (
             physical_alloc + physical_free + physical_lame != 40
-            or music_alloc + music_free != 24
+            or music_alloc + music_free != 26
             or jingle_alloc + jingle_free != 16
             or sfx_alloc + sfx_free != 32
             or peak_physical > 40
-            or peak_music > 24
+            or peak_music > 26
             or valid != 1
         ):
             return f"audio voice/state ownership is incoherent: {row}"
@@ -125,7 +125,7 @@ def plateau_error(rows: list[tuple[int, ...]]) -> str | None:
     # row. That worked only because the SGI alCSPStop() merely posted
     # AL_SEQP_STOPPING_EVT: the level teardown's music_stop() left the music
     # voices mapped, so the boundary sample still saw them. The clean-room
-    # alCSPStop() releases synchronously, so voiceMusic is now 0/24 in EVERY
+    # alCSPStop() releases synchronously, so voiceMusic is now 0/32 in EVERY
     # boundary row -- natively and in the browser alike -- and the old form
     # became unsatisfiable rather than merely weaker.
     #
@@ -412,7 +412,7 @@ def main() -> int:
 
     # Parser/checker positive control: generation-over-generation growth must
     # fail even if every value remains individually plausible.
-    voices = (1, 39, 0, 1, 23, 0, 16, 0, 32, 1)
+    voices = (1, 39, 0, 1, 25, 0, 16, 0, 26, 1)
     synthetic = [
         (5, 0, 100, 10, 1000, 2000, 1900, 500, 1000, 20, *voices),
         (5, 0, 100, 10, 1000, 2000, 1900, 500, 1000, 20, *voices),
