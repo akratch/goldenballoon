@@ -278,7 +278,17 @@ static int mod_racer_store_candidate(const TajModPersistentState *candidate,
     }
     s_roster.persistence_failed = 0;
     s_roster.persistence_issue = TAJ_MOD_PERSISTENCE_NONE;
-    if (!mod_racer_uses_async_persistence()) s_roster.retry_pending = 0;
+    if (!mod_racer_uses_async_persistence()) {
+        s_roster.retry_pending = 0;
+    } else if (issue == TAJ_MOD_PERSISTENCE_UNLOCK && s_roster.retry_pending &&
+               s_roster.retry_issue == TAJ_MOD_PERSISTENCE_UNLOCK) {
+        /* This candidate was built from s_roster.persisted, which already carries every unlock the
+         * queued retry was holding, so it strictly supersedes it. Dropping the queue entry here is
+         * what stops taj_mod_report_persistence_success() from later replaying an OLDER unlock set
+         * over this newer one -- which silently un-unlocked whichever identity was granted second.
+         * Only unlocks coalesce: an ERASE must still be retried on its own terms. */
+        s_roster.retry_pending = 0;
+    }
     return 1;
 }
 
