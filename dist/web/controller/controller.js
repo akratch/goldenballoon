@@ -374,7 +374,14 @@
             if (typeof controlEvent.data !== "string" || controlEvent.data.length > 4096) return;
             try {
               const value = JSON.parse(controlEvent.data);
-              if (value.type === "input_test_ack" && value.nonce === inputTestNonce) {
+              if (value.type === "ping" && value.protocol === 1 &&
+                  Number.isInteger(value.nonce) && value.nonce >= 0 &&
+                  value.nonce <= 0xffffffff) {
+                try {
+                  controlChannel.send(JSON.stringify({type: "pong", protocol: 1,
+                    nonce: value.nonce}));
+                } catch (_) { directTransportLost(connection, true); }
+              } else if (value.type === "input_test_ack" && value.nonce === inputTestNonce) {
                 markInputTestPassed();
               } else if (value.type === "rumble" && value.protocol === 1 && active &&
                          typeof navigator.vibrate === "function") {

@@ -4359,6 +4359,21 @@ void platform_present_config_apply(void) {
             present_sched_smoothing_enabled() ? 1 : 0,
             present_sched_allow_tearing() ? 1 : 0,
             wasActive > 0 ? 1 : 0, s_presentActive > 0 ? 1 : 0);
+    /* --headless-frames counts PRESENTS while simulation advances on field
+     * tickets, so any non-original frame limit (for example a player's
+     * mdkr64.ini left beside the checkout with FrameLimit=uncapped) silently
+     * changes how much simulation a frame budget buys. That mismatch has
+     * cost multiple debugging digs; make it one visible line instead. */
+    if (g_headlessFrames >= 0 &&
+        present_sched_present_kind() != MDKR_PRESENT_ORIGINAL) {
+        fprintf(stderr,
+                "[HEADLESS] warning: present policy '%s' is active under "
+                "--headless-frames; the frame budget buys fewer simulation "
+                "ticks than an Original-policy run. Set "
+                "MDKR_VIDEO_CONFIG_PATH=/dev/null to isolate a test run "
+                "from a local mdkr64.ini.\n",
+                present_sched_present_policy_name());
+    }
     fflush(stderr);
 
     /* 6. Re-rank the present mode. Each backend re-emits its own [PRESENT-MODE]

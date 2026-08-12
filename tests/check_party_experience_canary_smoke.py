@@ -72,7 +72,8 @@ def run(args: argparse.Namespace) -> None:
         require("ERROR" not in details.upper(),
                 "Wrangler reported an error during canary smoke")
     print("check_party_experience_canary_smoke: PASS — real Worker create/join, "
-          "direct phone setup/input and continued control during signaling loss")
+          "direct phone setup/input during signaling loss, same-lease epoch "
+          "rebind and fresh input after recovery")
 
 
 def main() -> int:

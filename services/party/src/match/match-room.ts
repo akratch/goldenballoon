@@ -139,7 +139,14 @@ export class MatchRoom extends DurableObject<Env> {
     await this.ctx.storage.put("match", record);
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  override fetch(request: Request): Promise<Response> {
+    /* Durable Object events may interleave at any await. Keep the complete
+     * read/authorize/reduce/persist/broadcast transition inside one input
+     * gate so two callers cannot both commit from the same revision. */
+    return this.ctx.blockConcurrencyWhile(() => this.fetchSerialized(request));
+  }
+
+  private async fetchSerialized(request: Request): Promise<Response> {
     const rejected = rejectUnsupportedInternalApi(request);
     if (rejected) return rejected;
     const url = new URL(request.url);

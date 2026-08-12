@@ -85,7 +85,14 @@ export class PartyRoom extends DurableObject<Env> {
     return constantTimeEqual(supplied, room.hostCredentialDigest);
   }
 
-  override async fetch(request: Request): Promise<Response> {
+  override fetch(request: Request): Promise<Response> {
+    /* Approval, rotation, reconnect and close are one room transition each.
+     * Await points must not let a second request observe and overwrite the
+     * same stored predecessor. This is also the pattern used by the budget DO. */
+    return this.ctx.blockConcurrencyWhile(() => this.fetchSerialized(request));
+  }
+
+  private async fetchSerialized(request: Request): Promise<Response> {
     const rejected = rejectUnsupportedInternalApi(request);
     if (rejected) return rejected;
     const url = new URL(request.url);

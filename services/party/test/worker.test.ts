@@ -270,6 +270,43 @@ describe("Party Worker local workerd adapter", () => {
       protocol: 1});
   });
 
+  it("serializes competing seat approvals without split ownership", async () => {
+    const created = await post("/api/party/create", {hostPublicKey});
+    const room = await created.json() as Record<string, string>;
+    const capability = new URL(room.controllerUrl!).hash.slice(1);
+    const redeem = async (name: string, key: string) => {
+      const response = await post("/api/controller/redeem", {
+        capability, protocol: 1, name, controllerPublicKey: key.repeat(87),
+      });
+      expect(response.status).toBe(201);
+      return response.json() as Promise<Record<string, string>>;
+    };
+    const [first, second] = await Promise.all([
+      redeem("First phone", "A"), redeem("Second phone", "B"),
+    ]);
+    const approve = (controllerId: string) => post(
+      `/api/party/${room.roomId}/approve`, {controllerId, seat: 2},
+      {authorization: `Bearer ${room.hostCredential}`});
+    const competing = await Promise.all([
+      approve(first.controllerId!), approve(second.controllerId!),
+    ]);
+    expect(competing.map(response => response.status).sort()).toEqual([200, 409]);
+    const bodies = await Promise.all(competing.map(response => response.json())) as
+      Record<string, unknown>[];
+    expect(bodies.filter(value => value.ok === true)).toHaveLength(1);
+    expect(bodies.filter(value => value.error === "room_full")).toHaveLength(1);
+
+    const bindings = env as unknown as Env;
+    const roomStub = bindings.PARTY_ROOMS.get(
+      bindings.PARTY_ROOMS.idFromName(room.roomId!));
+    const stored = await runInDurableObject(roomStub, async (_instance, state) =>
+      state.storage.get<Record<string, any>>("room"));
+    expect(stored?.controllers.filter((value: Record<string, unknown>) =>
+      value.phase === "leased" && value.seat === 2)).toHaveLength(1);
+    expect(stored?.controllers.filter((value: Record<string, unknown>) =>
+      value.phase === "pending")).toHaveLength(1);
+  });
+
   it("fails closed for origins, oversize bodies and rotated invites", async () => {
     const forbidden = await SELF.fetch("https://party.test/api/party/create",
       {method: "POST", headers: {origin: "https://attacker.invalid"}});

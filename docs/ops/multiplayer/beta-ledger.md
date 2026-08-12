@@ -65,6 +65,11 @@ direct setup p95 at most 8,000 ms and direct input-test RTT p95 at most 250 ms.
 The canary has no server-side collector, metrics route, per-user sampling or
 additional metrics write. Its ordinary admitted operations appear in the same
 capacity/provider aggregates and must remain inside the daily stop line.
+Each Phone Party journey also forces signaling loss after pairing, proves a
+fresh direct input while the room socket is unavailable, restores signaling,
+requires a rotated connection epoch within the existing seat lease, and proves
+another direct input after rebind. These are pass/fail journey conditions; they
+add no analytics fields or user-derived measurements.
 The controlled runner refuses non-HTTPS origins (except an explicit loopback
 development mode), requires exactly 20 attempts for operated evidence, uses
 fresh browser profiles for every direct-phone attempt, closes its synthetic

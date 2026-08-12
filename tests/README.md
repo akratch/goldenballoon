@@ -1154,7 +1154,15 @@ The adjacent browser-party evidence is split by responsibility:
 `check_controller_page.py` owns the engine-free phone surface and neutral
 lifecycle, `check_party_host.py` owns launcher QR/code approval and seat custody,
 and `check_phone_party_webrtc.py` owns authenticated signaling plus direct state
-and control channels. `check_persistent_browser_session.py` separately proves
+and control channels. That peer gate requires a no-churn handshake, same-peer
+ICE restart, bounded ping/pong, fail-neutral watchdog expiry, exact-neutral
+reliable-channel failure, one fresh generation and working input after each
+recovery. `check_party_experience_canary_smoke.py` runs the
+operated journey against a fresh real local Worker: direct input continues while
+phone signaling is forcibly unavailable, then the same seat rotates its epoch,
+rebinds and accepts fresh input after signaling returns. The one-attempt smoke
+must remain `STOP`; it cannot counterfeit hosted evidence.
+`check_persistent_browser_session.py` separately proves
 two complete engine loans return through one wasm module without surrendering
 launcher or mounted-storage ownership.
 
@@ -1183,7 +1191,11 @@ kill switch and durable-storage absence of raw invite/code/credential values.
 Client state also omits internal receipts, command high-water marks and
 fingerprints. Run all service gates with
 `(cd services/party && npm run check)`. These tests do not switch on production
-online admission.
+online admission. Worker integration also races two Match commands from one
+revision and two Phone Party approvals for one seat. Complete transitions are
+input-gated across storage awaits: the Match race has exactly one success and
+one `stale_revision`, while the seat race has exactly one lease and leaves the
+other phone pending. Repeated parallel test processes retain those outcomes.
 
 `test_party_experience_canary.py` pins the zero-analytics operated canary:
 HTTPS-only origin shape, fixed 20-attempt lanes, nearest-rank p95 thresholds,

@@ -93,6 +93,9 @@ def main() -> int:
     env.update(
         LC_ALL="C",
         MDKR_AUDIO="0",
+        # A repo-root mdkr64.ini (e.g. FrameLimit=uncapped) must not govern a
+        # frame-budgeted headless run.
+        MDKR_VIDEO_CONFIG_PATH=os.devnull,
         MDKR_TRACE="1",
         MDKR_TAJ_SELECT_TRACE="1",
         MDKR_RENDERER="opengl",

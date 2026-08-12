@@ -215,8 +215,8 @@ export function dispatchMatchCommand(lobby: MatchLobbyV1,
     return actor.lastCommandFingerprint === fingerprint
       ? step(lobby, true, "ok", true) : step(lobby, false, "command_conflict");
   }
-  if (actor && commandId < BigInt(actor.lastCommandId)) return step(lobby, false, "stale_command");
   if (command.expectedRevision !== lobby.revision) return step(lobby, false, "stale_revision");
+  if (actor && commandId < BigInt(actor.lastCommandId)) return step(lobby, false, "stale_command");
   if (lobby.phase === "closed") return step(lobby, false, "invalid_state");
   if (!actor && command.type !== "join") return step(lobby, false, "not_found");
   if (actor && !actor.connected && command.type !== "reconnect" && command.type !== "leave")

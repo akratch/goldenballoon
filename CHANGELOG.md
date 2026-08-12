@@ -21,7 +21,8 @@ save formats). Everything below 1.0.0 predates that commitment.
 - Phone Party (beta): pair phones as extra controllers by scanning a QR code
   from the launcher — no app install. Approved phones keep their seat through
   reconnects, and a phone dropping out leaves its kart in neutral rather than
-  handing it to someone else.
+  handing it to someone else. Established direct controls keep working through
+  a room-service interruption and reconnect inside the same approved seat.
 - An Online Room panel is visible in the launcher as a preview. Online races
   are not yet enabled; local and split-screen play are unaffected.
 - Magic Codes now keep their unlocked and active state between launches. Codes

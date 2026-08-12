@@ -23,6 +23,17 @@ in primary player copy.
    matchmaking or provider UI. The session bridge receives only frozen match
    state and canonical pad samples.
 
+For Phone Party, **Limited connection** has one precise meaning: both direct
+DataChannels are healthy but the room/signaling socket is retrying. Keep the
+active controller visible and usable, show the gold connection mark, and make
+one polite announcement that direct controls remain connected. Do not show a
+spinner over gameplay or release input for signaling alone. If either direct
+channel or the peer path fails, immediately publish neutral, show
+**Reconnecting — Controls are safely released**, preserve the numbered seat,
+and rebind with a fresh peer generation. When signaling recovery rotates the
+connection epoch, neutralize before the rebind; never accept packets from the
+old epoch. Recovery announcements do not steal focus.
+
 ## Home and route hierarchy
 
 | Route | Primary action | Secondary action | Network rule |
@@ -131,7 +142,9 @@ disconnected** rather than mislabeling a voluntary leave as an expired invite.
 The controller is a control surface, not a miniature game UI. The analog stick
 tracks the captured pointer 1:1; button feedback begins on pointer-down. Each
 pointer owns one control until release/cancel. `pointercancel`, visibility loss,
-page hide, channel loss, overflow and leave all publish exact neutral. A
+page hide, direct-channel loss, overflow and leave all publish exact neutral.
+Signaling-only loss is the exception because the authenticated direct path
+remains healthy; it changes status, not pad state. A
 three-finger hold exposes Leave when full-screen browser chrome is difficult.
 
 Settings are local and immediately previewed: Left/right-handed, Control size,

@@ -219,6 +219,9 @@ describe("MatchRoom local Durable Object adapter", () => {
         command(before.lobby.revision, "2", "set_vehicle", 0, "0"), host.credential),
     ]);
     expect(competing.map(item => item.status).sort()).toEqual([200, 412]);
+    const rejected = competing.find(item => item.status === 412)!;
+    expect(await rejected.json()).toMatchObject({error: "stale_revision",
+      revision: before.lobby.revision + 1});
     await abortAllDurableObjects();
     const resumed = await post(`/api/match/${host.roomId}/state`, {}, host.credential);
     expect(resumed.status).toBe(200);

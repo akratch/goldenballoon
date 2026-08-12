@@ -2,6 +2,8 @@
 
 > **Browser and native direct paths implemented locally; release evidence incomplete.** Secure
 > QR/code pairing, approval, WebRTC and wasm pad handoff pass automated gates.
+> Same-peer ICE restart, reliable-channel fail-neutral recovery and continued
+> direct input through signaling loss/recovery are automated locally.
 > Mixed-source assignment, in-game setup, four independent wasm ports and the
 > persistent native launcher adapter pass; four-phone physical-race and
 > packaged Windows/macOS/Linux device acceptance remain open in
@@ -381,20 +383,25 @@ themes; a corrupted finder pattern fails the positive control.
 
 ### LC-07 — WebRTC controller transport
 
-**Create:** `dist/web/party/party-peer.js`, shared signaling client and tests.
+**Modify:** `dist/web/party/party-host.js`, `dist/web/controller/controller.js`;
+add shared signaling/browser tests.
 
-- Controller creates the offer; host answers through signaling. Use direct ICE
-  in the zero-cost profile and no media permissions.
+- The approved host creates a generation-tagged offer and both named channels;
+  the controller answers through signaling. Use direct ICE in the zero-cost
+  profile and request no media permissions. Stale offers, answers and ICE from
+  an earlier peer generation are ignored.
 - Open the two specified channels; validate protocol labels and control hello
   before accepting state.
 - Event-driven state sends plus 50 ms repetition; reliable control ping every
   few seconds, never a per-frame room-service heartbeat.
-- ICE restart within the same approved lease; new connection epoch invalidates
-  all old state packets.
+- ICE restart first reuses the existing approved peer. A terminal peer/channel
+  failure creates one fresh peer generation inside the same seat lease; a new
+  connection epoch publishes neutral and invalidates all old state packets.
 - Export structured close reason and local statistics without IP/SDP logging.
 
 **Gate:** loopback plus real Chromium peers; forced dropped/reordered state,
-control-channel close, ICE restart and signaling loss after connection.
+successful control ping/pong, liveness-watchdog expiry, control-channel close,
+same-peer ICE restart and signaling loss/recovery after connection.
 
 ### LC-08 — Browser host bridge into four real ports
 

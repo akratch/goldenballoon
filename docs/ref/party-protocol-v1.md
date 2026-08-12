@@ -22,6 +22,21 @@ the host accepts these packets.
   Stop enqueueing stale state when `bufferedAmount` exceeds the host-advertised
   ceiling. The receiver emits neutral after 250 ms without a valid packet.
 
+Signaling messages are transient and are never stored. The host creates the
+offer and tags every offer and ICE candidate with one positive, monotonically
+increasing `peerGeneration`; the controller echoes that exact generation in
+its answer and candidates. Each side ignores a message for any other generation.
+An ICE restart may reuse a live generation. Closing either DataChannel retires
+that generation and requires one newer offer, so delayed answers or candidates
+cannot revive an abandoned peer. Signaling-socket loss alone does not release
+input while both authenticated channels remain open.
+
+After the authenticated `controller_ready` hello, the host sends a bounded
+`{type:"ping", protocol:1, nonce:u32}` on the reliable channel every five
+seconds while no probe is outstanding. The controller echoes a bounded `pong`.
+Fifteen seconds without the matching pong is a direct-channel failure: publish
+neutral, retain the seat lease and recover through a fresh peer generation.
+
 ## Pad-state binary layout
 
 All multibyte integers are unsigned network byte order. The fixed packet is 24

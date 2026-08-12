@@ -255,7 +255,12 @@ struct Peer {
     unsigned seat = 0u;
     uint32_t leaseGeneration = 0u;
     uint32_t connectionSequence = 0u;
+    uint32_t peerGeneration = 0u;
     bool failed = false;
+    bool authenticated = false;
+    uint32_t pingNonce = 0u;
+    Clock::time_point nextPingAt{};
+    Clock::time_point pingOutstandingAt{};
     std::shared_ptr<rtc::PeerConnection> connection;
     std::shared_ptr<rtc::DataChannel> state;
     std::shared_ptr<rtc::DataChannel> control;
@@ -435,13 +440,41 @@ private:
 
     void tick() {
         bool reconnect = false;
+        std::vector<std::shared_ptr<Peer>> ping;
+        std::vector<std::shared_ptr<Peer>> expired;
+        const Clock::time_point now = Clock::now();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             reconnect = !shuttingDown_ && !socket_ && !credential_.empty() &&
-                reconnectAt_ != Clock::time_point{} && Clock::now() >= reconnectAt_;
+                reconnectAt_ != Clock::time_point{} && now >= reconnectAt_;
             if (reconnect) reconnectAt_ = Clock::time_point{};
+            for (const auto &entry : peers_) {
+                const std::shared_ptr<Peer> &peer = entry.second;
+                if (peer->failed || !peer->authenticated || !peer->control) continue;
+                if (peer->pingOutstandingAt != Clock::time_point{} &&
+                    now - peer->pingOutstandingAt >= std::chrono::seconds(15)) {
+                    expired.push_back(peer);
+                } else if (peer->pingOutstandingAt == Clock::time_point{} &&
+                           peer->nextPingAt != Clock::time_point{} &&
+                           now >= peer->nextPingAt) {
+                    peer->pingNonce++;
+                    peer->pingOutstandingAt = now;
+                    peer->nextPingAt = now + std::chrono::seconds(5);
+                    ping.push_back(peer);
+                }
+            }
         }
         if (reconnect) (void)connect(false);
+        for (const auto &peer : expired) peerDisconnected(peer, true);
+        for (const auto &peer : ping) {
+            try {
+                if (!peer->control->isOpen() || !peer->control->send(
+                        Json{{"type", "ping"}, {"protocol", kProtocol},
+                            {"nonce", peer->pingNonce}}.dump())) {
+                    peerDisconnected(peer, true);
+                }
+            } catch (...) { peerDisconnected(peer, true); }
+        }
     }
 
     void socketMessage(uint64_t generation, const rtc::message_variant &message) {
@@ -647,11 +680,14 @@ private:
     }
 
     void createPeer(const MdkrNativePartyController &controller) {
+        uint32_t peerGeneration = 0u;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = peers_.find(controller.id);
             if (found != peers_.end() && !found->second->failed) return;
             if (found != peers_.end()) peers_.erase(found);
+            peerGeneration = ++peerGeneration_;
+            if (peerGeneration == 0u) peerGeneration = ++peerGeneration_;
         }
         rtc::Configuration configuration;
         configuration.iceServers.emplace_back("stun:stun.cloudflare.com:3478");
@@ -661,20 +697,29 @@ private:
         peer->seat = controller.seat;
         peer->leaseGeneration = controller.leaseGeneration;
         peer->connectionSequence = controller.connectionSequence;
+        peer->peerGeneration = peerGeneration;
         try {
             peer->connection = std::make_shared<rtc::PeerConnection>(configuration);
         } catch (...) { return; }
         const std::weak_ptr<TransportState> weak = shared_from_this();
         const std::weak_ptr<Peer> weakPeer = peer;
-        peer->connection->onLocalDescription([weak, id = peer->id](rtc::Description description) {
-            if (auto state = weak.lock()) state->sendSignal(Json{{"type", "webrtc_offer"},
-                {"to", id}, {"sdp", {{"type", description.typeString()},
-                    {"sdp", std::string(description)}}}});
+        peer->connection->onLocalDescription([weak, weakPeer](rtc::Description description) {
+            if (auto state = weak.lock()) {
+                if (auto current = weakPeer.lock()) state->sendPeerSignal(current,
+                    Json{{"type", "webrtc_offer"}, {"to", current->id},
+                        {"peerGeneration", current->peerGeneration},
+                        {"sdp", {{"type", description.typeString()},
+                            {"sdp", std::string(description)}}}});
+            }
         });
-        peer->connection->onLocalCandidate([weak, id = peer->id](rtc::Candidate candidate) {
-            if (auto state = weak.lock()) state->sendSignal(Json{{"type", "webrtc_ice"},
-                {"to", id}, {"candidate", {{"candidate", std::string(candidate)},
-                    {"sdpMid", candidate.mid()}}}});
+        peer->connection->onLocalCandidate([weak, weakPeer](rtc::Candidate candidate) {
+            if (auto state = weak.lock()) {
+                if (auto current = weakPeer.lock()) state->sendPeerSignal(current,
+                    Json{{"type", "webrtc_ice"}, {"to", current->id},
+                        {"peerGeneration", current->peerGeneration},
+                        {"candidate", {{"candidate", std::string(candidate)},
+                            {"sdpMid", candidate.mid()}}}});
+            }
         });
         peer->connection->onStateChange([weak, weakPeer](rtc::PeerConnection::State state) {
             if (state == rtc::PeerConnection::State::Disconnected ||
@@ -702,6 +747,11 @@ private:
                 if (auto current = weakPeer.lock()) owner->stateMessage(current, message);
             }
         });
+        peer->state->onClosed([weak, weakPeer]() {
+            if (auto owner = weak.lock()) {
+                if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
+            }
+        });
         peer->control->onOpen([weak, weakPeer]() {
             if (auto owner = weak.lock()) {
                 if (auto current = weakPeer.lock()) owner->controlOpened(current);
@@ -712,6 +762,11 @@ private:
                 if (auto current = weakPeer.lock()) owner->controlMessage(current, message);
             }
         });
+        peer->control->onClosed([weak, weakPeer]() {
+            if (auto owner = weak.lock()) {
+                if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
+            }
+        });
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!shuttingDown_) peers_[peer->id] = peer;
@@ -719,16 +774,25 @@ private:
     }
 
     void peerDisconnected(const std::shared_ptr<Peer> &peer, bool failed) {
+        MdkrNativePartyController controller;
+        bool recover = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = peers_.find(peer->id);
             if (found == peers_.end() || found->second != peer) return;
             peer->failed = peer->failed || failed;
+            const auto known = controllers_.find(peer->id);
+            if (failed && known != controllers_.end() &&
+                known->second.phase != MdkrNativePartyControllerPhase::Pending) {
+                controller = known->second;
+                recover = true;
+            }
         }
         MdkrPartyTransportEvent event;
         event.type = MdkrPartyTransportEventType::ControllerDisconnected;
         event.controllerId = peer->id;
         enqueue(std::move(event));
+        if (recover) createPeer(controller);
     }
 
     void stateMessage(const std::shared_ptr<Peer> &peer,
@@ -772,19 +836,45 @@ private:
                 event.controllerId = peer->id;
                 event.haptics = haptics;
                 enqueue(std::move(event));
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    if (found != peers_.end() && found->second == peer) {
+                        peer->authenticated = true;
+                        peer->pingOutstandingAt = Clock::time_point{};
+                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                    }
+                }
                 peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
             } else if (value.value("type", std::string{}) == "input_test" &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
                 peer->control->send(Json{{"type", "input_test_ack"},
                     {"nonce", value["nonce"]}}.dump());
+            } else if (value.value("type", std::string{}) == "pong" &&
+                       value.value("protocol", 0u) == kProtocol &&
+                       value.contains("nonce") &&
+                       value["nonce"].is_number_unsigned()) {
+                const uint64_t nonce = value["nonce"].get<uint64_t>();
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = peers_.find(peer->id);
+                if (nonce <= std::numeric_limits<uint32_t>::max() &&
+                    found != peers_.end() && found->second == peer &&
+                    peer->pingOutstandingAt != Clock::time_point{} &&
+                    static_cast<uint32_t>(nonce) == peer->pingNonce) {
+                    peer->pingOutstandingAt = Clock::time_point{};
+                    peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                }
             }
         } catch (...) { /* Malformed peer control cannot escape its callback. */ }
     }
 
     void handleAnswer(const Json &value) {
         std::string id;
+        uint64_t peerGeneration = 0u;
         if (!safeString(value, "controllerId", id, 64u) ||
+            !uintValue(value, "peerGeneration", peerGeneration,
+                std::numeric_limits<uint32_t>::max()) || peerGeneration == 0u ||
             !value.contains("sdp") || !value["sdp"].is_object()) return;
         std::string sdp;
         std::string type;
@@ -794,7 +884,8 @@ private:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = peers_.find(id);
-            if (found == peers_.end()) return;
+            if (found == peers_.end() ||
+                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration)) return;
             peer = found->second;
         }
         try { peer->connection->setRemoteDescription(rtc::Description(sdp, type)); }
@@ -803,7 +894,10 @@ private:
 
     void handleIce(const Json &value) {
         std::string id;
+        uint64_t peerGeneration = 0u;
         if (!safeString(value, "controllerId", id, 64u) ||
+            !uintValue(value, "peerGeneration", peerGeneration,
+                std::numeric_limits<uint32_t>::max()) || peerGeneration == 0u ||
             !value.contains("candidate") || !value["candidate"].is_object()) return;
         std::string candidate;
         std::string mid;
@@ -813,14 +907,22 @@ private:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = peers_.find(id);
-            if (found == peers_.end()) return;
+            if (found == peers_.end() ||
+                found->second->peerGeneration != static_cast<uint32_t>(peerGeneration)) return;
             peer = found->second;
         }
         try { peer->connection->addRemoteCandidate(rtc::Candidate(candidate, mid)); }
         catch (...) { /* One malformed candidate cannot tear down a healthy peer. */ }
     }
 
-    void sendSignal(const Json &value) { (void)command(value); }
+    void sendPeerSignal(const std::shared_ptr<Peer> &peer, const Json &value) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = peers_.find(peer->id);
+            if (found == peers_.end() || found->second != peer || peer->failed) return;
+        }
+        (void)command(value);
+    }
 
     std::mutex mutex_;
     std::deque<MdkrPartyTransportEvent> events_;
@@ -837,6 +939,7 @@ private:
     unsigned inviteGeneration_ = 0u;
     uint64_t inviteExpiresAtMs_ = 0u;
     uint64_t generation_ = 0u;
+    uint32_t peerGeneration_ = 0u;
     unsigned reconnectAttempt_ = 0u;
     Clock::time_point reconnectAt_{};
     bool creating_ = false;
