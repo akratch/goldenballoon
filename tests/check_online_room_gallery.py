@@ -162,7 +162,6 @@ def render_case(binary: str, root: Path, case: Case, timeout: int) -> str:
     environment = os.environ.copy()
     environment.update({
         "MDKR_APP_SMOKE_FRAMES": "4",
-        "MDKR_ONLINE_ROOM_PREVIEW": "1",
         "MDKR_APP_SMOKE_SHOT": str(capture),
         "MDKR_APP_SMOKE_WINDOW_SIZE": "960x720",
         "MDKR_APP_PANEL": "Online Room",
