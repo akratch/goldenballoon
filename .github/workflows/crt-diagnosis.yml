@@ -1,0 +1,63 @@
+# CRT exclusive-open diagnosis (issue #32).
+#
+# The v1.2.1 Windows zip was built in the MSYS2 MINGW64 environment, whose
+# executables link the legacy msvcrt.dll. The qualified v1.2.0 zip linked the
+# UCRT (api-ms-win-crt-*). Every atomic settings write in this tree opens its
+# temp file with fopen mode "wbx"; C11 'x' is a UCRT feature on Windows.
+#
+# This lane runs the same fs_utf8 unit test — now extended with an exclusive
+# create ("wbx") block — on BOTH CRT flavors on a real windows-latest kernel.
+# Expected under the msvcrt hypothesis: MINGW64 arm FAILS at "exclusive create
+# succeeds on a fresh path"; UCRT64 arm passes. Diagnostic only; uploads
+# nothing.
+
+name: CRT exclusive-open diagnosis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crt-diagnosis:
+    name: fs_utf8 exclusive create (${{ matrix.msystem }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - msystem: MINGW64
+            prefix: mingw-w64-x86_64
+          - msystem: UCRT64
+            prefix: mingw-w64-ucrt-x86_64
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            ${{ matrix.prefix }}-gcc ${{ matrix.prefix }}-cmake
+            ${{ matrix.prefix }}-SDL2 ${{ matrix.prefix }}-pkg-config
+            ${{ matrix.prefix }}-ninja
+
+      - name: Build the fs_utf8 unit test
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target mdkr_fs_utf8_test -j
+
+      - name: Prove which CRT this environment links
+        run: |
+          objdump -p build/mdkr_fs_utf8_test.exe | grep -i "DLL Name" | sort -u
+          echo "--- msvcrt vs ucrt:"
+          objdump -p build/mdkr_fs_utf8_test.exe | grep -iE "msvcrt|api-ms-win-crt" | sort -u || true
+
+      - name: Run the exclusive-create test on this CRT
+        run: |
+          ./build/mdkr_fs_utf8_test.exe

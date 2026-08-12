@@ -132,6 +132,31 @@ int main(void) {
     if (file) fclose(file);
     expect(mdkr_remove_utf8(moved) == 0, "remove the Unicode file");
 
+    /* Exclusive create ("wbx") is the foundation of every atomic settings,
+     * preferences, and state write in the tree (app_config.cpp,
+     * video_config_runtime.c, user_paths.c, taj_mod_state_file.c). The C11
+     * 'x' flag is a UCRT feature on Windows: a toolchain that links the
+     * legacy msvcrt CRT rejects the whole mode string, which silently turns
+     * EVERY launcher save into a failure. This block must pass on the exact
+     * CRT the shipped executable links. */
+    errno = 0;
+    file = mdkr_fopen_utf8(path, "wbx");
+    expect(file != NULL, "exclusive create succeeds on a fresh path");
+    if (file) {
+        expect(fwrite("excl", 1, 4, file) == 4 && fclose(file) == 0,
+               "write and close the exclusively created file");
+    }
+    errno = 0;
+    expect(mdkr_fopen_utf8(path, "wbx") == NULL,
+           "exclusive create refuses an existing file");
+    file = mdkr_fopen_utf8(path, "rb");
+    memset(bytes, 0, sizeof(bytes));
+    expect(file != NULL && fread(bytes, 1, 4, file) == 4 &&
+               memcmp(bytes, "excl", 4) == 0,
+           "refused exclusive create leaves the original file intact");
+    if (file) fclose(file);
+    expect(mdkr_remove_utf8(path) == 0, "remove the exclusive-create file");
+
     while (depth > 0) {
         depth--;
         expect(mdkr_rmdir_utf8(directories[depth]) == 0,
