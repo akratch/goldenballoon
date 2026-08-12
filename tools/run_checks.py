@@ -599,6 +599,13 @@ CHECKS = (
           "engine-free phone controller approval, touch and reconnect UX"),
     Check("party_host", "check_party_host.py", "source",
           "launcher-owned QR pairing, approval, seats, expiry and mobile layout"),
+    # Provisionally registered by the release session so the manifest guard
+    # passes; descriptions taken from each script's own docstring. The online
+    # campaign owner should adjust role/description when this work lands.
+    Check("party_experience_canary_smoke",
+          "check_party_experience_canary_smoke.py", "source",
+          "operated canary and direct play smoke through local signaling "
+          "loss"),
     Check("browser_online_room", "check_browser_online_room.py", "source",
           "zero-I/O online gate, local-owner handoffs, focus and mobile reflow"),
     Check("browser_online_activation", "check_browser_online_activation.py", "source",
