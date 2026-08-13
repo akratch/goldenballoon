@@ -37,8 +37,18 @@ EXPECTED_WEATHER_ROWS = 813
 # bit positions (issue #24): the prior digest was captured with every line
 # particle on the wrong local axis. Reverting that one accessor reproduces the
 # old digest exactly, so the orientation restore is the whole delta.
+# Re-frozen 2026-08-13 for the release fixes ba28eae shipped without a
+# re-freeze (first-parent bisect: b66b1b1 reproduces the prior digest exactly,
+# ba28eae diverges; both endpoints from scratch builds). That integration
+# carries the door/tree unstick and the #30 audio-budget fixes -- intended,
+# release-noted simulation changes. The divergence begins at tick 7 of level
+# load, moves no v1/v2 field (positions, rotations, integrators, and the RNG
+# seed stream are bit-identical; both control arms still diverge as designed)
+# and lives entirely in v3's added authority fields, so RNG order -- the thing
+# this gate polices -- is untouched. Skip-render and 30/60 presentation
+# invariance were re-verified on the new stream before this digest was pinned.
 EXPECTED_ORIGINAL_SHA256 = (
-    "2269b7deeb8ca4102f9e23addc2fcbbeb127fe8a11e9b88aa3a6beea0431a732"
+    "253847b6b10ea7edcf695816159f636b74a799cbde76245774b955e91a525c3c"
 )
 # Positive control for the scheduler/fixture boundary.  Delaying every positive
 # input edge by one ticket used to be easy to do accidentally when the host
@@ -47,8 +57,10 @@ EXPECTED_ORIGINAL_SHA256 = (
 # broken direction so restoring the accepted oracle cannot be faked by updating
 # the expected digest to whichever route happened to run.
 EXPECTED_LATE_PHASE_WEATHER_ROWS = 812
+# Re-frozen alongside EXPECTED_ORIGINAL_SHA256 above: the same authored delta
+# moves this frozen broken direction too, and its row count still drops by one.
 EXPECTED_LATE_PHASE_SHA256 = (
-    "1772adde9e513bfaafc146a6e2133b8f24127d64fb6b864b33e2c98b17826b54"
+    "a9f8d537aa654275c1fe2d9c950b370c879752a04527e5762a9a1f7075c46a67"
 )
 
 
