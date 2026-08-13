@@ -344,8 +344,16 @@ def main() -> int:
             "generation !== controlGeneration" in controller_script and
             'phase === "waiting" ? "approval_rejected" : "seat_reclaimed"' in
             controller_script and
-            '["approval_rejected", "seat_reclaimed", "host_closed", "room_expired"]' in
-            controller_script and
+            # The terminal close-reason set is asserted by membership rather
+            # than as one literal array so a formatting change (line wrap) or a
+            # NEW terminal reason (duplicate_controller was added when the host
+            # began evicting a controller's stale socket on reconnect) does not
+            # break a code-shape pin — every required reason must still be
+            # present and gated by an `event.reason` membership test.
+            all(f'"{reason}"' in controller_script for reason in (
+                "approval_rejected", "seat_reclaimed", "host_closed",
+                "room_expired", "duplicate_controller")) and
+            ".includes(event.reason)" in controller_script and
             'referrerPolicy: "no-referrer"' in controller_script,
             "Phone Party finite-recovery or bounded-response contract is missing")
     print("web document structure passed")
