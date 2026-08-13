@@ -49,10 +49,11 @@ changes have to happen in the
 
 ## Requirements
 
-A WebGPU browser — Chrome or Edge 113+. There is no WebGL fallback; the page tells
-you up front rather than rendering black. Save backup, import, editing, and
-recovery remain available when WebGPU is missing; they do not load the game
-engine or require a ROM.
+A WebGPU browser. Chrome or Edge 113+ is the qualified path; a WebGPU-enabled
+Firefox or Safari is capability-detected and can also work. There is no WebGL
+fallback; the page tells you up front rather than rendering black. Save backup,
+import, editing, and recovery remain available when WebGPU is missing; they do
+not load the game engine or require a ROM.
 
 ## Legal
 

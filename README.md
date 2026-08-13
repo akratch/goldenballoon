@@ -124,11 +124,13 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 ./build/mdkr64 --rom /path/to/your.z64
 ```
 
-Prerequisites: CMake 3.16+, a C11 toolchain, SDL2, python3, and network access
-at configure time (the WebGPU runtime is fetched and hash-verified). Running
+Prerequisites: CMake 3.16+, a C11 toolchain, pkg-config, SDL2, python3, and
+network access at configure time (the WebGPU runtime is fetched and
+hash-verified). On macOS: `brew install cmake pkg-config sdl2`. Running
 `./build/mdkr64` with no arguments opens the launcher.
 
-Browser build (needs [emsdk](https://emscripten.org/docs/getting_started/downloads.html)):
+Browser build (needs [emsdk](https://emscripten.org/docs/getting_started/downloads.html)
+**4.0.10**, the version CI pins — `./emsdk install 4.0.10 && ./emsdk activate 4.0.10`):
 
 ```bash
 tools/web/build_web.sh
