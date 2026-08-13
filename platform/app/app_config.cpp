@@ -1,6 +1,7 @@
 // app_config.cpp — see app_config.h.
 #include "app_config.h"
 #include "fs_utf8.h"
+#include "user_paths.h"
 
 #include <SDL.h>
 
@@ -48,6 +49,15 @@ std::string prefsFilePath() {
     const char *dir = std::getenv("MDKR_APP_PREFS_DIR");
     if (dir != nullptr && dir[0] != '\0') {
         std::string base = dir;
+        if (base.back() != '/' && base.back() != '\\') base += '/';
+        return base + "mdkr64_app.ini";
+    }
+    // Portable mode (portable.txt beside the executable) or an activated
+    // write-fallback keeps the launcher's own preferences beside the game's
+    // config, sidestepping a home path the OS cannot represent (issue #33).
+    char relocation[4096];
+    if (mdkr_user_paths_relocation_base(relocation, sizeof(relocation))) {
+        std::string base = relocation;
         if (base.back() != '/' && base.back() != '\\') base += '/';
         return base + "mdkr64_app.ini";
     }
@@ -191,6 +201,62 @@ AppConfig::PersistResult saveValues(
     }
     return AppConfig::PersistResult::Durable;
 }
+
+// One locked read-modify-write against `path`. Caller holds g_saveMutex. When
+// `setKey` is non-null the pair is applied on top of the merged dirty keys,
+// serving setAndSave() without duplicating the transaction.
+AppConfig::PersistResult persistAtLocked(const std::string &path,
+                                         const std::string *setKey,
+                                         const std::string *setValue) {
+    const std::string lockPath = path + ".lock";
+    MdkrFileLock lock = {(intptr_t)-1};
+    if (mdkr_file_lock_acquire_utf8(lockPath.c_str(), &lock) != 0) {
+        SDL_Log("[app] preferences save failed: could not lock %s", path.c_str());
+        return AppConfig::PersistResult::Failed;
+    }
+    std::map<std::string, std::string> candidate;
+    const bool read = loadValues(path, candidate);
+    if (read) {
+        for (const std::string &key : g_dirtyKeys) {
+            const auto found = g_kv.find(key);
+            if (found != g_kv.end()) candidate[key] = found->second;
+            else candidate.erase(key);
+        }
+        if (setKey != nullptr) candidate[*setKey] = *setValue;
+    }
+    const AppConfig::PersistResult result =
+        read ? saveValues(path, candidate) : AppConfig::PersistResult::Failed;
+    if (AppConfig::persistResultApplied(result)) {
+        g_kv = candidate;
+        g_dirtyKeys.clear();
+    }
+    mdkr_file_lock_release(&lock);
+    return result;
+}
+
+// Persist with the issue #33 safety net: if the home-directory write fails and
+// no portable.txt is present, relocate next to the executable and retry once.
+// Caller holds g_saveMutex.
+AppConfig::PersistResult persistWithFallbackLocked(const std::string *setKey,
+                                                   const std::string *setValue) {
+    const std::string path = prefsFilePath();
+    if (path.empty()) {
+        SDL_Log("[app] preferences NOT saved: no writable pref path (SDL_GetPrefPath failed)");
+        return AppConfig::PersistResult::Failed;
+    }
+    AppConfig::PersistResult result = persistAtLocked(path, setKey, setValue);
+    if (result == AppConfig::PersistResult::Failed &&
+        mdkr_user_paths_activate_write_fallback()) {
+        const std::string relocated = prefsFilePath();
+        if (!relocated.empty() && relocated != path) {
+            SDL_Log("[app] the settings folder was not writable; saving "
+                    "preferences next to the game instead (%s)",
+                    relocated.c_str());
+            result = persistAtLocked(relocated, setKey, setValue);
+        }
+    }
+    return result;
+}
 }  // namespace
 
 namespace AppConfig {
@@ -223,35 +289,8 @@ void forceDirectorySyncFailureForTest(bool enabled) {
 // full disk mid-write can never truncate the existing prefs. A post-replace
 // directory-sync fault is deliberately reported as visible but unconfirmed.
 PersistResult save() {
-    std::string path = prefsFilePath();
-    if (path.empty()) {
-        SDL_Log("[app] preferences NOT saved: no writable pref path (SDL_GetPrefPath failed)");
-        return PersistResult::Failed;
-    }
     std::lock_guard<std::mutex> guard(g_saveMutex);
-    const std::string lockPath = path + ".lock";
-    MdkrFileLock lock = {(intptr_t)-1};
-    if (mdkr_file_lock_acquire_utf8(lockPath.c_str(), &lock) != 0) {
-        SDL_Log("[app] preferences save failed: could not lock %s", path.c_str());
-        return PersistResult::Failed;
-    }
-    std::map<std::string, std::string> candidate;
-    const bool read = loadValues(path, candidate);
-    if (read) {
-        for (const std::string &key : g_dirtyKeys) {
-            const auto found = g_kv.find(key);
-            if (found != g_kv.end()) candidate[key] = found->second;
-            else candidate.erase(key);
-        }
-    }
-    const PersistResult result = read ? saveValues(path, candidate)
-                                      : PersistResult::Failed;
-    if (persistResultApplied(result)) {
-        g_kv = candidate;
-        g_dirtyKeys.clear();
-    }
-    mdkr_file_lock_release(&lock);
-    return result;
+    return persistWithFallbackLocked(nullptr, nullptr);
 }
 
 std::string get(const std::string &key, const std::string &fallback) {
@@ -265,36 +304,8 @@ void set(const std::string &key, const std::string &value) {
 }
 
 PersistResult setAndSave(const std::string &key, const std::string &value) {
-    const std::string path = prefsFilePath();
-    if (path.empty()) {
-        SDL_Log("[app] preferences NOT saved: no writable pref path (SDL_GetPrefPath failed)");
-        return PersistResult::Failed;
-    }
     std::lock_guard<std::mutex> guard(g_saveMutex);
-    const std::string lockPath = path + ".lock";
-    MdkrFileLock lock = {(intptr_t)-1};
-    if (mdkr_file_lock_acquire_utf8(lockPath.c_str(), &lock) != 0) {
-        SDL_Log("[app] preferences save failed: could not lock %s", path.c_str());
-        return PersistResult::Failed;
-    }
-    std::map<std::string, std::string> candidate;
-    const bool read = loadValues(path, candidate);
-    if (read) {
-        for (const std::string &dirty : g_dirtyKeys) {
-            const auto found = g_kv.find(dirty);
-            if (found != g_kv.end()) candidate[dirty] = found->second;
-            else candidate.erase(dirty);
-        }
-        candidate[key] = value;
-    }
-    const PersistResult result = read ? saveValues(path, candidate)
-                                      : PersistResult::Failed;
-    if (persistResultApplied(result)) {
-        g_kv = candidate;
-        g_dirtyKeys.clear();
-    }
-    mdkr_file_lock_release(&lock);
-    return result;
+    return persistWithFallbackLocked(&key, &value);
 }
 
 }  // namespace AppConfig

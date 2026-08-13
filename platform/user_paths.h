@@ -29,6 +29,37 @@ int mdkr_user_paths_prepare_packaged_data(void);
 const char *mdkr_user_paths_last_error(void);
 
 int mdkr_user_paths_is_packaged(void);
+
+/* Portable mode: a file named `portable.txt` sits in the same directory as the
+ * running executable. Config (mdkr64.ini), save/, and mods/ then resolve next
+ * to the executable instead of the per-user home directory, sidestepping a home
+ * path the operating system cannot represent (e.g. a Windows account name with
+ * non-ASCII characters, issue #33). Detection is lazy and cross-platform: the
+ * first path query resolves it. Environment overrides still win over it. */
+int mdkr_user_paths_is_portable(void);
+
+/* Safety net for a first-run player whose per-user home directory cannot be
+ * written and who has not placed a portable.txt. A config/settings writer calls
+ * this after its normal write to the home directory has FAILED. It resolves the
+ * executable's own directory (the same location portable.txt selects) and, when
+ * one is available, activates it for every subsequent path query and returns 1.
+ * The caller should then re-resolve its paths and retry the write once. Returns
+ * 0 when no relocation is possible or already in effect (portable mode, or the
+ * executable directory could not be resolved), so the caller does not loop. */
+int mdkr_user_paths_activate_write_fallback(void);
+
+/* 1 once a settings write has been relocated next to the executable because the
+ * home directory was not writable (never for an explicit portable.txt). Drives
+ * the player-facing "settings were saved next to the game instead" notice. */
+int mdkr_user_paths_write_relocated(void);
+
+/* When config/save are being relocated next to the executable (portable.txt or
+ * an activated write fallback), copy that base directory into `output` and
+ * return 1; otherwise return 0. Lets the launcher keep its own preferences file
+ * (mdkr64_app.ini) beside the game's config rather than in the home directory
+ * the operating system could not represent. */
+int mdkr_user_paths_relocation_base(char *output, size_t output_size);
+
 int mdkr_user_video_config_path(char *output, size_t output_size);
 int mdkr_user_save_directory(char *output, size_t output_size);
 /* The content-pack root (`mods/`). Same policy as the save directory and for

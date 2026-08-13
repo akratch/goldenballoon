@@ -982,7 +982,7 @@ static MdkrVideoWriteResult mdkr_video_write_config_unlocked(
     return MDKR_VIDEO_WRITE_DURABLE;
 }
 
-static MdkrVideoWriteResult mdkr_video_write_config(
+static MdkrVideoWriteResult mdkr_video_write_config_attempt(
     const MdkrVideoConfig *config) {
     MdkrFileLock lock = {(intptr_t)-1};
     ConfigIniEntry fresh_entries[MDKR_VIDEO_INI_MAX];
@@ -1019,6 +1019,22 @@ static MdkrVideoWriteResult mdkr_video_write_config(
      * choices to disk, so it is the one that passes persist_launcher. */
     written = mdkr_video_write_config_unlocked(&merged, 1);
     mdkr_file_lock_release(&lock);
+    return written;
+}
+
+static MdkrVideoWriteResult mdkr_video_write_config(
+    const MdkrVideoConfig *config) {
+    MdkrVideoWriteResult written = mdkr_video_write_config_attempt(config);
+    /* Safety net for a player whose per-user home directory cannot be written
+     * (issue #33: a Windows account name the OS cannot encode) and who has not
+     * placed a portable.txt. Relocate the config next to the executable and try
+     * once more; the lock/temp/replace transaction re-resolves the path. */
+    if (written == MDKR_VIDEO_WRITE_FAILED &&
+        mdkr_user_paths_activate_write_fallback()) {
+        fprintf(stderr,
+                "[video] retrying the settings write next to the game\n");
+        written = mdkr_video_write_config_attempt(config);
+    }
     return written;
 }
 

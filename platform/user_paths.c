@@ -48,6 +48,21 @@ static char s_pref_dir[MDKR_USER_PATH_MAX] MDKR_PACKAGED_ONLY;
 static char s_launch_cwd[MDKR_USER_PATH_MAX];
 static char s_last_error[MDKR_USER_PATH_MAX + 512];
 
+/* Portable / write-fallback state (native only; emscripten keeps fixed paths).
+ *  - s_portable_resolved: the one-time lazy detection has run.
+ *  - s_exe_dir: the running executable's own directory, UTF-8-safe, or empty.
+ *  - s_portable: portable.txt sits beside the executable (explicit opt-in).
+ *  - s_fallback_active: a home-directory write failed and paths were relocated
+ *    next to the executable as a safety net.
+ *  - s_write_relocated: latch for the player-facing relocation notice. */
+#ifndef __EMSCRIPTEN__
+static int s_portable_resolved;
+static char s_exe_dir[MDKR_USER_PATH_MAX];
+static int s_portable;
+static int s_fallback_active;
+static int s_write_relocated;
+#endif
+
 static void set_last_error(const char *message, const char *path) {
     if (message == NULL) {
         s_last_error[0] = '\0';
@@ -734,6 +749,102 @@ static int MDKR_PACKAGED_ONLY migrate_save_directory(void) {
     return 1;
 }
 
+#ifndef __EMSCRIPTEN__
+/* Resolve and cache the running executable's own directory, UTF-8-safe on every
+ * platform. Returns 1 when s_exe_dir holds a usable directory. */
+static int resolve_executable_directory(void) {
+    char *executable = NULL;
+    int ok;
+    if (s_exe_dir[0] != '\0') {
+        return 1;
+    }
+    if (mdkr_running_executable_path_utf8(&executable) != 0 ||
+        executable == NULL) {
+        return 0;
+    }
+    ok = path_parent(s_exe_dir, sizeof(s_exe_dir), executable);
+    free(executable);
+    if (!ok) {
+        s_exe_dir[0] = '\0';
+    }
+    return ok;
+}
+
+/* Lazily decide whether portable.txt sits beside the executable. Runs once. */
+static void ensure_portable_resolved(void) {
+    char marker[MDKR_USER_PATH_MAX];
+    if (s_portable_resolved) {
+        return;
+    }
+    s_portable_resolved = 1;
+    if (resolve_executable_directory() &&
+        path_join(marker, sizeof(marker), s_exe_dir, "portable.txt") &&
+        path_is_regular(marker)) {
+        s_portable = 1;
+    }
+}
+
+/* When portable mode or the write-fallback is active, copy the executable-local
+ * base directory into `output` and return 1; otherwise return 0. */
+static int active_relocation_dir(char *output, size_t output_size) {
+    ensure_portable_resolved();
+    if ((s_portable || s_fallback_active) && s_exe_dir[0] != '\0') {
+        return path_copy(output, output_size, s_exe_dir);
+    }
+    return 0;
+}
+#endif
+
+int mdkr_user_paths_is_portable(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    ensure_portable_resolved();
+    return s_portable;
+#endif
+}
+
+int mdkr_user_paths_activate_write_fallback(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    ensure_portable_resolved();
+    /* An explicit portable.txt already writes next to the executable, and a
+     * second activation has nothing new to offer -- report no new location so
+     * the caller does not retry a write that will land in the same place. */
+    if (s_portable || s_fallback_active) {
+        return 0;
+    }
+    if (!resolve_executable_directory()) {
+        return 0;
+    }
+    s_fallback_active = 1;
+    s_write_relocated = 1;
+    fprintf(stderr,
+            "[paths] the per-user settings location was not writable; saving "
+            "next to the game instead: %s\n", s_exe_dir);
+    return 1;
+#endif
+}
+
+int mdkr_user_paths_write_relocated(void) {
+#ifdef __EMSCRIPTEN__
+    return 0;
+#else
+    return s_write_relocated;
+#endif
+}
+
+int mdkr_user_paths_relocation_base(char *output, size_t output_size) {
+#ifdef __EMSCRIPTEN__
+    (void)output;
+    (void)output_size;
+    return 0;
+#else
+    return active_relocation_dir(output, output_size);
+#endif
+}
+
 int mdkr_user_paths_init(const char *executable_path) {
 #ifdef __EMSCRIPTEN__
     (void)executable_path;
@@ -816,9 +927,13 @@ int mdkr_user_video_config_path(char *output, size_t output_size) {
 #ifdef __EMSCRIPTEN__
     return path_copy(output, output_size, "/save/mdkr64.ini");
 #else
+    char relocation[MDKR_USER_PATH_MAX];
     const char *override = getenv("MDKR_VIDEO_CONFIG_PATH");
     if (override != NULL && override[0] != '\0') {
         return path_copy(output, output_size, override);
+    }
+    if (active_relocation_dir(relocation, sizeof(relocation))) {
+        return path_join(output, output_size, relocation, "mdkr64.ini");
     }
     if (s_packaged) {
         return s_pref_ready &&
@@ -832,9 +947,13 @@ int mdkr_user_save_directory(char *output, size_t output_size) {
 #ifdef __EMSCRIPTEN__
     return path_copy(output, output_size, "/save");
 #else
+    char relocation[MDKR_USER_PATH_MAX];
     const char *override = getenv("MDKR_SAVE_DIR");
     if (override != NULL && override[0] != '\0') {
         return path_copy(output, output_size, override);
+    }
+    if (active_relocation_dir(relocation, sizeof(relocation))) {
+        return path_join(output, output_size, relocation, "save");
     }
     if (s_packaged) {
         return s_pref_ready && path_join(output, output_size, s_pref_dir, "save");
@@ -849,6 +968,10 @@ int mdkr_user_mods_directory(char *output, size_t output_size) {
      * the caller has one code path, and the scan finds nothing. */
     return path_copy(output, output_size, "/mods");
 #else
+    char relocation[MDKR_USER_PATH_MAX];
+    if (active_relocation_dir(relocation, sizeof(relocation))) {
+        return path_join(output, output_size, relocation, "mods");
+    }
     if (s_packaged) {
         return s_pref_ready && path_join(output, output_size, s_pref_dir, "mods");
     }
