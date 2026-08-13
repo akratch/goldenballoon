@@ -1062,6 +1062,53 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME native_party_bringup
         COMMAND mdkr_native_party_bringup_test)
 
+    # A party session must survive the desktop events that interrupt it. The
+    # packaged launcher cannot be driven with a live session from a test --
+    # UiLauncher owns the host and no launcher smoke seam reaches Phone Party --
+    # so these assert at the host + ingress level, driving the lifecycle each
+    # event actually produces rather than the window message that causes it.
+    add_executable(mdkr_party_session_lifecycle_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_session_lifecycle.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+    target_include_directories(mdkr_party_session_lifecycle_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_party_session_lifecycle_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_party_session_lifecycle_test PRIVATE
+        Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_party_session_lifecycle_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_party_session_lifecycle_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME party_session_lifecycle
+        COMMAND mdkr_party_session_lifecycle_test)
+
+    # Firewall-negative, native half: a refused connect, a refused WSS upgrade
+    # and a silent mid-session drop must all fail neutral, release seats rather
+    # than leave stale input, never self-retry, and say the shipped sentence.
+    add_executable(mdkr_party_firewall_negative_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_firewall_negative.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+    target_include_directories(mdkr_party_firewall_negative_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_party_firewall_negative_test PRIVATE
+        cxx_std_17)
+    target_link_libraries(mdkr_party_firewall_negative_test PRIVATE
+        Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_party_firewall_negative_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_party_firewall_negative_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME party_firewall_negative
+        COMMAND mdkr_party_firewall_negative_test)
+
     # Rollback primitives are kept ROM-, renderer- and window-free. Their
     # boundaries must stay cheap enough to run on every native presubmit.
     add_executable(mdkr_net_input_test

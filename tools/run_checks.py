@@ -692,6 +692,20 @@ CHECKS = (
           "packaged-artifact Phone Party host/transport linkage and compiled "
           "service origin, plus the validator's own rejection paths",
           args=("--self-test",)),
+    Check("binary_size_evidence", "check_binary_size_evidence.py", "source",
+          "recorded packaged-artifact sizes for every release lane against "
+          "generous checked-in ceilings, with skip-on-absent and a strict "
+          "CI-facing lane mode"),
+    Check("party_service_chaos", "check_party_service_chaos.py",
+          "browser_local",
+          "live-session restart lease rebind and epoch rotation, concurrent "
+          "abuse flood at zero admission cost, literal-zero kill switch, and "
+          "quota exhaustion as a paired phone sees it"),
+    Check("party_firewall_negative", "check_party_firewall_negative.py",
+          "browser_local",
+          "real Worker killed mid-session and rebound as a blackhole: bounded "
+          "reconnect stop, blocked room-open and blocked code entry land in "
+          "the shipped recovery copy, local play stays reachable"),
     Check("phone_party_webrtc", "check_phone_party_webrtc.py", "browser_local",
           "direct phone state/control channels, input-test RTT and wasm handoff queue"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
