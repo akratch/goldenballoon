@@ -955,6 +955,7 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/tests/test_app_config.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/app_config.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/app_config_escape.cpp
+                ${CMAKE_SOURCE_DIR}/platform/user_paths.c
                 ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
             target_include_directories(mdkr_app_config_test PRIVATE
                 ${CMAKE_SOURCE_DIR}/platform

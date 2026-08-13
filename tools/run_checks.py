@@ -292,6 +292,9 @@ CHECKS = (
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
           "and explicit session-only state"),
+    Check("portable_paths", "check_portable_paths.py", "native",
+          "portable.txt beside the executable relocates the settings write next "
+          "to the game instead of an un-encodable home path (issue #33)"),
     Check("collision_untextured", "check_collision_untextured.py", "native",
           "untextured terrain collision"),
     Check("runtime_safety", "check_runtime_safety.py", "native",

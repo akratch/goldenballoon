@@ -759,6 +759,19 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME user_paths_pref_failure
         COMMAND mdkr_user_paths_test --pref-fail)
 
+    # Issue #33: portable.txt marker + home-write fallback resolve config/save/
+    # mods next to the executable. Two processes because portable detection
+    # caches once per run; they share no on-disk state (see the test header).
+    add_executable(mdkr_portable_paths_test
+        ${CMAKE_SOURCE_DIR}/tests/test_portable_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/user_paths.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+    target_include_directories(mdkr_portable_paths_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/tests)
+    add_test(NAME portable_paths_marker COMMAND mdkr_portable_paths_test)
+    add_test(NAME portable_paths_fallback
+        COMMAND mdkr_portable_paths_test --fallback)
+
     add_executable(mdkr_fs_utf8_test
         ${CMAKE_SOURCE_DIR}/tests/test_fs_utf8.c
         ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
