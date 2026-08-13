@@ -381,7 +381,7 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
         } else {
             recordAction(action, true);
         }
-        Launcher_requestTab(state, kLauncherPanelGameRom,
+        Launcher_requestTab(state, kLauncherPanelPlay,
                             kLauncherTabPlayer);
         return;
     }
@@ -414,7 +414,7 @@ void handleAction(MdkrOnlineViewAction action, LauncherState &state) {
             const MdkrOnlineFakeStep step = dispatch(action);
             if (step.accepted) {
                 g_online.leaveRaceConfirm = false;
-                Launcher_requestTab(state, kLauncherPanelGameRom,
+                Launcher_requestTab(state, kLauncherPanelPlay,
                                     kLauncherTabPlayer);
             }
         }

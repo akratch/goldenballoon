@@ -6,10 +6,16 @@
 // DKR ADAPTATION: mgb64's launcher carries Launch (level/difficulty/players)
 // and Modes (engine toggle hatches) panels. Neither exists here — DKR's engine
 // exposes no level or difficulty CLI, and its presentation modes are already
-// first-class schema keys — so the panel set is ROM / Online Room / Settings /
-// Diagnostics / About rather than mgb64's six. Online Room is launcher-owned and stays
-// visibly gated until the multiplayer release decision; panels DKR has no
-// analogue for are absent, not present and inert.
+// first-class schema keys — so the panel set is Play / Online Room / Settings /
+// Diagnostics / About rather than mgb64's six. Panels DKR has no analogue for
+// are absent, not present and inert.
+//
+// Panel 0 is Play: the home, which carries the ROM onboarding as a STATE
+// rather than as a separate destination named after a file format. Online Room
+// is drawn only under MDKR_ONLINE_ROOM_PREVIEW=1 (see panelVisible in
+// ui_launcher.cpp) so a shipped build offers exactly what the release offers;
+// its INDEX is unconditional either way, because the constants below are a
+// public smoke contract.
 #ifndef MDKR64_UI_LAUNCHER_H
 #define MDKR64_UI_LAUNCHER_H
 
@@ -23,7 +29,7 @@
  * four bytes per unit. Keep a finite UI/input contract below that OS boundary.
  * The preference writer reserves enough escaped-line capacity for this value. */
 constexpr size_t kLauncherRomPathMaxBytes = 32767u * 4u;
-constexpr int kLauncherPanelGameRom = 0;
+constexpr int kLauncherPanelPlay = 0;
 constexpr int kLauncherPanelOnlineRoom = 1;
 constexpr int kLauncherPanelSettings = 2;
 constexpr int kLauncherPanelDiagnostics = 3;

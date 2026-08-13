@@ -196,7 +196,7 @@ void drawPending(MdkrNativePartyHost &host,
             }
             ImGui::EndCombo();
         }
-        ui::SpeakFocusedItem("Controller Slot", preview,
+        ui::SpeakFocusedItem("Controller slot", preview,
             "Choose which local controller slot this phone will use.");
         ui::TextSubtleWrapped(
             "The phone takes this numbered slot. Any keyboard, gamepad, or touch source there moves out of the way; other slots are unchanged.");
@@ -211,7 +211,7 @@ void drawPending(MdkrNativePartyHost &host,
             "Approve only when this phrase matches the phone exactly.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
-        ui::SpeakFocusedItem("Decline Phone", nullptr,
+        ui::SpeakFocusedItem("Decline", nullptr,
             "Removes this pending phone without assigning a controller slot.");
     }
     ui::CardEnd();
@@ -338,7 +338,7 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
     ui::Gap(ui::kGapL);
     ImGui::Separator();
     ui::Gap(ui::kGapM);
-    ui::SectionHeader("Play Together Here",
+    ui::SectionHeader("Play Together on This Screen",
         "Turn any phone into a private browser controller. Scan, compare the pairing phrase, approve a slot, and play on this screen.");
     drawFull(host, serviceOrigin);
 }

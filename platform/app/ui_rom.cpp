@@ -250,7 +250,10 @@ void drawDropZone(bool haveRom) {
 // The acquisition controls: native panel (where one exists), and a typed path.
 void drawAcquisition(LauncherState &s) {
     if (filedialog::isAvailable()) {
-        if (ImGui::Button("Choose ROM File…", ui::kBtnWide())) {
+        const bool browsePressed = ImGui::Button("Browse…", ui::kBtnWide());
+        ui::SpeakFocusedItem("Browse", nullptr,
+                             "Opens your system file picker to choose a ROM.");
+        if (browsePressed) {
             RomPanel_chooseRom(s);
         }
         ImGui::SameLine();
@@ -566,10 +569,19 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
     RomPanel_ensureInit(s);
     RomPanel_serviceValidation(s);
 
-    ui::SectionHeader("Game ROM",
-                      MDKR_BRAND_NAME " needs a copy of the original game that you "
-                      "supply and legally own. No game data is included, and "
-                      "nothing on your disk is searched.");
+    /* Panel 0 is the launcher's home. It carries the ROM flow as its FIRST-RUN
+     * STATE rather than as a destination named after a file format, so the
+     * heading names the state the player is actually in: choosing a game before
+     * they have one, and ready to play once they do. */
+    const bool headingReady = !s.romPath.empty() && s.romInfo.valid;
+    ui::SectionHeader(
+        headingReady ? "Ready to Play" : "Choose Your Game",
+        headingReady
+            ? "Press Play to start. Everything below is here if you want to "
+              "change what you play or who plays with you."
+            : MDKR_BRAND_NAME " needs a copy of the original game that you "
+              "supply and legally own. No game data is included, and "
+              "nothing on your disk is searched.");
 
     const bool haveRom = !s.romPath.empty();
     const bool ready   = haveRom && s.romInfo.valid;
@@ -589,7 +601,11 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                     static_cast<float>(s.romValidationTotal);
             ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f));
             ui::TextSubtleUnformattedWrapped(s.romValidationPath.c_str());
-            if (ImGui::Button("Cancel Check", ui::kBtnSecondary())) {
+            const bool cancelCheckPressed =
+                ImGui::Button("Cancel Check", ui::kBtnSecondary());
+            ui::SpeakFocusedItem("Cancel Check", nullptr,
+                                 "Stops checking this ROM.");
+            if (cancelCheckPressed) {
                 cancelValidation(s, /*clearUnusableSelection=*/true);
                 g_changing = false;
                 g_note = "ROM check cancelled.";
@@ -607,7 +623,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         if (ui::CardBegin("##romcard", border, 0.0f)) {
             ImGui::PushStyleColor(ImGuiCol_Text, border);
             ImGui::PushFont(AppTheme::fonts().title);
-            ImGui::TextUnformatted(ready ? "Ready to Play"
+            ImGui::TextUnformatted(ready ? "Your Game"
                                          : "This ROM Cannot Be Used");
             ImGui::PopFont();
             ImGui::PopStyleColor();
@@ -643,7 +659,13 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         if (!ready) {
             ui::Gap(ui::kGapS);
             ui::TextSubtle("Supported: %s", mdkr_supported_rom_list());
-            if (ImGui::Button("Forget Remembered ROM", ui::kBtnSecondary())) {
+            const bool forgetPressed =
+                ImGui::Button("Forget Remembered ROM", ui::kBtnSecondary());
+            ui::SpeakFocusedItem(
+                "Forget Remembered ROM", nullptr,
+                "Forgets the file path. The ROM itself and all saved progress "
+                "are left alone. Asks you to confirm first.");
+            if (forgetPressed) {
                 g_forgetError.clear();
                 ImGui::OpenPopup("Forget remembered ROM?");
             }
@@ -679,8 +701,15 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
 
     // ---- Changing or forgetting the remembered selection -----------------
     if (ready) {
-        if (ImGui::Button(g_changing ? "Cancel Change" : "Change ROM…",
-                          ui::kBtnSecondary())) {
+        const char *changeLabel = g_changing ? "Cancel Change" : "Change ROM…";
+        const bool changePressed =
+            ImGui::Button(changeLabel, ui::kBtnSecondary());
+        ui::SpeakFocusedItem(
+            changeLabel, nullptr,
+            g_changing ? "Keeps the game you already have."
+                       : "Lets you pick a different ROM. The one you have "
+                         "stays playable until a new one is checked.");
+        if (changePressed) {
             if (g_changing) {
                 cancelValidation(s, /*clearUnusableSelection=*/false);
                 g_changing = false;
@@ -698,7 +727,13 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                                                    ImGui::GetStyle().ItemSpacing.x) {
                 ImGui::SameLine();
             }
-            if (ImGui::Button("Forget Remembered ROM", ui::kBtnSecondary())) {
+            const bool forgetPressed =
+                ImGui::Button("Forget Remembered ROM", ui::kBtnSecondary());
+            ui::SpeakFocusedItem(
+                "Forget Remembered ROM", nullptr,
+                "Forgets the file path. The ROM itself and all saved progress "
+                "are left alone. Asks you to confirm first.");
+            if (forgetPressed) {
                 g_forgetError.clear();
                 ImGui::OpenPopup("Forget remembered ROM?");
             }
@@ -784,7 +819,11 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         ImGui::EndPopup();
     }
 
-    if (s.phoneParty != nullptr) {
+    /* Phone controllers are a sitting-down-to-play decision, so they belong to
+     * the ready state. Drawn unconditionally, this section offered a first-run
+     * player a way to invite friends to a game they do not have yet, directly
+     * underneath the drop zone they still had to use. */
+    if (s.phoneParty != nullptr && ready && !g_changing) {
         PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
     }
 }

@@ -55,7 +55,15 @@ void DiagPanel_draw(LauncherState &s, LauncherAction &out) {
     // which by then it is not. Three seconds is long enough to be seen and
     // short enough that it can only describe the press that produced it.
     static double copiedAt = -1.0;
-    if (ImGui::Button("Copy Log to Clipboard", ui::kBtnWide())) {
+    const bool copyPressed =
+        ImGui::Button("Copy Log to Clipboard", ui::kBtnWide());
+    // The panel's only control, and it was silent. A speech user pressing it
+    // otherwise gets a "Copied" confirmation they cannot see.
+    ui::SpeakFocusedItem(
+        "Copy Log to Clipboard", nullptr,
+        "Copies this session's engine output so you can paste it into a bug "
+        "report.");
+    if (copyPressed) {
         ImGui::SetClipboardText(n > 0 ? buf.data() : "(log is empty)");
         copiedAt = ImGui::GetTime();
     }
