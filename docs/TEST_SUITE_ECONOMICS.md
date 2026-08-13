@@ -902,8 +902,8 @@ pools everything except three disjoint serial classes:
   gates need a quiet machine"), so they serialize even though their *role*
   pools. This is the load-bearing distinction: a native/rom/release/asan role
   is a mix — `state_hash`, the `camera_*_runtime` SIMHASH gates, the audio,
-  save, input and rollback checks are deterministic functions of ROM+input and
-  pool safely, while `framed_world_views`, `world_shadows`, the `taj_*` pixel
+  save and input checks are deterministic functions of ROM+input and pool
+  safely, while `framed_world_views`, `world_shadows`, the `taj_*` pixel
   gates and the presentation-visual checks do not. The set is curated from a
   read of each script, and `validate_manifest()` re-derives the render-marker
   set from the sources and **fails closed** if a pooled engine check ever grows
@@ -911,6 +911,16 @@ pools everything except three disjoint serial classes:
   gate cannot silently rejoin the pool and reintroduce a flake.
 - **`SERIAL_NAMES`** — gates whose verdict is a wall-clock or host-load
   measurement (realtime pacing, adopted handoffs, replay-cost ceilings).
+  The 2026-08-13 qualification pass extended this set with the
+  nanosecond-budget family the first full pooled runs proved out: the
+  rollback track/item/vehicle matrices and ASAN rematch, the camera
+  obstruction performance gate, and the `rom_free_units` battery (its audio
+  sink contract stalls under pool pressure). Their *functional* halves are
+  deterministic and would pool fine; their p50/p95/p99 budget clauses are
+  host-load measurements, and every one of them failed pooled at `--jobs 6`
+  and `--jobs 3` on a quiet 14-core machine (the camera gate by 3.2% at
+  three workers after 3x over at six — pure pool pressure). Serial is where
+  a budget measurement is meaningful at all.
 
 The serial tail runs alone after the pool drains, so its measurements see a
 quiet host. `--jobs 1` is byte-for-byte the historical sequential runner. The
