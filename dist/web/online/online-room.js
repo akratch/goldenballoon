@@ -6,7 +6,13 @@
 "use strict";
 
 (() => {
-  const entryFragment = (() => {
+  // Parse and immediately erase a `#match=` capability from the URL. Shared by
+  // the initial load and the hashchange handler below so both entry routes obey
+  // the same erase-before-consulting-anything ordering: the secret is scrubbed
+  // before any launcher global, release policy, model, ROM state or network
+  // adapter is read. If the History API cannot erase it, navigate to a clean
+  // URL and abandon this handoff in the current task.
+  function readEntryFragment() {
     const raw = location.hash;
     const attempted = raw.startsWith("#match=");
     if (!attempted) return {attempted: false, capability: "", scrubbed: true};
@@ -14,16 +20,14 @@
     const candidate = [...fields].length === 1 ? fields.get("match") || "" : "";
     const exact = raw === `#match=${candidate}` &&
       /^[A-Za-z0-9_-]{43}$/.test(candidate);
-    // Erase before consulting any launcher globals, release policy, model, ROM
-    // state or network adapter. If the History API cannot erase the secret,
-    // navigate to a clean URL and abandon this handoff in the current task.
     try { history.replaceState(null, "", location.pathname + location.search); }
     catch (_) {
       location.replace(location.pathname + location.search);
       return {attempted: true, capability: "", scrubbed: false};
     }
     return {attempted: true, capability: exact ? candidate : "", scrubbed: true};
-  })();
+  }
+  const entryFragment = readEntryFragment();
   if (!entryFragment.scrubbed) return;
   const byId = (id) => document.getElementById(id);
   const ownScript = document.currentScript?.src || "";
@@ -1371,7 +1375,11 @@
     return true;
   }
 
-  if (entryFragment.attempted) {
+  // Present the fail-closed invite landing for whatever capability is currently
+  // held, then show the dialog in the same synchronous turn. A player who
+  // followed an invite link must see why it did not open a room — a disabled
+  // build, an invalid link or a ROM prompt — never a silently dismissed dialog.
+  function presentEntryLanding() {
     const policyEnabled = globalThis.__mdkrOnlineControlReleasePolicy?.enabled === true;
     if (!pendingEntryCapability) {
       gateTitle = "Check the Room Invitation";
@@ -1398,7 +1406,10 @@
       }, 10 * 60_000);
     }
     showReleaseGate();
+    if (!dialog.open) open();
   }
+
+  if (entryFragment.attempted) presentEntryLanding();
 
   const ready = initialLiveConfig ? configureLive(initialLiveConfig, true) :
     testConfig ? ensureModel() : Promise.resolve(false);
@@ -1459,11 +1470,20 @@
     },
     selectedIndex: () => testConfig ? selectedIndex : -1,
   });
-  // Open synchronously, in the same turn that showReleaseGate() set the
-  // fail-closed explanation above. A player who followed an invite link must
-  // see why it did not open a room — a disabled build, an invalid link or a
-  // ROM prompt — rather than a silently dismissed dialog. Deferring this to a
-  // rAF left an observable frame where the gate copy was set but the modal was
-  // still closed, which read as a dead end.
-  if (entryFragment.attempted && !dialog.open) open();
+  // A production invite link (tapped from Messages or email) is a fresh
+  // document load, so the initial read above handles it. But an invite that
+  // arrives as an in-document fragment change — an SPA-style navigation, or a
+  // link followed while this page is already open — does not re-run the module,
+  // so re-run the same fail-closed landing on hashchange. readEntryFragment()
+  // still scrubs the secret before anything else is consulted, and scrubbing
+  // via replaceState does not itself fire hashchange, so this cannot loop.
+  globalThis.addEventListener("hashchange", () => {
+    const fragment = readEntryFragment();
+    if (!fragment.scrubbed || !fragment.attempted) return;
+    pendingEntryCapability = fragment.capability;
+    pendingEntryExpiresAt = fragment.capability ? Date.now() + 10 * 60_000 : 0;
+    clearTimeout(pendingEntryTimer);
+    pendingEntryTimer = 0;
+    presentEntryLanding();
+  });
 })();

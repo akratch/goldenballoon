@@ -241,11 +241,14 @@ def main() -> int:
             room_entry and
             "sessionStorage" not in room_entry and
             "mdkr-online-room-entry-v1" not in online_script and
-            online_script.index("const entryFragment = (() =>") <
+            "function readEntryFragment()" in online_script and
+            online_script.index("const entryFragment = readEntryFragment()") <
             online_script.index("const byId = (id)") and
             'return {attempted: true, capability: "", scrubbed: false};' in
             online_script and
             "if (!entryFragment.scrubbed) return;" in online_script and
+            'addEventListener("hashchange"' in online_script and
+            "const fragment = readEntryFragment();" in online_script and
             "pendingEntryCapability" in online_script and
             "Private Rooms Aren’t Enabled in This Build" in online_script and
             "if(TARGET mdkr_online_lobby_browser_wasm_test)" in cmake_tests and

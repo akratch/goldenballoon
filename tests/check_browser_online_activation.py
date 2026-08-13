@@ -130,7 +130,8 @@ def source_contract() -> None:
             "live snapshot atomicity, stale-action, phase or invite handling is incomplete")
     room_entry = (ROOT / "dist/web/room/room-entry.js").read_text(
         encoding="utf-8")
-    require(browser_room.index("const entryFragment = (() =>") <
+    require("function readEntryFragment()" in browser_room and
+            browser_room.index("const entryFragment = readEntryFragment()") <
             browser_room.index("const byId = (id)") and
             'location.replace(location.pathname + location.search);\n' in
             browser_room and
@@ -145,6 +146,19 @@ def source_contract() -> None:
             room_entry and
             "location.replace(`../#match=${capability}`)" in room_entry,
             "fragment-only private-room handoff or disabled-build custody regressed")
+    # An invite can also arrive as an in-document fragment change while the
+    # launcher is already open. The same fail-closed landing must re-run on
+    # hashchange, and it must go back through readEntryFragment() so the secret
+    # is scrubbed before any policy, model, ROM or network state is consulted.
+    hashchange_at = browser_room.find('addEventListener("hashchange"')
+    require(hashchange_at != -1 and
+            "function presentEntryLanding()" in browser_room and
+            "const fragment = readEntryFragment();" in
+            browser_room[hashchange_at:] and
+            "if (!fragment.scrubbed || !fragment.attempted) return;" in
+            browser_room[hashchange_at:] and
+            "presentEntryLanding();" in browser_room[hashchange_at:],
+            "in-document invite arrival does not re-run the scrubbed landing")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -180,21 +194,50 @@ def run(args: argparse.Namespace) -> None:
                     "published default did not remain a lazy disabled gate")
 
             secret = "A" * 43
-            cdp.call("Page.navigate", {"url": server.origin + "/#match=" + secret})
-            disabled_invite = wait_value(cdp, """(() => ({
+            invite_snapshot = """(() => ({
               ready:document.readyState==='complete' && Boolean(globalThis.MDKROnlineRoom),
               title:document.getElementById('online-room-title')?.textContent,
               open:document.getElementById('online-room-dialog')?.open,
               hash:location.hash,
               staged:sessionStorage.getItem('mdkr-online-room-entry-v1'),
               api:performance.getEntriesByType('resource').some(entry=>
-                new URL(entry.name).pathname.startsWith('/api/'))}))()""",
-                lambda value: isinstance(value, dict) and value.get("ready") and
-                    value.get("title") == "Private Rooms Aren’t Enabled in This Build",
-                "disabled-build invite custody", args.timeout)
-            require(disabled_invite["open"] and disabled_invite["hash"] == "" and
-                    disabled_invite["staged"] is None and not disabled_invite["api"],
-                    f"disabled build retained or used invite authority: {disabled_invite}")
+                new URL(entry.name).pathname.startsWith('/api/'))}))()"""
+
+            def assert_disabled_invite(arrival: str) -> None:
+                landed = wait_value(cdp, invite_snapshot,
+                    lambda value: isinstance(value, dict) and value.get("ready") and
+                        value.get("title") == "Private Rooms Aren’t Enabled in This Build",
+                    f"disabled-build invite custody ({arrival})", args.timeout)
+                require(landed["open"] and landed["hash"] == "" and
+                        landed["staged"] is None and not landed["api"],
+                        f"disabled build retained or used invite authority "
+                        f"({arrival}): {landed}")
+
+            # A real invite link tapped from Messages or email is a fresh
+            # document load. Force one (about:blank first) so this navigation
+            # cannot be optimized into a same-document poke that never re-runs
+            # the module — that would test nothing about the production path.
+            cdp.call("Page.navigate", {"url": "about:blank"})
+            cdp.call("Page.navigate", {"url": server.origin + "/#match=" + secret})
+            assert_disabled_invite("fresh load")
+
+            # An invite that arrives while the launcher is already open is an
+            # in-document fragment change. Establish a verified-clean baseline
+            # first (a fresh load with no fragment: no gate title, dialog shut),
+            # so the assertion after the fragment poke proves the hashchange
+            # handler did the work rather than reading the fresh-load leftover.
+            cdp.call("Page.navigate", {"url": "about:blank"})
+            cdp.call("Page.navigate", {"url": server.origin + "/"})
+            baseline = wait_value(cdp, invite_snapshot,
+                lambda value: isinstance(value, dict) and value.get("ready"),
+                "launcher clean baseline", args.timeout)
+            require(not baseline["open"] and
+                    baseline["title"] != "Private Rooms Aren’t Enabled in This Build",
+                    f"clean baseline already showed an invite gate: {baseline}")
+            # Same path, fragment added: a same-document navigation that fires
+            # hashchange without reloading the module.
+            cdp.call("Page.navigate", {"url": server.origin + "/#match=" + secret})
+            assert_disabled_invite("in-document fragment")
 
             result = cdp.evaluate("""(async()=>{
               const originalFetch=globalThis.fetch.bind(globalThis);
