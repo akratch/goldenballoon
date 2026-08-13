@@ -146,10 +146,26 @@ static void vehicle_audio_trace(Object_Racer *racer, VehicleSoundData *soundData
             soundData->engineIdleSoundHandle != NULL);
 }
 
+/* Latched once: this is called every tick for every Terry in plane mode, and getenv() is not a
+ * per-tick operation. Matches terry_visual.c's own trace gate. */
+static s32 terry_audio_trace_enabled(void) {
+    static s32 cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("MDKR_TERRY_AUDIO_TRACE");
+        cached = value != NULL && value[0] != '\0' && value[0] != '0';
+    }
+    return cached;
+}
+
 /* Terry's plane is his body, not a hidden mechanical vehicle.  Keep this
  * decision at the sound-player seam: physics still updates the donor plane's
  * VehicleSoundData, while only its continuous engine voices are withheld.
  * One-shot collision, weapon, boost and world sounds use separate paths. */
+/* vehicleIDPrev, not vehicleID: the continuous engine voices this suppresses were selected by
+ * mdkr_vehicle_sound_model(gSoundRacerObj->vehicleIDPrev) below, so the suppression has to be keyed
+ * on the same field that chose the handles. update_vehicle_particles() deliberately keys its Terry
+ * filter on vehicleID instead, because there it is filtering the retail `switch (vehicleId)`
+ * emitter dispatch. Each consumer matches the state it acts on; they are not interchangeable. */
 static s32 terry_flight_suppresses_engine(const Object_Racer *racer) {
     return racer != NULL && racer->vehicleIDPrev == VEHICLE_PLANE &&
            mod_racer_physics_identity(racer) == MOD_RACER_TERRY;
@@ -161,7 +177,6 @@ static void terry_flight_stop_engine(VehicleSoundData *soundData,
     s32 hadMain;
     s32 hadIdle;
     s32 i;
-    const char *trace;
 
     if (soundData == NULL) {
         return;
@@ -181,8 +196,7 @@ static void terry_flight_stop_engine(VehicleSoundData *soundData,
     soundData->backgroundVolume = 0;
     soundData->backgroundState = VEHICLE_BACKGROUND_STOPPED;
 
-    trace = getenv("MDKR_TERRY_AUDIO_TRACE");
-    if (trace != NULL && trace[0] != '\0' && trace[0] != '0' &&
+    if (terry_audio_trace_enabled() &&
         ((sampleCounter++ & 31u) == 0 || hadMain || hadIdle)) {
         fprintf(stderr,
                 "[TERRYAUDIO] event=engine_suppressed racer=%d vehicle=%d "

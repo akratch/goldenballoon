@@ -915,7 +915,13 @@ void update_vehicle_particles(Object *racerObj, s32 updateRate) {
     /* Terry's wings are the propulsion system. The Krunch plane donor still
      * authors paired wing-line emitters (ordinary 3/4, boosted 7/8); filter
      * those presentation bits at the spawn boundary without mutating racer
-     * state or suppressing unrelated collision/surface particles. */
+     * state or suppressing unrelated collision/surface particles.
+     *
+     * vehicleID, not vehicleIDPrev: this filters the retail `switch (vehicleId)` emitter dispatch
+     * below, so it must key on the same field that dispatch reads. audio_vehicle.c and the visual
+     * modules deliberately key on vehicleIDPrev instead, because the sound handles and the loaded
+     * donor model set are both selected by THAT field. Each consumer matches the state it acts on;
+     * they are not interchangeable. */
     if (vehicleId == VEHICLE_PLANE &&
         mod_racer_physics_identity(racer) == MOD_RACER_TERRY) {
         static s32 sTerryWingTrailsTraced;
