@@ -95,20 +95,27 @@ void setStatus(const char *text, const ImVec4 &color) {
  * A caller that gets `true` back owes an ImGui::Unindent(ui::kGapM); the indent
  * is what gives the gameplay rule in SettingLabel somewhere to live.
  */
+// Reset each frame by Settings_draw. The leading gap below separates one group
+// from the PREVIOUS one, so the first group on the page has nothing to be
+// separated from -- and spending it there simply stacked on the page title's
+// own trailing gap, leaving a band of empty panel above the first header that
+// read as a rendering fault rather than as breathing room.
+int g_sectionsDrawn = 0;
+
 bool drawSettingsSectionHeader(const char *label, const char *subtitle,
                                ImGuiTreeNodeFlags flags, bool compact) {
     // Groups need air between them, and the gap belongs to the header rather
     // than to each body's exit path: a body that forgets it leaves one seam on
     // the page tighter than every other, which is exactly how a settings list
     // starts looking like a debug dump.
-    ui::Gap(ui::kGapM);
+    if (g_sectionsDrawn++ > 0) ui::Gap(ui::kGapM);
     // These rows are independent expandable sections, not mutually exclusive
     // tabs. Keep resting and hover surfaces neutral; the chevron and a gold
     // leading rule communicate the open state without making every open
     // section look like another selected destination.
-    ImGui::PushStyleColor(ImGuiCol_Header, AppTheme::hex(0x212127));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, AppTheme::hex(0x2C2C33));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, AppTheme::hex(0x37373F));
+    ImGui::PushStyleColor(ImGuiCol_Header, AppTheme::groupHeader());
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, AppTheme::groupHeaderHover());
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, AppTheme::groupHeaderActive());
     // The scripted accessibility walk cannot reach a row inside a collapsed
     // section, because a collapsed section does not draw one.
     if (AppUi_a11yWalkArmed()) flags |= ImGuiTreeNodeFlags_DefaultOpen;
@@ -708,6 +715,36 @@ constexpr const char *kEnhancementLooksNote =
 // Composed once per key; drawn every frame.
 std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_enhancementHelp;
 
+/*
+ * WHEN a setting takes effect, said on every row that has room to say it.
+ *
+ * The page had three timings and only spelled two of them. A RESTART key gets
+ * the gold "Next launch" chip, a LEVEL key gets the grey "Next race" chip, and
+ * a LIVE key got NOTHING -- so "this applies immediately" was communicated by
+ * the absence of a marker, which is not communication. Eighteen of the visible
+ * rows were in that silent majority.
+ *
+ * The two scoped cases keep their chip and are left alone here: a chip on the
+ * label line plus a sentence under it would be the same fact twice. Only LIVE
+ * gains a sentence, and it is generated from the schema scope rather than
+ * written per row, so a key added tomorrow cannot be the one that forgets.
+ */
+std::array<std::string, MDKR_VIDEO_KEY_COUNT> g_rowDescription;
+
+const char *describeRow(MdkrVideoKey key, const MdkrVideoSchema *schema,
+                        const char *base) {
+    if (schema->scope == MDKR_VIDEO_SCOPE_RESTART ||
+        schema->scope == MDKR_VIDEO_SCOPE_LEVEL) {
+        return base;   // the chip on the label line already said it
+    }
+    std::string &text = g_rowDescription[static_cast<size_t>(key)];
+    if (!text.empty()) return text.c_str();
+    text = base != nullptr ? base : "";
+    if (!text.empty()) text += ' ';
+    text += "Applies straight away.";
+    return text.c_str();
+}
+
 const char *enhancementHelp(MdkrVideoKey key,
                             const MdkrEnhancement *enhancement,
                             const MdkrVideoSchema *schema) {
@@ -803,8 +840,9 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     const char *rowLabel = copy != nullptr ? copy->label : s->label;
     const char *description =
         copy != nullptr ? copy->description : helpFor(k, s);
+    const bool describable = !compact && !controllerBinding;
     ui::SettingLabel(rowLabel,
-                     (compact || controllerBinding) ? nullptr : description,
+                     describable ? describeRow(k, s, description) : nullptr,
                      rowStyle);
 
     ImGui::SetNextItemWidth(ui::kControlWidth());
@@ -1107,29 +1145,58 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
     return changed;
 }
 
-// --- Presentation pace: one control over Frame limit + Motion smoothing ----
+// --- Frame rate: ONE control over Frame limit + Motion smoothing + tearing --
 //
-// WHY THIS IS SUGAR AND NOT A SETTING. The two keys below it stay the source of
-// truth: this writes them and reads them back, and holds no state of its own
-// between frames. So a player who sets them individually sees whichever quick
-// choice their pair spells, a config file written by hand behaves identically,
-// and every gate that drives Video.FrameLimit keeps testing the same thing.
-// The alternative -- a third persisted key that the other two had to be kept in
-// sync with -- has a wrong answer available at every layer, and this one does
-// not.
+// WHY THIS IS ONE CONTROL NOW. The page used to offer the same setting twice:
+// a "Presentation pace" quick choice with two radios, and, a few rows below it
+// behind a "Set the rate yourself" disclosure, the two combos that quick choice
+// writes. Both were always on screen, both always live, and a player who
+// changed one watched the other move on its own with nothing saying why.
 //
-// WHY RADIO BUTTONS AND NOT A COMBO. Two named choices plus a state the control
-// cannot produce. A combo would have to either hide Custom, which makes the
-// panel claim a pace the player is not on, or offer it, which invites selecting
-// a value that means nothing to write. Radios show all three honestly: two
-// pressable, and Custom as a plain statement when neither is filled.
+// So the presets and the individual rows became one control. Off Custom the
+// individual rows are NOT DRAWN -- the page offers one way to set the frame
+// rate, not two -- and Custom is a real, pressable third choice that reveals
+// them. A line under the choices names the two values the selected preset
+// writes, so a preset is never a black box.
+//
+// WHY THIS IS STILL SUGAR AND NOT A SETTING. The two keys below stay the source
+// of truth: this writes them and reads them back and holds no persisted state
+// of its own. A player who edits the config file by hand behaves identically,
+// and every gate that drives Video.FrameLimit keeps testing the same thing. A
+// third persisted key that the other two had to be kept in sync with has a
+// wrong answer available at every layer, and this does not.
+//
+// WHY Custom IS STICKY. It is revealed state, not a value: pressing it writes
+// nothing, because there is nothing honest to write. Without the latch, a
+// player who entered Custom and then tuned their way into a pair that happens
+// to spell "Smooth" would have the controls they were using vanish from under
+// their hands. The latch clears only when they press Original or Smooth.
 struct PaceChoice { MdkrPresentationPace pace; const char *label; };
 const PaceChoice kPaceChoices[] = {
     {MDKR_PRESENTATION_PACE_ORIGINAL, "Original"},
     {MDKR_PRESENTATION_PACE_SMOOTH,   "Smooth"},
 };
 
-bool drawPresentationPace(bool compact) {
+bool g_frameRateCustomRevealed = false;
+
+// What the selected choice actually does, named in the player's words rather
+// than left for them to discover by watching two other controls move.
+const char *paceSummary(MdkrPresentationPace pace) {
+    switch (pace) {
+        case MDKR_PRESENTATION_PACE_ORIGINAL:
+            return "Original draws each picture the game makes, once, and "
+                   "nothing in between. Frame limit: Original. Motion "
+                   "smoothing: Off.";
+        case MDKR_PRESENTATION_PACE_SMOOTH:
+            return "Smooth follows your display and fills in the pictures "
+                   "between the game's own. Frame limit: Match Display. "
+                   "Motion smoothing: Interpolated.";
+        default:
+            return "Set Frame limit and Motion smoothing yourself below.";
+    }
+}
+
+bool drawFrameRate(SDL_Window *window, bool compact, bool selectingFrameLimit) {
     const MdkrVideoConfig *config = mdkr_video_config_desired();
     const MdkrVideoSchema *frameSchema =
         mdkr_video_schema(MDKR_VIDEO_FRAME_LIMIT);
@@ -1141,28 +1208,33 @@ bool drawPresentationPace(bool compact) {
         mdkr_video_config_runtime_locked(MDKR_VIDEO_FRAME_LIMIT) != 0 ||
         mdkr_video_config_runtime_locked(MDKR_VIDEO_MOTION_SMOOTHING) != 0;
     const MdkrPresentationPace current = mdkr_video_presentation_pace(config);
+    // A pair no preset names, or a scripted gate about to click the individual
+    // combo, both mean the same thing: the individual rows have to be reachable.
+    if (current == MDKR_PRESENTATION_PACE_CUSTOM || selectingFrameLimit) {
+        g_frameRateCustomRevealed = true;
+    }
     bool changed = false;
 
     ImGui::PushID("presentation-pace");
     if (locked) ImGui::BeginDisabled();
     ui::RowStyle paceStyle;
     paceStyle.tooltip = compact ? nullptr :
-        "Smooth makes motion read as more continuous. The in-between pictures "
-        "are invented, so fast-moving edges can show artefacts. Race speed, "
-        "timers, music and saves are identical either way. This writes Frame "
-        "limit and Motion smoothing together and takes effect straight away.";
+        "The in-between pictures Smooth draws are invented, so fast-moving "
+        "edges can show artefacts in them. Race speed, timers, music and saves "
+        "are identical either way.";
     ui::SettingLabel(
-        "Presentation pace",
+        "Frame rate",
         compact ? nullptr
-                : "Original shows only the pictures the game draws. Smooth "
-                  "follows your display and fills in the ones between.",
+                : "How often the app draws to your screen. It never changes "
+                  "how fast the game runs. Applies straight away.",
         paceStyle);
 
     for (int i = 0; i < static_cast<int>(std::size(kPaceChoices)); ++i) {
         const PaceChoice &choice = kPaceChoices[i];
         if (i > 0) ImGui::SameLine(0.0f, ui::kGapM);
-        const bool pressed =
-            ImGui::RadioButton(choice.label, current == choice.pace);
+        const bool selected =
+            !g_frameRateCustomRevealed && current == choice.pace;
+        const bool pressed = ImGui::RadioButton(choice.label, selected);
         const int slot = static_cast<int>(choice.pace);
         g_paceRectMin[slot] = ImGui::GetItemRectMin();
         g_paceRectMax[slot] = ImGui::GetItemRectMax();
@@ -1182,14 +1254,24 @@ bool drawPresentationPace(bool compact) {
             g_edits[static_cast<size_t>(MDKR_VIDEO_FRAME_LIMIT)] = EditState{};
             g_edits[static_cast<size_t>(MDKR_VIDEO_MOTION_SMOOTHING)] =
                 EditState{};
+            g_frameRateCustomRevealed = false;
             changed = true;
         }
     }
+    ImGui::SameLine(0.0f, ui::kGapM);
+    if (ImGui::RadioButton("Custom", g_frameRateCustomRevealed)) {
+        // Reveal only. There is no honest pair to write for "Custom", and
+        // writing one would silently move the player off the values they came
+        // here to keep.
+        g_frameRateCustomRevealed = true;
+    }
 
-    if (current == MDKR_PRESENTATION_PACE_CUSTOM) {
-        ui::TextSubtleWrapped(
-            "Custom — Frame limit and Motion smoothing are set individually "
-            "below.");
+    if (!compact) {
+        ImGui::PushFont(AppTheme::fonts().small);
+        ui::TextSubtleUnformattedWrapped(paceSummary(
+            g_frameRateCustomRevealed ? MDKR_PRESENTATION_PACE_CUSTOM
+                                      : current));
+        ImGui::PopFont();
     }
     if (locked) {
         ImGui::EndDisabled();
@@ -1217,6 +1299,17 @@ bool drawPresentationPace(bool compact) {
     }
     ui::Gap(ui::kGapS);
     ImGui::PopID();
+
+    // The individual rows, drawn ONLY on Custom. This is what makes the merge
+    // real rather than cosmetic: off Custom they are not on the page at all, so
+    // there is exactly one control for the frame rate.
+    if (g_frameRateCustomRevealed) {
+        ImGui::Indent(ui::kGapM);
+        changed |= drawKey(window, MDKR_VIDEO_FRAME_LIMIT, compact);
+        changed |= drawKey(window, MDKR_VIDEO_MOTION_SMOOTHING, compact);
+        changed |= drawKey(window, MDKR_VIDEO_ALLOW_TEARING, compact);
+        ImGui::Unindent(ui::kGapM);
+    }
     return changed;
 }
 
@@ -1337,10 +1430,9 @@ bool resetEnhancements() {
         g_edits[static_cast<size_t>(changes[static_cast<size_t>(i)].key)] =
             EditState{};
     }
-    setStatus("Enhancements are back to the way the game shipped. Your "
-              "picture, sound, controller and content-pack settings were left "
-              "as they were.",
-              AppTheme::good());
+    // Scope is stated under the button, where it can be read BEFORE the press.
+    // Repeating it here made one sentence appear twice on one page.
+    setStatus("Extras are back to the way the game shipped.", AppTheme::good());
     return true;
 }
 
@@ -1393,7 +1485,7 @@ bool drawEnhancementsSection(SDL_Window *window, bool compact,
         }
     }
     ui::Gap(ui::kGapS);
-    if (ImGui::Button("Reset enhancements", ui::kBtnWide())) {
+    if (ImGui::Button("Reset extras", ui::kBtnWide())) {
         changed |= resetEnhancements();
     }
     if (!compact) {
@@ -1554,13 +1646,8 @@ bool drawUiScale(bool compact) {
 bool drawAccessibilitySection(SDL_Window *window, bool compact,
                               bool webGpuRenderer, bool legacyStretchActive) {
     bool changed = false;
-    ui::Gap(ui::kGapS);
-    if (!compact) {
-        ui::TextSubtleWrapped(
-            "How the game presents itself to you: how big it reads, how much "
-            "the camera moves, and whether it speaks. None of these changes "
-            "how the game plays.");
-    }
+    /* No introduction here either: the group header says it, and said it
+     * better. */
     ui::Gap(ui::kGapS);
     ImGui::Indent(ui::kGapM);
     if (AppUi_shellPreferenceSection(AppUiShellPreference::UiScale) ==
@@ -1660,9 +1747,9 @@ bool drawContentSection(SDL_Window *window, bool compact,
     ui::Gap(ui::kGapS);
     if (!compact) {
         ui::TextSubtleWrapped(
-            "A content pack replaces some of the game's artwork with a pack "
-            "author's own. Put the pack's folder in the mods folder beside "
-            "your saves; everything found there is listed below.");
+            "Put a pack's folder in the mods folder beside your saves. "
+            "Everything found there is listed below, installed or skipped "
+            "with the reason.");
     }
     ui::Gap(ui::kGapS);
     ImGui::Indent(ui::kGapM);
@@ -1903,6 +1990,7 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     g_frameLimitRectValid = false;
     g_frameLimitRetryRectValid = false;
     g_uiScaleRectValid = false;
+    g_sectionsDrawn = 0;
     for (bool &paceValid : g_paceRectValid) paceValid = false;
     MdkrVideoRuntimeResult windowResult = MDKR_VIDEO_RUNTIME_INVALID;
     bool windowResultFresh = false;
@@ -2022,15 +2110,45 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         ui::Gap(ui::kGapM);
     }
 
-    // --- Picture ------------------------------------------------------------
+    /*
+     * NINE GROUPS, NAMED FOR WHAT A PLAYER CAME TO DO.
+     *
+     * There were eleven, and they answered three different questions. Picture,
+     * Sound and Camera named a SUBSYSTEM. Accessibility and Gameplay named a
+     * player CONCERN. App window named neither -- it was a lid over the window
+     * mode, the update check and the developer-tools switch, which have nothing
+     * to do with each other or with a window. Camera held exactly one row.
+     *
+     * Six of the eleven opened expanded, so the first screen was a wall rather
+     * than a menu. Two open by default now -- Display, because it is what most
+     * players came for, and Accessibility, because someone who needs it needs
+     * it before they can use anything below it.
+     *
+     * See docs/architecture/launcher-design.md for the full mapping. The safety
+     * net at the bottom is unchanged and still catches any visible key no group
+     * claims, so regrouping cannot silently lose a setting.
+     */
+    const ImGuiTreeNodeFlags openUnlessScripted =
+        flagsFor(!controllerSettingsSmoke && !draggingUiScale);
+
+    // --- Display ------------------------------------------------------------
     if (drawSettingsSectionHeader(
-            "Picture",
+            "Display",
             "Restored is the recommended default: widescreen and sharper "
             "output, with the original art direction untouched.",
-            flagsFor(!controllerSettingsSmoke && !selectingFrameLimit &&
-                     !draggingUiScale),
-            compact)) {
+            openUnlessScripted, compact)) {
         row(MDKR_VIDEO_MODE);
+        // The preset's third state, said out loud. A default session reads
+        // "Custom (Individual Settings)" -- a value that is not in the control's
+        // own list -- and the page used to leave the player to work out why.
+        const MdkrVideoValue *mode = desired(MDKR_VIDEO_MODE);
+        if (mode != nullptr && std::strcmp(mode->text, "custom") == 0 &&
+            !compact) {
+            ui::TextSubtleWrapped(
+                "Custom means your Graphics settings below no longer match any "
+                "of the three presets. Choosing one here sets them all again.");
+            ui::Gap(ui::kGapS);
+        }
         if (webGpuRenderer) {
             ui::TextSubtle("Graphics backend: WebGPU (recommended)");
             ui::Gap(ui::kGapS);
@@ -2045,119 +2163,61 @@ bool Settings_draw(SDL_Window *window, bool compact) {
             ui::CardEnd();
             ui::Gap(ui::kGapS);
         }
+
+        const bool pacingVisible = visible(MDKR_VIDEO_FRAME_LIMIT) &&
+                                   visible(MDKR_VIDEO_MOTION_SMOOTHING);
+        if (pacingVisible) {
+            changed |= drawFrameRate(window, compact, selectingFrameLimit);
+            // drawFrameRate owns these three rows, so it owns claiming them:
+            // the safety net below asks "did any group draw this key", and a
+            // key drawn by a dedicated control is drawn.
+            for (MdkrVideoKey key : {MDKR_VIDEO_FRAME_LIMIT,
+                                     MDKR_VIDEO_MOTION_SMOOTHING,
+                                     MDKR_VIDEO_ALLOW_TEARING}) {
+                drawnKey[static_cast<size_t>(key)] = true;
+            }
+            if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+                static bool tracedFrameRateControls = false;
+                if (!tracedFrameRateControls) {
+                    std::fprintf(
+                        stderr,
+                        "[app-ui] frame-rate-controls visible=1 "
+                        "gameplay-accuracy-separated=1\n");
+                    tracedFrameRateControls = true;
+                }
+            }
+        }
+
+        // The Camera group held this one row and nothing else. It changes what
+        // you see and not how the game plays, so it belongs here; Camera shake
+        // is an access need first and the routing policy keeps it under
+        // Accessibility.
+        row(MDKR_VIDEO_CAMERA_OBSTRUCTION);
         row(MDKR_VIDEO_GAMEPLAY_FOV);
         row(MDKR_VIDEO_ASPECT);
+        row(MDKR_WINDOW_MODE);
         row(MDKR_VIDEO_WIDESCREEN);
         ImGui::Unindent(ui::kGapM);
     }
 
-    // --- Accessibility ------------------------------------------------------
-    // Second on the page: a player who needs it needs it before they can use
-    // anything below it. Rows come from the routing policy, so an
-    // accessibility key added tomorrow is drawn -- and voiced -- here.
+    // --- Graphics -----------------------------------------------------------
     if (drawSettingsSectionHeader(
-            "Accessibility",
-            "How the game reads and speaks. None of these change how it "
-            "plays.",
-            flagsFor(draggingUiScale ||
-                     (!controllerSettingsSmoke && !selectingFrameLimit)),
-            compact)) {
-        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
-        changed |= drawAccessibilitySection(window, compact, webGpuRenderer,
-                                            legacyStretchActive);
-    }
-
-    // --- Frame rate ---------------------------------------------------------
-    const bool pacingVisible =
-        visible(MDKR_VIDEO_FRAME_LIMIT) && visible(MDKR_VIDEO_MOTION_SMOOTHING);
-    if (drawSettingsSectionHeader(
-            "Frame rate",
-            "How often the picture updates. The game itself always runs at "
-            "its original speed.",
-            flagsFor(!controllerSettingsSmoke && !draggingUiScale), compact)) {
-        if (pacingVisible) {
-            // Above the two rows it writes, because it is the answer for most
-            // players and the individual controls are the way to leave it, not
-            // the way to reach it.
-            changed |= drawPresentationPace(compact);
-        }
-        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
-            static bool tracedFrameRateControls = false;
-            if (!tracedFrameRateControls) {
-                std::fprintf(
-                    stderr,
-                    "[app-ui] frame-rate-controls visible=1 "
-                    "gameplay-accuracy-separated=1\n");
-                tracedFrameRateControls = true;
-            }
-        }
-        // Open when a scripted gate is about to click one of these, and open
-        // when the two keys already spell a pair no quick choice names: the
-        // controls that produced that state are the only way out of it.
-        const MdkrVideoConfig *paceConfig = mdkr_video_config_desired();
-        const bool customPace =
-            paceConfig != nullptr &&
-            mdkr_video_presentation_pace(paceConfig) ==
-                MDKR_PRESENTATION_PACE_CUSTOM;
-        if (ImGui::TreeNodeEx(
-                "Set the rate yourself",
-                ImGuiTreeNodeFlags_SpanAvailWidth |
-                    flagsFor(selectingFrameLimit || customPace))) {
-            row(MDKR_VIDEO_FRAME_LIMIT);
-            row(MDKR_VIDEO_MOTION_SMOOTHING);
-            row(MDKR_VIDEO_ALLOW_TEARING);
-            ImGui::TreePop();
-        }
-        ImGui::Unindent(ui::kGapM);
-    }
-
-    // --- Gameplay -----------------------------------------------------------
-    if (drawSettingsSectionHeader(
-            "Gameplay",
-            "The only settings on this page that change how the game plays.",
-            flagsFor(!controllerSettingsSmoke && !selectingFrameLimit &&
-                     !draggingUiScale),
-            compact)) {
-        if (visible(MDKR_VIDEO_SIMULATION_CADENCE) && !compact) {
-            const MdkrVideoValue *cadence =
-                desired(MDKR_VIDEO_SIMULATION_CADENCE);
-            const bool enhanced =
-                cadence != nullptr &&
-                std::strcmp(cadence->text, "enhanced") == 0;
-            ui::CautionBox(
-                enhanced ? "Enhanced is on — experimental, and races run off pace"
-                         : "Enhanced is experimental and changes how the game plays",
-                "Enhanced runs DKR's logic at 60 Hz instead of the 30 Hz it "
-                "was written for. The boss rematches are winnable, but they "
-                "still finish measurably off the pace the game intends, "
-                "because the original physics is written around the 30 Hz "
-                "step rather than derived from it. Original is exact — "
-                "bit for bit the game as it shipped. Frame rate above gives "
-                "you a smooth 60 FPS picture without changing the game at "
-                "all, and is the recommended way to get one.");
-            ui::Gap(ui::kGapS);
-        }
-        row(MDKR_VIDEO_SIMULATION_CADENCE);
-        row(MDKR_VIDEO_MENU_LANGUAGES);
-        ImGui::Unindent(ui::kGapM);
-    }
-
-    // --- Camera -------------------------------------------------------------
-    if (drawSettingsSectionHeader(
-            "Camera",
-            "Where the camera sits and how much it moves. The view only — "
-            "handling, results, ghosts and saves are identical.",
+            "Graphics",
+            "Image quality only. None of these change the art direction.",
             flagsFor(false), compact)) {
-        row(MDKR_VIDEO_CAMERA_OBSTRUCTION);
-        // Camera shake (MDKR_VIDEO_CAMERA_COMFORT) is an access need first and
-        // a camera setting second; the routing policy places it under
-        // Accessibility above.
+        row(MDKR_VIDEO_RENDER_SCALE);
+        row(MDKR_VIDEO_MSAA);
+        row(MDKR_VIDEO_ANISOTROPY);
+        row(MDKR_VIDEO_MIPMAPS);
+        row(MDKR_VIDEO_HIRES_TEXT);
+        row(MDKR_VIDEO_WORLD_SHADOWS);
+        row(MDKR_VIDEO_REMASTER_FX);
         ImGui::Unindent(ui::kGapM);
     }
 
-    // --- Sound --------------------------------------------------------------
+    // --- Audio --------------------------------------------------------------
     if (drawSettingsSectionHeader(
-            "Sound", "Applies as you drag, and is remembered.",
+            "Audio", "Volume levels, remembered as you set them.",
             flagsFor(false), compact)) {
         row(MDKR_AUDIO_MASTER_VOLUME);
         row(MDKR_AUDIO_MUSIC_VOLUME);
@@ -2165,12 +2225,12 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         ImGui::Unindent(ui::kGapM);
     }
 
-    // --- Controller ---------------------------------------------------------
+    // --- Controls -----------------------------------------------------------
     if (g_controllerSectionRequested) {
         ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     }
     if (drawSettingsSectionHeader(
-            "Controller",
+            "Controls",
             "Rumble, and which N64 button each control presses. The left "
             "stick is always steering.",
             flagsFor(controllerSettingsSmoke), compact)) {
@@ -2210,83 +2270,59 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     }
     g_controllerSectionRequested = false;
 
-    // --- Advanced graphics --------------------------------------------------
+    // --- Accessibility ------------------------------------------------------
+    // Open by default: a player who needs it needs it before they can use
+    // anything else on the page. Rows come from the routing policy, so an
+    // accessibility key added tomorrow is drawn -- and voiced -- here.
     if (drawSettingsSectionHeader(
-            "Advanced graphics",
-            "Image quality only. None of these change the art direction.",
+            "Accessibility",
+            "How the game reads and speaks. None of these change how it "
+            "plays.",
+            flagsFor(draggingUiScale ||
+                     (!controllerSettingsSmoke && !selectingFrameLimit)),
+            compact)) {
+        ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
+        changed |= drawAccessibilitySection(window, compact, webGpuRenderer,
+                                            legacyStretchActive);
+    }
+
+    // --- Gameplay -----------------------------------------------------------
+    if (drawSettingsSectionHeader(
+            "Gameplay",
+            "The only settings on this page that change how the game plays.",
             flagsFor(false), compact)) {
-        row(MDKR_VIDEO_RENDER_SCALE);
-        row(MDKR_VIDEO_MSAA);
-        row(MDKR_VIDEO_ANISOTROPY);
-        row(MDKR_VIDEO_MIPMAPS);
-        row(MDKR_VIDEO_HIRES_TEXT);
-        row(MDKR_VIDEO_WORLD_SHADOWS);
-        row(MDKR_VIDEO_REMASTER_FX);
-        ImGui::Unindent(ui::kGapM);
-    }
-
-    // --- App window ---------------------------------------------------------
-    // Last by position and open by default: a player rarely comes here for it,
-    // but UI scale is the one control someone on a handheld needs to find
-    // before they can read anything else on the page.
-    const ImGuiTreeNodeFlags interfaceFlags =
-        flagsFor(draggingUiScale ||
-                 (!controllerSettingsSmoke && !selectingFrameLimit));
-    if (drawSettingsSectionHeader(
-            "App window",
-            "Size and scale of the launcher and the game window.",
-            interfaceFlags, compact)) {
-        row(MDKR_WINDOW_MODE);
-        // Interface scale lives under Accessibility (see
-        // AppUi_shellPreferenceSection); it is the one control a player may
-        // need before they can read this page.
-        //
-        // Every other Interface-category schema key, so a key like Check for
-        // updates or Developer tools cannot end up with a schema row, an
-        // environment variable and no control anywhere in the product.
-        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-            if (key == MDKR_WINDOW_MODE) continue;  // drawn at the top
-            const MdkrVideoSchema *schema = mdkr_video_schema(key);
-            if (schema == nullptr ||
-                schema->category != MDKR_VIDEO_CAT_INTERFACE) continue;
-            row(key);
+        if (visible(MDKR_VIDEO_SIMULATION_CADENCE) && !compact) {
+            const MdkrVideoValue *cadence =
+                desired(MDKR_VIDEO_SIMULATION_CADENCE);
+            const bool enhanced =
+                cadence != nullptr &&
+                std::strcmp(cadence->text, "enhanced") == 0;
+            ui::CautionBox(
+                enhanced ? "Enhanced is on — experimental, and races run off pace"
+                         : "Enhanced is experimental and changes how the game plays",
+                "Enhanced runs DKR's logic at 60 Hz instead of the 30 Hz it "
+                "was written for. The boss rematches are winnable, but they "
+                "still finish measurably off the pace the game intends, "
+                "because the original physics is written around the 30 Hz "
+                "step rather than derived from it. Original is exact — "
+                "bit for bit the game as it shipped. Frame rate under Display "
+                "gives you a smooth 60 FPS picture without changing the game "
+                "at all, and is the recommended way to get one.");
+            ui::Gap(ui::kGapS);
         }
-        ui::Gap(ui::kGapS);
-        ImGui::Unindent(ui::kGapM);
-    }
-
-    // --- Safety net ---------------------------------------------------------
-    // Nothing reaches this in the shipped schema. It exists so that adding a
-    // key without giving it a home above costs a slightly untidy page rather
-    // than a setting the player can never see.
-    int unclaimed = 0;
-    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-        if (drawnKey[i] || !visible(key)) continue;
-        if (AppUi_settingsSection(key) != AppUiSettingsSection::Category)
-            continue;  // owned by a dedicated section above
-        ++unclaimed;
-    }
-    if (unclaimed > 0 &&
-        drawSettingsSectionHeader("Other settings", nullptr,
-                                  ImGuiTreeNodeFlags_None, compact)) {
-        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
-            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
-            if (drawnKey[i]) continue;
-            row(key);
-        }
+        row(MDKR_VIDEO_SIMULATION_CADENCE);
+        row(MDKR_VIDEO_MENU_LANGUAGES);
         ImGui::Unindent(ui::kGapM);
     }
 
     // Two sections that are not a schema category. Both gather keys the
     // categories would otherwise scatter -- see AppUi_settingsSection -- and
-    // both add something no generated row can: the enhancements get one action
-    // that resets them and nothing else, and the content packs get the list of
-    // what the scan actually found.
+    // both add something no generated row can: the extras get one action that
+    // resets them and nothing else, and the content packs get the list of what
+    // the scan actually found.
     if (drawSettingsSectionHeader(
-            "Enhancements",
-            "Extras you opt into. Each one says whether it changes how the "
+            "Extras",
+            "Things you opt into. Each one says whether it changes how the "
             "game plays.",
             ImGuiTreeNodeFlags_None, compact)) {
         ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
@@ -2306,13 +2342,43 @@ bool Settings_draw(SDL_Window *window, bool compact) {
     const bool anyPacks = mdkr_mod_registry_count(packs) > 0 ||
                           mdkr_mod_registry_skipped(packs) > 0;
     if (drawSettingsSectionHeader(
-            "Content",
+            "Content packs",
             "Packs that replace artwork or music, from the mods folder.",
             anyPacks ? ImGuiTreeNodeFlags_DefaultOpen
                      : ImGuiTreeNodeFlags_None,
             compact)) {
         ImGui::Unindent(ui::kGapM);  // the section helper manages its own indent
         changed |= drawContentSection(window, compact, packs, disabledList);
+    }
+
+    // --- Advanced -----------------------------------------------------------
+    // What "App window" used to hold once the window mode moved to Display: the
+    // update check and the developer-tools switch, which are diagnostic rather
+    // than about a window. The catch-all loop comes with them, so a key like a
+    // future Interface option still cannot end up with a schema row, an
+    // environment variable, and no control anywhere in the product. The
+    // unclaimed-key safety net is folded in here too, so the page has one
+    // last-resort home rather than two.
+    int unclaimed = 0;
+    for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+        const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+        if (drawnKey[i] || !visible(key)) continue;
+        if (AppUi_settingsSection(key) != AppUiSettingsSection::Category)
+            continue;  // owned by a dedicated section above
+        if (mdkr_video_schema(key) == nullptr) continue;
+        ++unclaimed;
+    }
+    if (unclaimed > 0 && drawSettingsSectionHeader(
+            "Advanced",
+            "Updates, developer tools, and anything without a home above.",
+            flagsFor(false), compact)) {
+        for (int i = 0; i < MDKR_VIDEO_KEY_COUNT; ++i) {
+            const MdkrVideoKey key = static_cast<MdkrVideoKey>(i);
+            if (drawnKey[i]) continue;
+            row(key);
+        }
+        ui::Gap(ui::kGapS);
+        ImGui::Unindent(ui::kGapM);
     }
 
     if (controllerSettingsSmoke) {
@@ -2329,16 +2395,10 @@ bool Settings_draw(SDL_Window *window, bool compact) {
         }
     }
 
-    if (Settings_restartPending()) {
-        ui::Gap(ui::kGapS);
-        ImGui::Separator();
-        ui::Gap(ui::kGapS);
-        ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-        ImGui::TextWrapped(compact
-            ? "Saved. Restart & Apply below starts the game with them now."
-            : "Saved. They start with your next Play.");
-        ImGui::PopStyleColor();
-    }
+    /* No third "your changes are staged" line here. The card at the top of the
+     * page names the action, and each staged row already says what will run
+     * next and what is running now; a footer repeating it made one fact appear
+     * three times on one page. */
 
     if (!g_status.empty()) {
         ui::Gap(ui::kGapS);
