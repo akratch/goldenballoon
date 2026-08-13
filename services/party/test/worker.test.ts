@@ -7,6 +7,10 @@ import {LIMITS, type Env} from "../src/types";
 const origin = "https://party.example.invalid";
 const hostPublicKey = "H".repeat(87);
 const controllerPublicKey = "C".repeat(87);
+const compatibility = {protocolVersion: 1,
+  buildId: Array.from({length: 16}, (_, index) => index + 1),
+  gameplayDigest: Array.from({length: 32}, (_, index) => 128 + index),
+  romRevision: 1, cadenceHz: 30};
 
 async function post(path: string, value?: unknown, headers?: HeadersInit) {
   const requestHeaders = new Headers(headers);
@@ -81,6 +85,20 @@ async function admittedControlUnits(): Promise<number> {
     admitted: {controlUnits: number};
   };
   return value.admitted.controlUnits;
+}
+
+async function admittedUnits(): Promise<{pairing: number; control: number}> {
+  const bindings = env as unknown as Env;
+  const day = new Date().toISOString().slice(0, 10);
+  const response = await bindings.PARTY_BUDGETS.get(
+    bindings.PARTY_BUDGETS.idFromName(day)).fetch("https://budget/status", {
+      headers: {[INTERNAL_API_HEADER]: "1"},
+    });
+  const value = await response.json() as {
+    admitted: {pairingUnits: number; controlUnits: number};
+  };
+  return {pairing: value.admitted.pairingUnits,
+    control: value.admitted.controlUnits};
 }
 
 describe("Party Worker local workerd adapter", () => {
@@ -547,6 +565,84 @@ describe("Party Worker local workerd adapter", () => {
     expect(lateRotate.status).toBe(409);
     expect(await lateRotate.json()).toEqual({error: "invalid_state"});
   });
+
+  /* A flood of unparseable, wrongly shaped or unauthenticated POSTs must not be
+   * able to spend the day's global admission reserve. The reserve is charged at
+   * exactly one point: after shape validation and, where the route has one,
+   * after the bound credential has been verified. */
+  it("charges the daily reserve only for validated, authenticated work", async () => {
+    const createdRoom = await post("/api/party/create", {hostPublicKey});
+    expect(createdRoom.status).toBe(201);
+    const room = await createdRoom.json() as Record<string, string>;
+    const createdMatch = await post("/api/match/create", {compatibility, seatCount: 1});
+    expect(createdMatch.status).toBe(201);
+    const match = await createdMatch.json() as Record<string, string>;
+    const hostAuth = {authorization: `Bearer ${room.hostCredential}`};
+    const matchAuth = {authorization: `Bearer ${match.credential}`};
+
+    /* Every entry is refused before it can become billable work: no body at
+     * all, truncated JSON, valid JSON of the wrong shape, an unknown field, a
+     * missing bearer, or a real credential carrying a malformed body. */
+    const refusedShapes: Array<() => Promise<Response>> = [
+      () => SELF.fetch("https://party.test/api/match/create",
+        {method: "POST", headers: {origin}}),
+      () => SELF.fetch("https://party.test/api/controller/redeem", {method: "POST",
+        headers: {origin, "content-type": "application/json"}, body: "{"}),
+      () => post("/api/match/create", {}),
+      () => post("/api/match/create", {compatibility, seatCount: 99}),
+      () => post("/api/match/join", {}),
+      () => post("/api/match/join",
+        {capability: "not-a-capability", compatibility, seatCount: 1}),
+      () => post("/api/match/code", {code: "abc", compatibility, seatCount: 1}),
+      () => post("/api/controller/redeem", {}),
+      () => post("/api/controller/redeem",
+        {capability: "x".repeat(43), protocol: 1, controllerPublicKey: "short"}),
+      () => post("/api/controller/code", {code: "12", protocol: 1, controllerPublicKey}),
+      () => post(`/api/match/${match.roomId}/state`, {}),
+      () => post(`/api/party/${room.roomId}/revoke`, {}),
+      () => post(`/api/match/${match.roomId}/state`, {diagnostics: true}, matchAuth),
+      () => post(`/api/match/${match.roomId}/rotate`, {diagnostics: true}, matchAuth),
+      () => post(`/api/party/${room.roomId}/approve`, {diagnostics: true}, hostAuth),
+      () => post(`/api/party/${room.roomId}/rotate`, {expectedInviteGeneration: 0},
+        hostAuth),
+    ];
+
+    const before = await admittedUnits();
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 64; attempt++) {
+      const response = await refusedShapes[attempt % refusedShapes.length]!();
+      statuses.push(response.status);
+      await response.body?.cancel();
+    }
+    expect(statuses).toHaveLength(64);
+    expect(statuses.filter(status => status >= 400 && status < 500)).toHaveLength(64);
+    expect(await admittedUnits()).toEqual(before);
+
+    // Legitimate admitted work still accounts exactly as it did before.
+    const legitimate = await post("/api/match/create", {compatibility, seatCount: 1});
+    expect(legitimate.status).toBe(201);
+    const host = await legitimate.json() as Record<string, string>;
+    const capability = new URL(host.inviteUrl!).hash.slice("#match=".length);
+    expect((await post("/api/match/join",
+      {capability, compatibility, seatCount: 1})).status).toBe(201);
+    expect((await post(`/api/match/${host.roomId}/state`, {},
+      {authorization: `Bearer ${host.credential}`})).status).toBe(200);
+    const afterLegitimate = await admittedUnits();
+    expect(afterLegitimate.pairing - before.pairing).toBe(12);
+    expect(afterLegitimate.control - before.control).toBe(2);
+
+    /* Design decision: a request that is well formed AND authenticated but then
+     * refused for capacity or state reasons still charges. It has already
+     * consumed the room fanout it is billed for, and refunding it would give a
+     * credential holder an unlimited free-work oracle. */
+    const staleRotate = await post(`/api/match/${host.roomId}/rotate`,
+      {expectedInviteGeneration: 99}, {authorization: `Bearer ${host.credential}`});
+    expect(staleRotate.status).toBe(409);
+    expect(await staleRotate.json()).toEqual({error: "invalid_state"});
+    const afterRefusal = await admittedUnits();
+    expect(afterRefusal.control - afterLegitimate.control).toBe(10);
+    expect(afterRefusal.pairing).toBe(afterLegitimate.pairing);
+  }, 15_000);
 
   it("rate-limits fallback guessing per pseudonymous requester", async () => {
     for (let attempt = 0; attempt < 12; attempt++) {

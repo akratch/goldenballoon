@@ -43,6 +43,27 @@ function exactKeysWithOptionalName(value: Record<string, unknown>,
   return exactKeys(value, required) || exactKeys(value, [...required, "name"]);
 }
 
+/**
+ * Charge the day's admission reserve for one external operation.
+ *
+ * Ordering contract, enforced by every call site below: a route charges only
+ * after the request has proven it is well formed and — where the route has one
+ * — has presented a valid bound credential. An unparseable, over-size,
+ * unknown-field or unauthenticated request must cost zero units, so a flood of
+ * empty POSTs can no longer spend the global reserve and fail the service
+ * closed until UTC midnight.
+ *
+ * The charge is deliberately NOT refunded when an already-validated,
+ * already-authenticated request is then refused for capacity or state reasons
+ * (room full, stale invite generation, expired room, transition cap). Those
+ * refusals are decided by the room's authoritative state, which means the
+ * request has already consumed the Durable Object fanout it is being billed
+ * for. Refunding them would also hand an attacker holding one valid credential
+ * an unlimited free-work oracle: every refused request would be free, and
+ * refusal is the cheapest state to drive a room into. Charging at the last
+ * point where refusal is still free — the end of shape and credential
+ * validation — is the conservative anti-abuse boundary.
+ */
 async function budget(env: Env, kind: "pairing" | "control",
                       units: number, operation: BudgetOperation): Promise<Response> {
   const day = new Date().toISOString().slice(0, 10);
@@ -84,17 +105,22 @@ function matchStub(env: Env, name: string): DurableObjectStub<MatchRoom> {
   return env.MATCH_ROOMS.get(env.MATCH_ROOMS.idFromName(name));
 }
 
+function validMatchSeatRequest(body: Record<string, unknown>): boolean {
+  return validCompatibility(body.compatibility) &&
+    Number.isInteger(body.seatCount) && Number(body.seatCount) >= 1 &&
+    Number(body.seatCount) <= MATCH_LIMITS.maxSeatsPerEndpoint;
+}
+
 async function createMatch(request: Request, env: Env): Promise<Response> {
-  /* Budget + eight hashed-code collision attempts + room initialize. */
-  const admission = await budget(env, "pairing", 10, "matchCreate");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeys(body, ["compatibility", "seatCount"]) ||
-      !validCompatibility(body.compatibility) ||
-      !Number.isInteger(body.seatCount) || Number(body.seatCount) < 1 ||
-      Number(body.seatCount) > MATCH_LIMITS.maxSeatsPerEndpoint) {
+      !validMatchSeatRequest(body)) {
     return json({error: "invalid_match"}, 400);
   }
+  /* Budget + eight hashed-code collision attempts + room initialize, charged
+   * once the body is known to be a well-formed create request. */
+  const admission = await budget(env, "pairing", 10, "matchCreate");
+  if (!admission.ok) return admission;
   const roomBytes = crypto.getRandomValues(new Uint8Array(16));
   const inviteBytes = new Uint8Array(32);
   inviteBytes.set(roomBytes);
@@ -136,11 +162,9 @@ async function joinMatchToRoom(body: Record<string, unknown>, env: Env,
                                  inviteDigest?: string;
                                  fallbackCodeDigest?: string;
                                }): Promise<Response> {
-  if (!validCompatibility(body.compatibility) ||
-      !Number.isInteger(body.seatCount) || Number(body.seatCount) < 1 ||
-      Number(body.seatCount) > MATCH_LIMITS.maxSeatsPerEndpoint) {
-    return json({error: "invalid_invite"}, 400);
-  }
+  /* Both callers validate this before charging budget; kept as the last
+   * defensive gate in front of the room object. */
+  if (!validMatchSeatRequest(body)) return json({error: "invalid_invite"}, 400);
   const endpointId = numericId(crypto.getRandomValues(new Uint8Array(8)));
   const credential = await boundCredential(env, "match-endpoint", roomId);
   const response = await matchStub(env, roomId).fetch("https://match/join",
@@ -158,28 +182,31 @@ async function joinMatchToRoom(body: Record<string, unknown>, env: Env,
 }
 
 async function joinMatch(request: Request, env: Env): Promise<Response> {
-  const admission = await budget(env, "pairing", 2, "matchLinkJoin");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeys(body, ["capability", "compatibility", "seatCount"]) ||
       typeof body.capability !== "string") {
     return json({error: "invalid_invite"}, 400);
   }
   const decoded = fromBase64Url(body.capability);
-  if (!decoded || decoded.byteLength !== 32) return json({error: "invalid_invite"}, 400);
+  if (!decoded || decoded.byteLength !== 32 || !validMatchSeatRequest(body)) {
+    return json({error: "invalid_invite"}, 400);
+  }
+  const admission = await budget(env, "pairing", 2, "matchLinkJoin");
+  if (!admission.ok) return admission;
   return joinMatchToRoom(body, env, roomName(decoded),
     {inviteDigest: await digest(env, "match-invite", body.capability)});
 }
 
 async function joinMatchCode(request: Request, env: Env): Promise<Response> {
-  const admission = await budget(env, "pairing", 3, "matchCodeJoin");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeys(body, ["code", "compatibility", "seatCount"])) {
     return json({error: "invalid_code"}, 400);
   }
   const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
   if (!/^\d{6}$/.test(code)) return json({error: "invalid_code"}, 400);
+  if (!validMatchSeatRequest(body)) return json({error: "invalid_invite"}, 400);
+  const admission = await budget(env, "pairing", 3, "matchCodeJoin");
+  if (!admission.ok) return admission;
   const codeDigest = await digest(env, "match-code", code);
   const resolved = await codeStub(env, "match-v1").fetch("https://code/resolve",
     internalRequest({
@@ -203,14 +230,17 @@ async function matchControl(request: Request, env: Env, roomId: string,
         bearer.slice(7)))) {
     return json({error: "unauthorized"}, 401);
   }
+  /* Read and validate the body under the authenticated credential before the
+   * reserve is charged; only then does this become billable work. */
+  const body = await readJson<Record<string, unknown>>(request,
+    MATCH_LIMITS.maxCommandBytes);
+  if (action === "state" ? !exactKeys(body, []) : !validMatchCommandRequest(body)) {
+    return json({error: action === "state" ? "invalid_request" : "invalid_command"},
+      400);
+  }
   const admission = await budget(env, "control", 2, "matchControl");
   if (!admission.ok) return admission;
   if (action === "state") {
-    const stateRequest = await readJson<Record<string, unknown>>(request,
-      MATCH_LIMITS.maxCommandBytes);
-    if (!exactKeys(stateRequest, [])) {
-      return json({error: "invalid_request"}, 400);
-    }
     return matchStub(env, roomId).fetch("https://match/state", internalRequest({
       method: "POST", headers: {"content-type": "application/json",
         "x-match-credential-digest": await digest(
@@ -218,15 +248,10 @@ async function matchControl(request: Request, env: Env, roomId: string,
       body: new Uint8Array(),
     }));
   }
-  const command = await readJson<Record<string, unknown>>(request,
-    MATCH_LIMITS.maxCommandBytes);
-  if (!validMatchCommandRequest(command)) {
-    return json({error: "invalid_command"}, 400);
-  }
   return matchStub(env, roomId).fetch("https://match/command", internalRequest({
     method: "POST", headers: {"content-type": "application/json",
       "x-match-credential-digest": await digest(env, "match-endpoint", bearer.slice(7))},
-    body: JSON.stringify(command),
+    body: JSON.stringify(body),
   }));
 }
 
@@ -238,8 +263,6 @@ async function rotateMatch(request: Request, env: Env,
         bearer.slice(7)))) {
     return json({error: "unauthorized"}, 401);
   }
-  const admission = await budget(env, "control", 10, "matchRotate");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeys(body, ["expectedInviteGeneration"])) {
     return json({error: "invalid_invite_generation"}, 400);
@@ -250,6 +273,8 @@ async function rotateMatch(request: Request, env: Env,
   }
   const roomBytes = fromBase64Url(roomId);
   if (!roomBytes || roomBytes.byteLength !== 16) return json({error: "not_found"}, 404);
+  const admission = await budget(env, "control", 10, "matchRotate");
+  if (!admission.ok) return admission;
   const capabilityBytes = new Uint8Array(32);
   capabilityBytes.set(roomBytes);
   capabilityBytes.set(crypto.getRandomValues(new Uint8Array(16)), 16);
@@ -339,11 +364,11 @@ async function createRoomForKey(hostPublicKey: string, env: Env,
                                 pairingReserved = false): Promise<Response> {
   /* Budget the worst collision path: budget DO + eight directory attempts +
    * one room initialize. Unused reservation is intentional $0 headroom. */
+  if (!validPublicKey(hostPublicKey)) return json({error: "invalid_host_key"}, 400);
   if (!pairingReserved) {
     const admission = await budget(env, "pairing", 10, "partyCreate");
     if (!admission.ok) return admission;
   }
-  if (!validPublicKey(hostPublicKey)) return json({error: "invalid_host_key"}, 400);
   const roomBytes = crypto.getRandomValues(new Uint8Array(16));
   const secretBytes = crypto.getRandomValues(new Uint8Array(16));
   const capabilityBytes = new Uint8Array(32);
@@ -388,11 +413,13 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
 
 async function redeemToRoom(body: Record<string, unknown>, env: Env, roomId: string,
                             proof: {inviteDigest?: string; fallbackCodeDigest?: string}): Promise<Response> {
-  const controllerId = randomToken(16);
-  const credential = await boundCredential(env, "controller", roomId);
+  /* Both callers validate this before charging budget; kept as the last
+   * defensive gate in front of the room object. */
   if (!validPublicKey(body.controllerPublicKey)) {
     return json({error: "invalid_controller_key"}, 400);
   }
+  const controllerId = randomToken(16);
+  const credential = await boundCredential(env, "controller", roomId);
   const input = {
     inviteDigest: proof.inviteDigest || "",
     fallbackCodeDigest: proof.fallbackCodeDigest || "",
@@ -412,8 +439,6 @@ async function redeemToRoom(body: Record<string, unknown>, env: Env, roomId: str
 }
 
 async function redeem(request: Request, env: Env): Promise<Response> {
-  const admission = await budget(env, "pairing", 2, "partyLinkJoin");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeysWithOptionalName(body,
       ["capability", "protocol", "controllerPublicKey"]) ||
@@ -422,13 +447,16 @@ async function redeem(request: Request, env: Env): Promise<Response> {
   }
   const decoded = fromBase64Url(body.capability);
   if (!decoded || decoded.byteLength !== 32) return json({error: "invalid_invite"}, 400);
+  if (!validPublicKey(body.controllerPublicKey)) {
+    return json({error: "invalid_controller_key"}, 400);
+  }
+  const admission = await budget(env, "pairing", 2, "partyLinkJoin");
+  if (!admission.ok) return admission;
   return redeemToRoom(body, env, roomName(decoded),
     {inviteDigest: await digest(env, "invite", body.capability)});
 }
 
 async function redeemCode(request: Request, env: Env): Promise<Response> {
-  const admission = await budget(env, "pairing", 3, "partyCodeJoin");
-  if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
   if (!exactKeysWithOptionalName(body,
       ["code", "protocol", "controllerPublicKey"])) {
@@ -436,6 +464,11 @@ async function redeemCode(request: Request, env: Env): Promise<Response> {
   }
   const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
   if (!/^\d{6}$/.test(code)) return json({error: "invalid_code"}, 400);
+  if (!validPublicKey(body.controllerPublicKey)) {
+    return json({error: "invalid_controller_key"}, 400);
+  }
+  const admission = await budget(env, "pairing", 3, "partyCodeJoin");
+  if (!admission.ok) return admission;
   const resolved = await codeStub(env).fetch("https://code/resolve",
     internalRequest({
     method: "POST", headers: {"content-type": "application/json"},
@@ -493,28 +526,32 @@ async function hostControl(request: Request, env: Env, roomId: string,
       !(await validBoundCredential(env, "host", roomId, bearer.slice(7)))) {
     return json({error: "unauthorized"}, 401);
   }
+  const input = await readJson<Record<string, unknown>>(request);
+  let expectedRotation = 0;
+  if (action === "rotate") {
+    expectedRotation = Number(input.expectedInviteGeneration);
+    if (!exactKeys(input, ["expectedInviteGeneration"]) ||
+        !Number.isInteger(expectedRotation) || expectedRotation < 1) {
+      return json({error: "invalid_invite_generation"}, 400);
+    }
+  } else {
+    const expectedKeys = action === "approve"
+      ? ["controllerId", "seat"]
+      : action === "reject" || action === "remove"
+      ? ["controllerId"]
+      : [];
+    if (!exactKeys(input, expectedKeys)) {
+      return json({error: "invalid_request"}, 400);
+    }
+  }
+  /* Authenticated host and a well-formed control body: only now is this
+   * billable work. */
   const admission = await budget(env, "control", action === "rotate" ? 10 : 2,
     action === "rotate" ? "partyRotate" : "partyControl");
   if (!admission.ok) return admission;
   const hostDigest = await digest(env, "host", bearer.slice(7));
-  const input = await readJson<Record<string, unknown>>(request);
   if (action === "rotate") {
-    if (!exactKeys(input, ["expectedInviteGeneration"])) {
-      return json({error: "invalid_invite_generation"}, 400);
-    }
-    const expected = Number(input.expectedInviteGeneration);
-    if (!Number.isInteger(expected) || expected < 1) {
-      return json({error: "invalid_invite_generation"}, 400);
-    }
-    return rotateInvite(env, roomId, hostDigest, expected);
-  }
-  const expectedKeys = action === "approve"
-    ? ["controllerId", "seat"]
-    : action === "reject" || action === "remove"
-    ? ["controllerId"]
-    : [];
-  if (!exactKeys(input, expectedKeys)) {
-    return json({error: "invalid_request"}, 400);
+    return rotateInvite(env, roomId, hostDigest, expectedRotation);
   }
   const body = JSON.stringify(input);
   return roomStub(env, roomId).fetch(`https://room/${action}`, internalRequest({
