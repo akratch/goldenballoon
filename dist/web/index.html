@@ -400,6 +400,12 @@
       <strong id="online-room-model-status">Private Room Preview</strong>
       <span id="online-room-model-counts">0 members · 0 racer seats · 0 ready</span>
     </div>
+    <section id="online-room-verification" class="online-room-verification"
+             aria-labelledby="online-room-verification-title" hidden>
+      <h3 id="online-room-verification-title">Compare on Every Display</h3>
+      <output id="online-room-verification-phrase" translate="no"></output>
+      <p>Do not continue if even 1 word differs. Leave the room and retry the secure connection instead.</p>
+    </section>
     <div id="online-room-timeout" class="online-room-timeout" role="alert" hidden>
       <strong id="online-room-timeout-title"></strong>
       <span id="online-room-timeout-copy"></span>
@@ -440,8 +446,8 @@
                 aria-label="QR code for joining as a phone controller"></canvas>
       </div>
       <div class="party-invite">
-        <p class="party-step">1. Scan with your phone’s camera</p>
-        <p>Nothing to install. The controller opens in Safari or Chrome.</p>
+        <p id="party-scan-step" class="party-step">1. Scan with your phone’s camera</p>
+        <p id="party-install-copy">Nothing to install. The controller opens in Safari or Chrome.</p>
         <div class="party-code-block">
           <span>Or enter code</span>
           <strong id="party-code" aria-label="Controller room code">—— —— ——</strong>
@@ -466,10 +472,10 @@
         <span id="party-ready-count">0 of 4 ready</span>
       </div>
       <ol id="party-seats" class="party-seats">
-        <li data-seat="1"><span class="party-seat-number">1</span><span><strong>Controller 1</strong><small>Available</small></span></li>
-        <li data-seat="2"><span class="party-seat-number">2</span><span><strong>Controller 2</strong><small>Available</small></span></li>
-        <li data-seat="3"><span class="party-seat-number">3</span><span><strong>Controller 3</strong><small>Available</small></span></li>
-        <li data-seat="4"><span class="party-seat-number">4</span><span><strong>Controller 4</strong><small>Available</small></span></li>
+        <li id="party-seat-1" data-seat="1" tabindex="-1"><span class="party-seat-number">1</span><span class="party-seat-copy"><strong>Controller 1</strong><small>Available</small></span><button class="party-seat-remove text-button" type="button" hidden>Remove</button></li>
+        <li id="party-seat-2" data-seat="2" tabindex="-1"><span class="party-seat-number">2</span><span class="party-seat-copy"><strong>Controller 2</strong><small>Available</small></span><button class="party-seat-remove text-button" type="button" hidden>Remove</button></li>
+        <li id="party-seat-3" data-seat="3" tabindex="-1"><span class="party-seat-number">3</span><span class="party-seat-copy"><strong>Controller 3</strong><small>Available</small></span><button class="party-seat-remove text-button" type="button" hidden>Remove</button></li>
+        <li id="party-seat-4" data-seat="4" tabindex="-1"><span class="party-seat-number">4</span><span class="party-seat-copy"><strong>Controller 4</strong><small>Available</small></span><button class="party-seat-remove text-button" type="button" hidden>Remove</button></li>
       </ol>
     </section>
 
@@ -480,6 +486,20 @@
       <button id="party-end" class="btn btn-ghost" type="button">End controller room</button>
     </div>
     <p id="party-status" class="sr-only" role="status" aria-live="polite"></p>
+  </div>
+</dialog>
+
+<dialog id="party-remove-dialog" class="confirm-dialog"
+        aria-labelledby="party-remove-title" aria-describedby="party-remove-copy">
+  <h2 id="party-remove-title">Remove phone controller?</h2>
+  <p id="party-remove-copy">That phone will stop controlling this race. Its seat becomes available.</p>
+  <div class="actions">
+    <button id="party-remove-cancel" class="btn btn-ghost" type="button">
+      Keep phone
+    </button>
+    <button id="party-remove-confirm" class="btn btn-danger" type="button">
+      Remove phone
+    </button>
   </div>
 </dialog>
 
@@ -596,6 +616,8 @@
 <script src="party/qrcodegen.js"></script>
 <script src="party/party-host.js"></script>
 <script src="online/online-control-config.js"></script>
+<script src="online/online-room-live-state.js"></script>
+<script src="online/online-room-presenter.js"></script>
 <script src="online/online-room.js"></script>
 <script src="mdkr64-shell.js"></script>
 </body>

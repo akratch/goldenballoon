@@ -67,8 +67,12 @@ typedef struct MdkrOnlineFakeAdapter {
     uint32_t revision;
     uint32_t next_pending_token;
     uint32_t pending_token;
+    uint32_t verification_phrase_generation;
     bool have_lobby;
     bool invite_ready;
+    /* Deterministic rotating stand-in for a locally derived authenticated
+     * transcript. It is never sourced from the fake room snapshot. */
+    bool verification_phrase_ready;
     bool race_admission_enabled;
     /* Adapter clock result, not room/service authority. The view model carries
      * the bounded outcome; UI presents it only after this local expiry. */

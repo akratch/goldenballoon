@@ -1,4 +1,11 @@
-"""Shared, side-effect-free helpers for the headless regression checks."""
+"""Shared helpers for the headless regression checks.
+
+Resolving the product executable is deliberately capability-gated. Most
+callers run an SDL/Cocoa process immediately after resolution, and an old
+binary may predate the application's own no-window safety check. Refusing at
+the Python harness boundary keeps a direct check invocation from activating
+that stale binary on an occupied workstation.
+"""
 
 from __future__ import annotations
 
@@ -37,6 +44,23 @@ EEPROM_ARTIFACTS = (
 DEFAULT_BUILD_DIR = "build"
 
 
+def _native_process_tests_allowed() -> bool:
+    """Whether this process was explicitly assigned a dedicated test desktop.
+
+    Browser checks have their own capability because some of them also query a
+    windowless contract from the native product before starting Chromium. Both
+    capabilities are issued only by the supported runner after its explicit
+    command-line opt-in; ambient ``MDKR*`` state is scrubbed first.
+    """
+
+    class_allowed = (
+        os.environ.get("MDKR_APP_TESTS_ALLOWED") == "1" or
+        os.environ.get("MDKR_BROWSER_TESTS_ALLOWED") == "1"
+    )
+    return (class_allowed and
+            os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") == "1")
+
+
 def resolve_binary(build: str | os.PathLike[str]) -> str:
     """Resolve ``--build`` consistently from either a directory or executable.
 
@@ -46,12 +70,23 @@ def resolve_binary(build: str | os.PathLike[str]) -> str:
     - ``--build build-rel/mdkr64`` remains that executable.
 
     Existence is intentionally checked by each caller so its existing failure
-    message and any additional input validation remain intact.
+    message and any additional input validation remain intact. The exact
+    product executable is different: resolving it is the shared last point
+    before more than a hundred harnesses launch it, so it requires the
+    dedicated-desktop capability even when the referenced build is stale.
     """
 
     path = Path(build).expanduser()
     if path.is_dir():
         path = path / "mdkr64"
+    product_names = {"mdkr64", "mdkr64.exe"}
+    if (path.name in product_names or path.resolve().name in product_names) and \
+            not _native_process_tests_allowed():
+        raise SystemExit(
+            "app-test-safety: refused to resolve the native product for a test "
+            "on an interactive workstation; a human must attest a dedicated "
+            "test desktop before using tools/run_checks.py --with-app-tests"
+        )
     return str(path)
 
 

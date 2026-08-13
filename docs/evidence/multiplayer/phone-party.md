@@ -4,7 +4,7 @@ Decision: **OPEN — browser direct-path automation passes; device/release gates
 
 | Field | Evidence |
 |---|---|
-| Service/QR | Party `npm run check`; QR ECC-Q decode; pinned dependency/license gate |
+| Service/QR | Attested-host Party `MDKR_DEDICATED_TEST_DESKTOP=1 npm run check`; QR ECC-Q decode; pinned dependency/license gate |
 | Browser UI | Controller and host Chrome gates at 320×568 and 200% text; rapid close/reopen cannot destroy the new room. Leave/end are separately confirmed with safe default focus, cancel is non-mutating and voluntary leave has truthful neutral recovery copy. Standalone room handoff has skip focus and notch-safe layout. Both analog surfaces expose visible-focus Arrow/WASD steering, bounded diagonals, spoken direction and exact-neutral release/blur behavior. |
 | Direct path | Two-process Chromium gate proves one no-churn handshake, unordered state/reliable control/input-test/haptics, bounded ping/pong, watchdog fail-neutral, an ICE restart on the same approved peer, exact-neutral control-channel failure, one fresh peer generation and live input after recovery. The real local Worker canary separately keeps controls active through a forced signaling outage, restores signaling with a rotated connection epoch, rebinds inside the same seat lease and accepts fresh direct input. |
 | Engine handoff | Remote fail-neutral plus independent P1–P4 wasm queue gate; in-game setup pauses/neutralizes local input; reconnect reservation blocks local takeover until explicit release |
@@ -15,3 +15,11 @@ Decision: **OPEN — browser direct-path automation passes; device/release gates
 | Native macOS/Windows/Linux | Generation-tagged libdatachannel host, direct close recovery and ping watchdog compile/test locally; executed packaged/device matrix remains OPEN (A2) |
 | Cost/deploy/privacy review | Aggregate-only production-path collector and one-attempt real-Worker smoke pass locally; hosted 20-attempt/seven-day evidence remains OPEN |
 | Reviewer/date/decision | OPEN |
+
+Evidence boundary, 2026-08-13: the exact request/signaling/native-command,
+controller removal, fragment scrub-denial and embedded/public copy/reclaim
+fixtures landed after the prior browser/service pass. All changed JavaScript
+parses, all changed Python files parse as AST, Party TypeScript type-checks and
+diff hygiene is clean. None of those behavioral fixtures was executed on this
+occupied workstation; the table above must not be read as a refreshed verdict
+for that delta.

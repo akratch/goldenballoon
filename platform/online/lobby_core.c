@@ -409,10 +409,10 @@ MdkrOnlineStep mdkr_online_lobby_dispatch(
                             MDKR_ONLINE_ERROR_COMMAND_CONFLICT);
         return step_for(lobby, true, true, false, MDKR_ONLINE_OK);
     }
-    if (actor != NULL && command->command_id < actor->last_command_id)
-        return step_for(lobby, false, false, false, MDKR_ONLINE_ERROR_STALE_COMMAND);
     if (command->expected_revision != lobby->revision)
         return step_for(lobby, false, false, false, MDKR_ONLINE_ERROR_STALE_REVISION);
+    if (actor != NULL && command->command_id < actor->last_command_id)
+        return step_for(lobby, false, false, false, MDKR_ONLINE_ERROR_STALE_COMMAND);
     if (lobby->phase == MDKR_ONLINE_CLOSED)
         return step_for(lobby, false, false, false, MDKR_ONLINE_ERROR_INVALID_STATE);
     if (actor == NULL && command->type != MDKR_ONLINE_JOIN)

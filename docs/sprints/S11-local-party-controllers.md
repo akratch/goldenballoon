@@ -84,7 +84,7 @@ pad/input protocol and S13's room/signaling service.
 | State | Required UI |
 |---|---|
 | Opening | Golden Balloon wordmark, “Joining controller room…”, cancel link |
-| Unsupported/embedded browser | Exact missing capability and **Open in Safari/Chrome** or Copy link recovery |
+| Unsupported/embedded browser | Explain the direct-connection requirement; share/copy the private link when held, otherwise share/copy `/controller/` and require the current code in Safari/Chrome |
 | Update required | Required/current controller protocol and **Refresh controller** |
 | Awaiting approval | Pairing phrase, “The display must approve this phone”; optional device name is secondary |
 | Assigned | Large controller number/color, one-step **Press Go** input test, **Use controller** |
@@ -114,8 +114,18 @@ remain reversible while moving; controller input itself is never animated.
   The payload combines a 128-bit room id and 128 random secret bits in the URL
   fragment, so it is absent from
   the initial HTTP request and referrer logs. Controller JavaScript copies it
-  into memory and immediately removes the fragment with `history.replaceState`
-  before performing any network operation.
+  into closure memory and immediately removes the fragment with
+  `history.replaceState` before configuration access, browser probes or network
+  work. The route is exact and query-free; a failed scrub clean-navigates to
+  `/controller/` and abandons redemption. Embedded-browser **Copy private link** and duplicate-tab
+  reclaim reconstruct the private URL only for the explicit user gesture and
+  the destination page scrubs it again; no capability enters web storage.
+  Production entry and minted links require one canonical HTTPS origin (HTTP is
+  loopback-only). Duplicate takeover first broadcasts neutral/close to the old
+  tab and takes its exclusive lock without force-stealing; Web Lock rejection
+  fails closed. A no-Web-Locks fallback stores only a 96-bit capability digest
+  prefix, random tab id and 15-second heartbeat expiry. The new pending phone
+  still requires visible host removal/replacement and approval.
 - The controller posts the capability over HTTPS to redeem a short-lived,
   controller-specific pending credential. Friends can scan the current invite
   during the same two-minute window, but every phone receives an independent

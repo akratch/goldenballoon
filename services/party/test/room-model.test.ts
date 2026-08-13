@@ -1,7 +1,7 @@
 import {describe, expect, it} from "vitest";
 import {applyRoomCommand} from "../src/room-model";
 import {admitSignalMessage} from "../src/party-room";
-import {LIMITS, type StoredRoom} from "../src/types";
+import {LIMITS, partyInviteRemainingMs, type StoredRoom} from "../src/types";
 
 function room(): StoredRoom {
   return {version: 2, phase: "open", createdAt: 0,
@@ -19,6 +19,15 @@ function redeem(target: StoredRoom, id: string, now = 1) {
 }
 
 describe("Party room state model", () => {
+  it("bounds advertised controller-invite lifetime by current room authority", () => {
+    expect(partyInviteRemainingMs(1_000, 900)).toBe(100);
+    expect(partyInviteRemainingMs(LIMITS.inviteTtlMs + 10, 0))
+      .toBe(LIMITS.inviteTtlMs);
+    expect(partyInviteRemainingMs(900, 900)).toBeNull();
+    expect(partyInviteRemainingMs(899, 900)).toBeNull();
+    expect(partyInviteRemainingMs(Number.MAX_SAFE_INTEGER + 1, 0)).toBeNull();
+  });
+
   it("bounds signaling by both burst window and socket lifetime", () => {
     const burst = {role: "host" as const, messages: 0,
       windowStartedAt: 0, lifetimeMessages: 0};

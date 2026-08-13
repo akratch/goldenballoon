@@ -7,8 +7,11 @@
     "node": ">=22"
   },
   "scripts": {
-    "check": "tsc --noEmit && node ../../tests/test_party_qr.cjs && vitest run",
-    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "precheck": "node scripts/require-dedicated-test-desktop.js",
+    "check": "npm run typecheck && npm test && node ../../tests/test_party_qr.cjs",
+    "pretest": "node scripts/require-dedicated-test-desktop.js",
+    "test": "vitest run --maxWorkers=1",
     "dev": "wrangler dev --local",
     "deploy": "wrangler deploy"
   },

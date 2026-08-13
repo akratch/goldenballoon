@@ -11,7 +11,7 @@ The ledger is one JSON object capped at 512 KiB:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "window": {
     "startDay": "2026-08-01",
     "endDay": "2026-08-07",
@@ -54,6 +54,10 @@ field is SHA-256 of the provider deployment id; do not place a raw account id,
 token, URL or provider envelope in this file. Every day must record the exact
 source commit, a real service-blocked local-play probe, no open incident and a
 signed daily `GO` decision.
+
+Ledger v3 requires provider reconciliation schema v2, including the daily
+Durable Object duration GB-s dimension. Earlier v2 ledgers are rejected rather
+than silently treating missing duration as zero.
 
 `experience` is a synthetic canary aggregate, never user analytics. Each UTC
 day runs exactly 20 clean-profile MatchRoom creates, 20 role-link joins and 20
@@ -134,7 +138,7 @@ python3 tests/test_party_beta_ledger.py
 ```
 
 It covers schema injection, missing/noncontiguous days, window skew, invalid
-digests, local-play failure, open incidents, charged provider days, incomplete
+digests, v2 downgrade, local-play failure, open incidents, charged provider days, incomplete
 legacy tracking, weighted-unit drift, experience schema/source/sample/success/
 latency failures, boolean-as-integer confusion, oversized input and
 secret-canary non-reflection. Passing it is not a seven-day canary.

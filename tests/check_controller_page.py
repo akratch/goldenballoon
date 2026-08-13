@@ -70,7 +70,13 @@ def run(args: argparse.Namespace) -> None:
             }
             cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
                 "globalThis.__mdkrControllerTestConfig=" +
-                json.dumps(config, separators=(",", ":")) + ";"})
+                json.dumps(config, separators=(",", ":")) + ";" +
+                "globalThis.__copiedControllerLink='';" +
+                "globalThis.__sharedControllerLink=null;" +
+                "Object.defineProperty(navigator,'clipboard',{configurable:true," +
+                "value:{writeText:async(value)=>{globalThis.__copiedControllerLink=value;}}});" +
+                "Object.defineProperty(navigator,'share',{configurable:true," +
+                "value:async(value)=>{globalThis.__sharedControllerLink=value;}});"})
             cdp.call("Emulation.setDeviceMetricsOverride", {
                 "width": 320, "height": 568, "deviceScaleFactor": 2,
                 "mobile": True,
@@ -161,6 +167,24 @@ def run(args: argparse.Namespace) -> None:
                     keyboard_stick["neutral"]["stickY"] == 0,
                     f"keyboard steering did not return neutral: {keyboard_stick}")
 
+            lifecycle_resume = cdp.evaluate("""(() => {
+              dispatchEvent(new Event('freeze'));
+              const frozen=globalThis.__mdkrControllerTest.state();
+              dispatchEvent(new Event('resume'));
+              const resumed=globalThis.__mdkrControllerTest.state();
+              const packet=globalThis.__mdkrControllerTestState.packets.at(-1).decoded;
+              return {frozen,resumed,packet};
+            })()""")
+            require(lifecycle_resume["frozen"]["active"] is False and
+                    lifecycle_resume["frozen"]["pad"] == {
+                        "buttons": 0, "stickX": 0, "stickY": 0} and
+                    lifecycle_resume["resumed"]["active"] is True and
+                    lifecycle_resume["resumed"]["phase"] == "controller" and
+                    lifecycle_resume["packet"]["buttons"] == 0 and
+                    lifecycle_resume["packet"]["edges"] == [],
+                    f"freeze/resume left dead controls or replayed input: "
+                    f"{lifecycle_resume}")
+
             reconnect = cdp.evaluate("""(() => {
               globalThis.__mdkrControllerTest.reconnect(2);
               const before = globalThis.__mdkrControllerTest.state();
@@ -227,6 +251,154 @@ def run(args: argparse.Namespace) -> None:
             require(left["title"] == "Controller disconnected" and left["neutral"] == 0,
                     f"confirmed leave lacked truthful neutral recovery: {left}")
 
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+                     "globalThis.__mdkrControllerTestConfig.entryMode='embedded';"})
+            cdp.call("Page.navigate", {"url": server.origin +
+                     "/controller/#" + secret})
+            embedded_copy = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              heading:document.getElementById('error-title')?.textContent,
+              primary:document.getElementById('error-recovery')?.textContent,
+              copy:document.getElementById('copy-link')?.textContent,
+              copyHidden:document.getElementById('copy-link')?.hidden,
+              hash:location.hash}))()""", lambda value: isinstance(value, dict) and
+                  value.get("phase") == "error", "embedded-browser recovery",
+                  args.timeout)
+            require(embedded_copy == {
+                        "phase": "error", "heading": "Continue in Safari or Chrome",
+                        "primary": "Share private link", "copy": "Copy private link",
+                        "copyHidden": False, "hash": ""},
+                    f"embedded-browser recovery copy was misleading: {embedded_copy}")
+            cdp.evaluate("document.getElementById('error-recovery').click()")
+            shared = wait_value(cdp, "globalThis.__sharedControllerLink",
+                lambda value: isinstance(value, dict),
+                "embedded-browser private-link share", args.timeout)
+            require(shared == {"title": "Golden Balloon phone controller",
+                        "text": "Open this private controller link in Safari or Chrome.",
+                        "url": server.origin +
+                            "/controller/#controller-test-capability"},
+                    f"private share sheet lost capability context: {shared}")
+            cdp.evaluate("document.getElementById('copy-link').click()")
+            copied = wait_value(cdp, "globalThis.__copiedControllerLink",
+                lambda value: isinstance(value, str) and value.endswith(
+                    "/controller/#controller-test-capability"),
+                "embedded-browser private-link copy", args.timeout)
+            require(copied == server.origin +
+                        "/controller/#controller-test-capability",
+                    f"copy recovery lost the private link: {copied}")
+
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+                     "globalThis.__mdkrControllerTestConfig.entryMode='duplicate';"})
+            cdp.call("Page.navigate", {"url": server.origin +
+                     "/controller/#" + secret})
+            duplicate = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              hash:location.hash,
+              invite:globalThis.__mdkrControllerTest?.inviteUrl()}))()""",
+                lambda value: isinstance(value, dict) and
+                    value.get("phase") == "duplicate", "duplicate-tab recovery",
+                    args.timeout)
+            require(duplicate == {"phase": "duplicate", "hash": "",
+                        "invite": server.origin +
+                            "/controller/#controller-test-capability"},
+                    f"duplicate-tab reclaim lost its private navigation: {duplicate}")
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+                     "globalThis.__mdkrControllerTestConfig.entryMode='';"})
+            cdp.evaluate("document.getElementById('reclaim-controller').click()")
+            reclaimed = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              hash:location.hash,href:location.href}))()""",
+                lambda value: isinstance(value, dict) and
+                    value.get("phase") == "assigned",
+                "duplicate-tab acknowledged takeover", args.timeout)
+            require(reclaimed == {"phase": "assigned", "hash": "",
+                        "href": server.origin + "/controller/"},
+                    f"duplicate-tab takeover did not scrub/redeem once: {reclaimed}")
+
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
+                     "globalThis.__mdkrControllerTestConfig.forceFallbackLease=true;"})
+            cdp.call("Page.navigate", {"url": server.origin +
+                     "/controller/#" + secret})
+            fallback_lease = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              mode:globalThis.__mdkrControllerTestState?.leaseMode,
+              keys:Object.keys(localStorage).filter(
+                key=>key==='gb-controller-tab-lease'),
+              storage:Object.entries(localStorage).map(([key,value])=>key+value)
+                .join('|')}))()""", lambda value: isinstance(value, dict) and
+                  value.get("phase") == "assigned",
+                  "no-Web-Locks controller lease", args.timeout)
+            require(fallback_lease["mode"] == "broadcast-storage" and
+                    len(fallback_lease["keys"]) == 1 and
+                    "controller-test-capability" not in fallback_lease["storage"],
+                    f"fallback lease exposed a secret or was not acquired: "
+                    f"{fallback_lease}")
+
+            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
+              globalThis.__mdkrControllerTestConfig.entryMode='';
+              globalThis.__mdkrControllerTestConfig.codeMode=true;
+              Object.defineProperty(History.prototype, 'replaceState', {
+                configurable:true,
+                value(){throw new DOMException('fixture denial', 'SecurityError');}
+              });
+            """})
+            cdp.call("Page.navigate", {"url": server.origin +
+                     "/controller/#" + secret})
+            scrub_denied = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              hash:location.hash,href:location.href,
+              leases:Object.keys(localStorage).filter(
+                key=>key==='gb-controller-tab-lease').length}))()""",
+                lambda value: isinstance(value, dict) and
+                    value.get("phase") == "code" and value.get("hash") == "",
+                "controller History API denial", args.timeout)
+            require(scrub_denied["href"] == server.origin + "/controller/",
+                    f"scrub denial retained or redeemed the capability: {scrub_denied}")
+            require(scrub_denied["leases"] == 0,
+                    f"pagehide retained the fallback tab lease: {scrub_denied}")
+            public_recovery = cdp.evaluate("""(() => {
+              globalThis.__copiedControllerLink='';
+              globalThis.__sharedControllerLink=null;
+              globalThis.__mdkrControllerTest.showEmbedded();
+              const copy=document.getElementById('copy-link');
+              const result={primary:document.getElementById('error-recovery').textContent,
+                copy:copy.textContent,copyHidden:copy.hidden};
+              copy.click();
+              return result;
+            })()""")
+            require(public_recovery == {"primary": "Share controller page",
+                        "copy": "Copy controller page", "copyHidden": False},
+                    f"capability-free browser recovery was misleading: "
+                    f"{public_recovery}")
+            cdp.evaluate("document.getElementById('error-recovery').click()")
+            public_shared = wait_value(cdp, "globalThis.__sharedControllerLink",
+                lambda value: isinstance(value, dict),
+                "capability-free controller page share", args.timeout)
+            require(public_shared == {
+                        "title": "Golden Balloon phone controller",
+                        "text": "Open this controller page in Safari or Chrome, then enter the current room code.",
+                        "url": server.origin + "/controller/"},
+                    f"public share sheet implied a retained invitation: {public_shared}")
+            wait_value(cdp, "globalThis.__copiedControllerLink",
+                       lambda value: value == server.origin + "/controller/",
+                       "capability-free controller page copy", args.timeout)
+
+            cdp.evaluate("""(() => {
+              dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
+              dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+            })()""")
+            restored = wait_value(cdp, """(() => ({
+              phase:globalThis.__mdkrControllerTest?.state().phase,
+              hash:location.hash,href:location.href,
+              leases:Object.keys(localStorage).filter(
+                key=>key==='gb-controller-tab-lease').length}))()""",
+                lambda value: isinstance(value, dict) and
+                    value.get("phase") == "code",
+                "controller BFCache recovery reload", args.timeout)
+            require(restored == {"phase": "code", "hash": "",
+                        "href": server.origin + "/controller/", "leases": 0},
+                    f"BFCache restore revived dead controller custody: {restored}")
+
             paths = [request.path for request in server.requests]
             forbidden = ("mdkr64_web", ".wasm", "/rom", "/save", "hero.jpg")
             require(not any(any(word in request for word in forbidden) for request in paths),
@@ -237,6 +409,7 @@ def run(args: argparse.Namespace) -> None:
             fatal = [line for line in cdp.console if "Uncaught" in line or "TypeError" in line]
             require(not fatal, "controller console errors: " + "; ".join(fatal))
             print(f"check_controller_page: PASS — {critical_bytes // 1024} KiB engine-free page, fragment erased, "
+                  "copy/reclaim/scrub-denial recovery, "
                   "approval/test/controller/reconnect/confirmed-leave UX, three-finger chord, neutral safety, "
                   "bounded Arrow/WASD steering, 320×568/200% layout and private-asset boundary")
         finally:

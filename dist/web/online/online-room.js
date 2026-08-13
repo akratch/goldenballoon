@@ -6,6 +6,25 @@
 "use strict";
 
 (() => {
+  const entryFragment = (() => {
+    const raw = location.hash;
+    const attempted = raw.startsWith("#match=");
+    if (!attempted) return {attempted: false, capability: "", scrubbed: true};
+    const fields = new URLSearchParams(raw.slice(1));
+    const candidate = [...fields].length === 1 ? fields.get("match") || "" : "";
+    const exact = raw === `#match=${candidate}` &&
+      /^[A-Za-z0-9_-]{43}$/.test(candidate);
+    // Erase before consulting any launcher globals, release policy, model, ROM
+    // state or network adapter. If the History API cannot erase the secret,
+    // navigate to a clean URL and abandon this handoff in the current task.
+    try { history.replaceState(null, "", location.pathname + location.search); }
+    catch (_) {
+      location.replace(location.pathname + location.search);
+      return {attempted: true, capability: "", scrubbed: false};
+    }
+    return {attempted: true, capability: exact ? candidate : "", scrubbed: true};
+  })();
+  if (!entryFragment.scrubbed) return;
   const byId = (id) => document.getElementById(id);
   const ownScript = document.currentScript?.src || "";
   const buildQuery = ownScript ? new URL(ownScript, location.href).search : "";
@@ -16,23 +35,32 @@
   const explanation = byId("online-room-explanation");
   const gate = byId("online-room-gate");
   const modelRoot = byId("online-room-model");
+  const verification = byId("online-room-verification");
+  const verificationPhrase = byId("online-room-verification-phrase");
   const local = byId("online-room-local");
   const controllers = byId("online-room-controllers");
   const play = byId("play");
   const drop = byId("drop");
   const phone = byId("add-phone-controllers");
+  const presenter = globalThis.MDKROnlineRoomPresenter;
+  const liveState = globalThis.MDKROnlineRoomLiveState;
   const testConfig = globalThis.__mdkrOnlineRoomTestConfig &&
     typeof globalThis.__mdkrOnlineRoomTestConfig === "object"
     ? globalThis.__mdkrOnlineRoomTestConfig : null;
-  const initialLiveConfig = globalThis.__mdkrOnlineRoomLiveConfig &&
+  const liveFixtureAllowed = testConfig?.liveFixture === true &&
+    ["127.0.0.1", "::1", "localhost"].includes(location.hostname);
+  const initialLiveConfig = liveFixtureAllowed &&
+    globalThis.__mdkrOnlineRoomLiveConfig &&
     typeof globalThis.__mdkrOnlineRoomLiveConfig === "object" &&
     globalThis.__mdkrOnlineRoomLiveConfig.enabled === true
     ? globalThis.__mdkrOnlineRoomLiveConfig : null;
-  const testState = testConfig || initialLiveConfig
+  const testState = testConfig
     ? {renders: [], activations: [], announcements: [], errors: []} : null;
   if (testState) globalThis.__mdkrOnlineRoomTestState = testState;
   if (!trigger || !dialog || !close || !title || !explanation || !gate ||
-      !modelRoot || !local || !controllers || !play || !drop || !phone) return;
+      !modelRoot || !verification || !verificationPhrase || !local ||
+      !controllers || !play || !drop || !phone || !presenter ||
+      presenter.version !== 1 || !liveState || liveState.version !== 1) return;
 
   const characters = ["Diddy", "Timber", "Pipsy", "Tiptup", "Conker",
     "Bumper", "Banjo", "Krunch", "Drumstick", "T.T."];
@@ -49,8 +77,12 @@
   let completionTimer = 0;
   let liveRoom = null;
   let liveInvite = null;
+  let liveInviteTimer = 0;
+  let liveInviteRotating = false;
   let liveSocket = null;
+  let liveSocketGeneration = 0;
   let liveSocketTimer = 0;
+  let liveSocketStableTimer = 0;
   let liveSocketAttempt = 0;
   let liveOperation = 0;
   let liveJourney = 1;
@@ -58,10 +90,16 @@
   let liveCommandId = 1;
   let liveLastOperation = null;
   let liveSelectionSaving = false;
+  let currentPresentation = null;
+  let pendingEntryCapability = entryFragment.capability;
+  entryFragment.capability = "";
+  let pendingEntryExpiresAt = pendingEntryCapability ? Date.now() + 10 * 60_000 : 0;
+  let pendingEntryTimer = 0;
 
-  const gateTitle = "Online Racing Is Not Enabled in This Build";
-  const gateExplanation = "Private rooms are still being qualified. Opening " +
+  let gateTitle = "Online Racing Is Not Enabled in This Build";
+  let gateExplanation = "Private rooms are still being qualified. Opening " +
     "this screen makes no network request and cannot enable online racing.";
+  const maxLiveResponseBytes = 64 * 1024;
 
   function syncLocalRecovery() {
     const playable = !play.disabled && play.dataset.blocked !== "1";
@@ -76,6 +114,7 @@
 
   function showAuxiliary(heading, copy) {
     const auxiliary = byId("online-room-auxiliary");
+    delete auxiliary.dataset.inviteView;
     auxiliary.replaceChildren();
     const strong = document.createElement("h3");
     const span = document.createElement("span");
@@ -87,6 +126,7 @@
 
   function hideAuxiliary() {
     const auxiliary = byId("online-room-auxiliary");
+    delete auxiliary.dataset.inviteView;
     auxiliary.hidden = true;
     auxiliary.replaceChildren();
   }
@@ -99,17 +139,9 @@
     delete dialog.dataset.viewKind;
     delete dialog.dataset.failure;
     delete dialog.dataset.gallerySlug;
+    currentPresentation = null;
     hideAuxiliary();
     syncLocalRecovery();
-  }
-
-  function validCompatibility(value) {
-    const bytes = (items, count) => Array.isArray(items) && items.length === count &&
-      items.every((item) => Number.isInteger(item) && item >= 0 && item <= 255);
-    return value && value.protocolVersion === 1 && bytes(value.buildId, 16) &&
-      bytes(value.gameplayDigest, 32) && Number.isInteger(value.romRevision) &&
-      value.romRevision > 0 && value.romRevision <= 255 &&
-      (value.cadenceHz === 25 || value.cadenceHz === 30);
   }
 
   function serviceUrl(path) {
@@ -118,10 +150,52 @@
     return new URL(path, configured || location.origin).toString();
   }
 
+  async function readLiveJson(response) {
+    const declared = response.headers?.get?.("content-length");
+    if (declared && /^\d+$/.test(declared) &&
+        Number(declared) > maxLiveResponseBytes) {
+      try { await response.body?.cancel?.(); } catch (_) {}
+      throw new Error("match_response_too_large");
+    }
+    if (!response.body?.getReader) {
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > maxLiveResponseBytes) {
+        throw new Error("match_response_too_large");
+      }
+      return JSON.parse(text);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", {fatal: true});
+    let total = 0;
+    let text = "";
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array) ||
+            total + value.byteLength > maxLiveResponseBytes) {
+          try { await reader.cancel(); } catch (_) {}
+          throw new Error("match_response_too_large");
+        }
+        total += value.byteLength;
+        text += decoder.decode(value, {stream: true});
+      }
+      text += decoder.decode();
+      return JSON.parse(text);
+    } catch (error) {
+      try { await reader.cancel(); } catch (_) {}
+      throw error;
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+    }
+  }
+
   async function liveRequest(path, body, credential = "") {
     if (testState) {
       testState.requests ||= [];
-      testState.requests.push({path, body: structuredClone(body), credential: Boolean(credential)});
+      testState.requests.push({path,
+        bodyKeys: body && typeof body === "object" ? Object.keys(body).sort() : [],
+        credential: Boolean(credential)});
     }
     const timeoutMs = Math.max(2000, Math.min(30000,
       Number(liveConfig?.timeoutMs) || 10000));
@@ -147,7 +221,7 @@
       const response = await fetch(serviceUrl(path), {method: "POST", cache: "no-store",
         credentials: "omit", referrerPolicy: "no-referrer", headers,
         signal: controller.signal, body: JSON.stringify(body || {})});
-      const value = await response.json().catch(() => ({}));
+      const value = await readLiveJson(response).catch(() => ({}));
       if (!response.ok) {
         // The free edge rate rule returns a provider HTML 429 before the Worker,
         // so it cannot carry our JSON enum. Preserve the same calm capacity UX
@@ -164,147 +238,143 @@
     } finally { clearTimeout(abortTimer); }
   }
 
-  function sameCompatibility(value) {
-    const expected = liveConfig?.compatibility;
-    return validCompatibility(value) && validCompatibility(expected) &&
-      value.protocolVersion === expected.protocolVersion &&
-      value.romRevision === expected.romRevision && value.cadenceHz === expected.cadenceHz &&
-      value.buildId.every((byte, index) => byte === expected.buildId[index]) &&
-      value.gameplayDigest.every((byte, index) => byte === expected.gameplayDigest[index]);
+  function liveInviteUsable(now = Date.now()) {
+    return Boolean(liveInvite && liveRoom?.lobby?.phase === "lobby" &&
+      liveInvite.inviteGeneration === liveRoom.inviteGeneration &&
+      Number.isSafeInteger(liveInvite.expiresAt) && now < liveInvite.expiresAt);
   }
 
-  function validateLiveState(value) {
-    const lobby = value?.lobby;
-    const decimal = (item) => {
-      if (typeof item !== "string" || !/^[1-9][0-9]{0,19}$/.test(item)) return false;
-      try { return BigInt(item) <= 0xffff_ffff_ffff_ffffn; } catch (_) { return false; }
-    };
-    if (value?.type !== "match_state" || value.schemaVersion !== 1 || !lobby ||
-        lobby.protocolVersion !== 1 || !Number.isInteger(lobby.revision) ||
-        lobby.revision < 1 || lobby.revision > 0xffff_ffff ||
-        !Number.isInteger(lobby.matchEpoch) || lobby.matchEpoch < 0 ||
-        lobby.matchEpoch > 0xffff_ffff || !Number.isInteger(lobby.leaderGeneration) ||
-        lobby.leaderGeneration < 1 || lobby.leaderGeneration > 0xffff_ffff ||
-        !["lobby", "loading", "racing", "results", "closed"].includes(lobby.phase) ||
-        !decimal(lobby.roomId) || !decimal(lobby.leaderEndpointId) ||
-        !sameCompatibility(lobby.compatibility) ||
-        !Array.isArray(lobby.members) || lobby.members.length < 1 ||
-        lobby.members.length > 4 || !Array.isArray(lobby.seats) ||
-        lobby.seats.length < 1 || lobby.seats.length > 4 ||
-        !Number.isInteger(lobby.selectedVehicleMask) ||
-        lobby.selectedVehicleMask < 0 || lobby.selectedVehicleMask > 7 ||
-        (lobby.selectedTrack !== null && (!Number.isInteger(lobby.selectedTrack) ||
-          lobby.selectedTrack < 0 || lobby.selectedTrack > 255)) ||
-        !Number.isSafeInteger(value.expiresAt) ||
-        !Number.isSafeInteger(value.inviteExpiresAt) ||
-        !Number.isInteger(value.inviteGeneration) || value.inviteGeneration < 1 ||
-        value.inviteGeneration > 0xffff_ffff ||
-        ![null, "host_closed", "room_expired"].includes(value.closedReason) ||
-        !Array.isArray(value.controlTail) || value.controlTail.length > 64 ||
-        Object.hasOwn(lobby, "receipts") || Object.hasOwn(lobby, "nextReceipt")) return false;
-    const ids = new Set();
-    for (const member of lobby.members) {
-      if (!decimal(member?.endpointId) || ids.has(member.endpointId) ||
-          Object.hasOwn(member, "lastCommandId") ||
-          Object.hasOwn(member, "lastCommandFingerprint") ||
-          !Number.isInteger(member.seatCount) || member.seatCount < 1 ||
-          member.seatCount > 2 || typeof member.connected !== "boolean" ||
-          typeof member.ready !== "boolean" || typeof member.loaded !== "boolean") return false;
-      ids.add(member.endpointId);
+  function clearLiveInviteTimer() {
+    clearTimeout(liveInviteTimer);
+    liveInviteTimer = 0;
+  }
+
+  function liveInviteReplacementAllowed() {
+    return Boolean(liveRoom?.lobby?.phase === "lobby" &&
+      liveRoom.lobby.leaderEndpointId === liveRoom.endpointId);
+  }
+
+  function showLiveInviteRecovery() {
+    if (!liveInviteReplacementAllowed()) {
+      hideAuxiliary();
+      return false;
     }
-    const localCounts = new Map();
-    const characterIds = new Set();
-    for (const seat of lobby.seats) {
-      if (!ids.has(seat?.endpointId) || !Number.isInteger(seat.localIndex) ||
-          seat.localIndex < 0 || seat.localIndex > 1 ||
-          !Number.isInteger(seat.selectionRevision) || seat.selectionRevision < 0 ||
-          (seat.characterId !== null && (!Number.isInteger(seat.characterId) ||
-            seat.characterId < 0 || seat.characterId >= characters.length)) ||
-          (seat.vehicleId !== null && (!Number.isInteger(seat.vehicleId) ||
-            seat.vehicleId < 0 || seat.vehicleId >= vehicles.length)) ||
-          (seat.voteTrack !== null && (!Number.isInteger(seat.voteTrack) ||
-            seat.voteTrack < 0 || seat.voteTrack > 255)) ||
-          ((seat.characterId !== null || seat.vehicleId !== null) !==
-            (seat.selectionRevision !== 0)) ||
-          (seat.characterId !== null && characterIds.has(seat.characterId))) return false;
-      const key = `${seat.endpointId}:${seat.localIndex}`;
-      if (localCounts.has(key)) return false;
-      localCounts.set(key, true);
-      if (seat.characterId !== null) characterIds.add(seat.characterId);
-    }
-    if (!lobby.members.every((member) => {
-      const seats = lobby.seats.filter((seat) => seat.endpointId === member.endpointId);
-      return seats.length === member.seatCount &&
-        seats.every((seat, index) => seat.localIndex === index) &&
-        (!member.ready || seats.every((seat) =>
-          seat.characterId !== null && seat.vehicleId !== null));
-    }) || !ids.has(lobby.leaderEndpointId) ||
-        !ids.has(String(liveRoom?.endpointId || value.endpointId || ""))) return false;
-    const active = ["loading", "racing", "results"].includes(lobby.phase);
-    if (active && (lobby.selectedTrack === null || lobby.selectedVehicleMask === 0 ||
-        lobby.matchEpoch === 0 || lobby.seats.some((seat) =>
-          seat.characterId === null || seat.vehicleId === null ||
-          (lobby.selectedVehicleMask & (1 << seat.vehicleId)) === 0))) return false;
-    return lobby.phase !== "lobby" || (lobby.selectedTrack === null &&
-      lobby.selectedVehicleMask === 0 && lobby.members.every((member) => !member.loaded));
+    const auxiliary = byId("online-room-auxiliary");
+    auxiliary.replaceChildren();
+    auxiliary.hidden = false;
+    auxiliary.dataset.inviteView = "expired";
+    const heading = document.createElement("h3");
+    const copy = document.createElement("span");
+    const replace = document.createElement("button");
+    heading.textContent = "Invitation Expired";
+    copy.textContent = "The old link and room code are no longer shown. Create a new invitation for friends who have not joined yet.";
+    replace.type = "button";
+    replace.className = "btn btn-primary";
+    replace.textContent = "Create New Invitation";
+    replace.disabled = liveInviteRotating;
+    replace.addEventListener("click", () => void rotateLiveInvite());
+    auxiliary.append(heading, copy, replace);
+    replace.focus();
+    return true;
+  }
+
+  function scheduleLiveInviteExpiry() {
+    clearLiveInviteTimer();
+    if (!liveInviteUsable()) return;
+    const operation = liveOperation;
+    const roomId = liveRoom.roomId;
+    const generation = liveInvite.inviteGeneration;
+    const deadline = liveInvite.expiresAt;
+    const delay = Math.max(0, Math.min(0x7fff_ffff, deadline - Date.now() + 20));
+    liveInviteTimer = setTimeout(() => {
+      liveInviteTimer = 0;
+      if (operation !== liveOperation || liveRoom?.roomId !== roomId ||
+          liveRoom?.inviteGeneration !== generation ||
+          liveInvite?.inviteGeneration !== generation) return;
+      if (Date.now() < deadline) { scheduleLiveInviteExpiry(); return; }
+      const inviteWasVisible = byId("online-room-auxiliary").dataset.inviteView ===
+        "active";
+      // Secret custody ends before any UI work. A presenter/Wasm failure may
+      // preserve the public room snapshot, but can never resurrect this link.
+      liveInvite = null;
+      try {
+        if (!projectLiveState()) throw new Error("projection_failed");
+        if (inviteWasVisible) showLiveInviteRecovery();
+      } catch (error) {
+        showLiveFailure(Object.assign(error, {code: "service_unavailable"}));
+      }
+    }, delay);
   }
 
   function projectLiveState() {
     if (!liveRoom?.lobby || !api) return false;
     const lobby = liveRoom.lobby;
-    const members = lobby.members;
     const endpoint = String(liveRoom.endpointId);
-    const localIndex = members.findIndex((member) => member.endpointId === endpoint);
-    const leaderIndex = members.findIndex((member) =>
+    const localIndex = lobby.members.findIndex((member) =>
+      member.endpointId === endpoint);
+    const leaderIndex = lobby.members.findIndex((member) =>
       member.endpointId === lobby.leaderEndpointId);
-    let memberSeats = 0;
-    let ready = 0;
-    let connected = 0;
-    let loaded = 0;
-    for (let index = 0; index < members.length; index++) {
-      memberSeats |= (members[index].seatCount & 3) << (index * 2);
-      if (members[index].ready) ready |= 1 << index;
-      if (members[index].connected) connected |= 1 << index;
-      if (members[index].loaded) loaded |= 1 << index;
-    }
-    let owners = 0;
-    let character = 0;
-    let vehicle = 0;
-    let vote = 0;
-    for (let index = 0; index < lobby.seats.length; index++) {
-      const owner = members.findIndex((member) =>
-        member.endpointId === lobby.seats[index].endpointId);
-      owners |= (owner & 3) << (index * 2);
-      if (lobby.seats[index].characterId !== null) character |= 1 << index;
-      if (lobby.seats[index].vehicleId !== null) vehicle |= 1 << index;
-      if (lobby.seats[index].voteTrack !== null) vote |= 1 << index;
-    }
-    const lobbyPhase = {lobby: 1, loading: 2, racing: 3, results: 4, closed: 5}
-      [lobby.phase];
     const roomPhase = lobby.phase === "lobby" ? liveRoomPhase :
       ({loading: 4, racing: 6, results: 7, closed: 8}[lobby.phase]);
-    const inviteReady = Boolean(liveInvite && localIndex === leaderIndex &&
-      Date.now() < Number(liveRoom.inviteExpiresAt));
-    const projected = api.liveProject(roomPhase, lobbyPhase, lobby.revision,
-      lobby.matchEpoch, leaderIndex, localIndex, members.length, lobby.seats.length,
-      memberSeats, ready, connected, loaded, owners, character, vehicle, vote,
-      lobby.selectedTrack ?? 0, lobby.selectedVehicleMask, liveJourney, 0,
-      inviteReady ? 1 : 0);
+    const inviteState = localIndex === leaderIndex && lobby.phase === "lobby"
+      ? (liveInviteUsable() ? 1 : 2) : 0;
+    const fields = liveState.projection(liveRoom, liveConfig?.compatibility,
+      endpoint, roomPhase, liveJourney, inviteState);
+    if (!fields) return false;
+    const projected = api.liveProject(...fields);
     if (!projected) return false;
     return renderShared();
   }
 
-  function mergeLiveState(value) {
-    const candidate = {...(liveRoom || {}), ...value,
-      lobby: value?.lobby || liveRoom?.lobby};
-    const prior = liveRoom;
-    liveRoom = candidate;
-    if (!validateLiveState(candidate)) {
-      liveRoom = prior;
+  function mergeLiveState(value, expectedInviteResponseGeneration = 0) {
+    const priorRoom = liveRoom;
+    const priorInvite = liveInvite;
+    const ingested = liveState.ingest(value, priorRoom, priorInvite,
+      liveConfig?.compatibility, liveConfig?.origin, Date.now(),
+      expectedInviteResponseGeneration);
+    if (!ingested) {
       throw Object.assign(new Error("invalid_match_state"),
         {code: "service_unavailable"});
     }
-    if (!projectLiveState()) throw Object.assign(new Error("projection_failed"),
+    if (ingested.obsolete) {
+      if (!ingested.invite) return true;
+      // The public snapshot lost an HTTP/WebSocket race, but this is the only
+      // valid copy of the already-current generation's invitation secret.
+      // Project it against the newer room without rolling public state back.
+      liveInvite = ingested.invite;
+      try {
+        if (projectLiveState()) {
+          scheduleLiveInviteExpiry();
+          return true;
+        }
+      } catch (_) {}
+      liveInvite = priorInvite;
+      scheduleLiveInviteExpiry();
+      throw Object.assign(new Error("projection_failed"),
+        {code: "service_unavailable"});
+    }
+    liveRoom = ingested.state;
+    liveInvite = ingested.invite;
+    try {
+      if (projectLiveState()) {
+        if (liveRoom.lobby.phase === "closed") {
+          forgetLiveRoom();
+          return true;
+        }
+        scheduleLiveInviteExpiry();
+        return true;
+      }
+    } catch (_) {
+      // Roll back below. A malformed Wasm/presenter result is no more entitled
+      // to advance credential or invite custody than an explicit projection
+      // rejection.
+    }
+    liveRoom = priorRoom;
+    liveInvite = priorInvite && priorRoom &&
+      priorInvite.inviteGeneration === priorRoom.inviteGeneration &&
+      Date.now() < priorInvite.expiresAt ? priorInvite : null;
+    scheduleLiveInviteExpiry();
+    throw Object.assign(new Error("projection_failed"),
       {code: "service_unavailable"});
   }
 
@@ -326,14 +396,28 @@
     if (testState) testState.errors.push(code);
     announcedKey = "";
     selectCase(failureSlug(code));
+    if (code === "host_closed" || code === "not_found") forgetLiveRoom();
   }
 
   function closeLiveSocket() {
+    liveSocketGeneration++;
     clearTimeout(liveSocketTimer);
+    clearTimeout(liveSocketStableTimer);
     liveSocketTimer = 0;
+    liveSocketStableTimer = 0;
     const socket = liveSocket;
     liveSocket = null;
     try { socket?.close?.(1000, "launcher_route_changed"); } catch (_) {}
+  }
+
+  function markLiveSocketStable(socketGeneration) {
+    clearTimeout(liveSocketStableTimer);
+    liveSocketStableTimer = setTimeout(() => {
+      liveSocketStableTimer = 0;
+      if (liveSocket && socketGeneration === liveSocketGeneration) {
+        liveSocketAttempt = 0;
+      }
+    }, 30_000);
   }
 
   async function refreshLive(operation = liveOperation) {
@@ -352,6 +436,11 @@
 
   function scheduleLiveReconnect(operation) {
     if (operation !== liveOperation || !liveRoom?.roomId || liveSocketTimer) return;
+    if (liveSocketAttempt >= 5) {
+      showLiveFailure(Object.assign(new Error("state_reconnect_exhausted"),
+        {code: "service_unavailable"}));
+      return;
+    }
     const delay = Math.min(4000, 250 * (2 ** Math.min(liveSocketAttempt++, 4)));
     liveSocketTimer = setTimeout(() => {
       liveSocketTimer = 0;
@@ -359,30 +448,107 @@
     }, delay);
   }
 
-  function connectLiveSocket(operation = liveOperation) {
+  function failLiveSocketSetup(operation, socketGeneration) {
+    if (operation !== liveOperation ||
+        socketGeneration !== liveSocketGeneration) return false;
+    // Invalidate any callback the adapter may have retained before throwing,
+    // and close a partially constructed native socket without trusting its
+    // event-listener installation to have completed.
     closeLiveSocket();
-    if (!liveRoom?.roomId || !liveRoom.credential || operation !== liveOperation) return;
+    showLiveFailure(Object.assign(new Error("match_state_transport_failed"),
+      {code: "service_unavailable"}));
+    scheduleLiveReconnect(operation);
+    return false;
+  }
+
+  function connectLiveSocket(operation = liveOperation) {
+    // A delayed caller from a superseded create/join must not close the newer
+    // room's live socket merely by reaching this function.
+    if (operation !== liveOperation) return false;
+    closeLiveSocket();
+    if (!liveRoom?.roomId || !liveRoom.credential) return false;
+    const socketGeneration = liveSocketGeneration;
     if (typeof liveConfig?.subscribe === "function") {
-      liveSocket = liveConfig.subscribe({...liveRoom}, (value) => {
-        if (operation !== liveOperation) return;
-        try { mergeLiveState(value); } catch (error) { showLiveFailure(error); }
-      }, () => scheduleLiveReconnect(operation));
-      return;
+      let subscription;
+      try {
+        subscription = liveConfig.subscribe({...liveRoom}, (value) => {
+          if (operation !== liveOperation ||
+              socketGeneration !== liveSocketGeneration) return;
+          try { mergeLiveState(value); }
+          catch (error) { closeLiveSocket(); showLiveFailure(error); }
+        }, () => {
+          if (operation !== liveOperation ||
+              socketGeneration !== liveSocketGeneration) return;
+          clearTimeout(liveSocketStableTimer);
+          liveSocketStableTimer = 0;
+          liveSocketGeneration++;
+          liveSocket = null;
+          scheduleLiveReconnect(operation);
+        });
+      } catch (_) {
+        return failLiveSocketSetup(operation, socketGeneration);
+      }
+      if (operation !== liveOperation ||
+          socketGeneration !== liveSocketGeneration) {
+        try { subscription?.close?.(1000, "superseded_during_subscribe"); }
+        catch (_) {}
+        return false;
+      }
+      if (!subscription || typeof subscription.close !== "function") {
+        return failLiveSocketSetup(operation, socketGeneration);
+      }
+      liveSocket = subscription;
+      markLiveSocketStable(socketGeneration);
+      return true;
     }
-    const url = new URL(`/api/match/${liveRoom.roomId}/connect`, serviceUrl("/"));
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(url, ["gb-match-v1", `gb-match.${liveRoom.credential}`]);
-    liveSocket = socket;
-    socket.addEventListener("open", () => { liveSocketAttempt = 0; });
-    socket.addEventListener("message", (event) => {
-      if (socket !== liveSocket || operation !== liveOperation ||
-          typeof event.data !== "string" || event.data.length > 64 * 1024) return;
-      try { mergeLiveState(JSON.parse(event.data)); }
-      catch (error) { showLiveFailure(error); }
-    });
-    socket.addEventListener("close", () => {
-      if (socket === liveSocket) { liveSocket = null; scheduleLiveReconnect(operation); }
-    });
+    let socket;
+    try {
+      const url = new URL(`/api/match/${liveRoom.roomId}/connect`, serviceUrl("/"));
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(url,
+        ["gb-match-v1", `gb-match.${liveRoom.credential}`]);
+      liveSocket = socket;
+      socket.addEventListener("open", () => {
+        if (socket === liveSocket && socketGeneration === liveSocketGeneration) {
+          markLiveSocketStable(socketGeneration);
+        }
+      });
+      socket.addEventListener("message", (event) => {
+        if (socket !== liveSocket || operation !== liveOperation ||
+            socketGeneration !== liveSocketGeneration) return;
+        if (typeof event.data !== "string" ||
+            event.data.length > maxLiveResponseBytes ||
+            new TextEncoder().encode(event.data).byteLength >
+              maxLiveResponseBytes) {
+          liveSocket = null;
+          clearTimeout(liveSocketStableTimer);
+          liveSocketStableTimer = 0;
+          try { socket.close(1009, "invalid_match_state"); } catch (_) {}
+          showLiveFailure(Object.assign(new Error("invalid_match_state"),
+            {code: "service_unavailable"}));
+          return;
+        }
+        try { mergeLiveState(JSON.parse(event.data)); }
+        catch (error) {
+          liveSocket = null;
+          clearTimeout(liveSocketStableTimer);
+          liveSocketStableTimer = 0;
+          try { socket.close(1008, "invalid_match_state"); } catch (_) {}
+          showLiveFailure(error);
+        }
+      });
+      socket.addEventListener("close", () => {
+        if (socket === liveSocket && socketGeneration === liveSocketGeneration) {
+          liveSocket = null;
+          clearTimeout(liveSocketStableTimer);
+          liveSocketStableTimer = 0;
+          scheduleLiveReconnect(operation);
+        }
+      });
+    } catch (_) {
+      return failLiveSocketSetup(operation, socketGeneration);
+    }
+    return true;
   }
 
   function renderQr(canvas, url) {
@@ -417,16 +583,10 @@
       const value = await liveRequest("/api/match/create", {
         compatibility: structuredClone(liveConfig.compatibility), seatCount: 1});
       if (operation !== liveOperation) return false;
-      liveInvite = {inviteUrl: value.inviteUrl,
-        fallbackCode: value.fallbackCode,
-        inviteGeneration: value.inviteGeneration || 1};
       liveCommandId = 1;
-      liveRoom = {roomId: value.roomId, endpointId: value.endpointId,
-        credential: value.credential};
       mergeLiveState(value);
       liveLastOperation = () => refreshLive();
-      connectLiveSocket(operation);
-      return true;
+      return connectLiveSocket(operation);
     } catch (error) {
       if (operation === liveOperation) showLiveFailure(error);
       return false;
@@ -434,16 +594,7 @@
   }
 
   function parseInvite(input) {
-    const compact = String(input || "").trim();
-    const code = compact.replace(/\s/g, "");
-    if (/^\d{6}$/.test(code)) return {code};
-    if (/^[A-Za-z0-9_-]{43}$/.test(compact)) return {capability: compact};
-    try {
-      const parsed = new URL(compact, location.href);
-      const capability = new URLSearchParams(parsed.hash.slice(1)).get("match");
-      return /^[A-Za-z0-9_-]{43}$/.test(capability || "")
-        ? {capability} : null;
-    } catch (_) { return null; }
+    return liveState.parseInvite(input, liveConfig?.origin || location.origin);
   }
 
   async function joinLiveRoom(rawInvite) {
@@ -463,14 +614,10 @@
       const value = await liveRequest(path, {...parsed,
         compatibility: structuredClone(liveConfig.compatibility), seatCount: 1});
       if (operation !== liveOperation) return false;
-      liveInvite = null;
       liveCommandId = 2;
-      liveRoom = {roomId: value.roomId, endpointId: value.endpointId,
-        credential: value.credential};
       mergeLiveState(value);
       liveLastOperation = () => refreshLive();
-      connectLiveSocket(operation);
-      return true;
+      return connectLiveSocket(operation);
     } catch (error) {
       if (operation === liveOperation) showLiveFailure(error);
       return false;
@@ -522,10 +669,15 @@
   }
 
   function showLiveInvite() {
-    if (!liveInvite) return;
+    if (!liveInviteUsable()) {
+      liveInvite = null;
+      try { projectLiveState(); } catch (_) {}
+      return showLiveInviteRecovery();
+    }
     const auxiliary = byId("online-room-auxiliary");
     auxiliary.replaceChildren();
     auxiliary.hidden = false;
+    auxiliary.dataset.inviteView = "active";
     const heading = document.createElement("h3");
     const copy = document.createElement("span");
     const canvas = document.createElement("canvas");
@@ -534,10 +686,14 @@
     const share = document.createElement("button");
     const rotate = document.createElement("button");
     heading.textContent = "Invite a Friend";
-    copy.textContent = "Scan this room QR or share the link. Use Add phone controllers for this display's controls.";
     canvas.className = "online-room-qr";
     canvas.setAttribute("aria-label", "Private online room QR code");
-    renderQr(canvas, liveInvite.inviteUrl);
+    let qrReady = false;
+    try { qrReady = renderQr(canvas, liveInvite.inviteUrl); }
+    catch (_) { qrReady = false; }
+    copy.textContent = qrReady
+      ? "Scan this room QR or share the link. Use Add phone controllers for this display's controls."
+      : "Share this room link or enter the code. Use Add phone controllers for this display's controls.";
     const rawCode = String(liveInvite.fallbackCode || "");
     code.className = "online-room-code";
     code.translate = false;
@@ -549,6 +705,12 @@
     share.textContent = "Share Link";
     rotate.textContent = "Replace Invitation";
     share.addEventListener("click", async () => {
+      if (!liveInviteUsable()) {
+        liveInvite = null;
+        try { projectLiveState(); } catch (_) {}
+        showLiveInviteRecovery();
+        return;
+      }
       const inviteUrl = liveInvite.inviteUrl;
       let timer = 0;
       const attempted = (async () => {
@@ -563,6 +725,12 @@
         timer = setTimeout(() => resolve(false), 2000);
       })]);
       clearTimeout(timer);
+      if (!liveInviteUsable()) {
+        liveInvite = null;
+        try { projectLiveState(); } catch (_) {}
+        showLiveInviteRecovery();
+        return;
+      }
       if (shared) {
         showAuxiliary("Invitation Ready", "The private-room link is ready to send.");
       } else { showAuxiliary("Share the Room Code",
@@ -571,24 +739,36 @@
     rotate.addEventListener("click", () => void rotateLiveInvite());
     actions.className = "online-room-inline-actions";
     actions.append(share, rotate);
-    auxiliary.append(heading, copy, canvas, code, actions);
+    auxiliary.append(heading, copy);
+    if (qrReady) auxiliary.append(canvas);
+    auxiliary.append(code, actions);
     share.focus();
+    return true;
   }
 
   async function rotateLiveInvite() {
-    if (!liveRoom?.roomId || !liveRoom.credential || !liveInvite) return false;
+    if (!liveRoom?.roomId || !liveRoom.credential || liveInviteRotating ||
+        liveRoom.lobby?.phase !== "lobby" ||
+        liveRoom.lobby?.leaderEndpointId !== liveRoom.endpointId) return false;
     const operation = liveOperation;
+    const expectedInviteGeneration = liveRoom.inviteGeneration;
+    liveInviteRotating = true;
+    showAuxiliary("Creating New Invitation…",
+      "Replacing the old link and room code. Friends already in the room stay connected.");
     try {
       const value = await liveRequest(`/api/match/${liveRoom.roomId}/rotate`,
-        {expectedInviteGeneration: liveInvite.inviteGeneration}, liveRoom.credential);
+        {expectedInviteGeneration}, liveRoom.credential);
       if (operation !== liveOperation) return false;
-      liveInvite = {inviteUrl: value.inviteUrl,
-        fallbackCode: value.fallbackCode,
-        inviteGeneration: value.inviteGeneration};
-      mergeLiveState(value);
-      showLiveInvite();
-      return true;
-    } catch (error) { if (operation === liveOperation) showLiveFailure(error); return false; }
+      const responseGeneration = expectedInviteGeneration < 0xffff_ffff
+        ? expectedInviteGeneration + 1 : 0;
+      mergeLiveState(value, responseGeneration);
+      return showLiveInvite();
+    } catch (error) {
+      if (operation === liveOperation) showLiveFailure(error);
+      return false;
+    } finally {
+      if (operation === liveOperation) liveInviteRotating = false;
+    }
   }
 
   function localSeatIndex(field) {
@@ -614,22 +794,40 @@
         else throw error;
       }
       if (operation !== liveOperation || !result?.accepted) return false;
+      // A successful leave revokes this endpoint credential atomically. Close
+      // is terminal for the whole room and closes its state sockets. Neither
+      // receipt has a useful authenticated state refresh left to perform; the
+      // caller clears locally only after this accepted response.
+      if (type === "leave" || type === "close") return true;
       return refreshLive(operation);
     } catch (error) {
-      if (error?.code === "stale_revision") return refreshLive(operation);
+      if (error?.code === "stale_revision") {
+        const refreshed = await refreshLive(operation);
+        if (refreshed) showAuxiliary("The Room Changed",
+          "Your action was not applied. Review the newest room state and try again.");
+        return false;
+      }
       if (operation === liveOperation) showLiveFailure(error);
       return false;
     }
   }
 
-  function clearLiveRoom() {
+  function forgetLiveRoom() {
     liveOperation++;
     closeLiveSocket();
+    clearLiveInviteTimer();
     liveRoom = null;
     liveInvite = null;
+    liveInviteRotating = false;
+    liveLastOperation = null;
+    liveSocketAttempt = 0;
     liveRoomPhase = 1;
     liveCommandId = 1;
     announcedKey = "";
+  }
+
+  function clearLiveRoom() {
+    forgetLiveRoom();
     selectCase("entry");
   }
 
@@ -644,24 +842,16 @@
   }
 
   async function startLive() {
-    if (!validCompatibility(liveConfig?.compatibility)) {
+    if (!liveState.validCompatibility(liveConfig?.compatibility)) {
       throw new Error("Online Room live adapter requires bounded compatibility data");
     }
-    let capability = new URLSearchParams(location.hash.slice(1)).get("match");
-    if (!capability) {
-      try {
-        const staged = JSON.parse(sessionStorage.getItem(
-          "mdkr-online-room-entry-v1") || "null");
-        sessionStorage.removeItem("mdkr-online-room-entry-v1");
-        if (staged && Number.isSafeInteger(staged.createdAt) &&
-            Date.now() - staged.createdAt >= 0 &&
-            Date.now() - staged.createdAt <= 60_000) capability = staged.capability;
-      } catch (_) {
-        try { sessionStorage.removeItem("mdkr-online-room-entry-v1"); } catch (_) {}
-      }
-    }
+    const capability = pendingEntryCapability && Date.now() < pendingEntryExpiresAt
+      ? pendingEntryCapability : null;
+    pendingEntryCapability = "";
+    pendingEntryExpiresAt = 0;
+    clearTimeout(pendingEntryTimer);
+    pendingEntryTimer = 0;
     if (/^[A-Za-z0-9_-]{43}$/.test(capability || "")) {
-      history.replaceState(null, "", location.pathname + location.search);
       open();
       await joinLiveRoom(capability);
     }
@@ -693,7 +883,8 @@
   function readModel() {
     return {
       slug: api.slug(), title: api.title(), explanation: api.explanation(),
-      status: api.status(), kind: api.kind(), failure: api.failure(),
+      status: api.status(), verificationPhrase: api.verificationPhrase(),
+      kind: api.kind(), failure: api.failure(),
       announcement: api.announcement(), members: api.members(),
       seats: api.seats(), ready: api.readyCount(),
       admission: Boolean(api.requiresAdmission()),
@@ -702,16 +893,6 @@
       timeoutTitle: api.timeoutTitle(), timeoutCopy: api.timeoutExplanation(),
       controls: [0, 1, 2, 3].map(readControl),
     };
-  }
-
-  function selectionFor(action) {
-    if (action === 6) return {label: "Choose Character", options: characters
-      .map((label, value) => ({label, value}))};
-    if (action === 7) return {label: "Choose Vehicle", options: vehicles
-      .map((label, value) => ({label, value}))};
-    if (action === 8) return {label: "Choose Track", options: tracks
-      .map(([label, value]) => ({label, value}))};
-    return null;
   }
 
   function recordActivation(action, result) {
@@ -821,13 +1002,36 @@
 
   async function activateLive(action, value) {
     if (liveSelectionSaving) return 0;
+    const admitted = presenter.liveAction(currentPresentation, action,
+      {fixture: liveConfig?.fixture === true});
+    if (!admitted) {
+      showAuxiliary("The Room Changed",
+        "That action is no longer available. Review the current room and try again.");
+      recordActivation(action, 0);
+      return 0;
+    }
+    if (!admitted.available) {
+      const carrier = admitted.route === "carrier_locked";
+      showAuxiliary(carrier ? "Secure Setup Is Still Locked" :
+        "Online Racing Is Still Locked", carrier
+        ? "This action needs the authenticated direct connection and a fresh phrase comparison. Nothing was changed."
+        : "Room control is available, but race setup and gameplay stay off until rollback qualification is approved. Nothing was changed.");
+      recordActivation(action, 2);
+      return 2;
+    }
     let result = 0;
-    if (action === 1) result = await createLiveRoom() ? 1 : 0;
-    else if (action === 2 || action === 15) {
+    const route = admitted.route;
+    if (route === "create") result = await createLiveRoom() ? 1 : 0;
+    else if (route === "join") {
       showJoinForm(); result = 2;
-    } else if (action === 3) {
-      showLiveInvite(); result = liveInvite ? 2 : 0;
-    } else if (action === 4) {
+    } else if (route === "share_invite") {
+      if (liveInviteUsable()) {
+        result = showLiveInvite() ? 2 : 0;
+      } else {
+        liveInvite = null;
+        result = await rotateLiveInvite() ? 2 : 0;
+      }
+    } else if (route === "check_setup") {
       liveRoomPhase = 2;
       if (projectLiveState()) {
         showAuxiliary("Checking Everyone's Setup",
@@ -835,48 +1039,51 @@
         liveRoomPhase = 3;
         result = projectLiveState() ? 1 : 0;
       }
-    } else if (action === 5) {
+    } else if (route === "connection_details") {
       showAuxiliary("Private Room Connection",
         "Room control is connected. Race transport remains disabled until rollback qualification is approved.");
       result = 2;
-    } else if (action === 6) {
+    } else if (route === "choose_character") {
       result = await sendLiveCommand("set_character", value,
         localSeatIndex("characterId")) ? 1 : 0;
-    } else if (action === 7) {
+    } else if (route === "choose_vehicle") {
       result = await sendLiveCommand("set_vehicle", value,
         localSeatIndex("vehicleId")) ? 1 : 0;
-    } else if (action === 8) {
+    } else if (route === "choose_track") {
       result = await sendLiveCommand("set_vote", value,
         localSeatIndex("voteTrack")) ? 1 : 0;
-    } else if (action === 9) {
+    } else if (route === "ready") {
       result = await sendLiveCommand("set_ready", 1) ? 1 : 0;
-    } else if (action === 10) {
+    } else if (route === "change_selection") {
       if (await sendLiveCommand("set_ready", 0)) {
         showLiveSelectionEditor(); result = 2;
       }
-    } else if (action === 14) {
+    } else if (route === "retry") {
       const recovered = await (liveLastOperation ? liveLastOperation() : refreshLive());
+      let connected = true;
       if (recovered && liveRoom?.roomId && !liveSocket) {
-        connectLiveSocket(liveOperation);
+        liveSocketAttempt = 0;
+        connected = connectLiveSocket(liveOperation);
       }
-      result = recovered ? 1 : 0;
-    } else if (action === 16) {
+      result = recovered && connected ? 1 : 0;
+    } else if (route === "update") {
       showAuxiliary("Update Safely",
         "Use the newest published release from the same trusted source you installed.");
       result = 2;
-    } else if (action === 17 || action === 21) {
+    } else if (route === "choose_rom" || route === "play_here") {
+      forgetLiveRoom();
       localRoute(action); result = 2;
-    } else if (action === 19) {
+    } else if (route === "setup_controller") {
       showAuxiliary("Set Up a Controller",
         "Connect a gamepad, use this display, or add a browser-based phone controller.");
       result = 2;
-    } else if (action === 20) {
+    } else if (route === "connection_doctor") {
       showAuxiliary("Connection Doctor",
         "Check that both displays are online, retry the newest invite, then use local play if the networks cannot connect directly.");
       result = 2;
-    } else if (action === 23 || action === 24) {
+    } else if (route === "return_home" || route === "leave_room") {
       result = await leaveLiveRoom() ? 1 : 0;
-      if (result && action === 23) localRoute(action);
+      if (result && route === "return_home") localRoute(action);
     }
     recordActivation(action, result);
     return result;
@@ -918,16 +1125,16 @@
     if (action === 17 || action === 21 || action === 23) localRoute(action);
   }
 
-  function addAction(container, control, primary, selection) {
-    if (!control.action || !control.label) return;
+  function addAction(container, item) {
+    if (!item.action || !item.label) return;
     let value = 0;
-    if (selection) {
+    if (item.selection) {
       const label = document.createElement("label");
       const name = document.createElement("span");
       const select = document.createElement("select");
       label.className = "online-room-choice";
-      name.textContent = selection.label;
-      for (const option of selection.options) {
+      name.textContent = item.selection.label;
+      for (const option of item.selection.options) {
         const node = document.createElement("option");
         node.value = String(option.value);
         node.textContent = option.label;
@@ -940,74 +1147,51 @@
     }
     const button = document.createElement("button");
     button.type = "button";
-    button.className = primary ? "btn btn-primary" : "btn btn-ghost";
-    button.textContent = control.label;
-    button.disabled = !control.enabled;
-    button.dataset.onlineAction = String(control.action);
-    if (control.action === 24 || control.action === 25) {
-      button.dataset.tone = "destructive";
-    }
-    button.addEventListener("click", () => activate(control.action, value));
+    button.className = item.primary ? "btn btn-primary" : "btn btn-ghost";
+    button.textContent = item.label;
+    button.disabled = !item.enabled;
+    button.dataset.onlineAction = String(item.action);
+    if (item.destructive) button.dataset.tone = "destructive";
+    button.addEventListener("click", () => activate(item.action, value));
     container.append(button);
   }
 
   function renderShared() {
     if (!api) return false;
     const model = readModel();
+    const playable = !play.disabled && play.dataset.blocked !== "1";
+    const presentation = presenter.project(model, {
+      live: Boolean(liveConfig), localPlayable: playable,
+    });
+    currentPresentation = presentation;
     gate.hidden = true;
     modelRoot.hidden = false;
-    title.textContent = model.title;
-    explanation.textContent = model.explanation;
-    byId("online-room-model-status").textContent = model.status || "Private Room Preview";
-    byId("online-room-model-counts").textContent =
-      `${model.members} members · ${model.seats} racer seats · ${model.ready} ready`;
-    dialog.dataset.viewKind = String(model.kind);
-    dialog.dataset.failure = String(model.failure);
-    dialog.dataset.gallerySlug = model.slug;
+    title.textContent = presentation.title;
+    explanation.textContent = presentation.explanation;
+    byId("online-room-model-status").textContent = presentation.status;
+    byId("online-room-model-counts").textContent = presentation.countsText;
+    verification.hidden = !presentation.verification.visible;
+    verificationPhrase.textContent = presentation.verification.phrase;
+    dialog.dataset.viewKind = String(presentation.kind);
+    dialog.dataset.failure = String(presentation.failure);
+    dialog.dataset.gallerySlug = presentation.slug;
 
     const timeout = byId("online-room-timeout");
-    timeout.hidden = !model.timeoutVisible;
-    byId("online-room-timeout-title").textContent = model.timeoutTitle;
-    byId("online-room-timeout-copy").textContent = model.timeoutCopy;
+    timeout.hidden = !presentation.timeout.visible;
+    byId("online-room-timeout-title").textContent = presentation.timeout.title;
+    byId("online-room-timeout-copy").textContent = presentation.timeout.copy;
     byId("online-room-selection").replaceChildren();
     const actions = byId("online-room-model-actions");
     actions.replaceChildren();
-    const timeoutControl = model.timeoutVisible ? model.controls[3] : null;
-    const seen = new Set();
-    if (timeoutControl?.action) {
-      addAction(actions, timeoutControl, true, null);
-      seen.add(timeoutControl.action);
-    }
-    for (const control of model.controls.slice(0, 3)) {
-      if (!control.action || seen.has(control.action)) continue;
-      const displayed = liveConfig && control.action === 21 &&
-          (play.disabled || play.dataset.blocked === "1")
-        ? {...control, action: 17, label: "Choose ROM"} : control;
-      if (seen.has(displayed.action)) continue;
-      addAction(actions, displayed, control.slot === 0,
-        control.slot === 0 ? selectionFor(displayed.action) : null);
-      seen.add(displayed.action);
-    }
-    // The shared model deliberately carries local availability separately from
-    // room actions. Keep that recovery visible in the live browser surface so
-    // entering Online Room never turns local play into a back-navigation hunt.
-    if (liveConfig && model.localPlay) {
-      const playable = !play.disabled && play.dataset.blocked !== "1";
-      const action = playable ? 21 : 17;
-      if (!seen.has(action)) addAction(actions, {
-        action, label: playable ? "Play Here" : "Choose ROM", enabled: true,
-      }, false, null);
-    }
+    for (const item of presentation.actions) addAction(actions, item);
     hideAuxiliary();
     leaveConfirmation = false;
 
-    const key = `${model.slug}:${model.kind}:${model.failure}`;
-    if (key !== announcedKey) {
-      announcedKey = key;
+    if (presentation.announcement.key !== announcedKey) {
+      announcedKey = presentation.announcement.key;
       const announcement = byId("online-room-announcement");
-      announcement.setAttribute("aria-live",
-        model.announcement === 2 ? "assertive" : "polite");
-      announcement.textContent = `${model.title}. ${model.explanation}`;
+      announcement.setAttribute("aria-live", presentation.announcement.priority);
+      announcement.textContent = presentation.announcement.text;
       if (testState) testState.announcements.push({
         text: announcement.textContent,
         priority: announcement.getAttribute("aria-live"),
@@ -1050,6 +1234,7 @@
       title: string("mdkr_online_browser_title"),
       explanation: string("mdkr_online_browser_explanation"),
       status: string("mdkr_online_browser_status"),
+      verificationPhrase: string("mdkr_online_browser_verification_phrase"),
       timeoutTitle: string("mdkr_online_browser_timeout_title"),
       timeoutExplanation: string("mdkr_online_browser_timeout_explanation"),
       kind: number("mdkr_online_browser_kind"),
@@ -1070,7 +1255,7 @@
       liveProject: number("mdkr_online_browser_live_project",
         Array(21).fill("number")),
     };
-    if (api.version() !== 1 || api.count() < 30) {
+    if (api.version() !== 4 || api.count() < 30) {
       throw new Error("unsupported Online Room model ABI");
     }
     const wanted = typeof testConfig?.case === "string" ? testConfig.case : "entry";
@@ -1111,7 +1296,7 @@
 
   function normalizedLiveConfig(value, trustedFixture) {
     if (!value || typeof value !== "object" ||
-        !validCompatibility(value.compatibility)) return null;
+        !liveState.validCompatibility(value.compatibility)) return null;
     const policy = globalThis.__mdkrOnlineControlReleasePolicy;
     const fixture = trustedFixture && typeof value.request === "function" &&
       typeof value.subscribe === "function";
@@ -1137,6 +1322,7 @@
       origin: origin.origin + "/",
       timeoutMs: Math.max(2000, Math.min(30000,
         Number(fixture ? value.timeoutMs : policy.timeoutMs) || 10000)),
+      fixture,
     };
     if (fixture) {
       normalized.request = value.request;
@@ -1147,7 +1333,7 @@
 
   function sameLiveConfig(left, right) {
     if (!left || !right || left.origin !== right.origin ||
-        left.timeoutMs !== right.timeoutMs) return false;
+        left.timeoutMs !== right.timeoutMs || left.fixture !== right.fixture) return false;
     const a = left.compatibility;
     const b = right.compatibility;
     return a.protocolVersion === b.protocolVersion &&
@@ -1157,14 +1343,7 @@
   }
 
   function stopLive() {
-    liveOperation++;
-    closeLiveSocket();
-    liveRoom = null;
-    liveInvite = null;
-    liveLastOperation = null;
-    liveRoomPhase = 1;
-    liveCommandId = 1;
-    announcedKey = "";
+    forgetLiveRoom();
   }
 
   async function configureLive(value, trustedFixture = false) {
@@ -1192,8 +1371,37 @@
     return true;
   }
 
-  const ready = testConfig ? ensureModel() : initialLiveConfig
-    ? configureLive(initialLiveConfig, true) : Promise.resolve(false);
+  if (entryFragment.attempted) {
+    const policyEnabled = globalThis.__mdkrOnlineControlReleasePolicy?.enabled === true;
+    if (!pendingEntryCapability) {
+      gateTitle = "Check the Room Invitation";
+      gateExplanation = "This private-room link was not valid and has been " +
+        "removed from the address bar. Ask your friend for a new link or use a room code.";
+    } else if (!policyEnabled && !initialLiveConfig) {
+      pendingEntryCapability = "";
+      pendingEntryExpiresAt = 0;
+      gateTitle = "Private Rooms Aren’t Enabled in This Build";
+      gateExplanation = "This invitation was removed from this browser. Local play " +
+        "is still available; use a release where private rooms are enabled to join.";
+    } else {
+      gateTitle = "Choose a ROM to Join the Private Room";
+      gateExplanation = "The invitation is held only in this tab’s memory while you " +
+        "choose and verify a supported ROM. It expires automatically within ten minutes.";
+      pendingEntryTimer = setTimeout(() => {
+        if (!pendingEntryCapability) return;
+        pendingEntryCapability = "";
+        pendingEntryExpiresAt = 0;
+        gateTitle = "Private Room Invitation Expired";
+        gateExplanation = "The invitation was removed from this browser. Ask your " +
+          "friend for a new link or enter the current six-digit room code.";
+        if (!liveConfig) showReleaseGate();
+      }, 10 * 60_000);
+    }
+    showReleaseGate();
+  }
+
+  const ready = initialLiveConfig ? configureLive(initialLiveConfig, true) :
+    testConfig ? ensureModel() : Promise.resolve(false);
 
   function open() {
     returnFocus = document.activeElement instanceof HTMLElement
@@ -1234,11 +1442,13 @@
     disable: disableLive,
     enabled: () => Boolean(liveConfig),
     compatibility: () => liveConfig ? structuredClone(liveConfig.compatibility) : null,
-    select: selectCase,
+    // Gallery mutation is evidence-only. Production callers can inspect the
+    // current validated projection, but cannot replace it with a fake case.
+    select: (value) => testConfig ? selectCase(value) : false,
     current: () => api ? readModel() : null,
     activate,
     inventory: () => {
-      if (!api) return [];
+      if (!api || !testConfig) return [];
       const prior = selectedIndex;
       const rows = Array.from({length: api.count()}, (_, index) => {
         api.select(index);
@@ -1247,6 +1457,9 @@
       if (prior >= 0) api.select(prior);
       return rows;
     },
-    selectedIndex: () => selectedIndex,
+    selectedIndex: () => testConfig ? selectedIndex : -1,
+  });
+  if (entryFragment.attempted) requestAnimationFrame(() => {
+    if (!dialog.open) open();
   });
 })();

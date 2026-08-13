@@ -728,7 +728,8 @@ async function publishOnlineCompatibility(romReady = null) {
   const revision = {"us.v80": 1, "pal.v80": 2}[build] || 0;
   const cadenceHz = build === "us.v80" ? 30 : build === "pal.v80" ? 25 : 0;
   const clean = info && info.source_dirty === false &&
-    typeof info.version === "string" && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.version) &&
+    typeof info.version === "string" && info.version.length <= 32 &&
+    /^[0-9]+\.[0-9]+\.[0-9]+$/.test(info.version) &&
     typeof info.source_commit === "string" &&
     /^[0-9a-f]{40}$/.test(info.source_commit);
   if (!ready || !clean || !revision || !cadenceHz ||

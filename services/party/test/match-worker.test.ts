@@ -2,6 +2,7 @@ import {env} from "cloudflare:workers";
 import {SELF, abortAllDurableObjects, evictDurableObject,
   runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
 import {describe, expect, it} from "vitest";
+import {MATCH_LIMITS} from "../src/match/protocol";
 import type {Env} from "../src/types";
 
 const origin = "https://party.example.invalid";
@@ -53,10 +54,65 @@ function nextClose(socket: WebSocket, label: string): Promise<CloseEvent> {
 }
 
 describe("MatchRoom local Durable Object adapter", () => {
+  it("rejects unknown public match fields before they reach authority", async () => {
+    const unknownCompatibility = {...compatibility, diagnostics: true};
+    const unknownCreate = await post("/api/match/create",
+      {compatibility: unknownCompatibility, seatCount: 1});
+    expect(unknownCreate.status).toBe(400);
+    expect(await unknownCreate.json()).toEqual({error: "invalid_match"});
+
+    const host = await create();
+    const capability = new URL(host.inviteUrl).hash.slice("#match=".length);
+    const unknownJoin = await post("/api/match/join", {
+      capability, compatibility, seatCount: 1, diagnostics: true,
+    });
+    expect(unknownJoin.status).toBe(400);
+    expect(await unknownJoin.json()).toEqual({error: "invalid_invite"});
+    const unknownCode = await post("/api/match/code", {
+      code: host.fallbackCode, compatibility, seatCount: 1, diagnostics: true,
+    });
+    expect(unknownCode.status).toBe(400);
+    expect(await unknownCode.json()).toEqual({error: "invalid_code"});
+    const unknownState = await post(`/api/match/${host.roomId}/state`,
+      {diagnostics: true}, host.credential);
+    expect(unknownState.status).toBe(400);
+    expect(await unknownState.json()).toEqual({error: "invalid_request"});
+    const unknownRotate = await post(`/api/match/${host.roomId}/rotate`,
+      {expectedInviteGeneration: 1, diagnostics: true}, host.credential);
+    expect(unknownRotate.status).toBe(400);
+    expect(await unknownRotate.json()).toEqual({error: "invalid_invite_generation"});
+    const unknownCommand = await post(`/api/match/${host.roomId}/command`,
+      {...command(host.lobby.revision, "1", "set_ready", 1), diagnostics: true},
+      host.credential);
+    expect(unknownCommand.status).toBe(400);
+    expect(await unknownCommand.json()).toEqual({error: "invalid_command"});
+
+    for (const contentType of [undefined, "text/plain", "application/jsonp"]) {
+      const headers = new Headers({origin,
+        authorization: `Bearer ${host.credential}`});
+      if (contentType) headers.set("content-type", contentType);
+      const wrongMedia = await SELF.fetch(
+        `https://party.test/api/match/${host.roomId}/command`, {
+          method: "POST", headers,
+          body: JSON.stringify(command(host.lobby.revision, "1", "set_ready", 1)),
+        });
+      expect(wrongMedia.status).toBe(415);
+      expect(await wrongMedia.json()).toEqual({error: "unsupported_media_type"});
+    }
+
+    const unchanged = await post(`/api/match/${host.roomId}/state`, {},
+      host.credential);
+    expect(unchanged.status).toBe(200);
+    expect((await unchanged.json() as Record<string, any>).lobby.revision)
+      .toBe(host.lobby.revision);
+  });
+
   it("joins by an isolated rate-limited code without persisting the raw code", async () => {
     const host = await create();
     expect(new URL(host.inviteUrl).pathname).toBe("/room/");
     expect(host.fallbackCode).toMatch(/^\d{6}$/);
+    expect(host.inviteExpiresInMs).toBeGreaterThan(0);
+    expect(host.inviteExpiresInMs).toBeLessThanOrEqual(MATCH_LIMITS.inviteTtlMs);
     const joined = await post("/api/match/code", {code: host.fallbackCode,
       compatibility, seatCount: 1}, undefined);
     expect(joined.status).toBe(201);
@@ -237,6 +293,8 @@ describe("MatchRoom local Durable Object adapter", () => {
     expect(rotatedResponse.status).toBe(200);
     const rotated = await rotatedResponse.json() as Record<string, any>;
     expect(rotated).toMatchObject({inviteGeneration: 2});
+    expect(rotated.inviteExpiresInMs).toBeGreaterThan(0);
+    expect(rotated.inviteExpiresInMs).toBeLessThanOrEqual(MATCH_LIMITS.inviteTtlMs);
     expect(rotated.inviteUrl).not.toBe(host.inviteUrl);
     expect(rotated.fallbackCode).toMatch(/^\d{6}$/);
 

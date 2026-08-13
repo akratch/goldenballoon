@@ -143,6 +143,10 @@
   border-radius: 10px;
 }
 .party-seats li[data-ready="true"] { border-color: var(--seat-color); }
+.party-seats li:focus-visible {
+  outline: 2px solid #ffd166;
+  outline-offset: 3px;
+}
 .party-seat-number {
   display: grid;
   flex: 0 0 38px;
@@ -156,6 +160,8 @@
 .party-seats strong,
 .party-seats small { display: block; }
 .party-seats small { margin-top: 2px; color: #b9cce0; }
+.party-seat-copy { min-width: 0; }
+.party-seat-remove { margin-left: auto; flex: 0 0 auto; }
 .party-seats li:nth-child(1) { --seat-color: #4bc7ff; }
 .party-seats li:nth-child(2) { --seat-color: #ff829e; }
 .party-seats li:nth-child(3) { --seat-color: #72e38f; }

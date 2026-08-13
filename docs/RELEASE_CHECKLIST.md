@@ -129,15 +129,15 @@ run.
 
 ```bash
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
-python3 tools/run_checks.py --jobs 6 \
+MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py --jobs 6 \
+  --with-compiled-tests --with-app-tests --with-browser-tests \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-`--jobs` pools the parallel-safe tasks; every gate whose verdict is a
-wall-clock or host-load measurement (realtime pacing, adopted-window
-handoffs, replay-cost ceilings), plus the instrumented/layout compiles and
-the port-bound browser lane, still runs sequentially after the pool drains —
+`--jobs` pools only source/static work. Compiled CTest and every role that can
+start the game, a renderer, an instrumented binary, or a browser are serialized
+after that pool drains. Wall-clock/host-load gates are serialized by name as well —
 see `SERIAL_ROLES`/`SERIAL_NAMES` in the runner. Each pooled task gets its own
 scratch save directory, so the historical "several checks share
 `save/eeprom.bin`" constraint no longer forces the whole manifest through one
@@ -147,22 +147,48 @@ like host contention rather than a code defect, re-run that task alone
 (`--only <name>`) before treating it as a regression — the same discipline
 the GPU-labelled ctests already require.
 
-That run's `rom_free_units` task invokes CTest against the same build directory
-with no label filter, so the GPU-labelled launcher tests already execute inside
-it. Re-run just that lane, without repeating the whole CTest set, with:
+That full release run explicitly opts into compiled CTests with
+`--with-compiled-tests`, native application/renderer checks with
+`--with-app-tests`, and real Chromium with `--with-browser-tests`; omit all
+three for ordinary workstation validation. Chromium
+creation also checks `MDKR_BROWSER_TESTS_ALLOWED=1` and the independently
+inherited `MDKR_DEDICATED_TEST_DESKTOP=1` at the final process-launch boundary.
+The runner sets the first only after its flag and cannot create the second. The `rom_free_units`
+task excludes GPU-labelled native-window tests by default. Those tests are not
+even registered in an ordinary build tree, so a forgotten label exclusion cannot
+activate or monopolize the workstation. A release owner registers and runs them
+on a dedicated test desktop:
 
 ```bash
-ctest --test-dir build-rel -L gpu --output-on-failure
+cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=Release \
+  -DMDKR_ENABLE_GPU_TESTS=ON
+env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+  MDKR_APP_TESTS_ALLOWED=1 \
+  MDKR_DEDICATED_TEST_DESKTOP=1 \
+  SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
+  ctest --test-dir build-rel -L gpu --output-on-failure --no-tests=error -j1
 ```
+
+`MDKR_APP_TESTS_ALLOWED=1` requests native automation surfaces; it is effective
+only alongside `MDKR_DEDICATED_TEST_DESKTOP=1`, which belongs only on that
+dedicated desktop. `MDKR64_HIDDEN=1` remains mandatory:
+on macOS it keeps permitted automation non-key and ordered behind existing
+windows. These are independent of the default
+`-LE 'gpu|app_process|browser'` exclusion. The
+runner also exports SDL's `SDL_MAC_BACKGROUND_APP=1` and
+`SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1` hints. Those survive legacy test
+harnesses that intentionally scrub `MDKR*` variables and are the final
+fail-closed focus boundary.
 
 `check_key_cutscene_once.py` is the one check that is **build-type-sensitive by
 design**. The runner verifies that its dedicated binary has an optimized
 `CMAKE_BUILD_TYPE`; it also verifies that the filename-entry sanitizer binary
 actually imports ASan. The ROM-free CTest task includes the display/runtime/
 layout/scheduler units, the deterministic audio queue controller, and SDL's
-silent queue-mode sink contract. When the selected build contains native
-launcher GPU tests, the runner includes them under their shared CTest resource
-lock; the complete local matrix never silently excludes them.
+silent queue-mode sink contract. When explicitly selected, native launcher GPU
+tests share one CTest resource lock. A release evidence record must state that
+this opt-in lane ran; workstation-safe validation reports it as excluded and
+never implies coverage.
 
 The RAW16 gate repeats against primary, Release, and ASan artifacts. The
 specialized native-layout gate verifies linked
@@ -203,7 +229,9 @@ Run every primary behavioural check against Debug as the second configuration.
 The specialized Release/ASan/UBSan arms already ran in section 2b.
 
 ```bash
-python3 tools/run_checks.py --build build --primary-only --skip-wasm
+MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py \
+  --with-compiled-tests --with-app-tests \
+  --build build --primary-only --skip-wasm
 ```
 
 See [`../tests/README.md`](../tests/README.md) for every assertion, positive
@@ -277,8 +305,9 @@ without naming its members:
 ```bash
 tools/check_no_rom.sh dist/web
 # iteration only -- the release evidence is section 2b's complete-suite run
-python3 tools/run_checks.py \
-  --role wasm,browser,browser_save \
+MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py \
+  --role wasm,browser,browser_save,browser_local \
+  --with-browser-tests \
   --wasm build-web/mdkr64_web.wasm \
   --rom baserom.us.v80.z64
 ```

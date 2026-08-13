@@ -14,8 +14,10 @@ Status: ready for a named production owner; no production deployment is claimed.
   injected only into the operations verification job. It is never a Wrangler
   plain-text var, browser value, command-line argument or substitute HMAC key.
 - `PARTY_ORIGIN`, `MAX_ADMISSIONS_PER_DAY` and `CONTROL_RESERVE_PER_DAY` are
-  reviewed against [capacity](capacity.md); the placeholder `.invalid` origin
-  is a deliberate fail-closed default.
+  reviewed against [capacity](capacity.md). `PARTY_ORIGIN` is exactly the
+  canonical HTTPS origin with no trailing slash, path, query, fragment or
+  credentials; HTTP is accepted only for loopback development. The placeholder
+  `.invalid` origin is a deliberate fail-closed default.
 - The zone's existing `http_ratelimit` entry-point ruleset has been exported and
   reviewed. Free plans allow one rule; do not overwrite an unrelated rule.
   `services/party/ops/free-rate-limit-rule.json` is the desired `/api/`-only
@@ -47,7 +49,7 @@ Status: ready for a named production owner; no production deployment is claimed.
 Cloudflare documents that a new Worker can call a Durable Object still running
 old code for seconds to minutes, and that stored state is not versioned or
 rolled back with Worker code. The current internal contract is therefore
-explicit v1: every one of the 15 Worker→object calls sends
+explicit v1: every one of the 16 Worker→object calls sends
 `x-mdkr-internal-api: 1`; all four object classes accept both v1 and the frozen
 legacy-unversioned request, while rejecting any unknown version before parsing
 or storage access. New Worker→old object works because the old object ignores
@@ -82,13 +84,14 @@ lifecycle change; this is why additive class migrations are isolated.
 
 1. Record commit, clean/dirty state, Node/Wrangler versions and current deployed
    version. Never deploy an unexplained dirty worktree.
-2. Run `(cd services/party && npm ci && npm run check)`.
+2. On an isolated test host, run
+   `(cd services/party && npm ci && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)`.
 3. Run pinned Wrangler `deploy --dry-run`; archive bundle size and bindings.
    Only `PARTY_ROOMS`, `PARTY_BUDGETS`, `PARTY_CODES`, `MATCH_ROOMS` and
    documented vars/secrets are allowed. The static-assets manifest must point
    at the reviewed `dist/web` release and route only `/api/*` through the Worker.
    Confirm neither secret is present in the bundle, manifest or dry-run output.
-   Run `python3 tests/check_party_internal_api.py`; require the 15-call census,
+   Run `python3 tests/check_party_internal_api.py`; require the 16-call census,
    v1 envelope and four pre-storage rejection guards. The service suite's
    ordinary direct-object tests are the legacy-old-Worker arm; full Worker tests
    are the v1-new-Worker arm; unknown-version tests are the fail-closed arm.
@@ -126,8 +129,9 @@ lifecycle change; this is why additive class migrations are isolated.
     aggregate and run the [strict $0 reconciliation gate](reconciliation.md).
     Require `PASS` before continuing. Archive only approved aggregates and the
     bounded pass line, never request headers, tokens or raw provider envelopes.
-    Read `/api/ops/health` once in the same checkpoint; require the same UTC
-    day, `tracking: complete`, `legacy: 0`, and exact tracked/admitted units.
+    Read `/api/ops/health` once in the same checkpoint; require exact health
+    schema v2, the same UTC day, `tracking: complete`, `legacy: 0`, all thirteen
+    fixed buckets, and exact tracked/admitted units.
 13. Run the browser publish-skew gate. Require an old active/new waiting worker,
     isolated build caches, complete old-build offline fallback after new HTML
     has been observed, and new-build activation only after the old document is

@@ -6,6 +6,7 @@
 // exactly as it did before this shell existed. See arg_triage.h for why the rule
 // is deny-by-default rather than mgb64's automation allow-list.
 #include "app_brand.h"
+#include "app_activation.h"
 #include "app_config.h"
 #include "app_host.h"
 #include "app_relaunch.h"
@@ -1085,7 +1086,8 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         onlineFocusEnd != smokeOnlineFocusValue && *onlineFocusEnd == '\0' &&
         smokeOnlineAction == smokeOnlineFocus &&
         smokeOnlineAction > MDKR_ONLINE_VIEW_ACTION_NONE &&
-        smokeOnlineAction <= MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE &&
+        smokeOnlineAction <=
+            MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH &&
         smokeOnlineActionToken &&
         std::strcmp(smokeOnlineActionToken,
                     "mdkr64-online-action-v1") == 0 &&
@@ -2508,17 +2510,38 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    // Exercise the native picker through the same live-window activation state
-    // as the launcher, then print its selection and ROM verdict.
-    if (std::getenv("MDKR_APP_FILEDIALOG_SELFTEST")) {
-        return runFileDialogSelfTest();
+    /* Fail closed before a file dialog, SDL video initialization, or Cocoa can
+     * activate. MDKR64_HIDDEN is deliberately insufficient: it is a best-effort
+     * visibility hint used by old harnesses. MDKR_APP_TESTS_ALLOWED=1 names
+     * the requested test class, while MDKR_DEDICATED_TEST_DESKTOP=1 is the
+     * independent caller attestation supported runners cannot manufacture.
+     * Smoke/autoplay/file-dialog automation is caught even if a legacy script
+     * forgot MDKR64_HIDDEN. Ordinary interactive launches are unchanged. */
+    if (AppActivation_rejectUnauthorizedAutomationSurface()) {
+        std::fprintf(
+            stderr,
+            "[app-test-safety] refused native surface: MDKR64_HIDDEN does not "
+            "authorize app/window tests; both the class opt-in and independent "
+            "dedicated-desktop attestation are required\n");
+        return 2;
     }
+    /* This has to precede file-dialog SDL_Init, engine dispatch and AppHost:
+     * on macOS SDL may create/activate NSApplication during initialization. */
+    AppActivation_prepareProcess();
 
     // Automation/CLI invocations run the unchanged engine path. Deliberately
     // BEFORE the bundle chdir below: a script that passes a relative --rom path
     // must keep resolving it against the directory the script is running in.
+    // The surface capability check above must precede this dispatch: bounded
+    // engine automation also creates a native SDL window.
     if (mdkr_is_automation_invocation(argc, argv)) {
         return mdkr64_headless_main(argc, argv);
+    }
+
+    // Exercise the native picker through the same live-window activation state
+    // as the launcher, then print its selection and ROM verdict.
+    if (std::getenv("MDKR_APP_FILEDIALOG_SELFTEST")) {
+        return runFileDialogSelfTest();
     }
 
     const AppUiSmokeInputMode smokeInputMode = AppUi_smokeInputMode();

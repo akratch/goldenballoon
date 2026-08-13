@@ -32,7 +32,11 @@ channel or the peer path fails, immediately publish neutral, show
 **Reconnecting — Controls are safely released**, preserve the numbered seat,
 and rebind with a fresh peer generation. When signaling recovery rotates the
 connection epoch, neutralize before the rebind; never accept packets from the
-old epoch. Recovery announcements do not steal focus.
+old epoch. Recovery announcements do not steal focus. Host and phone signaling
+each stop after five consecutive or short-lived attempts; 30 stable seconds
+reset the sequence. A phone without a healthy direct path then exposes **Try
+now**. If the direct path is healthy, play continues with **Limited connection**
+even after automatic signaling retry pauses.
 
 ## Home and route hierarchy
 
@@ -76,9 +80,14 @@ Controller colors are also named and numbered; color is never the only mapping.
 | Transport lost | Reconnecting — controls released | Remove |
 | Removed/expired | Available | Add/connect source |
 
-Focus does not jump when a tile changes state. Removal returns focus to that
-tile's Add action. Newly pending phones are announced politely; errors and
-controller release use assertive announcements.
+Focus does not jump when a tile changes state. **Remove** opens a native
+confirmation that names the phone and numbered seat, describes immediate
+neutral input, and initially focuses the safe **Keep phone** action. Cancel
+performs no request and returns focus to the same **Remove** action. Confirmed
+removal returns contextual focus to the now-**Available** seat tile; if another
+host removes it while confirmation is open, the dialog closes, focuses that
+same tile and announces that no further action was needed. Newly pending phones
+are announced politely; errors and controller release use assertive announcements.
 
 ## Add phone controllers dialog
 
@@ -95,6 +104,16 @@ Code text is selectable and grouped `123 456`, but its accessible name reads all
 six digits individually. The dialog opens focused on its heading/Close action
 and traps keyboard focus. **Close** and Escape revoke the displayed invite but
 preserve approved phone leases; only **End controller room** disconnects them.
+The launcher erases the QR bitmap, grouped code and controller URL from its
+model and DOM before waiting for the revoke request. The exact revoke response
+advances local invite-generation custody; reopening waits for that correlation
+before rotating, so rapid close/reopen cannot submit a stale generation.
+**Start local game** uses this same erase/revoke path before it clicks Play;
+approved phones persist and the launcher no longer advertises the old invite.
+Remote revocation proceeds immediately but never blocks offline local play; if
+the request cannot complete, the original two-minute service TTL remains the
+hard ceiling. The controller service does not mirror a gameplay/race phase—
+that state remains in the launcher and session boundary.
 Ending requires a separate confirmation whose initial focus is **Keep
 controller room** and which names the disconnected phones plus surviving local
 inputs. A later open rotates to a fresh QR/code. Focus returns to the invoking launcher
@@ -105,6 +124,16 @@ One displayed QR intentionally admits multiple friends during its two-minute
 window. Each phone appears independently and cannot send input before approval.
 **Extend** rotates both QR and code and says: **Invite extended. The previous QR
 code is no longer valid.**
+
+The service returns the actual remaining invite lifetime, capped by the room's
+deadline. The launcher starts a receipt-relative countdown up to 5% (at most
+ten seconds) early, so network delay cannot make a stale QR look usable. QR
+generation is an enhancement: if the offline encoder or canvas fails, hide the
+canvas, say **Open this site's /controller/ page**, and keep the grouped and
+individually announced six-digit code as the complete recovery path.
+At countdown expiry, apply the same immediate erasure and replace the content
+with **Invite expired — approved phones stay connected** plus **Show a new QR
+code**; never leave an expired capability visible while merely relabelling it.
 
 Pending row:
 
@@ -130,9 +159,30 @@ people must compare the phrase; copy never tells them to approve a mismatch.
 | Assigned | Controller N / Press Go to test | Press Go | Leave |
 | Ready | Connection works | Use controller | Test again / Leave |
 | Active | Controller N | Touch controls | Settings / Leave |
-| Reconnecting | Reconnecting / Controls are safely released | — | Leave |
+| Reconnecting | Reconnecting / Controls are safely released | Try now | Leave |
 | Duplicate | This controller is already open in another tab | Use this tab | Leave |
 | Terminal | Exact reason | Enter another code | Return to instructions |
+
+The phone consumes only an exact query-free `/controller/#…` invitation and
+scrubs it before configuration or feature checks. Scrub failure abandons the
+join at clean `/controller/` code entry. The in-memory capability is never
+written to web storage. Embedded or unsupported browser recovery truthfully
+offers **Share private link** with **Copy private link** as its fallback while
+the pre-redemption capability exists. Without one it offers **Share controller
+page** / **Copy controller page**, then tells the player to enter the current
+code in Safari or Chrome. Each URL is built only for that user gesture.
+**Use this tab** rebuilds the private URL only
+after the old tab acknowledges neutral/close and an ordinary exclusive lock is
+available, for one same-tab navigation whose new document scrubs it again. If
+coordination cannot prove single ownership, the action stays put and tells the
+player to close the other tab before retrying.
+Copying the already-clean address or reloading it would strand the player and is
+therefore not an acceptable recovery.
+
+Protocol mismatch uses a real **Refresh controller** action that reloads the
+static controller client. Other typed terminal failures use code entry only
+when the current browser can actually recover that way; action labels never sit
+over a generic handler with different behavior.
 
 Leave from Waiting, Assigned, Active or Reconnecting always opens a confirmation
 focused on **Keep controller**. Nothing neutralizes or disconnects until **Leave
@@ -162,30 +212,107 @@ Start action remains absent/disabled until rollback `GO`.
 `platform/online/lobby_view_model.*` is the shared pure projection for native
 and browser room views. It accepts only validated `MdkrSessionState`, optional
 validated `MdkrOnlineLobby`, a local endpoint id, a stable product failure and
-local release policy. It emits title, explanation, calm status, primary/
-secondary/Cancel controls, timeout recovery, announcement priority and bounded
-counts. UI adapters render this model and dispatch its typed actions; they do
-not invent copy or infer room transitions from provider callbacks.
+local release policy. It emits title, explanation, calm status, an optional
+strictly bounded three-compound verification phrase, primary/secondary/Cancel
+controls, timeout recovery, announcement priority and bounded counts. UI
+adapters render this model and dispatch its typed actions; they do not invent
+copy or infer room transitions from provider callbacks.
 
 The native launcher binding lives in `platform/app/ui_online_room.*`. With no
 test flag it renders an honest unavailable state and performs no network work;
-`MDKR_APP_ONLINE_FAKE=1` is an offline design/evidence adapter only. Its 42-case
+`MDKR_APP_ONLINE_FAKE=1` is an offline design/evidence adapter only. Its 43-case
 gallery covers every view and typed failure, its speech walk enumerates every
-title/action set, and all 25 public actions activate through keyboard and
-gamepad. The browser launcher has the same honest zero-I/O production entry and
+title/action set, and all 27 public actions have typed keyboard/gamepad routes.
+The browser launcher has the same honest zero-I/O production entry and
 hands local recovery to the existing ROM and Phone Party owners. Its explicit
-evidence adapter renders a standalone 34 KiB Wasm projection compiled from the
+evidence adapter renders a standalone sub-128-KiB Wasm projection compiled from the
 same C reducer/view model; JavaScript owns DOM semantics and launcher routes,
-never room transitions. The full 42-case browser/native correlation and all 25
-keyboard routes pass. The live adapter and human device review remain. None of this makes online racing
-available before A3 `GO`.
+never room transitions. Its pure semantic presenter is also exercised in Node
+against JSON emitted by all 43 authoritative C projections, covering action and
+selection order, timeout priority, count grammar, local recovery substitution,
+immutable output, malformed input, phrase copy and announcement priority without
+claiming browser layout or accessibility-tree evidence. That presenter also owns
+the exhaustive live-action admission table: only a currently rendered, enabled
+action can reach a launcher effect, and a carrier/race-dependent action produces
+specific locked guidance without network work. Gallery selection remains a test
+capability, never a production navigation API. The 43-case browser/native gate now requires identical
+phrase copy, semantic grouping, `translate=no`, announcement text, explicit
+**Words Match** / **Words Differ** decisions and all 27 keyboard routes. Its prior 25-action rendered
+baseline passed; rerunning the expanded rendered gate and human device review
+remain. None of this makes online racing available before A3 `GO`.
 
-| View | Primary | Cancel | Bounded timeout outcome |
+Live service data crosses a separate pure boundary before the presenter. That
+boundary accepts only the documented public MatchRoom shapes, copies them into
+one deeply immutable launcher schema and keeps the bearer/opaque room identity
+stable across state-only publications. It rejects private reducer receipts,
+unknown fields, identity substitution, non-contiguous control history,
+impossible seat/phase state and cross-origin invitations. Invitation custody is
+generation-bound: a publication that advances the generation without the new
+secret immediately removes the old Share action. The state and invite commit as
+one transaction only after native projection and semantic rendering succeed.
+For guest Leave, an accepted response is the terminal success state—the UI does
+not ask the server to authenticate a credential that Leave just revoked.
+
+The state socket may beat an HTTP response. Fully valid older public snapshots
+are ignored rather than turning a successful action into an outage, while mixed
+regression/advancement and equal-revision changes still fail closed. When a
+membership update beats a rotate response, the launcher may attach that
+response's secret to the newer room only if it names the exact generation
+expected by that in-flight rotation, the already-current invite generation and
+the current local leader; it never rolls member state back, extends locally
+expired custody or revives an older link.
+
+Invite expiry is a local security transition, not a passive timestamp label.
+The launcher derives a conservative receipt-relative deadline rather than
+trusting the display wall clock. At expiry it removes the QR, link and code from
+memory and the DOM before reprojecting. A leader sees **Invitation Expired**
+with one **New Invitation** action; a guest never receives rotation custody.
+Friends already in the room remain connected, and the copy says so while
+replacement is in progress. Projection failure may preserve the last public
+room state, but it must never restore the expired secret.
+
+QR rendering is an enhancement over the same invitation, not a single point of
+failure. If the offline QR module is missing or rejects the payload, the empty
+canvas is not exposed as an image; the accessible six-digit code and bounded
+Share action remain, with copy that no longer tells the player to scan.
+
+Pasted invitations accept only a six-digit ASCII code, a raw 43-character
+capability, or an exact same-origin `/room/#match=…` URL. Lookalike origins,
+embedded credentials, query strings, alternate paths, encoded capabilities,
+extra fragment fields and control-character whitespace fail before room I/O.
+The `/room/` handoff keeps the capability in the fragment for the one
+same-origin redirect, then the always-loaded launcher captures it only in
+closure memory and erases the address synchronously before policy/model/ROM
+work. It never uses session or local storage. If URL scrubbing fails, the page
+navigates to the clean route and abandons the join instead of continuing with
+the capability. A disabled build discards the
+capability immediately and opens a calm **Private Rooms Aren’t Enabled in This
+Build** recovery with local play preserved. An enabled build that still needs a
+ROM names that requirement and retains the in-memory handoff for at most the
+ten-minute protocol TTL; timeout erases it and asks for a new link or current
+room code.
+
+**Room Ended** and **Room Expired** are terminal local states. Once either is
+projected, the launcher closes its subscription and discards the room bearer;
+**Return Home** and **Play Here** never wait on or retry a server that has
+already ended the room. The recovery view remains visible long enough to make
+the reason clear, but it contains no live capability material.
+
+State-socket recovery is deliberately finite. Consecutive or short-lived
+connections use five launcher-owned backoff attempts; only 30 seconds of stable
+custody resets that counter. Exhaustion stops automatic reserve use and shows
+the normal **Try Again** recovery. An explicit Retry refreshes authenticated
+state first, resets the bounded sequence and then reconnects. A synchronous
+adapter/WebSocket setup failure uses this same path; it never becomes an
+unhandled page error or leaves a blank/stale room view.
+
+| View | Primary / secondary | Cancel | Bounded timeout outcome |
 |---|---|---|---|
 | Online entry | Create Private Room | Back | Not a wait |
 | Creating/joining | Connection Details | Cancel | Try Again |
-| Room | Share Invite | Leave Room | Not a network wait |
-| Preflight | Review Checks | Leave Room | Retry Checks |
+| Room | Share Invite; after expiry, New Invitation (leader only) | Leave Room | Not a network wait |
+| Preflight checks | Review Checks | Leave Room | Retry Checks |
+| Phrase comparison | Words Match / Words Differ | Leave Room | Human-paced; no timeout |
 | Selecting | Choose Character → Choose Vehicle → Ready | Leave Room | Not a network wait |
 | Loading/rematch | Connection Details | Cancel to Lobby | Return to Lobby |
 | Countdown | Connection Details | Cancel to Lobby | Return to Lobby |
@@ -240,7 +367,7 @@ deterministic AI will take over or the race will end under current room policy.
 | `room_expired` | This controller room ended. | Enter another code |
 | `protocol_update_required` | This controller page needs an update. | Refresh controller |
 | `duplicate_controller` | This controller is already open. | Use this tab |
-| `seat_reclaimed` | The display reassigned this controller seat. | Enter another code |
+| `seat_reclaimed` | The display removed this phone controller. Its controls are neutral. | Enter another code |
 | `rate_limited` | Too many code attempts. Wait a few minutes, then try again. | Return |
 | `service_budget_safe` | Phone pairing is full right now. Local controllers still work. | Play here |
 | `transport_lost` | Connection lost. Controls were safely released. | Reconnect / Leave |

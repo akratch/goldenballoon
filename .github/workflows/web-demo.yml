@@ -11,6 +11,10 @@ permissions:
   pages: write        # scoped to the Pages deployment only
   id-token: write     # required by deploy-pages OIDC; grants nothing else
 
+env:
+  # Hosted browser checks run on an isolated test desktop.
+  MDKR_DEDICATED_TEST_DESKTOP: "1"
+
 # Cancelling is safe for the BUILD (a superseded build produces nothing anyone
 # is waiting on) and is not safe for the Pages DEPLOYMENT: cancelling one
 # mid-flight can leave the site on a partially replaced payload. Per GitHub's
@@ -70,6 +74,8 @@ jobs:
         run: tools/check_no_rom.sh dist/web
 
       - name: Browser save custody (ROM/WebGPU independent)
+        env:
+          MDKR_BROWSER_TESTS_ALLOWED: "1"
         run: >-
           python3 tests/check_browser_save_ui.py
           --engine-dir dist/web

@@ -243,7 +243,7 @@ module or any room endpoint. If a reviewed same-origin release enables room
 control, the shell still waits for clean build provenance and a locally
 full-SHA-verified supported ROM, then derives the bounded compatibility record
 without retaining or transmitting ROM bytes. Gallery and live evidence adapters
-correlate all 42 views and 25 typed actions against the native executable
+correlate all 43 cases and 27 typed actions against the native executable
 without creating a second JS reducer. The independent local race-admission bit
 remains false until written A3 `GO`.
 

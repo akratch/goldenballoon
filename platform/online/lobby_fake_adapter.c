@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+static const char *const k_verification_phrases[] = {
+    "Nimble-Pilot Jolly-Star Sunny-Falcon",
+    "Golden-Otter Rapid-Moon Velvet-Kite",
+    "Brave-Lion Cosmic-Cloud Teal-Penguin",
+};
+
 static MdkrOnlineFakeStep fake_step(const MdkrOnlineFakeAdapter *adapter,
                                     bool accepted, bool duplicate,
                                     MdkrOnlineFakeError error) {
@@ -152,7 +158,15 @@ bool mdkr_online_fake_view(const MdkrOnlineFakeAdapter *adapter,
     input.local_endpoint_id = adapter->local_endpoint_id;
     input.journey = adapter->journey;
     input.failure = adapter->failure;
-    input.invite_ready = adapter->invite_ready;
+    input.invite_state = adapter->invite_ready
+        ? MDKR_ONLINE_INVITE_READY : MDKR_ONLINE_INVITE_PREPARING;
+    input.verification_phrase = adapter->verification_phrase_ready &&
+            adapter->verification_phrase_generation != 0u
+        ? k_verification_phrases[
+            (adapter->verification_phrase_generation - 1u) %
+            (sizeof(k_verification_phrases) /
+             sizeof(k_verification_phrases[0]))]
+        : NULL;
     input.race_admission_enabled = adapter->race_admission_enabled;
     return mdkr_online_view_model_build(&input, output);
 }
@@ -214,11 +228,27 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
             accepted = true;
             break;
         case MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP:
+            next.verification_phrase_ready = false;
             accepted = session_dispatch(
                 &next, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                 MDKR_ROOM_PREFLIGHT);
             if (accepted) publish_pending(
                 &next, MDKR_ONLINE_FAKE_PENDING_PREFLIGHT);
+            break;
+        case MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE:
+            if (!next.verification_phrase_ready ||
+                next.session.state.room != MDKR_ROOM_PREFLIGHT) break;
+            accepted = session_dispatch(
+                &next, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
+                MDKR_ROOM_SELECTING);
+            if (accepted) next.verification_phrase_ready = false;
+            break;
+        case MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH:
+            if (!next.verification_phrase_ready ||
+                next.session.state.room != MDKR_ROOM_PREFLIGHT) break;
+            next.verification_phrase_ready = false;
+            next.failure = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+            accepted = true;
             break;
         case MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER:
             accepted = local_seat_owned(&next, command->seat) &&
@@ -254,6 +284,7 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
                 next.failure == MDKR_ONLINE_VIEW_FAILURE_NONE) break;
             if (next.failure != MDKR_ONLINE_VIEW_FAILURE_NONE) {
                 next.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+                next.verification_phrase_ready = false;
                 if (next.have_lobby &&
                     next.session.state.room == MDKR_ROOM_PREFLIGHT) {
                     publish_pending(&next, MDKR_ONLINE_FAKE_PENDING_PREFLIGHT);
@@ -288,6 +319,7 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
                 break;
             }
             next.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+            next.verification_phrase_ready = false;
             publish_pending(&next, MDKR_ONLINE_FAKE_PENDING_PREFLIGHT);
             accepted = true;
             break;
@@ -310,7 +342,15 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
                                MDKR_ONLINE_REMATCH, 0u, 0u) &&
                 session_dispatch(&next,
                                  MDKR_SESSION_COMMAND_RETURN_TO_LOBBY, 0u);
-            if (accepted) next.journey = MDKR_ONLINE_JOURNEY_REMATCH;
+            if (accepted) {
+                next.journey = MDKR_ONLINE_JOURNEY_REMATCH;
+                next.verification_phrase_ready = false;
+                accepted = session_dispatch(
+                    &next, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
+                    MDKR_ROOM_PREFLIGHT);
+                if (accepted) publish_pending(
+                    &next, MDKR_ONLINE_FAKE_PENDING_PREFLIGHT);
+            }
             break;
         case MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM:
         case MDKR_ONLINE_VIEW_ACTION_PLAY_HERE:
@@ -323,6 +363,7 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
             if (accepted) {
                 next.have_lobby = false;
                 next.invite_ready = false;
+                next.verification_phrase_ready = false;
                 next.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
             }
             break;
@@ -332,6 +373,7 @@ MdkrOnlineFakeStep mdkr_online_fake_dispatch(
             if (accepted) {
                 next.have_lobby = false;
                 next.invite_ready = false;
+                next.verification_phrase_ready = false;
                 next.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
             }
             break;
@@ -366,6 +408,7 @@ MdkrOnlineFakeStep mdkr_online_fake_complete(
     next.timeout_expired = false;
     if (failure != MDKR_ONLINE_VIEW_FAILURE_NONE) {
         next.failure = failure;
+        next.verification_phrase_ready = false;
         next.pending = MDKR_ONLINE_FAKE_PENDING_NONE;
         next.pending_token = 0u;
         accepted = true;
@@ -392,9 +435,12 @@ MdkrOnlineFakeStep mdkr_online_fake_complete(
                     MDKR_ONLINE_JOIN, 0u, 1u);
                 break;
             case MDKR_ONLINE_FAKE_PENDING_PREFLIGHT:
-                accepted = session_dispatch(
-                    &next, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
-                    MDKR_ROOM_SELECTING);
+                next.verification_phrase_generation++;
+                if (next.verification_phrase_generation == 0u) {
+                    next.verification_phrase_generation = 1u;
+                }
+                next.verification_phrase_ready = true;
+                accepted = true;
                 break;
             case MDKR_ONLINE_FAKE_PENDING_LOAD: {
                 uint64_t leader = next.lobby.leader_endpoint_id;
@@ -544,7 +590,10 @@ static const MdkrOnlineFakeGallerySpec k_gallery[] = {
     {"room-friends", MDKR_ONLINE_VIEW_ROOM, MDKR_ONLINE_VIEW_FAILURE_NONE,
      MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP, false, false},
     {"preflight", MDKR_ONLINE_VIEW_PREFLIGHT, MDKR_ONLINE_VIEW_FAILURE_NONE,
-     MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS, true, false},
+     MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE, false, false},
+    {"failure-verification-mismatch", MDKR_ONLINE_VIEW_RECOVERY,
+     MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH,
+     MDKR_ONLINE_VIEW_ACTION_RETRY, true, false},
     {"select-character", MDKR_ONLINE_VIEW_SELECTING,
      MDKR_ONLINE_VIEW_FAILURE_NONE,
      MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER, false, false},
@@ -705,7 +754,9 @@ static bool gallery_room(MdkrOnlineFakeAdapter *adapter, bool with_peer) {
 static bool gallery_selecting(MdkrOnlineFakeAdapter *adapter) {
     return gallery_room(adapter, true) &&
            gallery_action(adapter, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP, 0u, 0u) &&
-           gallery_complete(adapter, MDKR_ONLINE_VIEW_FAILURE_NONE);
+           gallery_complete(adapter, MDKR_ONLINE_VIEW_FAILURE_NONE) &&
+           gallery_action(adapter, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                          0u, 0u);
 }
 
 static bool gallery_local_choices(MdkrOnlineFakeAdapter *adapter,
@@ -752,6 +803,9 @@ static bool gallery_results(MdkrOnlineFakeAdapter *adapter) {
 static bool gallery_rematch_loading(MdkrOnlineFakeAdapter *adapter) {
     return gallery_results(adapter) &&
            gallery_action(adapter, MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN, 0u, 0u) &&
+           gallery_complete(adapter, MDKR_ONLINE_VIEW_FAILURE_NONE) &&
+           gallery_action(adapter, MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                          0u, 0u) &&
            mdkr_online_fake_prepare_peer(adapter, adapter->revision,
                                          2u, 0u, 5u).accepted &&
            gallery_local_choices(adapter, false, false, true, true) &&
@@ -832,7 +886,15 @@ bool mdkr_online_fake_prepare_gallery(MdkrOnlineFakeAdapter *adapter,
         built = gallery_room(&next, true);
     } else if (strcmp(slug, "preflight") == 0) {
         built = gallery_room(&next, true) &&
-            gallery_action(&next, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP, 0u, 0u);
+            gallery_action(&next, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP, 0u, 0u) &&
+            gallery_complete(&next, MDKR_ONLINE_VIEW_FAILURE_NONE);
+    } else if (strcmp(slug, "failure-verification-mismatch") == 0) {
+        built = gallery_room(&next, true) &&
+            gallery_action(&next, MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP, 0u, 0u) &&
+            gallery_complete(&next, MDKR_ONLINE_VIEW_FAILURE_NONE) &&
+            gallery_action(
+                &next, MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH,
+                0u, 0u);
     } else if (strcmp(slug, "select-character") == 0) {
         built = gallery_selecting(&next);
     } else if (strcmp(slug, "select-vehicle") == 0) {

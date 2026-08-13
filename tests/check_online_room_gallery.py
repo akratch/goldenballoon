@@ -107,8 +107,8 @@ def discover(binary: str, root: Path, timeout: int) -> list[Case]:
     if {case.kind for case in cases} != set(range(1, 11)):
         raise GalleryError("gallery does not cover every view kind 1..10")
     failures = {case.failure for case in cases if case.failure}
-    if failures != set(range(1, 18)):
-        raise GalleryError("gallery does not cover every typed failure 1..17")
+    if failures != set(range(1, 19)):
+        raise GalleryError("gallery does not cover every typed failure 1..18")
     return cases
 
 
@@ -228,7 +228,7 @@ def main() -> int:
         return 1
     print(
         "PASS online room gallery: "
-        f"cases={len(cases)} views=10 failures=17 unique-captures={len(digests)}"
+        f"cases={len(cases)} views=10 failures=18 unique-captures={len(digests)}"
     )
     return 0
 

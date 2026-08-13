@@ -1,4 +1,4 @@
-# Golden Balloon 1.2.1 acceptance guide
+# Golden Balloon 1.3.0 acceptance guide
 
 Use this guide only with artifacts built from the same clean candidate commit.
 Do not publish, retag, or substitute a rebuilt file after testing begins.
@@ -10,10 +10,10 @@ bug report, not ROMs or ROM-derived captures.
 
 For each desktop artifact, record its filename and SHA-256. Verify the adjacent
 `.sha256` file where supplied and inspect `.provenance.json`: version must be
-`1.2.1`, `commit` must match the candidate commit, and its recorded hash
+`1.3.0`, `commit` must match the candidate commit, and its recorded hash
 must match the artifact.
 
-For the browser build, open `build-info.json` and confirm version `1.2.1`, the
+For the browser build, open `build-info.json` and confirm version `1.3.0`, the
 same source commit, and `source_dirty: false`. Hard-refresh before testing.
 
 Stop if any identity differs. Do not test an archive in place: extract it to a

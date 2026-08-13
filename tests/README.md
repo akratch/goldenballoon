@@ -17,19 +17,32 @@ Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
 Every behavioural script accepts the same `--build` value: either a directory
 (`--build build-rel`) or the executable inside it
-(`--build build-rel/mdkr64`). Use the runner for a complete pass:
+(`--build build-rel/mdkr64`). Test execution belongs on a human-confirmed
+dedicated desktop. Use the runner there for a complete pass:
 
 ```bash
-python3 tools/run_checks.py \
+MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
+
+The runner refuses every execution lane on an ordinary workstation, including
+nominally source-only checks: a test filename and its historical behavior are
+not a reliable guarantee that it cannot launch a subprocess later. Only
+`--list` is permitted without the independent
+`MDKR_DEDICATED_TEST_DESKTOP=1` caller attestation. On an attested desktop, the
+default still excludes every compiled CTest and every role that can start the
+native game/renderer or a real Chromium/Worker. Browser/native/compiled lanes add
+`--with-compiled-tests`, `--with-app-tests`, and `--with-browser-tests`; the
+runner then sets explicit per-class child capabilities and keeps all
+application-launching roles serialized. Hidden-window hints remain defense in
+depth, not permission to create a desktop application.
 
 The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
 158 tasks. The four it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
 `check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
-every check script still runs exactly once in a default pass. That task also
+every check script still runs exactly once in a complete dedicated-host pass. That task also
 runs the ROM-free display/endian/magic-code/object-layout/allocator/
 runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
 CTests, while filename entry, locked-door collision, RAW16 audio, native-layout
@@ -327,7 +340,8 @@ ownership.
 ### Repeated browser resource ownership — `tests/check_browser_resource_plateau.py`
 
 ```bash
-python3 tests/check_browser_resource_plateau.py \
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
+  python3 tests/check_browser_resource_plateau.py \
   --engine-dir build-web --shell-dir dist/web \
   --rom baserom.us.v80.z64
 ```
@@ -970,7 +984,11 @@ fail, while an invalid balloon index and an armed non-correction mode must fail
 closed. Every row also enforces the 16 MiB ring, timing, journal, forbidden-I/O
 and clean-teardown contracts.
 
-`online_lobby_core` is the socket-free launcher room reducer. Its tests cover
+`online_lobby_core` is the socket-free launcher room reducer. Native C and the
+service TypeScript reducer both consume
+`tests/fixtures/online_lobby_reducer_v1.tsv`: one 43-command lifecycle fixture
+that asserts the result/error and canonical lobby state after every valid or
+invalid transition. Its tests cover
 membership, exact compatibility, seat ownership, unique per-seat character and
 vehicle selections, selection revisions, Ready invalidation, voting, barriers,
 reconnect, leader custody, CAS and retry idempotency. `match_launch_descriptor`
@@ -989,6 +1007,56 @@ characters/vehicles without `MDKR_LOAD_TRACK`;
 `check_online_process_convergence.py --launch-v3` proves four endpoint processes
 retain identical descriptor identity while their local controller, viewport,
 HUD and listener maps differ safely.
+
+`online_compatibility_identity` and `check_browser_online_activation.py` share
+one exact vector for the domain-separated build/gameplay digests derived from
+clean release semver and source commit. Native rejects dirty/malformed
+provenance and unsupported ROM revisions atomically; browser activation also
+requires same-origin policy and a locally SHA-verified supported ROM before any
+room request. CTest registers the browser check's `--source-only` arm as
+`online_compatibility_source_contract`, so the ordinary non-GPU lane catches
+native/browser domain and 32-byte version-bound drift without opening Chrome.
+
+`match_peer_graph` freezes the 2–4 endpoint connectivity policy: mutual edges,
+direct-first deterministic one-hop selection, diameter-three refusal and exact
+epoch/connection generations. `match_peer_forward` admits only the current
+named intermediate receiving from the separately authenticated source endpoint
+and connection generation, then applies a bounded replay window without
+decrypting or changing ciphertext.
+`match_peer_crypto` and `match_peer_crypto_js` lock pinned Mbed TLS and browser
+WebCrypto to ephemeral P-256 identities and one direction/generation-bound
+HKDF-SHA-256 and AES-256-GCM vector. `match_peer_transcript` shares the exact
+room/build/ROM/epoch/sorted-key digest and verification phrase with the browser.
+The crypto gates mutate every 132-byte envelope position and require
+the complete caller-expected source-to-recipient direction, then authentication,
+before plaintext or replay state changes. A valid peer key cannot authenticate
+a header claiming another source endpoint or generation. Callers cannot choose
+the GCM sequence: a direction-bound seal window allocates it monotonically
+across input and preflight payloads. The gates cover network reordering, stale
+receive-window rejection, corrupt/exhausted sender state, provider failure and
+two concurrent browser seals. Native used/exhausted window initialization and a
+second browser window for one derived key object refuse; browser state is
+read-only. The wire contract is documented in
+`docs/ref/match-peer-carrier-v1.md`.
+
+`match_preflight` and `match_preflight_js` share one exact fixed 124-byte report
+vector and cover the pure launcher consensus gate over the frozen
+launch-descriptor SHA-256, peer-key transcript, order-independent canonical
+directed-graph SHA-256, exact epoch/generations, local supported-ROM
+verification, phrase confirmation and ready channel graph. It
+requires monotonic authenticated endpoint reports; progress, mismatch priority,
+readiness withdrawal, duplicate/conflict/stale handling, malformed wire bytes,
+all digest-byte disagreements, graph reorder equivalence and reachability
+equivocation, disconnected routes, corrupt state and fail-atomic outputs are
+executable. A second cross-platform contract carries the report as three
+sequence-bound 64-byte payload-type-1 fragments, binds every piece and the
+completed report to one carrier-authenticated peer direction, and covers
+reorder, exact duplicate, conflict, stale replacement, final-padding,
+cross-source splicing and forged-attribution negatives. `READY`
+has no engine or network authority.
+The UX, wire and security contract is documented in
+`docs/ref/match-preflight-v1.md`.
+
 `check_rollback_authority_wrapper.py` is the suite-facing entry for the frozen
 mutable-authority census and its omitted-state positive control.
 
@@ -1001,6 +1069,24 @@ keeps raw provider/transport terms out of player copy, maps unknown reasons to
 one actionable fallback, preserves **Play Here**, rejects mismatched snapshots
 fail-atomically, and proves room data cannot expose **Start Race** before the
 local release gate (which also requires leader, 2+ members and everyone Ready).
+
+`check_app_background_activation.py` (registered as
+`app_background_activation_contract`) and `app_window` enforce desktop-safe
+native automation. `MDKR64_HIDDEN=1` creates a background GL/WebGPU surface,
+sets SDL's background/no-activation hints and AppKit's accessory policy before
+`SDL_Init`, skips macOS application/key-window activation and every window raise, ignores
+OS fullscreen effects while preserving the settings transaction, and prevents
+persisted fullscreen from affecting creation. Hidden mode alone no longer
+authorizes a surface: smoke/autoplay/file-dialog automation must also receive
+the exact `MDKR_APP_TESTS_ALLOWED=1` class capability plus the independently
+inherited `MDKR_DEDICATED_TEST_DESKTOP=1` attestation or it exits
+before SDL video/Cocoa. The shared Python harness requires the same exact
+capability before it will even resolve `mdkr64` for a test, so a directly
+invoked check cannot activate a stale binary that predates the in-app guard.
+Use `ctest -LE 'gpu|app_process|browser'` for a suite
+that cannot launch the production app or create any native launcher surface;
+the `gpu` lane remains real
+render/input evidence but must not steal focus or switch Spaces.
 `online_lobby_fake_adapter` is the deterministic ON-03B effect layer beneath
 the real views. It uses the actual session and room reducers for create/join,
 invite, preflight, selections, vote, Ready, loading, racing, results and a
@@ -1022,25 +1108,83 @@ handheld gate uses the same active-panel scroll seam, preventing Online Room
 support from weakening the existing input proof. Run the focused contract with:
 
 ```bash
-ctest --test-dir build --output-on-failure \
+env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED \
+  -u MDKR_DEDICATED_TEST_DESKTOP \
+  MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+  MDKR_APP_TESTS_ALLOWED=1 \
+  MDKR_DEDICATED_TEST_DESKTOP=1 \
+  SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
+  ctest --test-dir build --output-on-failure \
   -R 'app_online_room_(smoke|content|minimum_smoke|minimum_content|gallery|accessibility|actions)'
 ```
 
-The executable also publishes a versioned 42-case gallery built only through
+That focused command is GPU/UI evidence and belongs on a dedicated test
+desktop. Ordinary workstation validation must retain
+`-LE 'gpu|app_process|browser'` instead and must not set the app-test capability.
+
+The pure `online_lobby_browser_wasm` test compiles the Emscripten-facing C ABI
+as an ordinary native process. It enumerates all 43 authoritative cases, all 10
+view kinds, 18 failures and 27 enabled actions; drives every action; proves
+timeout ownership and both explicit phrase decisions; and verifies invalid
+gallery/live projections are fail-atomic. This is ROM-, renderer-, provider-,
+SDL- and browser-free, but it is still a compiled executable and is therefore
+queued—not run—under the maintainer workstation's current no-executable-test
+policy.
+
+`online_room_presenter_js` asks that same executable for a bounded JSON dump of
+all 43 projections, then runs the exact pure presenter loaded by the published
+browser shell in Node. It independently checks all 27 action routes, all 18
+failure values, action/selection order, timeout priority, singular/plural count
+copy, **Play Here**/**Choose ROM** live recovery, immutable output, malformed
+model rejection and the complete phrase/mismatch announcement. This strengthens
+browser semantic evidence without claiming DOM layout, actual accessibility-tree
+behavior or input dispatch; those remain in the dedicated-desktop Chromium gate.
+The same test enumerates the live policy for all 27 action ids: a route is
+admitted only when it is currently rendered and enabled, production setup cannot
+borrow the trusted fixture's simulated preflight, and carrier/race-dependent
+routes remain explicit locked outcomes. The runtime consumes this policy before
+performing any launcher effect or request; production callers also cannot select
+gallery fixtures.
+
+`online_room_live_state_js` owns the browser's other pure boundary: the exact
+public MatchRoom snapshot and its launcher-only identity envelope. It rejects
+unknown/root/private fields, partial or changed credentials, incompatible
+builds, malformed U64s, impossible member/seat/selection/phase state, broken
+control-tail continuity or final-state disagreement, regressing/equivocating
+publications, cross-origin or malformed invitations and stale invite generations.
+Accepted input is deep-copied into an immutable canonical state. Invite secrets
+use a receipt-relative local deadline with a 5%/30-second early-expiry margin,
+so display clock skew cannot keep a QR alive; expiry destroys the secret before
+rendering and projects an explicit **New Invitation** recovery for the leader.
+Valid fully older HTTP publications are no-ops, mixed advancement/regression is
+equivocation, and a rotate secret crossing a newer socket publication must match
+the exact in-flight expected/current generation and current leader custody.
+Replay cannot extend local expiry; terminal close may revoke the generation's
+service deadline.
+The exact 21-field C ABI v4 projection, owner/ready/loaded masks, three-state
+invite custody and room/service phase correlation are checked without DOM,
+network, Wasm or a game process. The browser transaction restores prior state
+on projection/render failure but never resurrects an expired secret. A successful
+guest leave is terminal because the service revokes that credential in the same
+commit; it is not followed by a predictably unauthorized refresh. This gate is
+registered but must be executed with the deferred executable-validation batch
+while the maintainer's workstation is occupied.
+
+The executable also publishes a versioned 43-case gallery built only through
 fake-adapter commands/callbacks/reducers. `app_online_room_gallery` renders each
-case in an isolated profile and requires all 42 captures to be non-flat and
+case in an isolated profile and requires all 43 captures to be non-flat and
 byte-distinct. `app_online_room_accessibility` walks every case with actual SDL
 keyboard navigation and requires its title plus every visible action to be
 spoken; recovery titles must be assertive. `app_online_room_actions` discovers
-all 25 action ids from the executable and activates one valid rendered instance
+all 27 action ids from the executable and activates one valid rendered instance
 through both keyboard and a virtual gamepad. Reducer tests separately prove the
 confirmed Leave Race effect ordering and that preflight retry cannot create a
 replacement room. `check_browser_online_room.py` qualifies the browser's
 zero-I/O release gate, launcher-owned ROM/Phone Party handoffs, Escape focus
 restoration and 320×568/200% reflow. `check_browser_online_room_gallery.py`
-then loads the isolated 35 KiB shared-C projection (never the ROM, game engine
-or a provider), compares all 42 browser views with the native executable,
-activates all 25 typed routes through focused native keyboard controls, and
+then loads the isolated sub-128-KiB shared-C projection (never the ROM, game engine
+or a provider), compares all 43 browser cases with the native executable,
+activates all 27 typed routes through focused native keyboard controls, and
 proves touch, recovery accessibility and every-case portrait/landscape 200%
 reflow (down to 320×568). These
 are product-input gates; none enables production race admission.
@@ -1055,11 +1199,17 @@ the model exactly once. US 1.1 maps to revision 1/30 Hz and PAL 1.1 to revision
 activation performs no `/api/` request and still cannot enable race admission.
 
 `check_browser_online_match_room.py` enables the otherwise-inert live adapter
-with a MatchRoom-shaped seam. It proves link/code create and join, invite QR and
-generation rotation, local selection/Ready, state-socket reconnect, corrupt
-snapshot recovery, secret-fragment erasure before request and accessible action
-names. An injected service admission field remains powerless: the shared C
-projection receives the locally false policy and never exposes Start Race.
+with a MatchRoom-shaped seam. It proves link/code create and join, invite QR,
+generation rotation, publication-driven and timer-driven expiry, immediate old
+secret removal, membership/rotation and leadership-loss races, leader-only
+replacement, missing-QR fallback, local selection/Ready, generation-guarded
+state-socket reconnect, synchronous adapter-construction failure recovery,
+five-attempt socket-flap exhaustion, explicit Retry,
+accepted host-close without a doomed state refresh, corrupt snapshot recovery,
+secret-fragment erasure before request and accessible
+action names. Unknown service fields and superseded callbacks remain powerless:
+the exact boundary rejects them, while the shared C projection receives the
+locally false admission policy and never exposes Start Race.
 
 `tests/check_browser_online_two_person.py` starts the real local Worker with
 static assets and fresh Durable Objects, then drives two isolated Chrome
@@ -1100,7 +1250,7 @@ keeps forged/refused floods at zero observations. The second environment proves 
 while static/local paths remain available and its health aggregate remains
 empty/complete.
 
-`tests/check_party_internal_api.py` freezes the 15-call Worker→Durable Object
+`tests/check_party_internal_api.py` freezes the 16-call Worker→Durable Object
 census and requires every call to use the internal v1 envelope. It also requires
 PartyBudget, PartyRoom, PartyCodeDirectory and MatchRoom to reject an unknown
 version before URL/body parsing or storage access. Service tests exercise all
@@ -1154,7 +1304,11 @@ The adjacent browser-party evidence is split by responsibility:
 `check_controller_page.py` owns the engine-free phone surface and neutral
 lifecycle, `check_party_host.py` owns launcher QR/code approval and seat custody,
 and `check_phone_party_webrtc.py` owns authenticated signaling plus direct state
-and control channels. That peer gate requires a no-churn handshake, same-peer
+and control channels. The host gate also forces QR encoding failure and requires
+the canvas to disappear while `/controller/` plus the accessible six-digit code
+remain truthful. The service fixture connects two approved controller sockets
+and proves a host offer reaches only its addressed attachment. That peer gate
+requires a no-churn handshake, same-peer
 ICE restart, bounded ping/pong, fail-neutral watchdog expiry, exact-neutral
 reliable-channel failure, one fresh generation and working input after each
 recovery. `check_party_experience_canary_smoke.py` runs the
@@ -1162,6 +1316,18 @@ operated journey against a fresh real local Worker: direct input continues while
 phone signaling is forcibly unavailable, then the same seat rotates its epoch,
 rebinds and accepts fresh input after signaling returns. The one-attempt smoke
 must remain `STOP`; it cannot counterfeit hosted evidence.
+
+The controller-page gate additionally covers exact 43-character fragment
+scrubbing, embedded private share/copy recovery, capability-free public-page
+share/copy plus code guidance, acknowledged duplicate-tab private navigation,
+the no-Web-Locks hashed broadcast/storage lease and pagehide cleanup, actual
+reload for protocol mismatch, BFCache clean reload and fail-closed History API
+denial. The host gate also authors pagehide secret/pad cleanup plus persisted
+room-authority recovery. The service
+security gate separately covers canonical HTTPS and loopback-only origin
+configuration. These latest arms are
+authored and syntax-valid but are deliberately unexecuted on the occupied
+workstation; they require the dedicated browser desktop.
 `check_persistent_browser_session.py` separately proves
 two complete engine loans return through one wasm module without surrendering
 launcher or mounted-storage ownership.
@@ -1177,7 +1343,11 @@ mutates neither lease nor room, and confirmation produces exact neutral state
 before truthful **Controller disconnected** recovery. The shared document
 contract requires inline code errors, stable dynamic invite-form metadata,
 semantic auxiliary headings, contained modal overscroll, visible focus, and a
-safe-area-aware skip target on the private-room handoff.
+safe-area-aware skip target on the private-room handoff. Static document/source
+contracts additionally require bounded 16 KiB/ten-second HTTP reads, exact
+host/controller publications, same-transition equivocation rejection, stale
+socket-generation guards, five-attempt reconnect and the phone's native **Try
+now** recovery action.
 
 The Party service also contains a separate launcher MatchRoom authority in
 `services/party/src/match/`. Its pure reducer and real local SQLite Durable
@@ -1189,13 +1359,28 @@ vector, leader-only generation-checked invite rotation, expiry deletion,
 canonical non-Join commands, a literal-zero admission
 kill switch and durable-storage absence of raw invite/code/credential values.
 Client state also omits internal receipts, command high-water marks and
-fingerprints. Run all service gates with
-`(cd services/party && npm run check)`. These tests do not switch on production
+fingerprints. On a human-confirmed isolated test host, run all service gates
+with `(cd services/party && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)`.
+On an occupied workstation, use only `npm run typecheck`. These tests do not switch on production
 online admission. Worker integration also races two Match commands from one
 revision and two Phone Party approvals for one seat. Complete transitions are
 input-gated across storage awaits: the Match race has exactly one success and
 one `stale_revision`, while the seat race has exactly one lease and leaves the
 other phone pending. Repeated parallel test processes retain those outcomes.
+
+`match-signaling.test.ts` and `match-signaling-worker.test.ts` keep Match peer
+setup separate from the read-only state subscription. They prove exact bounded
+hello/SDP/ICE/end schemas, UTF-8 burst/lifetime caps, room-bound credentials,
+object-injected sender identity, exact-target generations, stale/unavailable
+recovery, hibernation, duplicate-socket replacement and originless native
+protocol negotiation. `test_match_signal_client_js.mjs` checks the dormant
+same-origin launcher adapter, including secret-free URLs, welcome custody,
+selected-subprotocol custody, outgoing sequencing and fail-closed stale server
+generations. `hibernation-contract.test.ts` inventories all four Durable Object
+sources and rejects standard WebSocket acceptance, event listeners, timers or
+outbound WebSockets that would consume idle duration; both socket objects must
+retain the hibernation API and serialized attachments. None of these
+tests enable Start or send gameplay/preflight data through the service.
 
 `test_party_experience_canary.py` pins the zero-analytics operated canary:
 HTTPS-only origin shape, fixed 20-attempt lanes, nearest-rank p95 thresholds,
@@ -1203,8 +1388,9 @@ aggregate-only output and refusal to overwrite evidence. The production-path
 runner is `tools/run_party_experience_canary.py`; its explicit loopback
 development mode can smoke real Worker/WebSocket/WebRTC behavior but cannot
 produce a ledger-qualified day. `test_party_beta_ledger.py` then requires the
-exact v2 experience aggregate on every one of seven contiguous zero-charge
-days and adversarially rejects under-sampling, success or latency drift.
+exact v1 experience aggregate inside every day of the v3 ledger, including
+provider-v2 Durable Object duration, across seven contiguous zero-charge days
+and adversarially rejects downgrade, under-sampling, success or latency drift.
 
 `net_local_input` is the ROM-free input ownership gate beneath that later
 integration. It merges local-seat-indexed samples into a canonical frame using
@@ -1599,7 +1785,8 @@ counted as runtime coverage.
 ## Real browser runtime — `tests/check_browser_runtime.py`
 
 ```bash
-python3 tests/check_browser_runtime.py \
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
+  python3 tests/check_browser_runtime.py \
   --engine-dir build-web --shell-dir dist/web \
   --rom baserom.us.v80.z64 --camera-obstruction modern
 ```
@@ -1668,7 +1855,8 @@ Release both pass.
 ## Browser save custody — `tests/check_browser_save_ui.py`
 
 ```bash
-python3 tests/check_browser_save_ui.py \
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
+  python3 tests/check_browser_save_ui.py \
   --engine-dir build-web --shell-dir dist/web
 ```
 

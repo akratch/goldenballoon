@@ -27,6 +27,8 @@ def run(args: argparse.Namespace) -> None:
     shell = resolve(args.shell_dir)
     for relative in ("index.html", "online/online-control-config.js",
                      "online/online-room.css",
+                     "online/online-room-live-state.js",
+                     "online/online-room-presenter.js",
                      "online/online-room.js"):
         require((shell / relative).is_file(),
                 f"browser Online Room artifact missing: {relative}")

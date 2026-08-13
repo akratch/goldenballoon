@@ -34,6 +34,7 @@ class Case:
     admission: bool
     timeout_visible: bool
     title: str
+    verification_phrase: str
     labels: tuple[str, ...]
     actions: tuple[int, ...]
 
@@ -64,7 +65,7 @@ def native_cases(binary: str, root: Path) -> list[Case]:
     require(completed.returncode == 0,
             f"native gallery inventory failed:\n{completed.stdout[-3000:]}")
     semantic: dict[str, tuple[int, int, int, bool, bool]] = {}
-    copies: dict[str, tuple[str, tuple[str, ...]]] = {}
+    copies: dict[str, tuple[str, str, tuple[str, ...]]] = {}
     actions: dict[str, tuple[int, ...]] = {}
     for line in completed.stdout.splitlines():
         match = ROW_RE.match(line)
@@ -72,19 +73,19 @@ def native_cases(binary: str, root: Path) -> list[Case]:
             slug, kind, failure, primary, _timeout, admission, visible = match.groups()
             semantic[slug] = (int(kind), int(failure), int(primary),
                               admission == "1", visible == "1")
-        elif line.startswith("online-gallery-copy-v1|"):
+        elif line.startswith("online-gallery-copy-v2|"):
             fields = line.split("|")
-            require(len(fields) == 7, f"malformed native copy row: {line}")
-            copies[fields[1]] = (fields[2], tuple(fields[3:]))
+            require(len(fields) == 8, f"malformed native copy row: {line}")
+            copies[fields[1]] = (fields[2], fields[7], tuple(fields[3:7]))
         elif line.startswith("online-gallery-actions-v1|"):
             fields = line.split("|")
             require(len(fields) == 6, f"malformed native action row: {line}")
             actions[fields[1]] = tuple(int(value) for value in fields[2:])
-    require(len(semantic) == len(copies) == len(actions) == 42,
-            "native product did not publish the complete 42-case contract")
+    require(len(semantic) == len(copies) == len(actions) == 43,
+            "native product did not publish the complete 43-case contract")
     result = []
     for slug, (kind, failure, primary, admission, visible) in semantic.items():
-        title, raw_labels = copies[slug]
+        title, verification_phrase, raw_labels = copies[slug]
         raw_actions = actions[slug]
         ordered_labels: list[str] = []
         ordered_actions: list[int] = []
@@ -96,7 +97,8 @@ def native_cases(binary: str, root: Path) -> list[Case]:
             ordered_actions.append(action)
             ordered_labels.append(label)
         result.append(Case(slug, kind, failure, primary, admission, visible,
-                           title, tuple(ordered_labels), tuple(ordered_actions)))
+                           title, verification_phrase, tuple(ordered_labels),
+                           tuple(ordered_actions)))
     return result
 
 
@@ -124,7 +126,8 @@ def run(args: argparse.Namespace) -> None:
         shell = (ROOT / shell).resolve()
     binary = resolve_binary(args.build)
     for relative in ("index.html", "online/online-control-config.js",
-                     "online/online-room.js",
+                     "online/online-room-live-state.js",
+                     "online/online-room-presenter.js", "online/online-room.js",
                      "mdkr-online-tools.js", "mdkr-online-tools.wasm"):
         require((shell / relative).is_file(), f"shared room artifact missing: {relative}")
     require((shell / "mdkr-online-tools.wasm").stat().st_size < 131072,
@@ -159,7 +162,7 @@ def run(args: argparse.Namespace) -> None:
                     ready = cdp.evaluate("globalThis.MDKROnlineRoom.ready",
                                          await_promise=True)
                     require(ready is True, "shared C Online Room module did not initialize")
-                    require(cdp.evaluate("MDKROnlineRoom.inventory().length") == 42,
+                    require(cdp.evaluate("MDKROnlineRoom.inventory().length") == 43,
                             "browser did not enumerate all native gallery cases")
                     open_if_needed(cdp)
 
@@ -176,6 +179,11 @@ def run(args: argparse.Namespace) -> None:
                             kind:Number(dialog.dataset.viewKind),
                             failure:Number(dialog.dataset.failure),
                             title:document.getElementById('online-room-title').textContent,
+                            verificationPhrase:model.verificationPhrase,
+                            renderedPhrase:document.getElementById(
+                              'online-room-verification-phrase').textContent,
+                            phraseHidden:document.getElementById(
+                              'online-room-verification').hidden,
                             labels:buttons.map(button=>button.textContent),
                             actions:buttons.map(button=>Number(button.dataset.onlineAction)),
                             primary:model.controls[0].action,
@@ -196,6 +204,12 @@ def run(args: argparse.Namespace) -> None:
                                  case.timeout_visible, case.admission),
                                 f"{case.slug}: browser semantic model drifted: {rendered}")
                         require(rendered["title"] == case.title and
+                                rendered["verificationPhrase"] ==
+                                  case.verification_phrase and
+                                rendered["renderedPhrase"] ==
+                                  case.verification_phrase and
+                                rendered["phraseHidden"] ==
+                                  (not bool(case.verification_phrase)) and
                                 tuple(rendered["labels"]) == case.labels and
                                 tuple(rendered["actions"]) == case.actions,
                                 f"{case.slug}: browser copy/action order drifted: {rendered}")
@@ -210,8 +224,52 @@ def run(args: argparse.Namespace) -> None:
                         for action in case.actions:
                             action_case.setdefault(action, index)
 
-                    require(set(action_case) == set(range(1, 26)),
+                    require(set(action_case) == set(range(1, 28)),
                             f"browser inventory does not expose all actions: {sorted(action_case)}")
+
+                    phrase_cases = [case for case in cases
+                                    if case.verification_phrase]
+                    require(len(phrase_cases) == 1,
+                            "browser/native contract must expose exactly one phrase view")
+                    phrase_case = phrase_cases[0]
+                    require(phrase_case.primary == 26 and
+                            phrase_case.labels[:2] ==
+                              ("Words Match", "Words Differ"),
+                            "verification phrase lacks both explicit decisions")
+                    phrase_index = cases.index(phrase_case)
+                    cdp.evaluate(f"MDKROnlineRoom.select({phrase_index})")
+                    require(cdp.evaluate("""(() => {
+                      const region=document.getElementById('online-room-verification');
+                      const output=document.getElementById(
+                        'online-room-verification-phrase');
+                      const announcement=document.getElementById(
+                        'online-room-announcement');
+                      return !region.hidden &&
+                        region.getAttribute('aria-labelledby')===
+                          'online-room-verification-title' &&
+                        output.getAttribute('translate')==='no' &&
+                        announcement.textContent.includes(output.textContent) &&
+                        announcement.textContent.includes(
+                          'Do not continue if even 1 word differs.');
+                    })()"""),
+                            "phrase card or assistive announcement is incomplete")
+
+                    mismatch_index = next(
+                        i for i, case in enumerate(cases)
+                        if case.slug == "failure-verification-mismatch")
+                    mismatch_case = cases[mismatch_index]
+                    require(mismatch_case.failure == 18 and
+                            mismatch_case.title == "Words Did Not Match" and
+                            mismatch_case.labels[0] == "Reconnect Securely",
+                            "phrase mismatch lacks dedicated actionable recovery")
+                    cdp.evaluate(f"MDKROnlineRoom.select({mismatch_index})")
+                    require(cdp.evaluate("""(() => {
+                      const a=document.getElementById('online-room-announcement');
+                      return a.getAttribute('aria-live')==='assertive' &&
+                        a.textContent.startsWith('Words Did Not Match.') &&
+                        document.getElementById('online-room-verification').hidden;
+                    })()"""),
+                            "phrase mismatch is not assertive or leaves stale phrase visible")
 
                     # Reflow every state at the minimum supported mobile width
                     # and browser zoom. Vertical scrolling is expected; two-axis
@@ -363,8 +421,9 @@ def run(args: argparse.Namespace) -> None:
                     chrome.close()
         finally:
             server.close()
-    print("check_browser_online_room_gallery: PASS — 42 shared-C views, "
-          "25 keyboard actions, touch, a11y and portrait/landscape 200% reflow")
+    print("check_browser_online_room_gallery: PASS — 43 shared-C cases, "
+          "27 keyboard actions, phrase decisions, touch, a11y and "
+          "portrait/landscape 200% reflow")
 
 
 def test_state_errors(cdp: CDPClient) -> list[str]:

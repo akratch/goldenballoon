@@ -1,6 +1,8 @@
 #include "platform/online/lobby_core.h"
 
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -37,6 +39,159 @@ static MdkrOnlineCommand command(
     value.actor_endpoint_id = actor;
     value.type = type;
     return value;
+}
+
+static const char *phase_name(MdkrOnlinePhase phase) {
+    static const char *const names[] = {
+        "invalid", "lobby", "loading", "racing", "results", "closed"};
+    return phase <= MDKR_ONLINE_CLOSED ? names[phase] : names[0];
+}
+
+static const char *error_name(MdkrOnlineError error) {
+    static const char *const names[] = {
+        "ok", "protocol", "stale_revision", "stale_command",
+        "command_conflict", "invalid_state", "unauthorized", "not_found",
+        "already_joined", "incompatible", "capacity", "not_ready",
+        "disconnected", "selection_conflict", "illegal_vehicle"};
+    return error <= MDKR_ONLINE_ERROR_ILLEGAL_VEHICLE ? names[error] : "unknown";
+}
+
+static MdkrOnlineCommandType command_type(const char *name) {
+    static const char *const names[] = {
+        "invalid", "join", "leave", "disconnect", "reconnect", "set_ready",
+        "set_vote", "begin_loading", "ack_loaded", "begin_race",
+        "publish_results", "rematch", "transfer_leader", "close",
+        "set_character", "set_vehicle", "cancel_loading"};
+    unsigned index;
+    for (index = 1u; index <= MDKR_ONLINE_CANCEL_LOADING; index++) {
+        if (strcmp(name, names[index]) == 0) return (MdkrOnlineCommandType)index;
+    }
+    return (MdkrOnlineCommandType)0;
+}
+
+static void append_text(char *output, size_t capacity, size_t *used,
+                        const char *format, ...) {
+    va_list arguments;
+    int count;
+    if (*used >= capacity) return;
+    va_start(arguments, format);
+    count = vsnprintf(output + *used, capacity - *used, format, arguments);
+    va_end(arguments);
+    if (count < 0 || (size_t)count >= capacity - *used) {
+        *used = capacity;
+        return;
+    }
+    *used += (size_t)count;
+}
+
+static void canonical_parity_state(const MdkrOnlineLobby *lobby,
+                                   MdkrOnlineStep result, char *output,
+                                   size_t capacity) {
+    size_t used = 0u;
+    unsigned index;
+    bool first = true;
+    output[0] = '\0';
+    append_text(output, capacity, &used,
+                "%u,%u,%u,%s,%u,%u,%s,%llu,%u,",
+                result.accepted ? 1u : 0u, result.duplicate ? 1u : 0u,
+                result.leader_changed ? 1u : 0u, error_name(result.error),
+                lobby->revision, lobby->match_epoch, phase_name(lobby->phase),
+                (unsigned long long)lobby->leader_endpoint_id,
+                lobby->leader_generation);
+    if (lobby->selected_track == MDKR_ONLINE_NO_VOTE)
+        append_text(output, capacity, &used, "-,%u,", lobby->selected_vehicle_mask);
+    else
+        append_text(output, capacity, &used, "%u,%u,", lobby->selected_track,
+                    lobby->selected_vehicle_mask);
+    for (index = 0u; index < MDKR_ONLINE_MAX_ENDPOINTS; index++) {
+        const MdkrOnlineMember *item = &lobby->members[index];
+        if (!item->occupied) continue;
+        append_text(output, capacity, &used, "%s%llu:%u:%u:%u:%u:%llu",
+                    first ? "" : ";", (unsigned long long)item->endpoint_id,
+                    item->connected ? 1u : 0u, item->ready ? 1u : 0u,
+                    item->loaded ? 1u : 0u, item->seat_count,
+                    (unsigned long long)item->last_command_id);
+        first = false;
+    }
+    append_text(output, capacity, &used, ",");
+    first = true;
+    for (index = 0u; index < MDKR_ONLINE_MAX_SEATS; index++) {
+        const MdkrOnlineSeat *item = &lobby->seats[index];
+        if (!item->occupied) continue;
+        append_text(output, capacity, &used, "%s%llu:%u:%u:", first ? "" : ";",
+                    (unsigned long long)item->endpoint_id, item->local_index,
+                    item->selection_revision);
+        if (item->vote_track == MDKR_ONLINE_NO_VOTE)
+            append_text(output, capacity, &used, "-:");
+        else
+            append_text(output, capacity, &used, "%u:", item->vote_track);
+        if (item->character_id == MDKR_ONLINE_NO_CHARACTER)
+            append_text(output, capacity, &used, "-:");
+        else
+            append_text(output, capacity, &used, "%u:", item->character_id);
+        if (item->vehicle_id == MDKR_ONLINE_NO_VEHICLE)
+            append_text(output, capacity, &used, "-");
+        else
+            append_text(output, capacity, &used, "%u", item->vehicle_id);
+        first = false;
+    }
+}
+
+static void test_shared_service_parity_trace(void) {
+    const char *path = MDKR_SOURCE_DIR "/tests/fixtures/online_lobby_reducer_v1.tsv";
+    MdkrOnlineCompatibilityV1 compat = compatibility();
+    MdkrOnlineLobby lobby;
+    FILE *file = fopen(path, "rb");
+    char line[4096];
+    unsigned line_number = 0u;
+    expect(file != NULL, "shared reducer parity trace opens");
+    if (file == NULL) return;
+    expect(mdkr_online_lobby_init(&lobby, 42u, 100u, &compat, 1u),
+           "shared reducer parity lobby initializes");
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char *fields[9];
+        char *cursor = line;
+        char *tab;
+        unsigned field_count = 0u;
+        MdkrOnlineCommand value;
+        MdkrOnlineStep result;
+        char actual[2048];
+        char message[256];
+        line_number++;
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '\0' || line[0] == '#') continue;
+        while (field_count < 9u) {
+            fields[field_count++] = cursor;
+            tab = strchr(cursor, '\t');
+            if (tab == NULL) break;
+            *tab = '\0';
+            cursor = tab + 1;
+        }
+        snprintf(message, sizeof(message), "parity trace line %u has nine fields",
+                 line_number);
+        expect(field_count == 9u && strchr(fields[8], '\t') == NULL, message);
+        if (field_count != 9u) continue;
+        value = command(&lobby, strtoull(fields[2], NULL, 10),
+                        strtoull(fields[3], NULL, 10), command_type(fields[1]));
+        value.expected_revision = (uint32_t)strtoul(fields[4], NULL, 10);
+        value.value = (uint32_t)strtoul(fields[5], NULL, 10);
+        value.target_endpoint_id = strtoull(fields[6], NULL, 10);
+        if (strcmp(fields[7], "same") == 0) value.compatibility = compat;
+        else if (strcmp(fields[7], "unsupported_rom") == 0) {
+            value.compatibility = compat;
+            value.compatibility.rom_revision = 3u;
+        } else if (strcmp(fields[7], "mismatch") == 0) {
+            value.compatibility = compat;
+            value.compatibility.gameplay_digest[3] ^= 1u;
+        }
+        result = mdkr_online_lobby_dispatch(&lobby, &value);
+        canonical_parity_state(&lobby, result, actual, sizeof(actual));
+        snprintf(message, sizeof(message), "shared parity row %s matches", fields[0]);
+        expect(strcmp(actual, fields[8]) == 0, message);
+        if (strcmp(actual, fields[8]) != 0)
+            fprintf(stderr, "  expected: %s\n  actual:   %s\n", fields[8], actual);
+    }
+    fclose(file);
 }
 
 static MdkrOnlineStep join(
@@ -200,6 +355,22 @@ static void test_atomic_compatibility_capacity_and_idempotency(void) {
     step = mdkr_online_lobby_dispatch(&lobby, &value);
     expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_STALE_REVISION,
            "compare-and-swap revision rejects stale concurrent UI state");
+    value.command_id = 3u;
+    value.expected_revision = lobby.revision;
+    expect(mdkr_online_lobby_dispatch(&lobby, &value).accepted,
+           "higher command id advances the actor high-water mark");
+    before = lobby;
+    value.command_id = 2u;
+    value.expected_revision = lobby.revision - 1u;
+    step = mdkr_online_lobby_dispatch(&lobby, &value);
+    expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_STALE_REVISION &&
+               memcmp(&lobby, &before, sizeof(lobby)) == 0,
+           "stale revision wins over an unseen lower command id");
+    value.expected_revision = lobby.revision;
+    step = mdkr_online_lobby_dispatch(&lobby, &value);
+    expect(!step.accepted && step.error == MDKR_ONLINE_ERROR_STALE_COMMAND &&
+               memcmp(&lobby, &before, sizeof(lobby)) == 0,
+           "lower command id is stale only at the current revision");
 }
 
 static void test_disconnect_and_leader_custody(void) {
@@ -361,6 +532,7 @@ static void test_selection_ownership_conflicts_and_readiness(void) {
 }
 
 int main(void) {
+    test_shared_service_parity_trace();
     test_service_fingerprint_vector();
     test_lifecycle_and_votes();
     test_atomic_compatibility_capacity_and_idempotency();

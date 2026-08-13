@@ -1,24 +1,35 @@
 # Test suite economics
 
-The complete suite is 141 tasks. It took between 2¼ and 3¼ hours when this
-document was written; the `native_layout` change recorded in §6.1 has since
-removed about 27 minutes of that. This document measures where the time goes,
-names the overlaps that could be collapsed, and records what evidence a future
-implementer must produce before collapsing them.
+The complete suite is **204 tasks** as of 2026-08-13. It took between 2¼ and
+3¼ hours when this document was written; the `native_layout` change recorded
+in §6.1 has since removed about 27 minutes of that. This document measures
+where the time goes, names the overlaps that could be collapsed, and records
+what evidence a future implementer must produce before collapsing them.
+
+**Every measurement below was taken against the 135-task manifest** that the
+suite carried on 2026-08-05/06, and the numbers are left exactly as measured.
+They are still the best available evidence for the tasks they name, but they
+do not describe the current wall clock: the online-multiplayer work has since
+added tasks, so treat the totals as a floor rather than a current figure. Do
+not scale them — re-measure before quoting a new total.
 
 **Nothing here removes or weakens a gate.** No task was deprecated, merged, or
 subsetted in the pass that produced this document. Every verdict below is a
 *candidate* with a stated precondition. The release gate remains the complete
-run: `python3 tools/run_checks.py` with no restriction flags, printing
-`complete suite, 135/135 tasks`. See
+run: `MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py
+--with-compiled-tests --with-app-tests --with-browser-tests` on a dedicated test desktop, printing
+`complete suite, N/N tasks` — currently `204/204`. Any other verdict is
+printed as `SUBSET n/204 tasks:` followed by the restriction that produced it,
+and a `SUBSET` line never counts as a release gate. See
 [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) §2b.
 
 ---
 
 ## 1. Method, and what these two runs can and cannot show
 
-Two complete-suite logs, same 135-task manifest
-([`../tools/run_checks.py`](../tools/run_checks.py)):
+Two complete-suite logs, same 135-task manifest as it stood on 2026-08-05/06
+([`../tools/run_checks.py`](../tools/run_checks.py)). The manifest is 204 tasks
+today; these two runs are reported unchanged, at their original size:
 
 | | run 1 | run 2 |
 |---|---|---|
@@ -777,7 +788,14 @@ A workable shape, using the measured numbers:
 |---|---|---|---|
 | per-commit | `--primary-only` — roles `source` + `native` + `ctest`, 94 tasks | 10s + 41m59s + 48s = **42m57s** | `SUBSET 94/135 tasks: --primary-only` |
 | nightly | `--role` naming every role except `layout`, 134 tasks | 135m06s − 36m47s = **98m19s** | `SUBSET 134/135 tasks: --role …` |
-| **release** | **no flags** | **135m07s measured** | **`complete suite, 135/135 tasks`** |
+| **release** | **no restriction flags** | **135m07s measured** | **`complete suite, 135/135 tasks`** |
+
+The selections and costs in this table are the 2026-08-05/06 measurement at
+135 tasks. Since then the runner also requires `MDKR_DEDICATED_TEST_DESKTOP=1`
+plus `--with-compiled-tests --with-app-tests --with-browser-tests` to reach the
+compiled, app and browser lanes at all, and the manifest is 204 tasks, so the
+release row prints `complete suite, 204/204 tasks` today. The tier *shapes*
+still hold; the counts and costs need re-measuring.
 
 Three rules make this safe rather than a trap:
 
@@ -790,8 +808,10 @@ Three rules make this safe rather than a trap:
    list, it derives it from a manifest role the way the release checklist
    already derives the web lane from `BROWSER_ROLES` — a hand-maintained second
    list is how a gate goes missing.
-3. **The complete suite runs before every cut.** The full 135 tasks, on the
-   candidate tree, with the verdict line pasted into the release record. That
+3. **The complete suite runs before every cut.** The full manifest — 204 tasks
+   today, not a pinned number — on the candidate tree, with the verdict line
+   pasted into the release record. Read the count off the verdict line rather
+   than trusting any figure written in this document. That
    rule exists because a subset battery has already hidden a broken gate here.
 
 The tiering itself saves nothing at release time. Everything in §6 does.

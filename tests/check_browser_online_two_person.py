@@ -171,6 +171,8 @@ def fatal_lines(cdp: CDPClient) -> list[str]:
 def run(args: argparse.Namespace) -> None:
     shell = resolve(args.shell_dir)
     for path in (shell / "index.html", shell / "room/index.html",
+                 shell / "online/online-room-live-state.js",
+                 shell / "online/online-room-presenter.js",
                  shell / "online/online-room.js", shell / "mdkr-online-tools.wasm",
                  WRANGLER):
         require(path.is_file(), f"two-person UX artifact missing: {path}")

@@ -44,6 +44,8 @@ def run(args: argparse.Namespace) -> None:
                                      "controllers": []},
             }
             source = """
+              let partyInviteGeneration = 1;
+              let partyTransition = 100;
               globalThis.__mdkrPartyHostTestConfig = {
                 initialRoomState: %s,
                 async request(path) {
@@ -52,9 +54,27 @@ def run(args: argparse.Namespace) -> None:
                     fallbackCode:'123456', inviteGeneration:1, inviteExpiresInMs:120000,
                     controllerUrl:location.origin+'/controller/#'+'A'.repeat(43)
                   };
-                  if (path.endsWith('/rotate')) return {
-                    fallbackCode:'654321', inviteGeneration:2, inviteExpiresInMs:120000,
-                    controllerUrl:location.origin+'/controller/#'+'B'.repeat(43)
+                  if (path.endsWith('/rotate')) {
+                    if (globalThis.__partyHoldRotate) {
+                      globalThis.__partyRotateStarted=true;
+                      await new Promise(resolve=>{globalThis.__partyReleaseRotate=resolve;});
+                    }
+                    partyInviteGeneration++;
+                    const current=globalThis.MDKRPartyHost.state().room;
+                    globalThis.MDKRPartyHost.applyRoomState({
+                      transitionId:++partyTransition,
+                      inviteGeneration:partyInviteGeneration,
+                      controllers:current.controllers || []
+                    });
+                    return {
+                      fallbackCode:'654321', inviteGeneration:partyInviteGeneration,
+                      inviteExpiresInMs:120000,
+                      controllerUrl:location.origin+'/controller/#'+'B'.repeat(43)
+                    };
+                  }
+                  if (path.endsWith('/revoke')) return {
+                    ok:true, transitionId:++partyTransition,
+                    inviteGeneration:++partyInviteGeneration
                   };
                   return {ok:true};
                 }
@@ -129,9 +149,22 @@ def run(args: argparse.Namespace) -> None:
             require(not seat["startDisabled"] and seat["label"] == "Phone reconnecting — neutral",
                     f"approved controller did not enable start: {seat}")
 
-            cdp.evaluate("document.getElementById('party-extend').click()")
-            wait_value(cdp, "document.getElementById('party-code').textContent",
-                       lambda value: value == "654 321", "rotated QR", args.timeout)
+            cdp.evaluate("""(() => {
+              globalThis.__partyQrEncode = qrcodegen.QrCode.encodeText;
+              qrcodegen.QrCode.encodeText = () => { throw new Error('qr fixture failure'); };
+              document.getElementById('party-extend').click();
+            })()""")
+            qr_fallback = wait_value(cdp, """(() => ({
+              code:document.getElementById('party-code').textContent,
+              hidden:document.querySelector('.party-qr-wrap').hidden,
+              step:document.getElementById('party-scan-step').textContent,
+              install:document.getElementById('party-install-copy').textContent
+            }))()""", lambda value: isinstance(value, dict) and
+                value.get("code") == "654 321", "rotated QR fallback", args.timeout)
+            require(qr_fallback["hidden"] and "/controller/" in qr_fallback["install"] and
+                    "Open this site" in qr_fallback["step"],
+                    f"QR failure did not preserve manual code recovery: {qr_fallback}")
+            cdp.evaluate("qrcodegen.QrCode.encodeText = globalThis.__partyQrEncode")
             cdp.call("Emulation.setPageScaleFactor", {"pageScaleFactor": 2})
             layout = cdp.evaluate("({width:document.documentElement.scrollWidth, viewport:innerWidth})")
             require(layout["width"] <= layout["viewport"], f"200% party sheet overflow: {layout}")
@@ -142,6 +175,21 @@ def run(args: argparse.Namespace) -> None:
             wait_value(cdp,
                 "globalThis.__mdkrPartyHostTestState.requests.some(p=>p.endsWith('/revoke'))",
                 bool, "dismissed launcher invite revocation", args.timeout)
+            revoked_presentation = cdp.evaluate("""(() => ({
+              room:globalThis.MDKRPartyHost.state().room,
+              code:document.getElementById('party-code').textContent,
+              qrWidth:document.getElementById('party-qr').width,
+              qrHidden:document.querySelector('.party-qr-wrap').hidden,
+              expiry:document.getElementById('party-expiry').textContent
+            }))()""")
+            require(revoked_presentation["room"] and
+                    "fallbackCode" not in revoked_presentation["room"] and
+                    "controllerUrl" not in revoked_presentation["room"] and
+                    revoked_presentation["code"] == "—— —— ——" and
+                    revoked_presentation["qrWidth"] == 1 and
+                    revoked_presentation["qrHidden"] and
+                    revoked_presentation["expiry"] == "Invite is not displayed",
+                    f"dismissed invite remained in launcher/DOM custody: {revoked_presentation}")
             require(cdp.evaluate("Boolean(globalThis.MDKRPartyHost.state().room)"),
                     "closing setup unexpectedly ended approved controller leases")
 
@@ -168,6 +216,9 @@ def run(args: argparse.Namespace) -> None:
                        "in-game local pause latch", args.timeout)
             wait_value(cdp, "Boolean(globalThis.MDKRPartyHost.state().room)", bool,
                        "in-game controller room", args.timeout)
+            wait_value(cdp,
+                "globalThis.MDKRPartyHost.state().room.inviteGeneration >= 4",
+                bool, "reopened invite generation after revoke", args.timeout)
             cdp.evaluate("document.getElementById('party-close').click()")
             wait_value(cdp, "!globalThis.__mdkrPartyOverlayOpen", bool,
                        "in-game local pause release", args.timeout)
@@ -177,9 +228,135 @@ def run(args: argparse.Namespace) -> None:
             preserved = cdp.evaluate("Boolean(globalThis.MDKRPartyHost.state().room)")
             require(preserved, "in-game dismissal destroyed the controller room")
 
-            cdp.evaluate("globalThis.MDKRPartyHost.open()")
+            cdp.evaluate("""(() => {
+              document.getElementById('stage').hidden=true;
+              globalThis.MDKRPartyHost.open();
+            })()""")
+            wait_value(cdp, "document.getElementById('party-dialog').open", bool,
+                       "room reopened for launcher start", args.timeout)
+            wait_value(cdp,
+                "globalThis.MDKRPartyHost.state().room.inviteGeneration >= 6",
+                bool, "second reopen correlated after revoke", args.timeout)
+            cdp.evaluate("""(() => {
+              globalThis.__partyPlayClicked=false;
+              document.getElementById('play').addEventListener('click', event => {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                globalThis.__partyPlayClicked=true;
+              }, {capture:true, once:true});
+              document.getElementById('party-start').click();
+            })()""")
+            started = wait_value(cdp, """(() => ({
+              played:globalThis.__partyPlayClicked,
+              dialog:document.getElementById('party-dialog').open,
+              room:globalThis.MDKRPartyHost.state().room,
+              code:document.getElementById('party-code').textContent,
+              qrHidden:document.querySelector('.party-qr-wrap').hidden,
+              revokes:globalThis.__mdkrPartyHostTestState.requests
+                .filter(path=>path.endsWith('/revoke')).length
+            }))()""", lambda value: isinstance(value, dict) and
+                value.get("played") is True and value.get("dialog") is False and
+                value.get("revokes", 0) >= 3,
+                "launcher start invite revocation", args.timeout)
+            require(started["room"] and "fallbackCode" not in started["room"] and
+                    "controllerUrl" not in started["room"] and
+                    started["code"] == "—— —— ——" and started["qrHidden"],
+                    f"starting local play retained invite custody: {started}")
+
+            cdp.evaluate("""(() => {
+              document.getElementById('stage').hidden=false;
+              globalThis.MDKRPartyHost.open();
+            })()""")
             wait_value(cdp, "document.getElementById('party-dialog').open", bool,
                        "room reopened for explicit end", args.timeout)
+            wait_value(cdp,
+                "globalThis.MDKRPartyHost.state().room.inviteGeneration >= 8",
+                bool, "post-start reopen correlated after revoke", args.timeout)
+            rotate_generations = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
+              .requestDetails.filter(entry=>entry.path.endsWith('/rotate'))
+              .map(entry=>entry.body.expectedInviteGeneration)""")
+            require(rotate_generations == [1, 3, 5, 7],
+                    f"rotate requests lost revoke/publication correlation: {rotate_generations}")
+
+            removal_requests_before = cdp.evaluate("""globalThis.__mdkrPartyHostTestState
+              .requests.filter(path=>path.endsWith('/remove')).length""")
+            cdp.evaluate("document.querySelector('[data-seat=\"2\"] .party-seat-remove').click()")
+            removal_confirmation = wait_value(cdp, """(() => ({
+              open:document.getElementById('party-remove-dialog').open,
+              focus:document.activeElement?.id,
+              copy:document.getElementById('party-remove-copy').textContent,
+              requests:globalThis.__mdkrPartyHostTestState.requests
+                .filter(path=>path.endsWith('/remove')).length
+            }))()""", lambda value: isinstance(value, dict) and
+                value.get("open") is True, "remove-phone confirmation", args.timeout)
+            require(removal_confirmation["focus"] == "party-remove-cancel" and
+                    "Sam’s phone" in removal_confirmation["copy"] and
+                    "Controller 2" in removal_confirmation["copy"] and
+                    removal_confirmation["requests"] == removal_requests_before,
+                    f"phone removal was not safe and specific: {removal_confirmation}")
+            cdp.evaluate("document.getElementById('party-remove-cancel').click()")
+            wait_value(cdp, "!document.getElementById('party-remove-dialog').open", bool,
+                       "cancelled phone removal", args.timeout)
+            require(cdp.evaluate("""globalThis.__mdkrPartyHostTestState.requests
+                    .filter(path=>path.endsWith('/remove')).length""") ==
+                    removal_requests_before,
+                    "cancelling phone removal mutated the room")
+            require(cdp.evaluate("document.activeElement?.classList.contains('party-seat-remove')"),
+                    "cancelled phone removal did not restore focus")
+
+            cdp.evaluate("""(() => {
+              document.querySelector('[data-seat="2"] .party-seat-remove').click();
+              document.getElementById('party-remove-confirm').click();
+            })()""")
+            wait_value(cdp, """globalThis.__mdkrPartyHostTestState.requests
+              .filter(path=>path.endsWith('/remove')).length""",
+              lambda value: value == removal_requests_before + 1,
+              "confirmed phone removal", args.timeout)
+            cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
+              type:'room_state', transitionId:++partyTransition,
+              inviteExpiresAt:Date.now()+120000,
+              inviteGeneration:partyInviteGeneration, phase:'open', controllers:[]
+            })""")
+            removed_seat = wait_value(cdp, """(() => ({
+              hidden:document.querySelector('[data-seat="2"] .party-seat-remove').hidden,
+              label:document.querySelector('[data-seat="2"] small').textContent,
+              focusSeat:document.activeElement?.dataset?.seat
+            }))()""", lambda value: isinstance(value, dict) and
+                value.get("hidden") is True, "removed phone seat", args.timeout)
+            require(removed_seat["label"] == "Available" and
+                    removed_seat["focusSeat"] == "2",
+                    f"confirmed removal did not neutralize/focus safely: {removed_seat}")
+
+            cdp.evaluate("""(() => {
+              globalThis.__partyHoldRotate=true;
+              globalThis.__partyRotateStarted=false;
+              document.getElementById('party-extend').click();
+            })()""")
+            wait_value(cdp, "globalThis.__partyRotateStarted", bool,
+                       "page-bound invite rotation", args.timeout)
+            bfcache = cdp.evaluate("""(async () => {
+              dispatchEvent(new PageTransitionEvent('pagehide', {persisted:true}));
+              globalThis.__partyHoldRotate=false;
+              globalThis.__partyReleaseRotate();
+              await new Promise(resolve=>setTimeout(resolve, 0));
+              const hidden={room:globalThis.MDKRPartyHost.state().room,
+                code:document.getElementById('party-code').textContent,
+                qr:document.getElementById('party-qr').width,
+                pads:globalThis.MDKRPartyHost.remotePads().map(p=>({
+                  active:p.active,reserved:p.reserved,packets:p.packets.length}))};
+              dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true}));
+              return {hidden,lifecycle:
+                globalThis.__mdkrPartyHostTestState.lifecycle.slice(-2)};
+            })()""", await_promise=True)
+            require("fallbackCode" not in bfcache["hidden"]["room"] and
+                    "controllerUrl" not in bfcache["hidden"]["room"] and
+                    bfcache["hidden"]["code"] == "—— —— ——" and
+                    bfcache["hidden"]["qr"] == 1 and
+                    not any(pad["active"] or pad["reserved"] or pad["packets"]
+                            for pad in bfcache["hidden"]["pads"]) and
+                    bfcache["lifecycle"] == ["pagehide", "pageshow:persisted"],
+                    f"BFCache lifecycle revived invite/input custody: {bfcache}")
+
             cdp.evaluate("document.getElementById('party-end').click()")
             confirmation = wait_value(cdp, """(() => ({
               open:document.getElementById('party-end-dialog').open,
@@ -209,8 +386,8 @@ def run(args: argparse.Namespace) -> None:
             require(not cdp.failures, "browser/CDP failures: " + "; ".join(cdp.failures))
             fatal = [line for line in cdp.console if "Uncaught" in line or "TypeError" in line]
             require(not fatal, "party host console errors: " + "; ".join(fatal))
-            print("check_party_host: PASS — mixed-source seat choice, QR/code rotation, "
-                  "in-game pause/revoke/preserve, confirmed close cleanup and 200% mobile layout")
+            print("check_party_host: PASS — mixed-source seats, safe phone removal, QR/code "
+                  "fallback, dismiss/start revoke/preserve, confirmed close and 200% layout")
         finally:
             if cdp is not None:
                 cdp.close()

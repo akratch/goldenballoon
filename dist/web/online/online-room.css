@@ -59,6 +59,36 @@
 .online-room-status strong { color: #fff; }
 .online-room-status span { color: var(--ink-dim); }
 
+.online-room-verification {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: clamp(16px, 4vw, 22px);
+  overflow: hidden;
+  border: 2px solid rgba(255, 196, 46, .78);
+  background: rgba(255, 196, 46, .1);
+}
+
+.online-room-verification[hidden] { display: none; }
+.online-room-verification h3,
+.online-room-verification p { margin: 0; }
+.online-room-verification h3 {
+  color: var(--gold);
+  font-size: .9rem;
+  text-wrap: balance;
+}
+.online-room-verification output {
+  color: #fff;
+  overflow-wrap: anywhere;
+  font: 850 clamp(1.2rem, 5vw, 1.75rem)/1.25 ui-monospace, monospace;
+  letter-spacing: .01em;
+  text-wrap: balance;
+}
+.online-room-verification p {
+  color: var(--ink-dim);
+  text-wrap: pretty;
+}
+
 .online-room-timeout,
 .online-room-auxiliary {
   display: grid;

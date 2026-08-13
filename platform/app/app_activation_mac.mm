@@ -4,6 +4,20 @@
 #import <AppKit/AppKit.h>
 #import <SDL_syswm.h>
 
+void AppActivation_prepareProcess() {
+    if (!AppActivation_backgroundAutomation()) return;
+
+    /* Set SDL's own Cocoa policy before SDL_Init constructs NSApplication.
+     * Demoting only after SDL_CreateWindow left a small but observable window
+     * in which a test process could become the foreground application. */
+    SDL_SetHintWithPriority(SDL_HINT_MAC_BACKGROUND_APP,
+                            "1", SDL_HINT_OVERRIDE);
+    SDL_SetHintWithPriority(SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN,
+                            "1", SDL_HINT_OVERRIDE);
+    [NSApplication sharedApplication];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+}
+
 void AppActivation_requestForeground(SDL_Window *window, void *nativeView) {
     /* Finder performs this activation when it opens a bundle. Direct binary
      * launches used by release tests do not, and a background CAMetalLayer can
@@ -25,7 +39,7 @@ void AppActivation_requestForeground(SDL_Window *window, void *nativeView) {
          * it remains renderable, but deliberately never activate NSApp, make
          * the NSWindow key, or raise it. Accessory policy also keeps dozens of
          * isolated screenshot processes out of the Dock/app switcher. */
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        AppActivation_prepareProcess();
         if (nativeWindow != nil) {
             [nativeWindow setIsVisible:YES];
             [nativeWindow orderBack:nil];

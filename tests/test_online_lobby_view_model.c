@@ -150,22 +150,115 @@ static void test_room_selection_and_release_gate(void) {
            model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP &&
            !model.secondary.enabled,
            "joined room advances to setup while invite preparation stays explicit");
-    input.invite_ready = true;
+    input.invite_state = MDKR_ONLINE_INVITE_READY;
     expect(mdkr_online_view_model_build(&input, &model) &&
            model.secondary.action == MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE &&
            model.secondary.enabled,
            "room enables secondary sharing only after launcher owns an invite");
+    input.invite_state = MDKR_ONLINE_INVITE_REFRESH_AVAILABLE;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.secondary.action == MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE &&
+           model.secondary.enabled &&
+           strcmp(model.secondary.label, "New Invitation") == 0,
+           "expired leader invite has a clear replacement recovery");
+    input.invite_state = MDKR_ONLINE_INVITE_READY;
+    input.local_endpoint_id = 20u;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           !model.local_member_is_leader &&
+           model.secondary.action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS &&
+           model.secondary.enabled,
+           "guests keep connection details instead of host invite custody");
+    input.local_endpoint_id = 10u;
 
     session_command(&session, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                     MDKR_ROOM_PREFLIGHT);
+    input.invite_state = MDKR_ONLINE_INVITE_PREPARING;
     expect(mdkr_online_view_model_build(&input, &model) &&
            model.kind == MDKR_ONLINE_VIEW_PREFLIGHT && model.timeout.present &&
+           model.verification_phrase[0] == '\0' &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS &&
            model.announcement == MDKR_ONLINE_ANNOUNCE_POLITE,
            "preflight has non-blocking status and timeout recovery");
     expect_complete(&model, "preflight copy/control contract is complete");
 
+    {
+        char mutable_phrase[] =
+            "Nimble-Pilot Jolly-Star Sunny-Falcon";
+        input.verification_phrase = mutable_phrase;
+        expect(mdkr_online_view_model_build(&input, &model) &&
+               model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
+               !model.timeout.present &&
+               strcmp(model.verification_phrase, mutable_phrase) == 0 &&
+               model.primary.action ==
+                   MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE &&
+               model.secondary.action ==
+                   MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH &&
+               strcmp(model.primary.label, "Words Match") == 0 &&
+               strcmp(model.secondary.label, "Words Differ") == 0 &&
+               strstr(model.explanation, "every display") != NULL,
+               "authenticated phrase requires one explicit human confirmation");
+        mutable_phrase[0] = 'T';
+        expect(strcmp(model.verification_phrase,
+                      "Nimble-Pilot Jolly-Star Sunny-Falcon") == 0,
+               "view model owns an immutable bounded phrase copy");
+    }
+    {
+        static const char *invalid_phrases[] = {
+            "Nimble Pilot Jolly-Star Sunny-Falcon",
+            "nimble-Pilot Jolly-Star Sunny-Falcon",
+            "Nimble-Pilot  Jolly-Star Sunny-Falcon",
+            "Nimble-Pilot Jolly-Star Sunny-Falcon Extra-Word",
+            "Nimble-Pilot Jolly-Star Sunny-<Falcon",
+        };
+        MdkrOnlineViewModel sentinel;
+        unsigned phrase;
+        memset(&sentinel, 0x5a, sizeof(sentinel));
+        for (phrase = 0u;
+             phrase < sizeof(invalid_phrases) / sizeof(invalid_phrases[0]);
+             phrase++) {
+            model = sentinel;
+            input.verification_phrase = invalid_phrases[phrase];
+            expect(!mdkr_online_view_model_build(&input, &model) &&
+                   memcmp(&model, &sentinel, sizeof(model)) == 0,
+                   "malformed verification phrase rejects fail-atomically");
+        }
+    }
+    {
+        char unterminated_phrase[64];
+        MdkrOnlineViewModel sentinel;
+        memset(unterminated_phrase, 'A', sizeof(unterminated_phrase));
+        memset(&sentinel, 0x4c, sizeof(sentinel));
+        model = sentinel;
+        input.verification_phrase = unterminated_phrase;
+        expect(!mdkr_online_view_model_build(&input, &model) &&
+               memcmp(&model, &sentinel, sizeof(model)) == 0,
+               "unterminated verification phrase rejects at the 64-byte bound");
+    }
+    input.verification_phrase = NULL;
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH;
+    expect(mdkr_online_view_model_build(&input, &model) &&
+           model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+           model.announcement == MDKR_ONLINE_ANNOUNCE_ASSERTIVE &&
+           model.verification_phrase[0] == '\0' &&
+           model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETRY &&
+           strcmp(model.primary.label, "Reconnect Securely") == 0 &&
+           model.cancel.action == MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM &&
+           strstr(model.explanation, "Do not continue") != NULL,
+           "phrase mismatch stops progression with explicit secure recovery");
+    input.failure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+
     session_command(&session, MDKR_SESSION_COMMAND_SET_ROOM_PHASE,
                     MDKR_ROOM_SELECTING);
+    input.verification_phrase = "Nimble-Pilot Jolly-Star Sunny-Falcon";
+    {
+        MdkrOnlineViewModel sentinel;
+        memset(&sentinel, 0x6b, sizeof(sentinel));
+        model = sentinel;
+        expect(!mdkr_online_view_model_build(&input, &model) &&
+               memcmp(&model, &sentinel, sizeof(model)) == 0,
+               "stale phrase cannot escape the preflight view");
+    }
+    input.verification_phrase = NULL;
     expect(mdkr_online_view_model_build(&input, &model) &&
            model.kind == MDKR_ONLINE_VIEW_SELECTING &&
            model.primary.action == MDKR_ONLINE_VIEW_ACTION_CHOOSE_CHARACTER,

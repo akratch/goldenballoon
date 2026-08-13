@@ -36,7 +36,8 @@ def main() -> int:
     dynamic = ["/api/party/create", "/api/match/join", "/api/ops/capacity",
                "/api/ops/health"]
     static = ["/", "/index.html", "/controller/", "/room/", "/sw.js",
-              "/online/online-room.js"]
+              "/online/online-room-live-state.js",
+              "/online/online-room-presenter.js", "/online/online-room.js"]
     matches = lambda path: path.startswith("/api/")
     require(all(matches(path) for path in dynamic),
             "a dynamic API route escaped the edge rule model")
@@ -50,9 +51,25 @@ def main() -> int:
         encoding="utf-8")
     require('response.status === 429 ? "rate_limited"' in room_client,
             "provider HTML 429 no longer maps to the typed capacity recovery")
+    security = (ROOT / "services/party/src/security.ts").read_text(
+        encoding="utf-8")
+    worker = (ROOT / "services/party/src/worker.ts").read_text(
+        encoding="utf-8")
+    party_room = (ROOT / "services/party/src/party-room.ts").read_text(
+        encoding="utf-8")
+    require("export function validPartyOrigin" in security and
+            'url.protocol === "https:"' in security and
+            'url.protocol === "http:" && loopbackHostname' in security and
+            "value === url.origin" in security and
+            "if (!validPartyOrigin(env.PARTY_ORIGIN))" in worker and
+            worker.index("if (!validPartyOrigin(env.PARTY_ORIGIN))") <
+            worker.index("const url = new URL(request.url)") and
+            "if (!validPartyOrigin(this.env.PARTY_ORIGIN))" in party_room,
+            "Party origin must fail closed before routing or object access")
 
     print("check_party_edge_policy: PASS — one free /api-only 30/10s/IP rule; "
-          "static local routes stay outside and provider HTML 429 is typed")
+          "static local routes stay outside, origin is canonical TLS, and "
+          "provider HTML 429 is typed")
     return 0
 
 

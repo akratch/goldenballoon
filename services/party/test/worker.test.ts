@@ -2,7 +2,7 @@ import {env} from "cloudflare:workers";
 import {SELF, abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {describe, expect, it} from "vitest";
 import {INTERNAL_API_HEADER} from "../src/internal-api";
-import type {Env} from "../src/types";
+import {LIMITS, type Env} from "../src/types";
 
 const origin = "https://party.example.invalid";
 const hostPublicKey = "H".repeat(87);
@@ -56,6 +56,20 @@ function nextSocketClose(socket: WebSocket, label: string): Promise<CloseEvent> 
   });
 }
 
+function observeMatching(socket: WebSocket,
+                         predicate: (value: Record<string, any>) => boolean) {
+  let matched = false;
+  const listener = (event: MessageEvent) => {
+    const value = JSON.parse(String(event.data)) as Record<string, any>;
+    if (predicate(value)) matched = true;
+  };
+  socket.addEventListener("message", listener);
+  return {
+    matched: () => matched,
+    close: () => socket.removeEventListener("message", listener),
+  };
+}
+
 async function admittedControlUnits(): Promise<number> {
   const bindings = env as unknown as Env;
   const day = new Date().toISOString().slice(0, 10);
@@ -86,6 +100,8 @@ describe("Party Worker local workerd adapter", () => {
     expect(bootstrap).toMatchObject({type: "native_bootstrap",
       inviteGeneration: 1, fallbackCode: expect.stringMatching(/^\d{6}$/),
       controllerUrl: expect.stringMatching(/^https:\/\//)});
+    expect(bootstrap.inviteExpiresInMs).toBeGreaterThan(0);
+    expect(bootstrap.inviteExpiresInMs).toBeLessThanOrEqual(LIMITS.inviteTtlMs);
     expect(bootstrap.roomId).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(bootstrap.hostCredential).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(state).toMatchObject({type: "room_state", phase: "open",
@@ -115,6 +131,14 @@ describe("Party Worker local workerd adapter", () => {
       controllerId: controller.controllerId, phase: "pending",
     }]});
     const controlBeforeCommands = await admittedControlUnits();
+
+    const invalidCommand = nextMessageMatching(socket, value =>
+      value.type === "host_command_result");
+    socket.send(JSON.stringify({type: "host_command", action: "approve",
+      controllerId: controller.controllerId, seat: 2, diagnostics: true}));
+    expect(await invalidCommand).toEqual({type: "host_command_result", ok: false,
+      error: "invalid_command"});
+    expect(await admittedControlUnits()).toBe(controlBeforeCommands);
 
     const approvedState = nextMessageMatching(socket, value =>
       value.type === "room_state" && value.transitionId === 3);
@@ -207,6 +231,8 @@ describe("Party Worker local workerd adapter", () => {
   it("migrates legacy raw controller codes to v2 digests on reconstruction", async () => {
     const created = await post("/api/party/create", {hostPublicKey});
     const room = await created.json() as Record<string, string>;
+    expect(Number(room.inviteExpiresInMs)).toBeGreaterThan(0);
+    expect(Number(room.inviteExpiresInMs)).toBeLessThanOrEqual(LIMITS.inviteTtlMs);
     const bindings = env as unknown as Env;
     const stub = bindings.PARTY_ROOMS.get(
       bindings.PARTY_ROOMS.idFromName(room.roomId!));
@@ -329,6 +355,9 @@ describe("Party Worker local workerd adapter", () => {
       {authorization: `Bearer ${room.hostCredential}`});
     expect(rotated.status).toBe(200);
     const next = await rotated.json() as Record<string, string | number>;
+    expect(next.inviteGeneration).toBe(2);
+    expect(next.inviteExpiresInMs).toBeGreaterThan(0);
+    expect(next.inviteExpiresInMs).toBeLessThanOrEqual(LIMITS.inviteTtlMs);
     expect(next.controllerUrl).not.toBe(room.controllerUrl);
     expect(next.fallbackCode).toMatch(/^\d{6}$/);
     const replay = await post("/api/controller/redeem",
@@ -353,6 +382,152 @@ describe("Party Worker local workerd adapter", () => {
     expect(await close).toMatchObject({code: 4009, reason: "message_too_large"});
   });
 
+  it("rejects unknown public Phone Party fields without mutating authority", async () => {
+    const unknownCreate = await post("/api/party/create",
+      {hostPublicKey, diagnostics: true});
+    expect(unknownCreate.status).toBe(400);
+    expect(await unknownCreate.json()).toEqual({error: "invalid_host_key"});
+
+    const created = await post("/api/party/create", {hostPublicKey});
+    expect(created.status).toBe(201);
+    const room = await created.json() as Record<string, string>;
+    const capability = new URL(room.controllerUrl!).hash.slice(1);
+    const unknownRedeem = await post("/api/controller/redeem", {
+      capability, protocol: 1, controllerPublicKey, diagnostics: true,
+    });
+    expect(unknownRedeem.status).toBe(400);
+    expect(await unknownRedeem.json()).toEqual({error: "invalid_invite"});
+
+    const unknownRevoke = await post(`/api/party/${room.roomId}/revoke`,
+      {diagnostics: true},
+      {authorization: `Bearer ${room.hostCredential}`});
+    expect(unknownRevoke.status).toBe(400);
+    expect(await unknownRevoke.json()).toEqual({error: "invalid_request"});
+
+    const stillRedeemable = await post("/api/controller/redeem",
+      {capability, protocol: 1, controllerPublicKey});
+    expect(stillRedeemable.status).toBe(201);
+  });
+
+  it("closes ambiguous or non-object Phone Party signaling before relay", async () => {
+    const created = await post("/api/party/create", {hostPublicKey});
+    expect(created.status).toBe(201);
+    const room = await created.json() as Record<string, string>;
+    const connectHost = async () => {
+      const response = await SELF.fetch(
+        `https://party.test/api/party/${room.roomId}/connect`, {headers: {
+          origin, upgrade: "websocket",
+          "sec-websocket-protocol": `gb-control-v1, gb-host.${room.hostCredential}`,
+        }});
+      expect(response.status).toBe(101);
+      const socket = response.webSocket!;
+      const initial = nextMessageMatching(socket, value => value.type === "room_state");
+      socket.accept();
+      await initial;
+      return socket;
+    };
+
+    const extraField = await connectHost();
+    const extraClose = nextSocketClose(extraField, "unknown signaling field");
+    extraField.send(JSON.stringify({type: "webrtc_offer", to: "A".repeat(22),
+      peerGeneration: 1, sdp: {type: "offer", sdp: "v=0\r\n"},
+      diagnostics: true}));
+    expect(await extraClose).toMatchObject({code: 4003,
+      reason: "invalid_signaling"});
+
+    const nonObject = await connectHost();
+    const nonObjectClose = nextSocketClose(nonObject, "non-object signaling");
+    nonObject.send("null");
+    expect(await nonObjectClose).toMatchObject({code: 4003,
+      reason: "invalid_signaling"});
+  });
+
+  it("delivers host WebRTC signaling only to its addressed controller", async () => {
+    const created = await post("/api/party/create", {hostPublicKey});
+    expect(created.status).toBe(201);
+    const room = await created.json() as Record<string, string>;
+    const capability = new URL(room.controllerUrl!).hash.slice(1);
+    const redeem = async (name: string, key: string) => {
+      const response = await post("/api/controller/redeem", {
+        capability, protocol: 1, name, controllerPublicKey: key.repeat(87),
+      });
+      expect(response.status).toBe(201);
+      return response.json() as Promise<Record<string, string>>;
+    };
+    const first = await redeem("First phone", "A");
+    const second = await redeem("Second phone", "B");
+    expect((await post(`/api/party/${room.roomId}/approve`,
+      {controllerId: first.controllerId, seat: 1},
+      {authorization: `Bearer ${room.hostCredential}`})).status).toBe(200);
+    expect((await post(`/api/party/${room.roomId}/approve`,
+      {controllerId: second.controllerId, seat: 2},
+      {authorization: `Bearer ${room.hostCredential}`})).status).toBe(200);
+
+    const connectSocket = async (role: "host" | "controller", credential: string,
+                                 initialType: string) => {
+      const response = await SELF.fetch(
+        `https://party.test/api/party/${room.roomId}/connect`, {headers: {
+          origin, upgrade: "websocket",
+          "sec-websocket-protocol":
+            `gb-control-v1, gb-${role}.${credential}`,
+        }});
+      expect(response.status).toBe(101);
+      const socket = response.webSocket!;
+      const initial = nextMessageMatching(socket, value => value.type === initialType);
+      socket.accept();
+      await initial;
+      return socket;
+    };
+    const host = await connectSocket("host", room.hostCredential!, "room_state");
+    const firstSocket = await connectSocket(
+      "controller", first.credential!, "controller_state");
+    const secondSocket = await connectSocket(
+      "controller", second.credential!, "controller_state");
+    const hello = nextMessageMatching(host, value =>
+      value.type === "controller_hello");
+    firstSocket.send(JSON.stringify({type: "controller_hello",
+      controllerId: second.controllerId}));
+    expect(await hello).toEqual({type: "controller_hello",
+      controllerId: first.controllerId});
+    const offer = nextMessageMatching(firstSocket, value =>
+      value.type === "webrtc_offer" && value.to === first.controllerId);
+    const leak = observeMatching(secondSocket, value => value.type === "webrtc_offer");
+    host.send(JSON.stringify({type: "webrtc_offer", to: first.controllerId,
+      peerGeneration: 1, sdp: {type: "offer", sdp: "v=0\r\n"}}));
+    expect(await offer).toMatchObject({to: first.controllerId,
+      peerGeneration: 1, sdp: {type: "offer"}});
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(leak.matched()).toBe(false);
+    leak.close();
+
+    const removedControllerState = nextMessageMatching(firstSocket, value =>
+      value.type === "controller_state" && value.phase === "closed");
+    const removedHostState = nextMessageMatching(host, value =>
+      value.type === "room_state" &&
+      value.controllers.every((item: Record<string, unknown>) =>
+        item.controllerId !== first.controllerId));
+    const removedSocketClose = nextSocketClose(firstSocket, "removed controller");
+    const removed = await post(`/api/party/${room.roomId}/remove`,
+      {controllerId: first.controllerId},
+      {authorization: `Bearer ${room.hostCredential}`});
+    expect(removed.status).toBe(200);
+    const removedResult = await removed.json() as Record<string, unknown>;
+    expect(removedResult).toMatchObject({ok: true,
+      controllerId: first.controllerId});
+    expect(await removedControllerState).toEqual({type: "controller_state",
+      transitionId: removedResult.transitionId, phase: "closed", seat: null,
+      leaseGeneration: 1, connectionSequence: 2});
+    expect(await removedHostState).toMatchObject({controllers: [{
+      controllerId: second.controllerId, seat: 2,
+    }]});
+    expect(await removedSocketClose).toMatchObject({code: 4000,
+      reason: "seat_reclaimed"});
+
+    for (const socket of [host, secondSocket]) {
+      socket.close(1000, "targeting_contract_verified");
+    }
+  });
+
   it("revokes a dismissed QR while preserving the room", async () => {
     const created = await post("/api/party/create", {hostPublicKey});
     const room = await created.json() as Record<string, string>;
@@ -360,6 +535,8 @@ describe("Party Worker local workerd adapter", () => {
     const revoked = await post(`/api/party/${room.roomId}/revoke`, {},
       {authorization: `Bearer ${room.hostCredential}`});
     expect(revoked.status).toBe(200);
+    expect(await revoked.clone().json()).toEqual({ok: true, transitionId: 2,
+      inviteGeneration: 2});
     const replay = await post("/api/controller/redeem",
       {capability, protocol: 1, controllerPublicKey});
     expect(replay.status).toBe(409);

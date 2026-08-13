@@ -268,11 +268,16 @@ def run(args: argparse.Namespace) -> None:
                          "protocols": ["gb-match-v1",
                                        f"gb-match.{match['credential']}"]},
                         {"url": origin.replace("http", "ws", 1) +
+                         f"/api/match/{match['roomId']}/signal",
+                         "protocols": ["gb-match-signal-v1",
+                                       f"gb-match.{match['credential']}"]},
+                        {"url": origin.replace("http", "ws", 1) +
                          f"/api/party/{party['roomId']}/connect",
                          "protocols": ["gb-control-v1",
                                        f"gb-host.{party['hostCredential']}"]},
                     ]), await_promise=True)
-                    require(sockets == ["gb-match-v1", "gb-control-v1"],
+                    require(sockets == ["gb-match-v1", "gb-match-signal-v1",
+                                        "gb-control-v1"],
                             f"control-reserve sockets failed: {sockets}")
                     require(not cdp.failures,
                             "capacity browser failures: " + "; ".join(cdp.failures))
@@ -348,10 +353,10 @@ def run(args: argparse.Namespace) -> None:
                         f"capacity snapshot failed: {status}, {snapshot}")
                 require(snapshot == {
                     "schemaVersion": 1,
-                    "admitted": {"pairingUnits": 20, "controlUnits": 42},
+                    "admitted": {"pairingUnits": 20, "controlUnits": 57},
                     "refusalObserved": {"pairing": True, "control": False},
                     "remaining": {"admissionUnits": 0,
-                                  "controlUnits": 19838},
+                                  "controlUnits": 19823},
                     "admissionPercent": 100,
                     "level": "closed",
                     "day": datetime.now(timezone.utc).date().isoformat(),
@@ -368,8 +373,8 @@ def run(args: argparse.Namespace) -> None:
                 require(health_status == 200 and
                         health_headers.get("cache-control") == "no-store" and
                         health == {
-                            "schemaVersion": 1,
-                            "reservationRequests": 9,
+                            "schemaVersion": 2,
+                            "reservationRequests": 10,
                             "reservations": {
                                 "matchCreate": 1,
                                 "matchLinkJoin": 0,
@@ -377,6 +382,7 @@ def run(args: argparse.Namespace) -> None:
                                 "matchControl": 4,
                                 "matchRotate": 0,
                                 "matchSocket": 1,
+                                "matchSignalSocket": 1,
                                 "partyCreate": 1,
                                 "partyLinkJoin": 0,
                                 "partyCodeJoin": 0,
@@ -387,11 +393,11 @@ def run(args: argparse.Namespace) -> None:
                             },
                             "admitted": {
                                 "pairingUnits": 20,
-                                "controlUnits": 42,
+                                "controlUnits": 57,
                             },
                             "tracked": {
                                 "pairingUnits": 20,
-                                "controlUnits": 42,
+                                "controlUnits": 57,
                             },
                             "tracking": "complete",
                             "day": datetime.now(timezone.utc).date().isoformat(),

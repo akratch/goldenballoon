@@ -5,13 +5,12 @@
  * bounded gallery/model fields and typed fake-adapter actions. The production
  * browser does not load it while online admission is closed.
  */
+#include "lobby_browser_wasm.h"
 #include "lobby_fake_adapter.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-#define MDKR_ONLINE_BROWSER_ABI_VERSION 1u
 
 static MdkrOnlineFakeAdapter s_adapter;
 static MdkrOnlineViewModel s_model;
@@ -108,6 +107,11 @@ const char *mdkr_online_browser_status(void) {
     return s_selected && s_model.status != NULL ? s_model.status : "";
 }
 
+const char *mdkr_online_browser_verification_phrase(void) {
+    return s_selected && s_model.verification_phrase[0] != '\0'
+        ? s_model.verification_phrase : "";
+}
+
 const char *mdkr_online_browser_timeout_title(void) {
     return s_selected && s_adapter.timeout_expired && s_model.timeout.present &&
             s_model.timeout.title != NULL ? s_model.timeout.title : "";
@@ -180,7 +184,7 @@ unsigned mdkr_online_browser_dispatch(unsigned action, unsigned supplied_value) 
     MdkrOnlineViewAction dispatched;
     unsigned value = supplied_value;
     if (!s_selected || s_live || action == MDKR_ONLINE_VIEW_ACTION_NONE ||
-        action > MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE ||
+        action > MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH ||
         !visible_action(action)) return 0u;
 
     switch ((MdkrOnlineViewAction)action) {
@@ -239,7 +243,7 @@ int mdkr_online_browser_live_project(
     unsigned connected_mask, unsigned loaded_mask, unsigned seat_owners,
     unsigned character_mask, unsigned vehicle_mask, unsigned vote_mask,
     unsigned selected_track, unsigned selected_vehicle_mask,
-    unsigned journey, unsigned failure, unsigned invite_ready) {
+    unsigned journey, unsigned failure, unsigned invite_state) {
     MdkrOnlineCompatibilityV1 compatibility = browser_compatibility();
     MdkrOnlineLobby lobby;
     MdkrSessionState session;
@@ -254,7 +258,9 @@ int mdkr_online_browser_live_project(
         lobby_phase < MDKR_ONLINE_LOBBY || lobby_phase > MDKR_ONLINE_CLOSED ||
         revision == 0u || journey < MDKR_ONLINE_JOURNEY_CREATE ||
         journey > MDKR_ONLINE_JOURNEY_REMATCH ||
-        failure >= MDKR_ONLINE_VIEW_FAILURE_COUNT) return 0;
+        failure >= MDKR_ONLINE_VIEW_FAILURE_COUNT ||
+        failure == MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH ||
+        invite_state > MDKR_ONLINE_INVITE_REFRESH_AVAILABLE) return 0;
 
     memset(&lobby, 0, sizeof(lobby));
     lobby.protocol_version = MDKR_ONLINE_PROTOCOL_VERSION;
@@ -329,7 +335,7 @@ int mdkr_online_browser_live_project(
     input.local_endpoint_id = local_index + 1u;
     input.journey = (MdkrOnlineJourney)journey;
     input.failure = (MdkrOnlineViewFailure)failure;
-    input.invite_ready = invite_ready != 0u;
+    input.invite_state = (MdkrOnlineInviteState)invite_state;
     input.race_admission_enabled = false;
     if (!mdkr_online_view_model_build(&input, &s_model)) return 0;
     s_spec = NULL;

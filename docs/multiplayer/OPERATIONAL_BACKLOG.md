@@ -1,6 +1,6 @@
 # Multiplayer operational backlog
 
-Last reconciled: **2026-08-12**. This is the ordered delivery queue for the
+Last reconciled: **2026-08-13**. This is the ordered delivery queue for the
 local-plus-online multiplayer product. Acceptance details live in S10–S13; the
 [status ledger](STATUS.md) records evidence; this file answers **what should be
 worked next, in what order, and what achievement closes each milestone**.
@@ -60,21 +60,34 @@ admitted until M2 is `GO` and M3 passes first-time usability.
 | Order | ID | State | Achievement | Depends | Exit evidence |
 |---:|---|---|---|---|---|
 | 1 | MP-00 | DONE | Versioned session, Party, room, descriptor and security boundaries are frozen | — | Cross-language codecs/reducers, fail-atomic mutations, threat/data records |
-| 2 | LP-01 | EVIDENCE REVIEW | Browser Phone Party pairs by QR/code with no app and drives explicit split-screen seats | MP-00 | Automated Chromium/WebRTC gates; four physical iOS/Android phones remain |
+| 2 | LP-01 | IMPLEMENTED / EVIDENCE REFRESH | Browser Phone Party pairs by QR/code with no app and drives explicit split-screen seats | MP-00 | The browser host/controller paths now use actual receipt-relative invite TTLs, exact bounded HTTP/socket state, finite generation-guarded recovery, manual phone Retry, QR-to-`/controller/`+code fallback and server-targeted per-controller signaling. The service and client require one canonical same-origin HTTPS boundary (HTTP only on loopback). Private/public recovery copy is truthful. Duplicate-tab takeover explicitly neutralizes/closes the prior publisher before an ordinary exclusive Web Lock; rejection fails closed, while the no-Web-Locks fallback retains only a hashed expiring tab lease. The service rebuilds exact role-specific SDP/ICE/hello envelopes, injects phone identity from socket custody and exact-validates native host commands before reserve or mutation. Launcher-owned per-seat removal uses a named safe-default confirmation, cancel-without-mutation, contextual focus, exact lease release and a targeted terminal socket close without disturbing other phones. Authored Worker/browser fixtures cover origin refusal, tab custody, rotation generation, ambiguous signaling, QR failure, two-controller non-disclosure and removal isolation; dedicated execution plus four physical iOS/Android phones remain. |
 | 3 | LP-02 | DONE LOCAL / EVIDENCE REVIEW | Native launcher hosts the same browser controller without localhost, certificates or firewall prompts | LP-01 | Pinned static adapter, one-WSS bootstrap/reconnect, shared codec/router, QR/SAS vectors, launcher/overlay lifecycle, fail-neutral queues and release notices pass locally. A MinGW GCC 16.1 Release build and stock-Windows-DLL import audit also pass; executed Windows/macOS/Linux packages and a physical mixed-source race remain |
 | 4 | RB-01 | IN PROGRESS | Four endpoints deterministically race, recover within bounds and unwind safely beyond them | MP-00 | Track/vehicle/item/soak, four-endpoint and real Chromium/Wasm matrices plus memory/timing budgets pass; PAL/desktop-OS, physical-device and written `GO` evidence remain |
-| 5 | UX-01 | EVIDENCE REVIEW | Native Online Room covers every state/failure/action with accessible real input | MP-00 | 42-state gallery, 25 keyboard/gamepad actions; human SR/device pass remains |
-| 6 | UX-02 | EVIDENCE REVIEW | Browser renders the same room model, not a second room state machine | UX-01 | Shared-C gallery passes 42 native-correlated views/25 routes; explicit MatchRoom binding passes create/join/share/rotate/select/ready/reconnect/recovery while Start remains locally gated; human SR/device evidence remains |
+| 5 | UX-01 | IMPLEMENTED / RENDER EVIDENCE REFRESH | Native Online Room covers every state/failure/action with accessible real input | MP-00 | Shared model and native projection compile with a bounded, announced phrase plus explicit **Words Match**/**Words Differ** actions; rerun the 43-case/27-action keyboard/gamepad/speech gallery on a dedicated desktop, then human SR/device review |
+| 6 | UX-02 | IMPLEMENTED / EXECUTABLE + RENDER EVIDENCE REFRESH | Browser renders the same room model, not a second room state machine | UX-01 | Native browser-ABI conformance previously drove all 43 cases/10 kinds/18 failures/27 actions plus both phrase paths under normal/ASan; the shipped pure presenter covers every projection and live action. The ABI-v4 exact live-state boundary deep-copies the public MatchRoom envelope, rejects private/unknown/impossible or regressing/equivocating state, correlates the control tail with final lobby authority, holds identity stable and revokes stale invite generations. Valid older HTTP publications are no-ops; a delayed rotate response can restore only the exact in-flight expected/current generation secret while newer member state and local leader custody remain authoritative. Role links now cross only a same-origin fragment redirect: the launcher scrubs before configuration access, never uses web storage, drops authority immediately in disabled builds, caps enabled pre-ROM closure custody at ten minutes, and abandons redemption if either History API scrub fails. Invite secrets use a conservative receipt-relative deadline, leave memory/DOM before expiry rendering and expose leader-only **New Invitation** recovery without disturbing joined friends. Public state commits only after projection/presentation succeeds, while expired secrets are never rolled back. Accepted guest Leave is terminal after credential revocation and stale-revision recovery explicitly says the action was not applied. The exhaustive Node boundary gate and browser timer/publication/race expiry/scrub-failure arms are authored/syntax-valid, and focused C targets compile; run the dedicated executable/browser/rendered native correlation/phrase/invite AX/reflow batch. Start stays locally gated. |
 | 7 | UX-03 | IN PROGRESS / HUMAN EVIDENCE | Two new players complete invite, preflight, cancel and rematch without coaching | UX-02 | Two clean automated profiles pass real-Worker create/share/role-link join/outage/select/Ready/backtrack/leave with bounded timings and AX checks. Phone/host destructive leave has safe-default confirmation and cancel-before-mutation; semantic dynamic forms, contained modals and notch-safe handoff pass. Both analog surfaces provide visible-focus Arrow/WASD steering, bounded diagonals, spoken direction and fail-neutral lifecycle behavior. Uncoached human task study, physical assistive-device review, cancel/rematch observation and any resulting P0/P1 closure remain. |
 | 8 | SV-01 | DONE LOCAL | MatchRoom persists bounded control state and survives object eviction/restart | MP-00 | Full local lifecycle; every-phase restart, hibernated socket, alarm expiry, v3 package dry-run, purpose-HMACed and generation-rotated invites, idempotency and split-brain gates |
-| 9 | NET-01 | GATED BY A3 GO | Authenticated direct/one-hop graph carries redundant inputs | RB-01, SV-01 | 2–4 endpoint NAT/partial-graph/asymmetric-loss matrix; unauthorized input stays zero |
-| 10 | ROOM-01 | GATED BY A3 GO | Exact preflight freezes one signed launch descriptor | UX-03, SV-01, NET-01 | build/ROM/settings/controller/route mismatch and downgrade controls |
-| 11 | ROOM-02 | GATED BY A3 GO | Vote, load, countdown, results and rematch barriers are cancel-safe | ROOM-01 | stale callback/epoch/deploy replay cannot resurrect or start a race |
-| 12 | ROOM-03 | GATED BY A3 GO | Leases, leader transfer, reconnect and deterministic AI takeover preserve custody | ROOM-02 | outage/rejoin/leave races; neutral gap; no double owner or hand-back |
-| 13 | SEC-01 | READY after vertical slice | Red-team and abuse review closes product and service attack paths | SV-01..ROOM-03 | invite theft/replay, origin, size/rate, log/diagnostic, exhaustion and crypto review |
-| 14 | OPS-01 | IN PROGRESS / DONE LOCAL ADMISSION + COST OBSERVABILITY + RECONCILIATION CONTRACT | Metrics and admission prove admitted work cannot bill or consume its internal close/control reserve | SV-01..SEC-01 | Real-Worker 64-way admission plus 64-way forged-control floods, persisted process restart, typed/no-store refusal, pre-budget room/role credential binding, weighted HTTP/socket reserve, socket-lifetime bound, secure static fallback and literal-zero kill switch pass locally; protected daily snapshot/refusal/retention, fixed no-extra-write reservation buckets with legacy tracking, one free `/api/`-only edge rule and a strict privacy-safe internal/provider/zero-charge reconciliation gate pass locally. The v2 ledger and controlled production-path runner fix a 20-attempt synthetic MatchRoom create/join and Phone Party direct/input success-latency contract with no user analytics or metrics write; a one-attempt local end-to-end smoke passes and remains non-qualifying. Hosted execution, edge false-positive test, distributed raw-request risk, provider export, real seven-day ledger and drill remain. |
+| 9 | NET-01 | FOUNDATION LOCAL / LIVE CHANNEL BINDING GATED BY A3 GO | Authenticated direct/one-hop graph carries redundant inputs | RB-01, SV-01 | Isolated exact-target signaling relay with fail-contained delivery/replacement commit, dormant browser adapter, full-direction-bound peer crypto with seal-window-owned monotonic nonces/concurrent-browser exclusion, authenticated immediate-source generation forwarding and $0 lifetime reservation pass locally; 2–4 endpoint NAT/partial-graph/asymmetric-loss matrix and unauthorized-input live proof remain |
+| 10 | ROOM-01 | FOUNDATION LOCAL / LIVE BINDING GATED BY A3 GO | Exact preflight freezes one signed launch descriptor | UX-03, SV-01, NET-01 | Native/browser fixed-report, canonical-graph and authenticated-direction-bound three-fragment carrier vectors cover build/ROM/transcript/generation/route/phrase/channel disagreement, route equivocation, cross-source splicing/forged attribution, withdrawal, stale/conflicting retries and corrupt state over a direct/opaque one-hop-capable format. Shared launcher phrase UI and explicit confirmation are implemented; real authenticated-channel binding and physical phrase evidence remain |
+| 11 | ROOM-02 | FOUNDATION LOCAL / LIVE BINDING GATED BY A3 GO | Vote, load, countdown, results and rematch barriers are cancel-safe | ROOM-01 | Shared C/TypeScript reducer trace and broader lifecycle suites cover cancellation, phase/revision/epoch barriers, results and rematch atomically; stale live callbacks and carrier/deploy replay remain vertical-slice evidence |
+| 12 | ROOM-03 | FOUNDATION LOCAL / LIVE BINDING GATED BY A3 GO | Leases, leader transfer, reconnect and deterministic AI takeover preserve custody | ROOM-02 | Reducer custody/reconnect/leader tests and four-process deterministic takeover prove neutral history, no double owner and no hand-back locally; live outage/rejoin/leave timing remains |
+| 13 | SEC-01 | INDEPENDENT LOCAL RED-TEAM READY / LIVE SLICE GATED | Red-team and abuse review closes product and service attack paths | SV-01..ROOM-03 | The dated handoff maps invite/auth/generation/replay/origin/bounds/privacy/cost/crypto hypotheses to exact code and safe commands; independent review may start now, while live carrier, hosted abuse and provisioned-network findings remain open |
+| 14 | OPS-01 | IN PROGRESS / DONE LOCAL ADMISSION + COST OBSERVABILITY + RECONCILIATION CONTRACT | Metrics and admission prove admitted work cannot bill or consume its internal close/control reserve | SV-01..SEC-01 | Real-Worker 64-way admission plus 64-way forged-control floods, persisted process restart, typed/no-store refusal, pre-budget room/role credential binding, weighted HTTP/socket reserve, socket-lifetime bound, secure static fallback and literal-zero kill switch pass locally; protected daily snapshot/refusal/retention, fixed no-extra-write reservation buckets with legacy tracking, one free `/api/`-only edge rule and a strict privacy-safe internal/provider/zero-charge reconciliation gate pass locally. Provider schema v2 includes the separate Durable Object duration ceiling. The v3 ledger and controlled production-path runner fix a 20-attempt synthetic MatchRoom create/join and Phone Party direct/input success-latency contract with no user analytics or metrics write; a one-attempt local end-to-end smoke passes and remains non-qualifying. Hosted execution, edge false-positive test, distributed raw-request risk, provider export, real seven-day ledger and drill remain. |
 | 15 | REL-01 | HUMAN / PROVISIONING | Invited alpha is deployable, observable and reversible | OPS-01 | named owners, DNS/secrets, canary, rollback, incident/privacy/capacity runbooks |
 | 16 | REL-02 | GATED / LEDGER CONTRACT DONE LOCAL | Zero-cost beta meets its error budget without weakening refusal behavior | REL-01 | exact fail-closed seven-day validator passes adversarial fixtures; real contiguous hosted canary, device/network matrix, privacy review and signed go/no-go record remain |
+
+LP-01's latest custody delta also fixes two recovery paths that previously used
+the already-scrubbed controller URL. Phone entry now scrubs before configuration
+access, rejects query/route ambiguity, abandons redemption on scrub failure and
+keeps the capability closure-only. Embedded/unsupported **Share private link**
+with **Copy private link** fallback reconstructs the exact private link only for
+that user gesture; capability-free recovery shares exact public `/controller/`
+and requires the current code. Duplicate **Use this tab**
+first makes the prior tab neutralize/close, then reconstructs it for one
+ordinary exclusive-lock navigation and immediate re-scrub. Lock errors refuse;
+the no-Web-Locks fallback stores only a hashed 15-second lease. The browser
+copy/share/reclaim/fallback-lease/scrub-denial arms are authored and await the
+dedicated desktop evidence refresh.
 
 ## Current executable checkpoint
 
@@ -93,9 +106,13 @@ The following is real now and should be extended rather than rewritten:
   code. Physical/device/platform release evidence is deliberately still open.
 - The 148-byte checksum-protected V3 descriptor copy-owns match identity across
   launcher, bridge and engine; the engine does not own party state.
-- Native Online Room has 42 deterministic views covering all 10 view kinds and
-  17 typed failures. All 25 public actions activate through keyboard and
-  gamepad. Timeouts are shown only after a local deadline actually expires.
+- Native Online Room has 43 deterministic cases covering all 10 view kinds and
+  18 typed failures. Its shared model now exposes 27 public actions, including
+  human-paced **Words Match** and **Words Differ** decisions; malformed/stale
+  phrases fail atomically, mismatch preserves the room for a fresh secure
+  preflight, and rematches repeat comparison. The prior 25-action rendered
+  input baseline passes; expanded 27-action desktop evidence remains. Timeouts
+  are shown only after a local deadline actually expires.
 - A confirmed online-race leave orders engine stop before disconnect and cannot
   terminate a local race.
 - Browser Online Room remains an honest launcher-owned unavailable surface in
@@ -107,7 +124,7 @@ The following is real now and should be extended rather than rewritten:
   ROM. The launcher derives bounded build/gameplay compatibility identifiers
   without retaining or transmitting ROM bytes. Activation is idempotent;
   dirty provenance, unknown ROMs and cross-origin targets return to the same
-  local-first gate. Explicit gallery/live adapters load a 35 KiB ROM-, engine-,
+  local-first gate. Explicit gallery/live adapters load a sub-128-KiB ROM-, engine-,
   provider- and storage-free Wasm projection compiled from the native C
   reducer/view model. The live seam validates MatchRoom snapshots then projects
   them through that same C model. Create, fragment/code join, QR/share,
@@ -131,7 +148,7 @@ The following is real now and should be extended rather than rewritten:
   ordinary browser caches. A real-browser two-release gate now proves the old
   worker/new document waiting window, build-isolated caches, atomic old-build
   offline fallback and new activation only after the old client exits.
-- All 15 Worker→Durable Object calls carry internal protocol v1. All four object
+- All 16 Worker→Durable Object calls carry internal protocol v1. All four object
   classes keep the legacy-unversioned reader for old-Worker/new-object skew and
   reject unknown versions before parsing/storage. Future protocol/schema work
   is ordered as expand → 24-hour admission-off drain → emit → late contract;
@@ -183,9 +200,13 @@ feature flag or service response. Promotion order is strict:
 Evidence commands:
 
 ```bash
-python3 tests/check_browser_online_room.py --shell-dir dist/web
-python3 tests/check_browser_online_activation.py --shell-dir dist/web
-python3 tests/check_browser_online_match_room.py --shell-dir dist/web
+# Dedicated test desktop only: these commands launch real Chromium profiles.
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_room.py --shell-dir dist/web
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_activation.py --shell-dir dist/web
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_match_room.py --shell-dir dist/web
+
+# Occupied workstation: do not invoke a runner or any file under tests/.
+# Use source inspection, syntax/parser/type checks and bounded compilation only.
 ```
 
 ## Slice template
@@ -255,6 +276,34 @@ Documentation:    protocol, threat/data map, UX catalog and runbook updates
 | Storage | minimum bounded state, explicit TTL/alarm deletion, versioned migrations | restart/deploy/expiry cannot retain secrets or fork state |
 | Diagnostics | structured bounded enums/counters only | secret/name/address/SDP/input canaries never appear |
 | Supply chain | pinned dependencies, provenance and trusted release guidance | unpinned/new external origin fails release checks |
+
+## Required before the written A3 `GO` — carrier review findings (2026-08-13)
+
+These came out of the code review of the online-multiplayer campaign. None is
+exploitable today: the carrier, preflight and signaling modules are imported by
+nothing but their tests, and the publisher policy still ships disabled. Each one
+becomes reachable the moment a live carrier is bound, so **all five must close
+before the written `GO`**, not before the code lands.
+
+**Decided during landing review, 2026-08-13 — tied-publication invite custody
+is fail-closed.** `online-room-live-state.js` previously let a publication that
+ties on every ordering pair (revision, matchEpoch, leaderGeneration,
+inviteGeneration), or that is outright obsolete, install an invite secret it
+carried. Ruled: **only a strictly newer publication may change custody.** A
+delayed or replayed rotate response may now preserve custody the launcher
+already holds, but may never introduce or replace a secret; re-delivering the
+byte-identical held secret stays idempotent. `test_online_room_live_state.mjs`
+covers both halves. This closed the disagreement between that test and the
+implementation rather than lowering the test — the original author should know
+the decision went against the implementation.
+
+| # | Finding | Evidence | Required before `GO` |
+|---|---|---|---|
+| G-1 | **The verification phrase is worth ~15 bits, not 30, against an active MITM.** The transcript has no key-commitment round, so a man in the middle picks its key toward A *and* its key toward B and grinds both for a phrase collision — a birthday search, not a preimage. | `platform/net/match_peer_transcript.c:119` extracts 30 bits. Simulated against that exact extraction: **collision found in 68,667 keypairs per side, 0.2 s**. | Add a ZRTP-style hash commitment so each endpoint commits to its public key before seeing its peer's (restoring the full 30 bits), or widen the phrase. Re-run the collision search as the negative control. |
+| G-2 | **The nonce-reuse guard binds the key object, not the key material.** `ISSUED_SEAL_KEYS` is a `WeakSet` over the wrapper, and `deriveMatchPeerKey` is deterministic — two calls with identical inputs yield two wrappers over one AES key, each starting a seal window at sequence 1. Repeated `(key, nonce)` under AES-GCM leaks the GHASH subkey and forges tags. | `dist/web/online/match-peer-crypto.js:250-268`. Only prose forbids the second derive today; the native side has the same caller-discipline property. | Make it structural: mint the seal window inside the derive call and never hand out a bare key that a second window can claim. |
+| G-3 | **Global budget exhaustion from unauthenticated requests.** Admission is charged before the body is validated, so ~1,000 empty POSTs can spend the day's pairing reserve and fail-close the service until UTC midnight. | `services/party/src/worker.ts:87-97` charges `budget(...)` ahead of schema validation. | Validate shape and authenticate before charging, and add per-source rate limiting ahead of the global reserve. |
+| G-4 | **Unbounded `peerGenerationHighWater` growth.** The map keeps one entry per observed peer generation for the socket's lifetime, with no eviction. | `dist/web/online/match-signal-client.js:243-258`. | Bound it to the room's member cap and evict on epoch change; add a negative control that floods generations. |
+| G-5 | **`hibernation-contract.test.ts` is a source-text grep suite.** It asserts things like `expect(matchRoom.match(/\bsocket\.close\(/g)).toHaveLength(1)` — it cannot fail for the reason it claims and will fail on a legal refactor. | `services/party/test/hibernation-contract.test.ts`. | Replace with a behavioral assertion against the object's actual hibernation lifecycle. This repo has logged three instrument failures from code-shape gates; do not add a fourth. |
 
 ## UI/UX acceptance ladder
 

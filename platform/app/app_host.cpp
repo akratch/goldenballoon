@@ -63,6 +63,10 @@ static void        bindSmokeGamepadToImGui(SDL_GameController *gamepad) {
 
 bool AppHost::init(const char *title, int width, int height) {
     active_    = true;
+    /* Cocoa/SDL activation can happen during SDL_Init, before the window-level
+     * ordering policy below gets a chance to run. Apply test process policy at
+     * the earliest reusable host boundary as well as from main(). */
+    AppActivation_prepareProcess();
     /* Resolve before the availability check so diagnostics still name an
      * explicitly requested WebGPU backend in a GL-only build. */
     useWebGpu_ = (mdkr_render_backend() == MDKR_BACKEND_WEBGPU);

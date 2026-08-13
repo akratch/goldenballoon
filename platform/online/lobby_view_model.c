@@ -4,6 +4,56 @@
 
 #include <string.h>
 
+static bool title_word(const char *begin, const char *end) {
+    const char *cursor;
+    if (begin == NULL || end == NULL || begin >= end ||
+        *begin < 'A' || *begin > 'Z') return false;
+    for (cursor = begin + 1; cursor < end; cursor++) {
+        if (*cursor < 'a' || *cursor > 'z') return false;
+    }
+    return true;
+}
+
+/* The peer transcript generator emits exactly 3 Title-Case compounds. Keep
+ * this projection parser narrower than generic display text: it prevents an
+ * adapter bug from turning cryptographic UI into an injection/overflow seam. */
+static bool verification_phrase_valid(const char *phrase, size_t *length_out) {
+    const char *cursor = phrase;
+    unsigned compound;
+    size_t length = 0u;
+    if (phrase == NULL || length_out == NULL) return false;
+    while (length < MDKR_ONLINE_VERIFICATION_PHRASE_BYTES &&
+           phrase[length] != '\0') length++;
+    if (length == 0u || length == MDKR_ONLINE_VERIFICATION_PHRASE_BYTES)
+        return false;
+    for (compound = 0u; compound < 3u; compound++) {
+        const char *left = cursor;
+        const char *hyphen;
+        const char *right;
+        const char *end;
+        while (*cursor != '\0' && *cursor != '-' && *cursor != ' ') cursor++;
+        if (*cursor != '-') return false;
+        hyphen = cursor++;
+        right = cursor;
+        while (*cursor != '\0' && *cursor != ' ') {
+            if (*cursor == '-') return false;
+            cursor++;
+        }
+        end = cursor;
+        if (!title_word(left, hyphen) || !title_word(right, end)) return false;
+        if (compound < 2u) {
+            if (*cursor != ' ') return false;
+            cursor++;
+            if (*cursor == '\0' || *cursor == ' ') return false;
+        } else if (*cursor != '\0') {
+            return false;
+        }
+    }
+    if (*cursor != '\0') return false;
+    *length_out = length;
+    return true;
+}
+
 static MdkrOnlineViewControl control(MdkrOnlineViewAction action,
                                      const char *label, bool enabled) {
     MdkrOnlineViewControl value;
@@ -252,6 +302,15 @@ static void recovery_model(MdkrOnlineViewFailure failure,
             model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
                                      "Return to Lobby", true);
             break;
+        case MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH:
+            model->title = "Words Did Not Match";
+            model->explanation =
+                "The secure connection may have changed. Do not continue until everyone compares a new phrase.";
+            model->primary = control(MDKR_ONLINE_VIEW_ACTION_RETRY,
+                                     "Reconnect Securely", true);
+            model->cancel = control(MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM,
+                                    "Leave Room", true);
+            break;
         case MDKR_ONLINE_VIEW_FAILURE_NONE:
         case MDKR_ONLINE_VIEW_FAILURE_SERVICE_UNAVAILABLE:
         case MDKR_ONLINE_VIEW_FAILURE_COUNT:
@@ -278,14 +337,25 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
     bool character_missing = false;
     bool vehicle_missing = false;
     bool vote_missing = false;
+    size_t verification_phrase_length = 0u;
+    MdkrOnlineInviteState invite_state;
 
     if (input == NULL || output == NULL || input->session == NULL ||
         !mdkr_session_state_valid(input->session) ||
         input->journey < MDKR_ONLINE_JOURNEY_CREATE ||
-        input->journey > MDKR_ONLINE_JOURNEY_REMATCH) {
+        input->journey > MDKR_ONLINE_JOURNEY_REMATCH ||
+        input->invite_state < MDKR_ONLINE_INVITE_PREPARING ||
+        input->invite_state > MDKR_ONLINE_INVITE_REFRESH_AVAILABLE) {
         return false;
     }
     if (input->failure < MDKR_ONLINE_VIEW_FAILURE_NONE) return false;
+    if (input->verification_phrase != NULL &&
+        (input->session->scene != MDKR_SCENE_LOBBY ||
+         input->session->room != MDKR_ROOM_PREFLIGHT ||
+         !verification_phrase_valid(input->verification_phrase,
+                                    &verification_phrase_length))) {
+        return false;
+    }
     if (input->lobby != NULL) {
         if (!mdkr_online_lobby_valid(input->lobby) ||
             input->session->intent != MDKR_INTENT_ONLINE_PRIVATE ||
@@ -294,6 +364,21 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
         }
         member = local_member(input->lobby, input->local_endpoint_id);
         if (member == NULL) return false;
+    }
+
+    /* Invite custody belongs to the leader of an open room in the lobby
+     * phase. Outside that exact custody the projection degrades to
+     * "Preparing", which renders a disabled Share Invite control, rather
+     * than refusing to build a view at all: a guest still needs its room,
+     * preflight and recovery views. Only this local value reaches the
+     * Share Invite control below, so a non-leader, a non-open room or a
+     * stale phase can never present a live invitation. */
+    invite_state = input->invite_state;
+    if (input->lobby == NULL ||
+        input->lobby->phase != MDKR_ONLINE_LOBBY ||
+        input->session->room != MDKR_ROOM_OPEN ||
+        input->lobby->leader_endpoint_id != input->local_endpoint_id) {
+        invite_state = MDKR_ONLINE_INVITE_PREPARING;
     }
 
     memset(&next, 0, sizeof(next));
@@ -362,6 +447,10 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                 MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
                 "Connection Details", true);
             if (input->session->room == MDKR_ROOM_OPEN) {
+                const bool invite_ready =
+                    invite_state == MDKR_ONLINE_INVITE_READY;
+                const bool invite_refresh =
+                    invite_state == MDKR_ONLINE_INVITE_REFRESH_AVAILABLE;
                 next.kind = MDKR_ONLINE_VIEW_ROOM;
                 next.title = "Private Room";
                 next.explanation =
@@ -371,31 +460,54 @@ bool mdkr_online_view_model_build(const MdkrOnlineViewInput *input,
                     next.primary = control(
                         MDKR_ONLINE_VIEW_ACTION_CHECK_SETUP,
                         "Check Setup", true);
-                    next.secondary = control(
-                        MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE,
-                        "Share Invite", input->invite_ready);
+                    if (next.local_member_is_leader) {
+                        next.secondary = control(
+                            MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE,
+                            invite_ready ? "Share Invite" :
+                                invite_refresh ? "New Invitation" :
+                                    "Preparing Invite…",
+                            invite_ready || invite_refresh);
+                    }
                 } else {
-                    next.status = input->invite_ready
-                        ? "Invite Ready" : "Preparing Invite…";
+                    next.status = invite_ready ? "Invite Ready" :
+                        invite_refresh ? "Invitation Expired" :
+                            "Preparing Invite…";
                     next.primary = control(
                         MDKR_ONLINE_VIEW_ACTION_SHARE_INVITE,
-                        input->invite_ready
-                            ? "Share Invite" : "Preparing Invite…",
-                        input->invite_ready);
+                        invite_ready ? "Share Invite" :
+                            invite_refresh ? "New Invitation" :
+                                "Preparing Invite…",
+                        invite_ready || invite_refresh);
                 }
             } else if (input->session->room == MDKR_ROOM_PREFLIGHT) {
                 next.kind = MDKR_ONLINE_VIEW_PREFLIGHT;
-                next.title = "Checking Everyone's Setup";
-                next.explanation =
-                    "Checking game versions, ROMs, settings, controllers and connections.";
-                next.status = "Checking…";
-                next.primary = control(
-                    MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
-                    "Review Checks", true);
-                next.timeout = timeout_view(
-                    "Setup Check Took Too Long",
-                    "One or more checks did not finish. Retry before getting ready.",
-                    MDKR_ONLINE_VIEW_ACTION_RETRY, "Retry Checks");
+                if (input->verification_phrase != NULL) {
+                    next.title = "Compare These Words";
+                    next.explanation =
+                        "Read all 3 groups aloud. Continue only when every display shows exactly the same words.";
+                    next.status = "Secure Phrase Ready";
+                    memcpy(next.verification_phrase,
+                           input->verification_phrase,
+                           verification_phrase_length + 1u);
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                        "Words Match", true);
+                    next.secondary = control(
+                        MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH,
+                        "Words Differ", true);
+                } else {
+                    next.title = "Checking Everyone's Setup";
+                    next.explanation =
+                        "Checking game versions, ROMs, settings, controllers and connections.";
+                    next.status = "Checking…";
+                    next.primary = control(
+                        MDKR_ONLINE_VIEW_ACTION_CONNECTION_DETAILS,
+                        "Review Checks", true);
+                    next.timeout = timeout_view(
+                        "Setup Check Took Too Long",
+                        "One or more checks did not finish. Retry before getting ready.",
+                        MDKR_ONLINE_VIEW_ACTION_RETRY, "Retry Checks");
+                }
             } else if (input->session->room == MDKR_ROOM_SELECTING) {
                 if (!selection_state(input->lobby, input->local_endpoint_id,
                                      &character_missing, &vehicle_missing,

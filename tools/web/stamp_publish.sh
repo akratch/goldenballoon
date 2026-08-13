@@ -77,7 +77,7 @@ fi
 perl -pi -e "
   s/(href=\"(?:style|input\\/touch-surface|party\\/party-host|online\\/online-room)\\.css)\"/\$1?v=$STAMP\"/g;
   s/(href=\"manifest\\.webmanifest)\"/\$1?v=$STAMP\"/;
-  s/(src=\"(?:rom-id|mdkr-save-ui|mdkr64-shell|input\\/touch-surface|party\\/(?:party-protocol|party-sas|qrcodegen|party-host)|online\\/(?:online-control-config|online-room))\\.js)\"/\$1?v=$STAMP\"/g;
+  s/(src=\"(?:rom-id|mdkr-save-ui|mdkr64-shell|input\\/touch-surface|party\\/(?:party-protocol|party-sas|qrcodegen|party-host)|online\\/(?:online-control-config|online-room-live-state|online-room-presenter|online-room))\\.js)\"/\$1?v=$STAMP\"/g;
   s/^<html lang=\"en\">/<html lang=\"en\" data-build-version=\"$VERSION\" data-build-stamp=\"$STAMP\">/;
 " "$INDEX"
 
@@ -104,6 +104,8 @@ for ref in "style.css?v=$STAMP" "manifest.webmanifest?v=$STAMP" \
            "party/party-protocol.js?v=$STAMP" "party/party-sas.js?v=$STAMP" \
            "party/qrcodegen.js?v=$STAMP" "party/party-host.js?v=$STAMP" \
            "online/online-control-config.js?v=$STAMP" \
+           "online/online-room-live-state.js?v=$STAMP" \
+           "online/online-room-presenter.js?v=$STAMP" \
            "online/online-room.js?v=$STAMP" "mdkr64-shell.js?v=$STAMP" \
            "data-build-version=\"$VERSION\"" "data-build-stamp=\"$STAMP\""; do
     if ! grep -Fq "$ref" "$INDEX"; then

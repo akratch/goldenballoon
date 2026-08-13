@@ -35,7 +35,7 @@ def internal() -> dict[str, object]:
 
 def provider() -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "day": "2026-08-12",
         "plan": "free",
         "billing": {
@@ -47,6 +47,7 @@ def provider() -> dict[str, object]:
         "usage": {
             "workerRequests": 500,
             "durableObjectRequests": 450,
+            "durableObjectDurationGbSeconds": 10,
             "rowsRead": 1_000,
             "rowsWritten": 250,
             "storageBytes": 65_536,
@@ -54,6 +55,7 @@ def provider() -> dict[str, object]:
         "limits": {
             "workerRequests": 100_000,
             "durableObjectRequests": 100_000,
+            "durableObjectDurationGbSeconds": 13_000,
             "rowsRead": 5_000_000,
             "rowsWritten": 100_000,
             "storageBytes": 5_000_000_000,
@@ -80,6 +82,11 @@ def main() -> int:
     watched = provider()
     watched["usage"]["workerRequests"] = 50_000  # type: ignore[index]
     assert MODULE.reconcile(internal(), watched).level == "watch"
+    duration_watched = provider()
+    duration_watched["usage"]["durableObjectDurationGbSeconds"] = 6_500  # type: ignore[index]
+    duration_result = MODULE.reconcile(internal(), duration_watched)
+    assert duration_result.level == "watch"
+    assert duration_result.provider_dimension == "durableObjectDurationGbSeconds"
 
     cases: list[tuple[str, dict[str, object], dict[str, object]]] = []
     changed_internal = internal()
@@ -88,6 +95,15 @@ def main() -> int:
     changed_provider = provider()
     changed_provider["accountId"] = "must-never-appear"
     cases.append(("provider_schema", internal(), changed_provider))
+    changed_provider = provider()
+    changed_provider["schemaVersion"] = 1
+    cases.append(("provider_version", internal(), changed_provider))
+    changed_provider = provider()
+    del changed_provider["usage"]["durableObjectDurationGbSeconds"]  # type: ignore[index]
+    cases.append(("provider_usage_schema", internal(), changed_provider))
+    changed_provider = provider()
+    del changed_provider["limits"]["durableObjectDurationGbSeconds"]  # type: ignore[index]
+    cases.append(("provider_limits_schema", internal(), changed_provider))
     changed_provider = provider()
     changed_provider["billing"]["methodAttached"] = True  # type: ignore[index]
     cases.append(("provider_billing_method", internal(), changed_provider))
@@ -102,6 +118,9 @@ def main() -> int:
     cases.append(("unreviewed_provider_limit", internal(), changed_provider))
     changed_provider = provider()
     changed_provider["usage"]["workerRequests"] = 90_000  # type: ignore[index]
+    cases.append(("provider_stop_line", internal(), changed_provider))
+    changed_provider = provider()
+    changed_provider["usage"]["durableObjectDurationGbSeconds"] = 9_750  # type: ignore[index]
     cases.append(("provider_stop_line", internal(), changed_provider))
     changed_provider = provider()
     changed_provider["usage"]["workerRequests"] = 0  # type: ignore[index]
@@ -143,6 +162,9 @@ def main() -> int:
     cases.append(("day_mismatch", internal(), changed_provider))
     changed_provider = provider()
     changed_provider["usage"]["rowsWritten"] = True  # type: ignore[index]
+    cases.append(("provider_usage_value", internal(), changed_provider))
+    changed_provider = provider()
+    changed_provider["usage"]["durableObjectDurationGbSeconds"] = True  # type: ignore[index]
     cases.append(("provider_usage_value", internal(), changed_provider))
     for code, left, right in cases:
         expect_error(code, left, right)

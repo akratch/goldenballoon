@@ -10,6 +10,13 @@ export const MATCH_LIMITS = Object.freeze({
   maxTransitions: 4096,
   maxCommandBytes: 4096,
   maxSocketMessageBytes: 4096,
+  maxSignalMessageBytes: 64 * 1024,
+  maxSignalSdpBytes: 60 * 1024,
+  maxSignalIceBytes: 4 * 1024,
+  maxSignalMetadataBytes: 256,
+  signalWindowMs: 10_000,
+  maxSignalMessagesPerWindow: 60,
+  maxSignalMessagesPerSocket: 256,
 });
 
 export type MatchPhase = "lobby" | "loading" | "racing" | "results" | "closed";
@@ -85,6 +92,20 @@ export interface MatchCommandV1 {
   compatibility: MatchCompatibilityV1;
 }
 
+/** Exact public command body. Actor identity and compatibility are injected by
+ * MatchRoom from authenticated room authority; a browser cannot supply either
+ * field. Keeping this validator beside the canonical protocol lets the Worker
+ * reject ambiguous media/schema before proxying while the Durable Object still
+ * revalidates its own trust boundary. */
+export interface MatchCommandRequestV1 {
+  protocolVersion: number;
+  expectedRevision: number;
+  commandId: string;
+  type: MatchCommandType;
+  value: number;
+  targetEndpointId: string;
+}
+
 export interface MatchStep {
   accepted: boolean;
   duplicate: boolean;
@@ -133,12 +154,18 @@ function bytes(value: unknown, count: number): value is number[] {
 }
 
 export function validCompatibility(value: unknown): value is MatchCompatibilityV1 {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const keys = Object.keys(value).sort();
+  const expected = ["buildId", "cadenceHz", "gameplayDigest",
+    "protocolVersion", "romRevision"];
+  if (keys.length !== expected.length ||
+      !keys.every((key, index) => key === expected[index])) return false;
   const item = value as Partial<MatchCompatibilityV1>;
   return item.protocolVersion === MATCH_PROTOCOL_VERSION &&
     bytes(item.buildId, 16) && bytes(item.gameplayDigest, 32) &&
-    Number.isInteger(item.romRevision) && Number(item.romRevision) > 0 &&
-    Number(item.romRevision) <= 255 && Number.isInteger(item.cadenceHz) &&
+    Number.isInteger(item.romRevision) &&
+    (item.romRevision === 1 || item.romRevision === 2) &&
+    Number.isInteger(item.cadenceHz) &&
     (item.cadenceHz === 25 || item.cadenceHz === 30);
 }
 
@@ -147,11 +174,39 @@ export function blankCompatibility(): MatchCompatibilityV1 {
     gameplayDigest: Array(32).fill(0), romRevision: 0, cadenceHz: 0};
 }
 
+export function inviteRemainingMs(inviteExpiresAt: unknown,
+                                  now: unknown): number | null {
+  if (!Number.isSafeInteger(inviteExpiresAt) ||
+      !Number.isSafeInteger(now) || Number(now) < 0 ||
+      Number(inviteExpiresAt) <= Number(now)) return null;
+  return Math.min(MATCH_LIMITS.inviteTtlMs,
+    Number(inviteExpiresAt) - Number(now));
+}
+
 export const MATCH_COMMAND_TYPES = new Set<MatchCommandType>([
   "join", "leave", "disconnect", "reconnect", "set_ready", "set_vote",
   "begin_loading", "ack_loaded", "begin_race", "publish_results", "rematch",
   "transfer_leader", "close", "set_character", "set_vehicle", "cancel_loading",
 ]);
+
+export function validMatchCommandRequest(value: unknown):
+    value is MatchCommandRequestV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  const keys = Object.keys(item).sort();
+  const expected = ["commandId", "expectedRevision", "protocolVersion",
+    "targetEndpointId", "type", "value"];
+  return keys.length === expected.length &&
+    keys.every((key, index) => key === expected[index]) &&
+    item.protocolVersion === MATCH_PROTOCOL_VERSION &&
+    Number.isInteger(item.expectedRevision) && Number(item.expectedRevision) >= 1 &&
+    Number(item.expectedRevision) <= 0xffff_ffff &&
+    parseU64(item.commandId) !== null && typeof item.type === "string" &&
+    MATCH_COMMAND_TYPES.has(item.type as MatchCommandType) &&
+    Number.isInteger(item.value) && Number(item.value) >= 0 &&
+    Number(item.value) <= 0xffff_ffff &&
+    parseU64(item.targetEndpointId, true) !== null;
+}
 
 function validStoredStep(value: MatchStep): boolean {
   return value.accepted === true && value.duplicate === false &&

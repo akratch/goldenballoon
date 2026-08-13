@@ -52,6 +52,8 @@ typedef enum MdkrOnlineViewFailure {
     MDKR_ONLINE_VIEW_FAILURE_ROOM_EXPIRED,
     MDKR_ONLINE_VIEW_FAILURE_ENGINE_FAILED,
     MDKR_ONLINE_VIEW_FAILURE_EPOCH_MISMATCH,
+    /* Local authenticated-transcript ceremony; never sourced from service data. */
+    MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH,
     MDKR_ONLINE_VIEW_FAILURE_COUNT
 } MdkrOnlineViewFailure;
 
@@ -81,7 +83,10 @@ typedef enum MdkrOnlineViewAction {
     MDKR_ONLINE_VIEW_ACTION_RETURN_TO_LOBBY,
     MDKR_ONLINE_VIEW_ACTION_RETURN_HOME,
     MDKR_ONLINE_VIEW_ACTION_LEAVE_ROOM,
-    MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE
+    MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE,
+    /* Appended to preserve every previously published action id. */
+    MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+    MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH
 } MdkrOnlineViewAction;
 
 typedef enum MdkrOnlineAnnouncement {
@@ -90,13 +95,28 @@ typedef enum MdkrOnlineAnnouncement {
     MDKR_ONLINE_ANNOUNCE_ASSERTIVE
 } MdkrOnlineAnnouncement;
 
+/* Launcher-owned invite custody, never service-owned UI text. PREPARING means
+ * no usable secret and no explicit recovery is available yet; REFRESH means a
+ * leader can safely request a replacement without retaining the old secret. */
+typedef enum MdkrOnlineInviteState {
+    MDKR_ONLINE_INVITE_PREPARING = 0,
+    MDKR_ONLINE_INVITE_READY,
+    MDKR_ONLINE_INVITE_REFRESH_AVAILABLE
+} MdkrOnlineInviteState;
+
+enum { MDKR_ONLINE_VERIFICATION_PHRASE_BYTES = 64 };
+
 typedef struct MdkrOnlineViewInput {
     const MdkrSessionState *session;
     const MdkrOnlineLobby *lobby; /* Optional before a room snapshot exists. */
     uint64_t local_endpoint_id;
     MdkrOnlineJourney journey;
     MdkrOnlineViewFailure failure;
-    bool invite_ready;
+    MdkrOnlineInviteState invite_state;
+    /* Locally derived from the authenticated peer transcript; never accepted
+     * from room/service state. NULL means the secure check is still running.
+     * The projection validates and copies at most 63 display bytes. */
+    const char *verification_phrase;
     /* Local release configuration only. Never derive this from room/service
      * data. It remains false until the separately reviewed rollback GO. */
     bool race_admission_enabled;
@@ -121,6 +141,8 @@ typedef struct MdkrOnlineViewModel {
     const char *title;
     const char *explanation;
     const char *status;
+    /* Non-empty only in the explicit human-confirmation preflight state. */
+    char verification_phrase[MDKR_ONLINE_VERIFICATION_PHRASE_BYTES];
     MdkrOnlineViewControl primary;
     MdkrOnlineViewControl secondary;
     MdkrOnlineViewControl cancel;

@@ -14,9 +14,11 @@
 - [ ] I did not add private plans, handoffs, agent transcripts, personal paths,
       or a personal author/committer email; `python3 tools/check_public_surface.py
       --staged` passes.
-- [ ] I ran the relevant validation (`python3 tools/run_checks.py`, or
-      `python3 tools/run_checks.py --only <name>` for the narrower checks that
-      apply to this change — see `tools/run_checks.py --list`).
+- [ ] I ran the relevant validation on a dedicated test desktop
+      (`MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py`, or the
+      narrower `--only <name>` selection — see the workstation-safe
+      `tools/run_checks.py --list`). Compiled, native-app, and browser evidence
+      used its additional explicit class opt-in.
 - [ ] Release/archive changes also pass every gate in
       [docs/RELEASE_CHECKLIST.md](../docs/RELEASE_CHECKLIST.md), including
       `tools/check_clean_room.sh` and `tools/check_no_rom.sh`.

@@ -1,9 +1,11 @@
 import {describe, expect, it} from "vitest";
-import {blankCompatibility, MATCH_LIMITS, type MatchCommandType, type MatchCommandV1,
+import {blankCompatibility, inviteRemainingMs, MATCH_LIMITS,
+  type MatchCommandType, type MatchCommandV1,
   type MatchCompatibilityV1, validMatchControlLog} from "../src/match/protocol";
 import {createMatchLobby, dispatchMatchCommand, matchCommandFingerprint,
   validMatchLobby}
   from "../src/match/reducer";
+import parityTrace from "../../../tests/fixtures/online_lobby_reducer_v1.tsv?raw";
 
 const compatibility: MatchCompatibilityV1 = {protocolVersion: 1,
   buildId: Array.from({length: 16}, (_, i) => i + 1),
@@ -18,7 +20,58 @@ function command(type: MatchCommandType, actor: string, id: number,
     compatibility: compat};
 }
 
+function canonicalParityState(lobby: NonNullable<ReturnType<typeof createMatchLobby>>,
+                              result: ReturnType<typeof dispatchMatchCommand>): string {
+  const members = lobby.members.map(item => [item.endpointId, Number(item.connected),
+    Number(item.ready), Number(item.loaded), item.seatCount, item.lastCommandId].join(":"))
+    .join(";");
+  const seats = lobby.seats.map(item => [item.endpointId, item.localIndex,
+    item.selectionRevision, item.voteTrack ?? "-", item.characterId ?? "-",
+    item.vehicleId ?? "-"].join(":"))
+    .join(";");
+  return [Number(result.accepted), Number(result.duplicate),
+    Number(result.leaderChanged), result.error, lobby.revision, lobby.matchEpoch,
+    lobby.phase, lobby.leaderEndpointId, lobby.leaderGeneration,
+    lobby.selectedTrack ?? "-", lobby.selectedVehicleMask, members, seats].join(",");
+}
+
+function parityCompatibility(token: string): MatchCompatibilityV1 {
+  if (token === "same") return structuredClone(compatibility);
+  if (token === "blank") return blankCompatibility();
+  if (token === "unsupported_rom") return {...structuredClone(compatibility), romRevision: 3};
+  if (token === "mismatch") {
+    const value = structuredClone(compatibility);
+    value.gameplayDigest[3] = value.gameplayDigest[3]! ^ 1;
+    return value;
+  }
+  throw new Error(`unknown parity compatibility token: ${token}`);
+}
+
 describe("MatchRoom protocol-v1 reducer", () => {
+  it("bounds advertised invite lifetime by current room authority", () => {
+    expect(inviteRemainingMs(1_000, 900)).toBe(100);
+    expect(inviteRemainingMs(MATCH_LIMITS.inviteTtlMs + 10, 0))
+      .toBe(MATCH_LIMITS.inviteTtlMs);
+    expect(inviteRemainingMs(900, 900)).toBeNull();
+    expect(inviteRemainingMs(899, 900)).toBeNull();
+    expect(inviteRemainingMs(Number.MAX_SAFE_INTEGER + 1, 0)).toBeNull();
+  });
+
+  it("replays the shared native/service valid and invalid lifecycle trace", () => {
+    const lobby = createMatchLobby("42", "100", compatibility, 1)!;
+    for (const line of parityTrace.split(/\r?\n/)) {
+      if (!line || line.startsWith("#")) continue;
+      const fields = line.split("\t");
+      expect(fields, line).toHaveLength(9);
+      const [label, type, actor, id, revision, value, target, compat, expected] = fields;
+      const result = dispatchMatchCommand(lobby, command(type as MatchCommandType,
+        actor!, Number(id), Number(revision), Number(value), target,
+        parityCompatibility(compat!)));
+      const actual = canonicalParityState(lobby, result);
+      expect(actual, label).toBe(expected);
+    }
+  });
+
   it("matches the native C command fingerprint vector", () => {
     const value = command("set_character", "100", 1, 1, 0, "0");
     expect(matchCommandFingerprint(value)).toBe("187cbf8c556a134d");
@@ -95,6 +148,9 @@ describe("MatchRoom protocol-v1 reducer", () => {
     expect(dispatchMatchCommand(lobby,
       command("set_vehicle", "100", 1, lobby.revision, 0, "0")))
       .toMatchObject({accepted: false, error: "stale_command"});
+    expect(dispatchMatchCommand(lobby,
+      command("set_vehicle", "100", 1, lobby.revision - 1, 0, "0")))
+      .toMatchObject({accepted: false, error: "stale_revision"});
     expect(dispatchMatchCommand(lobby,
       command("set_vehicle", "100", 3, lobby.revision - 1, 0, "0")))
       .toMatchObject({accepted: false, error: "stale_revision"});
@@ -237,5 +293,10 @@ describe("MatchRoom protocol-v1 reducer", () => {
     expect(rejected).toBeGreaterThan(20_000);
     expect(duplicateChecks).toBeGreaterThan(20);
     expect(errors.size).toBeGreaterThanOrEqual(7);
-  });
+  // This arm deliberately performs 48 * 512 commands against both an active
+  // and reconstructed reducer, with invariant checks after every dispatch.
+  // Give that fixed workload an explicit budget so background-priority local
+  // validation remains reliable on an occupied workstation; the default 5 s
+  // is a framework default, not a product performance threshold.
+  }, 30_000);
 });

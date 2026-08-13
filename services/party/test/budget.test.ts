@@ -107,6 +107,7 @@ describe("zero-cost budget settings", () => {
       "/admit?kind=pairing&units=3&operation=unknown",
       "/admit?kind=pairing&units=2&operation=matchCodeJoin",
       "/admit?kind=control&units=28&operation=partyControl",
+      "/admit?kind=control&units=14&operation=matchSignalSocket",
     ]) {
       const response = await stub.fetch(`https://budget${path}`,
         {method: "POST", headers});
@@ -119,21 +120,24 @@ describe("zero-cost budget settings", () => {
     expect((await stub.fetch(
       "https://budget/admit?kind=control&units=28&operation=partySocket",
       {method: "POST", headers})).status).toBe(200);
+    expect((await stub.fetch(
+      "https://budget/admit?kind=control&units=15&operation=matchSignalSocket",
+      {method: "POST", headers})).status).toBe(200);
     // Missing operation remains readable only for the frozen pre-v1 Worker.
     expect((await stub.fetch("https://budget/admit?kind=pairing&units=1",
       {method: "POST"})).status).toBe(200);
     const health = await stub.fetch("https://budget/health", {headers});
     expect(health.headers.get("cache-control")).toBe("no-store");
-    expect(await health.json()).toEqual({schemaVersion: 1,
-      reservationRequests: 3,
+    expect(await health.json()).toEqual({schemaVersion: 2,
+      reservationRequests: 4,
       reservations: {
         matchCreate: 0, matchLinkJoin: 0, matchCodeJoin: 1,
-        matchControl: 0, matchRotate: 0, matchSocket: 0,
+        matchControl: 0, matchRotate: 0, matchSocket: 0, matchSignalSocket: 1,
         partyCreate: 0, partyLinkJoin: 0, partyCodeJoin: 0,
         partyControl: 0, partyRotate: 0, partySocket: 1, legacy: 1,
       },
-      admitted: {pairingUnits: 4, controlUnits: 28},
-      tracked: {pairingUnits: 3, controlUnits: 28},
+      admitted: {pairingUnits: 4, controlUnits: 43},
+      tracked: {pairingUnits: 3, controlUnits: 43},
       tracking: "partial",
     });
   });

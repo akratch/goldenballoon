@@ -11,9 +11,17 @@ The suite has five invocation shapes:
 
 This runner owns those differences and fails if a new ``tests/check_*.py`` is
 not registered below, or if a ``tests/test_*.py`` has no CMake ``add_test()``
-to carry it into the ctest task. It runs sequentially because several checks intentionally
-create and remove ``save/eeprom.bin``. The default is the complete suite; use
-``--only`` only for iteration.
+to carry it into the ctest task. App-, renderer-, and browser-launching roles
+are always serialized, even under ``--jobs``. Native game/renderer checks,
+compiled CTests, and browser checks are additionally fail-closed behind
+``--with-app-tests``, ``--with-compiled-tests``, and
+``--with-browser-tests`` respectively. Every opt-in also requires a separate
+``MDKR_DEDICATED_TEST_DESKTOP=1`` attestation inherited from the caller; this
+runner never manufactures it. After repeated workstation disruption, even the
+nominally source-only lane requires that attestation: test filenames and past
+behavior are not a safe process-launch boundary. ``--list`` remains read-only
+and does not require attestation. The runner lowers its own CPU priority before
+starting children. A release run must not monopolize the maintainer's desktop.
 """
 
 from __future__ import annotations
@@ -54,24 +62,63 @@ DEFAULT_TASK_TIMEOUT = 1800
 BUILDING_TASK_TIMEOUT = 10800
 
 # The roles that constitute the web lane. The release checklist selects them by
-# role so its task list cannot drift from this manifest.
-BROWSER_ROLES = ("wasm", "browser", "browser_save")
+# role so its task list cannot drift from this manifest. ``browser_local``
+# checks own their arguments and artifacts (so they do not use the ordinary
+# browser command route), but they still launch real Chromium and/or a local
+# Worker and therefore belong to the serialized web lane.
+BROWSER_ROLES = ("wasm", "browser", "browser_save", "browser_local")
 
-# --jobs classification. Everything is parallel-safe unless listed here,
-# because each task already runs against its own scratch save directory (see
-# main()) and the checks own their run_dir isolation internally. What CANNOT
-# run beside other tasks:
+# These roles can execute the native game, create SDL/Cocoa surfaces, or build
+# and run instrumented game binaries. Hidden-window hints reduce disruption but
+# are not an authorization boundary: window-manager regressions can still
+# activate an app or move it into a fullscreen Space. Keep them out of ordinary
+# workstation validation unless a dedicated test desktop was explicitly chosen.
+# ``rom`` is intentionally in this set.  Its command shape only passes a ROM
+# path, but most scripts in that role resolve and execute the default native
+# game binary internally.  Treating the role as data-only let an ordinary
+# workstation run start dozens of Cocoa/SDL processes without the explicit
+# app-test opt-in.
+APP_ROLES = ("rom", "native", "release", "asan", "instrumented", "layout")
+
+# CTest inventories are broad and can regress: a new or incorrectly labelled
+# executable may initialize SDL/Cocoa even when the current inventory is
+# believed to be ROM- and renderer-free. After repeated focus theft on the
+# maintainer's occupied Mac, do not execute any compiled test by default. The
+# dedicated-desktop gate is intentionally independent from the label filter.
+COMPILED_TEST_ROLES = ("ctest",)
+
+# --jobs classification. Pure source work may share isolated scratch
+# directories. Anything that executes compiled code, starts the game, a
+# renderer, or a browser is
+# serialized even when its individual files are otherwise independent. Six
+# simultaneous "headless" native processes made macOS unusable and amplified
+# any focus-policy regression into six foreground windows. What CANNOT run
+# beside other tasks:
 #
-#   * instrumented/layout — configure and compile their own trees; two at once
-#     contend for the same tree and the host's whole core budget;
-#   * wasm/browser/browser_save — the wasm build tree is one directory, and
-#     the browser gates bind local ports and spawn real Chromium profiles;
+#   * rom/native/release/asan — execute the game and can own CPU/GPU surfaces;
+#   * ctest — broad compiled inventory; run alone after the source pool drains;
+#   * instrumented/layout — build and execute instrumented game trees;
+#   * wasm/browser/browser_save/browser_local — the wasm build tree is one
+#     directory, and the browser gates bind local ports, spawn real Chromium
+#     profiles and sometimes run a local Worker;
 #   * SERIAL_NAMES — gates whose VERDICT is a wall-clock or host-load
 #     measurement (realtime pacing arms, adopted-window handoffs, replay-cost
 #     ceilings). Running them beside other work turns host contention into a
 #     false failure — the same effect docs/TEST_SUITE_ECONOMICS.md §1 measured
 #     between its loaded and quiet runs.
-SERIAL_ROLES = frozenset({"instrumented", "layout", "wasm", "browser", "browser_save"})
+SERIAL_ROLES = frozenset({
+    "ctest",
+    "rom",
+    "native",
+    "release",
+    "asan",
+    "instrumented",
+    "layout",
+    "wasm",
+    "browser",
+    "browser_save",
+    "browser_local",
+})
 SERIAL_NAMES = frozenset({
     "pacing_quality",        # realtime arms assert displayed-interval tails
     "boost_magnitude",       # MDKR_PACE_REALTIME arm
@@ -385,7 +432,8 @@ CHECKS = (
           "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("web_publish_stamp", "check_web_publish_stamp.py", "source",
           "single-build cache stamps across launcher, controller and room routes"),
-    Check("browser_publish_skew", "check_browser_publish_skew.py", "source",
+    Check("browser_publish_skew", "check_browser_publish_skew.py",
+          "browser_local",
           "waiting-worker deploy skew, build-isolated caches and atomic offline fallback"),
     Check("address_domains", "check_address_domains.py", "source",
           "raw pointer/token narrowing confined to typed boundary helpers"),
@@ -595,9 +643,9 @@ CHECKS = (
           "two complete engine epochs through one wasm module and returned launcher"),
     Check("touch_controls", "check_touch_controls.py", "browser",
           "bounded touch edge transport, overlay gating/persistence, chord and neutral"),
-    Check("controller_page", "check_controller_page.py", "source",
+    Check("controller_page", "check_controller_page.py", "browser_local",
           "engine-free phone controller approval, touch and reconnect UX"),
-    Check("party_host", "check_party_host.py", "source",
+    Check("party_host", "check_party_host.py", "browser_local",
           "launcher-owned QR pairing, approval, seats, expiry and mobile layout"),
     # Provisionally registered by the release session so the manifest guard
     # passes; descriptions taken from each script's own docstring. The online
@@ -607,31 +655,36 @@ CHECKS = (
           "native UI automation stays renderable without stealing desktop "
           "focus"),
     Check("party_experience_canary_smoke",
-          "check_party_experience_canary_smoke.py", "source",
+          "check_party_experience_canary_smoke.py", "browser_local",
           "operated canary and direct play smoke through local signaling "
           "loss"),
-    Check("browser_online_room", "check_browser_online_room.py", "source",
+    Check("browser_online_room", "check_browser_online_room.py",
+          "browser_local",
           "zero-I/O online gate, local-owner handoffs, focus and mobile reflow"),
-    Check("browser_online_activation", "check_browser_online_activation.py", "source",
+    Check("browser_online_activation", "check_browser_online_activation.py",
+          "browser_local",
           "clean-build/local-ROM release handoff, idempotence, region mapping, "
           "dirty and cross-origin refusal"),
     Check("browser_online_room_gallery", "check_browser_online_room_gallery.py",
-          "source", "shared-C 42-state browser room model, 25 keyboard routes, "
-          "touch, accessibility and zoomed mobile reflow"),
+          "browser_local",
+          "shared-C 43-case browser room model, 27 keyboard routes, "
+          "verification phrase, touch, accessibility and zoomed mobile reflow"),
     Check("browser_online_match_room", "check_browser_online_match_room.py",
-          "source", "explicit live MatchRoom create/join/share/rotate/select/ready, "
+          "browser_local",
+          "explicit live MatchRoom create/join/share/rotate/select/ready, "
           "reconnect, corrupt-state recovery and pre-GO admission gate"),
     Check("browser_online_two_person", "check_browser_online_two_person.py",
-          "source", "two clean profiles over the real local Worker: share/join, "
+          "browser_local",
+          "two clean profiles over the real local Worker: share/join, "
           "outage, selection, Ready backtrack, accessibility and leave"),
-    Check("party_capacity", "check_party_capacity.py", "source",
+    Check("party_capacity", "check_party_capacity.py", "browser_local",
           "real-Worker admission/forged-control floods, restart, weighted "
           "HTTP/socket reserve, telemetry, static recovery and zero kill switch"),
     Check("party_internal_api", "check_party_internal_api.py", "source",
           "versioned Worker/Durable Object envelope and pre-storage skew rejection"),
     Check("party_edge_policy", "check_party_edge_policy.py", "source",
           "free-plan /api-only edge rate limit and static local-play isolation"),
-    Check("phone_party_webrtc", "check_phone_party_webrtc.py", "source",
+    Check("phone_party_webrtc", "check_phone_party_webrtc.py", "browser_local",
           "direct phone state/control channels, input-test RTT and wasm handoff queue"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
@@ -705,6 +758,22 @@ def validate_manifest() -> None:
     unregistered_units = sorted(unit_scripts - cmake_scripts)
     stale_units = sorted(name for name in cmake_scripts - unit_scripts
                          if name.startswith("test_"))
+    # A check can own its own arguments and still launch Chromium or a local
+    # Worker. Historically those checks were called ``source`` and entered the
+    # parallel pool, which could start several browser profiles at once. Scan
+    # the registered scripts as a fail-closed backstop: future browser harnesses
+    # must use a role in SERIAL_ROLES rather than relying on a remembered name.
+    intensive_markers = (
+        "ChromeProcess", "find_chrome(", "playwright", "selenium",
+        "WRANGLER", "wrangler dev", "run_attempt(",
+    )
+    automation_role_leaks = []
+    for check in CHECKS:
+        if not check.script or check.role in SERIAL_ROLES:
+            continue
+        source = (TESTS / check.script).read_text(encoding="utf-8")
+        if any(marker in source for marker in intensive_markers):
+            automation_role_leaks.append(f"{check.name} [{check.role}]")
     problems: list[str] = []
     if missing:
         problems.append("unregistered check scripts: " + ", ".join(missing))
@@ -718,6 +787,9 @@ def validate_manifest() -> None:
     if stale_units:
         problems.append("add_test() names missing unit scripts: " +
                         ", ".join(stale_units))
+    if automation_role_leaks:
+        problems.append("browser/Worker checks use a parallel-safe role: " +
+                        ", ".join(automation_role_leaks))
     if problems:
         raise RuntimeError("; ".join(problems))
 
@@ -747,6 +819,17 @@ def cmake_build_type(binary: Path) -> str | None:
         if line.startswith(prefix):
             return line[len(prefix):].strip()
     return None
+
+
+def cmake_cache_bool(binary: Path, name: str) -> bool:
+    cache = binary.parent / "CMakeCache.txt"
+    if not cache.is_file():
+        return False
+    prefix = f"{name}:BOOL="
+    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip().upper() in {"1", "ON", "TRUE", "YES"}
+    return False
 
 
 def has_asan(binary: Path) -> bool:
@@ -799,6 +882,12 @@ def subset_label(args: argparse.Namespace, count: int) -> str:
         restrictions.append("--skip-instrumented")
     if args.skip_wasm:
         restrictions.append("--skip-wasm")
+    if getattr(args, "browser_tests_excluded", False):
+        restrictions.append("browser tests disabled by default")
+    if getattr(args, "app_tests_excluded", False):
+        restrictions.append("native app/renderer tests disabled by default")
+    if getattr(args, "compiled_tests_excluded", False):
+        restrictions.append("compiled tests disabled by default")
     if not restrictions:
         return f"complete suite, {count}/{len(CHECKS)} tasks"
     return (
@@ -863,10 +952,10 @@ def command_for(
             "--output-on-failure",
         ]
         if not with_gpu_tests:
-            command += ["-LE", "gpu"]
+            command += ["-LE", "gpu|app_process|browser"]
         return command
     cmd = [sys.executable, str(TESTS / check.script)]
-    if check.role == "source":
+    if check.role in {"source", "browser_local"}:
         pass
     elif check.role == "rom":
         cmd += ["--rom", str(rom)]
@@ -939,6 +1028,7 @@ def preflight(
     asan: Path,
     rom: Path,
     wasm: Path,
+    with_gpu_tests: bool,
 ) -> None:
     roles = {check.role for check in checks}
     required: list[tuple[str, Path]] = []
@@ -984,6 +1074,13 @@ def preflight(
     missing = [f"{label}: {path}" for label, path in required if not path.is_file()]
     if missing:
         raise RuntimeError("missing required artifact(s):\n  " + "\n  ".join(missing))
+
+    if (with_gpu_tests and "ctest" in roles and
+            not cmake_cache_bool(native, "MDKR_ENABLE_GPU_TESTS")):
+        raise RuntimeError(
+            "--with-gpu-tests requires a build configured with "
+            "-DMDKR_ENABLE_GPU_TESTS=ON"
+        )
 
     # Deliberately NOT all of BROWSER_ROLES. This guard is about the STAGED
     # tree under dist/web/, which only the served browser lanes read. The
@@ -1118,6 +1215,24 @@ def main() -> int:
         help="explicitly run native GPU/window CTests; default excludes them "
              "so validation cannot take over the workstation",
     )
+    parser.add_argument(
+        "--with-app-tests",
+        action="store_true",
+        help="explicitly permit native game/renderer and instrumented runtime "
+             "checks; use only on a dedicated test desktop",
+    )
+    parser.add_argument(
+        "--with-compiled-tests",
+        action="store_true",
+        help="explicitly permit CTest/compiled-test execution; use only on a "
+             "dedicated test desktop",
+    )
+    parser.add_argument(
+        "--with-browser-tests",
+        action="store_true",
+        help="explicitly permit real Chromium/Worker checks; use only on a "
+             "dedicated test desktop",
+    )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
         "--jobs", type=int, default=1,
@@ -1128,6 +1243,60 @@ def main() -> int:
              "byte-for-byte today's sequential runner.")
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
+
+    if args.with_gpu_tests and (
+            not args.with_app_tests or not args.with_compiled_tests):
+        print(
+            "run_checks: FAIL — --with-gpu-tests also requires "
+            "--with-app-tests and --with-compiled-tests on a dedicated "
+            "test desktop",
+            file=sys.stderr,
+        )
+        return 2
+
+    privileged_test_classes_requested = (
+        args.with_app_tests or args.with_browser_tests or
+        args.with_compiled_tests or args.with_gpu_tests
+    )
+    dedicated_test_desktop = (
+        os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") == "1"
+    )
+    if not args.list and not dedicated_test_desktop:
+        print(
+            "run_checks: FAIL — every test lane requires an independent "
+            "MDKR_DEDICATED_TEST_DESKTOP=1 attestation from the caller; "
+            "nominally source-only tests are not a reliable process-launch "
+            "boundary, and this runner will not create the attestation on an "
+            "occupied workstation",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The runner and every descendant should yield to interactive work. Nice is
+    # inherited by subprocesses on POSIX and can only reduce our priority, so a
+    # repository test cannot promote itself above the invoking shell.
+    if os.name == "posix":
+        try:
+            current_nice = os.nice(0)
+            if current_nice < 10:
+                os.nice(10 - current_nice)
+        except OSError as exc:
+            print(f"run_checks: warning: could not lower CPU priority: {exc}",
+                  file=sys.stderr)
+    if sys.platform == "darwin":
+        # macOS's Darwin-background policy also throttles inherited disk I/O
+        # and scheduler pressure. This is stronger than niceness alone and is
+        # inherited by every compiler, CTest, Node and service-test child.
+        try:
+            subprocess.run(
+                ["taskpolicy", "-b", "-p", str(os.getpid())],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            print(f"run_checks: warning: could not enter background policy: {exc}",
+                  file=sys.stderr)
 
     try:
         validate_manifest()
@@ -1145,13 +1314,17 @@ def main() -> int:
     if args.skip_wasm:
         checks = [
             check for check in checks
-            if check.role not in {"wasm", "browser", "browser_save"}
+            if check.role not in BROWSER_ROLES
         ]
     if args.primary_only:
         checks = [
             check for check in checks if check.role in {"source", "native", "ctest"}
         ]
-
+    # Enumerate before the opt-in gates below remove roles. --list is a
+    # read-only inventory of the manifest: it starts no process, so it must
+    # show the whole suite (and answer --only for a gated task) without the
+    # dedicated-desktop attestation. Gating what --list can *name* would send
+    # contributors looking for task names that appear not to exist.
     if args.list:
         for check in checks:
             source = check.script or "CTest:all"
@@ -1160,6 +1333,55 @@ def main() -> int:
                 f"{source}: {check.description}"
             )
         return 0
+
+    app_checks = [check for check in checks if check.role in APP_ROLES]
+    if app_checks and not args.with_app_tests:
+        if args.only or args.role:
+            print(
+                "run_checks: FAIL — the explicit selection includes native "
+                "game/renderer tests; add --with-app-tests only on a "
+                "dedicated test desktop",
+                file=sys.stderr,
+            )
+            return 2
+        checks = [check for check in checks if check.role not in APP_ROLES]
+        args.app_tests_excluded = True
+    else:
+        args.app_tests_excluded = False
+    browser_checks = [check for check in checks if check.role in BROWSER_ROLES]
+    if browser_checks and not args.with_browser_tests:
+        if args.only or args.role:
+            print(
+                "run_checks: FAIL — the explicit selection includes real "
+                "browser/Worker tests; add --with-browser-tests only on a "
+                "dedicated test desktop",
+                file=sys.stderr,
+            )
+            return 2
+        checks = [check for check in checks if check.role not in BROWSER_ROLES]
+        args.browser_tests_excluded = True
+    else:
+        args.browser_tests_excluded = False
+    compiled_checks = [
+        check for check in checks if check.role in COMPILED_TEST_ROLES
+    ]
+    if compiled_checks and not args.with_compiled_tests:
+        if args.only or args.role:
+            print(
+                "run_checks: FAIL — the explicit selection includes compiled "
+                "CTest executables; add --with-compiled-tests only on a "
+                "dedicated test desktop",
+                file=sys.stderr,
+            )
+            return 2
+        checks = [
+            check for check in checks
+            if check.role not in COMPILED_TEST_ROLES
+        ]
+        args.compiled_tests_excluded = True
+    else:
+        args.compiled_tests_excluded = False
+
     if not checks:
         print("run_checks: FAIL — selection is empty", file=sys.stderr)
         return 2
@@ -1171,7 +1393,8 @@ def main() -> int:
     roms = resolve_path(args.roms)
     wasm = resolve_path(args.wasm)
     try:
-        preflight(checks, native, release, asan, rom, wasm)
+        preflight(checks, native, release, asan, rom, wasm,
+                  args.with_gpu_tests)
     except RuntimeError as exc:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2
@@ -1201,13 +1424,44 @@ def main() -> int:
         # keep real surfaces. A check that genuinely needs a foreground
         # window must opt out explicitly in its own environment.
         "MDKR64_HIDDEN": "1",
+        # Several legacy scenario scripts deliberately discard every MDKR*
+        # variable before constructing a hermetic engine environment. SDL's
+        # own hint names survive that scrub and prevent Cocoa from promoting
+        # the command-line process or activating a window if it is shown.
+        # Keep MDKR64_HIDDEN as the cross-platform policy and these as a macOS
+        # fail-safe underneath it.
+        "SDL_MAC_BACKGROUND_APP": "1",
+        "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN": "1",
         # Never inherit a developer's playable repository config. Individual
         # configuration/migration checks replace this with a writable fixture.
         "MDKR_VIDEO_CONFIG_PATH": os.devnull,
         "MDKR_SAVE_DIR": save_dir,
         "MDKR_TEST_SAVE_DIR": save_dir,
         "PYTHONUNBUFFERED": "1",
+        # Keep library/build helpers from silently fanning one serialized task
+        # back out across every CPU core. Explicit harness-level --jobs still
+        # controls the parallel-safe pool.
+        "CMAKE_BUILD_PARALLEL_LEVEL": "2",
+        "CTEST_PARALLEL_LEVEL": "1",
+        "OMP_NUM_THREADS": "1",
+        "RAYON_NUM_THREADS": "1",
+        "VECLIB_MAXIMUM_THREADS": "1",
     })
+    if args.with_browser_tests:
+        # ChromeProcess checks this immediately before Popen. Direct script
+        # invocation therefore fails closed too, rather than relying solely on
+        # this runner's task selection.
+        environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"
+    if args.with_app_tests:
+        # Record the explicit dedicated-desktop decision for nested harnesses
+        # and future launch-boundary guards. Role selection above remains the
+        # authoritative boundary for this runner.
+        environment["MDKR_APP_TESTS_ALLOWED"] = "1"
+    if privileged_test_classes_requested and dedicated_test_desktop:
+        # Copy the caller's independent attestation only after the opt-in has
+        # been validated above. It is deliberately absent from MDKR_ENV_ALLOWLIST
+        # so ordinary child tasks cannot inherit stale ambient authorization.
+        environment["MDKR_DEDICATED_TEST_DESKTOP"] = "1"
 
     print(
         f"run_checks: {len(checks)} task(s); native={native}; "

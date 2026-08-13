@@ -6,7 +6,7 @@ import {INTERNAL_API_HEADER, INTERNAL_API_VERSION,
 
 export const BUDGET_OPERATIONS = [
   "matchCreate", "matchLinkJoin", "matchCodeJoin", "matchControl",
-  "matchRotate", "matchSocket", "partyCreate", "partyLinkJoin",
+  "matchRotate", "matchSocket", "matchSignalSocket", "partyCreate", "partyLinkJoin",
   "partyCodeJoin", "partyControl", "partyRotate", "partySocket",
 ] as const;
 export type BudgetOperation = typeof BUDGET_OPERATIONS[number];
@@ -19,7 +19,8 @@ const BUDGET_OPERATION_SHAPE: Readonly<Record<BudgetOperation,
   matchCreate: ["pairing", 10], matchLinkJoin: ["pairing", 2],
   matchCodeJoin: ["pairing", 3],
   matchControl: ["control", 2], matchRotate: ["control", 10],
-  matchSocket: ["control", 4], partyCreate: ["pairing", 10],
+  matchSocket: ["control", 4], matchSignalSocket: ["control", 15],
+  partyCreate: ["pairing", 10],
   partyLinkJoin: ["pairing", 2], partyCodeJoin: ["pairing", 3],
   partyControl: ["control", 2],
   partyRotate: ["control", 10], partySocket: ["control", 28],
@@ -112,7 +113,7 @@ export class PartyBudget extends DurableObject<Env> {
         trackedControlUnits > counters.control ? "invalid" :
         reservations.legacy === 0 && trackedPairingUnits === counters.pairing &&
         trackedControlUnits === counters.control ? "complete" : "partial";
-      return json({schemaVersion: 1,
+      return json({schemaVersion: 2,
         reservationRequests: Object.values(reservations)
           .reduce((total, count) => total + count, 0),
         reservations,

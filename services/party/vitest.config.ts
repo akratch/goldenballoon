@@ -1,5 +1,6 @@
 import {defineConfig} from "vitest/config";
 import {cloudflareTest} from "@cloudflare/vitest-pool-workers";
+import "./scripts/require-dedicated-test-desktop.js";
 
 export default defineConfig({
   plugins: [cloudflareTest({

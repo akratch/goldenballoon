@@ -14,7 +14,7 @@ from pathlib import Path
 from harness_utils import resolve_binary
 
 
-COPY_PREFIX = "online-gallery-copy-v1|"
+COPY_PREFIX = "online-gallery-copy-v2|"
 SPEAK_RE = re.compile(r"^\[SPEAK\] cat=(\S+) pri=(\S+) text=(.*)$",
                       re.MULTILINE)
 TRACE_RE = re.compile(r"\[online-gallery\] rendered slug=([a-z0-9-]+)")
@@ -30,6 +30,7 @@ class CopyCase:
     slug: str
     title: str
     actions: tuple[str, ...]
+    verification_phrase: str
     requires_admission: bool
 
 
@@ -81,9 +82,10 @@ def discover(binary: str, root: Path, timeout: int) -> list[CopyCase]:
         if not line.startswith(COPY_PREFIX):
             continue
         fields = line.split("|")
-        if len(fields) != 7:
+        if len(fields) != 8:
             raise A11yError(f"malformed copy inventory row: {line}")
-        _version, slug, title, primary, secondary, cancel, timeout_action = fields
+        (_version, slug, title, primary, secondary, cancel, timeout_action,
+         verification_phrase) = fields
         actions = tuple(
             dict.fromkeys(label for label in
                           (primary, secondary, cancel, timeout_action) if label)
@@ -92,12 +94,19 @@ def discover(binary: str, root: Path, timeout: int) -> list[CopyCase]:
             raise A11yError(f"incomplete copy inventory row: {line}")
         if slug not in admission:
             raise A11yError(f"copy row has no semantic inventory row: {slug}")
-        rows.append(CopyCase(slug, title, actions, admission[slug]))
+        rows.append(CopyCase(slug, title, actions, verification_phrase,
+                             admission[slug]))
     header = re.search(r"^online-gallery-v1 count=(\d+)$", output, re.MULTILINE)
     if header is None or len(rows) != int(header.group(1)):
         raise A11yError(
             f"copy inventory count mismatch: rows={len(rows)}, "
             f"header={header.group(1) if header else 'missing'}"
+        )
+    phrase_rows = [case for case in rows if case.verification_phrase]
+    if (len(phrase_rows) != 1 or
+            phrase_rows[0].actions[:2] != ("Words Match", "Words Differ")):
+        raise A11yError(
+            "gallery must expose exactly one view with both phrase decisions"
         )
     return rows
 
@@ -149,6 +158,14 @@ def walk(binary: str, root: Path, case: CopyCase, timeout: int) -> None:
     if case.slug.startswith("failure-") and not any(
             priority == "critical" for priority, _text in status):
         raise A11yError(f"{case.slug}: recovery announcement was not assertive")
+    if case.verification_phrase and not any(
+            case.verification_phrase in text and
+            "Do not continue if even 1 word differs." in text
+            for _priority, text in status):
+        raise A11yError(
+            f"{case.slug}: verification phrase or mismatch warning was not "
+            f"announced; got {status[:5]}"
+        )
     missing = [label for label in case.actions
                if not any(text.startswith(label + ",") for text in focus)]
     if missing:

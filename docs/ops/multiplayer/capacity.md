@@ -22,6 +22,21 @@ own admission request. Current worst-case reservations are:
 | Phone Party signaling socket | 28 | Budget + room upgrade + the 26-request equivalent of at most 512 incoming signaling messages. A 120/10-second burst cap also applies. |
 | Native Phone Party create + socket | 10 pairing + 28 control | Both reservations succeed before room creation, so a closed control line cannot leave an unreachable room. The one-use bootstrap and subsequent signaling share that single WSS connection; successful host mutations are then admitted per row above rather than assuming only one rotation. |
 | MatchRoom state socket | 4 | Budget + room upgrade + one forbidden client message/close allowance. |
+| Match peer signaling socket | 15 | Budget + room upgrade + thirteen 20-message request equivalents for the hard 256-message lifetime; a 60/10-second burst cap also applies. No gameplay input is relayed. |
+
+Browser MatchRoom state, Phone Party host and phone-controller signaling do not
+turn their socket rows into unbounded automatic retry loops. Each makes at most
+five consecutive/short-lived reconnect attempts with backoff, and resets that
+count only after 30 stable seconds. Construction/listener/send failures consume
+the same sequence rather than opening an unmetered side path. Phone controls
+with healthy direct DataChannels remain usable when signaling retry pauses;
+otherwise **Try now** explicitly starts a fresh bounded sequence. MatchRoom
+Retry refreshes authenticated state before another socket reservation.
+
+Phone Party create/redeem/rotate HTTP reads also stop after ten seconds and 16
+KiB of decompressed response data. The returned invite lifetime is measured
+from the room object's absolute expiry after its response arrives, rather than
+granting a fresh two minutes at the Worker boundary.
 
 Reservations intentionally overcount successful first-attempt paths. The code's
 `SAFE_EXTERNAL_OPERATIONS=20,000` is an internal safety ceiling, not a statement
@@ -47,7 +62,8 @@ alert.
 
 Baseline verified **2026-08-12**: Workers Free and SQLite Durable Objects each
 publish 100,000 requests/day; Durable Objects also publish 5,000,000 rows
-read/day, 100,000 rows written/day and 5 GB stored, with free-tier operations
+read/day, 100,000 rows written/day, 5 GB stored and 13,000 GB-s duration/day,
+with free-tier operations
 failing after a limit and daily counters resetting at 00:00 UTC. Incoming
 Durable Object WebSocket messages use a 20:1 compute-request ratio; alarms and
 storage deletion are metered. Static-asset requests remain free/unlimited when
@@ -56,6 +72,12 @@ they do not invoke the Worker. Primary references:
 [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/),
 [static-assets billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/).
 These are planning inputs, not an entitlement or availability guarantee.
+Use the Hibernation WebSocket API exclusively: accepted inbound sockets may
+hibernate without disconnecting and idle eligible objects do not accrue
+duration. A standard `accept()` socket, timer, pending I/O or outbound socket
+can prevent hibernation and is a release-blocking cost regression. The service
+suite inventories every Durable Object source for those constructs and requires
+`acceptWebSocket` plus serialized attachments on both socket-owning objects.
 
 ## Free edge guard
 
@@ -141,7 +163,7 @@ During a private-beta canary, append each qualified day to the strict
 ## Local executable proof
 
 ```bash
-python3 tests/check_party_capacity.py --shell-dir dist/web
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_party_capacity.py --shell-dir dist/web
 python3 tests/test_party_usage_reconciliation.py
 ```
 

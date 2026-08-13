@@ -13,6 +13,7 @@
 
   const dialog = $("party-dialog");
   const endDialog = $("party-end-dialog");
+  const removeDialog = $("party-remove-dialog");
   const trigger = $("add-phone-controllers");
   const stageTrigger = $("party-stage-button");
   let romReady = false;
@@ -24,17 +25,26 @@
   let operation = 0;
   let socketReconnectTimer = null;
   let socketReconnectAttempt = 0;
+  let socketGeneration = 0;
+  let socketStableTimer = null;
+  let socketReconnectExhausted = false;
+  let publishedRoomTransition = 0;
+  let publishedRoomFingerprint = "";
   let leavingPage = false;
   let openedFromStage = false;
   let preserveOnClose = false;
   let inviteActive = false;
+  let inviteRevocation = null;
   let dialogClosing = false;
   let pendingOpenFromStage = null;
   let hostIdentity = null;
   let endReturnFocus = null;
+  let removeReturnFocus = null;
+  let removeControllerId = "";
   const pairingPhrases = new Map();
   const phraseTasks = new Map();
   const peers = new Map();
+  const pageBoundRequests = new Set();
   let peerGeneration = 0;
   const signaledControllers = new Set();
   const remotePads = Array.from({length: 4}, () => ({
@@ -45,6 +55,8 @@
   const rtcConfig = Object.freeze({iceServers: [{
     urls: "stun:stun.cloudflare.com:3478",
   }]});
+  const maxPartyResponseBytes = 16 * 1024;
+  const partyRequestTimeoutMs = 10_000;
   globalThis.__mdkrPartyOverlayOpen = false;
 
   function announce(message) {
@@ -100,9 +112,80 @@
     return sources;
   }
 
+  function loopbackHostname(hostname) {
+    const value = String(hostname || "").toLowerCase();
+    return value === "localhost" || value.endsWith(".localhost") ||
+      value === "127.0.0.1" || value === "[::1]" || value === "::1";
+  }
+
+  function trustedPartyUrl(url) {
+    return url && !url.username && !url.password &&
+      (url.protocol === "https:" ||
+        (url.protocol === "http:" && loopbackHostname(url.hostname)));
+  }
+
   function serviceUrl(path) {
-    const configured = document.querySelector('meta[name="party-service-origin"]')?.content;
-    return new URL(path, configured || location.origin).toString();
+    const configured = document.querySelector(
+      'meta[name="party-service-origin"]')?.content?.trim() || "";
+    const base = new URL(configured || location.origin, location.origin);
+    if (!trustedPartyUrl(base) || base.origin !== location.origin ||
+        (configured && configured !== base.origin)) {
+      throw new Error("service_unavailable");
+    }
+    const target = new URL(path, base.origin);
+    if (!trustedPartyUrl(target) || target.origin !== location.origin ||
+        !target.pathname.startsWith("/api/") || target.search || target.hash) {
+      throw new Error("service_unavailable");
+    }
+    return target.toString();
+  }
+
+  function exactKeys(value, expected) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    const wanted = [...expected].sort();
+    return keys.length === wanted.length &&
+      keys.every((key, index) => key === wanted[index]);
+  }
+
+  async function readPartyJson(response) {
+    const declared = response.headers?.get?.("content-length");
+    if (declared && /^\d+$/.test(declared) &&
+        Number(declared) > maxPartyResponseBytes) {
+      try { await response.body?.cancel?.(); } catch (_) {}
+      throw new Error("service_unavailable");
+    }
+    if (!response.body?.getReader) {
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > maxPartyResponseBytes) {
+        throw new Error("service_unavailable");
+      }
+      return JSON.parse(text);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", {fatal: true});
+    let total = 0;
+    let text = "";
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array) ||
+            total + value.byteLength > maxPartyResponseBytes) {
+          try { await reader.cancel(); } catch (_) {}
+          throw new Error("service_unavailable");
+        }
+        total += value.byteLength;
+        text += decoder.decode(value, {stream: true});
+      }
+      text += decoder.decode();
+      return JSON.parse(text);
+    } catch (error) {
+      try { await reader.cancel(); } catch (_) {}
+      throw error;
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+    }
   }
 
   async function request(path, options = {}) {
@@ -112,20 +195,49 @@
         body: options.body === undefined
           ? null : JSON.parse(JSON.stringify(options.body))});
     }
-    if (testConfig?.request) return testConfig.request(path, options);
-    const response = await fetch(serviceUrl(path), {
-      method: "POST", cache: "no-store", credentials: "omit",
-      headers: options.headers || undefined,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
-    });
-    const value = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(value.error || "service_unavailable");
-    return value;
+    if (testConfig?.request) {
+      let timer = 0;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("service_unavailable")),
+          partyRequestTimeoutMs);
+      });
+      try {
+        return await Promise.race([
+          Promise.resolve(testConfig.request(path, options)), timeout]);
+      } finally { clearTimeout(timer); }
+    }
+    const controller = new AbortController();
+    if (options.pageBound) pageBoundRequests.add(controller);
+    const timer = setTimeout(() => controller.abort(), partyRequestTimeoutMs);
+    try {
+      const response = await fetch(serviceUrl(path), {
+        method: "POST", cache: "no-store", credentials: "omit",
+        referrerPolicy: "no-referrer", signal: controller.signal,
+        headers: options.headers || undefined,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+      const value = await readPartyJson(response).catch(() => ({}));
+      if (!response.ok) throw new Error(
+        typeof value.error === "string" ? value.error : "service_unavailable");
+      return value;
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("service_unavailable");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      pageBoundRequests.delete(controller);
+    }
+  }
+
+  function abortPageBoundRequests() {
+    for (const controller of pageBoundRequests) controller.abort();
+    pageBoundRequests.clear();
   }
 
   function renderQr(url) {
-    const qr = globalThis.qrcodegen.QrCode.encodeText(
+    const qr = globalThis.qrcodegen?.QrCode?.encodeText(
       url, globalThis.qrcodegen.QrCode.Ecc.QUARTILE);
+    if (!qr) return false;
     const quiet = 4;
     const scale = Math.max(4, Math.floor(300 / (qr.size + quiet * 2)));
     const side = (qr.size + quiet * 2) * scale;
@@ -133,6 +245,7 @@
     canvas.width = side;
     canvas.height = side;
     const context = canvas.getContext("2d", {alpha: false});
+    if (!context) return false;
     context.fillStyle = "#fff";
     context.fillRect(0, 0, side, side);
     context.fillStyle = "#000";
@@ -143,17 +256,100 @@
         }
       }
     }
+    return true;
   }
 
-  function renderInvite(value) {
-    room = {...(room || {}), ...value};
+  function normalizedInvite(value, creating, expectedGeneration = null) {
+    const createKeys = ["roomId", "hostCredential", "fallbackCode",
+      "inviteGeneration", "inviteExpiresInMs", "controllerUrl"];
+    const rotateKeys = ["fallbackCode", "inviteGeneration",
+      "inviteExpiresInMs", "controllerUrl"];
+    if (!exactKeys(value, creating ? createKeys : rotateKeys) ||
+        !/^\d{6}$/.test(value.fallbackCode) ||
+        !Number.isInteger(value.inviteGeneration) ||
+        value.inviteGeneration < 1 || value.inviteGeneration > 0xffff_ffff ||
+        !Number.isSafeInteger(value.inviteExpiresInMs) ||
+        value.inviteExpiresInMs < 1 || value.inviteExpiresInMs > 120_000 ||
+        (creating && (!/^[A-Za-z0-9_-]{22}$/.test(value.roomId) ||
+          !/^[A-Za-z0-9_-]{43}$/.test(value.hostCredential) ||
+          value.inviteGeneration !== 1)) ||
+        (!creating && (!room || !Number.isInteger(expectedGeneration) ||
+          value.inviteGeneration !== expectedGeneration + 1 ||
+          ![expectedGeneration, value.inviteGeneration]
+            .includes(Number(room.inviteGeneration))))) return null;
+    try {
+      const url = new URL(value.controllerUrl, location.href);
+      const capability = url.hash.slice(1);
+      if (!trustedPartyUrl(url) || url.origin !== location.origin ||
+          url.pathname !== "/controller/" || url.search ||
+          !/^[A-Za-z0-9_-]{43}$/.test(capability) ||
+          url.hash !== `#${capability}`) return null;
+    } catch (_) { return null; }
+    return Object.freeze({...value});
+  }
+
+  function normalizedRevocation(value, expectedGeneration) {
+    if (!exactKeys(value, ["ok", "transitionId", "inviteGeneration"]) ||
+        value.ok !== true || !Number.isSafeInteger(value.transitionId) ||
+        value.transitionId < 1 || value.transitionId > 4097 ||
+        !Number.isInteger(value.inviteGeneration) ||
+        value.inviteGeneration !== expectedGeneration) return null;
+    return Object.freeze({...value});
+  }
+
+  function clearInvitePresentation(expired, announceExpiry = false) {
+    inviteActive = false;
+    deadline = 0;
+    if (room) {
+      const {fallbackCode: _code, controllerUrl: _url, ...retained} = room;
+      room = retained;
+    }
+    const canvas = $("party-qr");
+    canvas.width = 1;
+    canvas.height = 1;
+    const wrap = canvas.closest(".party-qr-wrap");
+    if (wrap) wrap.hidden = true;
+    $("party-code").textContent = "—— —— ——";
+    $("party-code").setAttribute("aria-label", expired
+      ? "Controller invite expired" : "No controller invite is displayed");
+    $("party-scan-step").textContent = expired
+      ? "Invite expired — show a new QR code to add another phone"
+      : "Invite hidden";
+    $("party-install-copy").textContent =
+      "Approved phones stay connected. Show a new invite to add another phone.";
+    $("party-expiry").textContent = expired
+      ? "Invite expired — approved phones stay connected"
+      : "Invite is not displayed";
+    $("party-extend").textContent = "Show a new QR code";
+    $("party-extend").disabled = false;
+    if (announceExpiry) announce(
+      "Controller invite expired. Approved phones stay connected.");
+  }
+
+  function renderInvite(value, expectedGeneration = null) {
+    const creating = !room;
+    const normalized = normalizedInvite(value, creating, expectedGeneration);
+    if (!normalized) throw new Error("service_unavailable");
+    room = {...(room || {}), ...normalized};
     inviteActive = true;
-    deadline = Date.now() + Number(value.inviteExpiresInMs || 120000);
-    const code = String(value.fallbackCode || "");
+    const safetyMs = Math.min(10_000,
+      Math.floor(normalized.inviteExpiresInMs / 20));
+    deadline = Date.now() + normalized.inviteExpiresInMs - safetyMs;
+    const code = normalized.fallbackCode;
     $("party-code").textContent = code.replace(/^(...)(...)$/, "$1 $2");
     $("party-code").setAttribute("aria-label",
       `Controller room code: ${[...code].join(" ")}`);
-    renderQr(value.controllerUrl);
+    let qrReady = false;
+    try { qrReady = renderQr(normalized.controllerUrl); }
+    catch (_) { qrReady = false; }
+    const wrap = $("party-qr").closest(".party-qr-wrap");
+    if (wrap) wrap.hidden = !qrReady;
+    $("party-scan-step").textContent = qrReady
+      ? "1. Scan with your phone’s camera"
+      : "1. Open this site’s controller page on your phone";
+    $("party-install-copy").textContent = qrReady
+      ? "Nothing to install. The controller opens in Safari or Chrome."
+      : "Open this site’s /controller/ page in Safari or Chrome, then enter the code below.";
     $("party-extend").disabled = false;
     updateCountdown();
   }
@@ -175,11 +371,19 @@
       if (typeof testConfig.sendSignal === "function") testConfig.sendSignal(value);
       return true;
     }
-    if (socket?.readyState !== WebSocket.OPEN) return false;
-    const encoded = JSON.stringify(value);
-    if (encoded.length > 60 * 1024) return false;
-    socket.send(encoded);
-    return true;
+    const connection = socket;
+    const generation = socketGeneration;
+    if (connection?.readyState !== WebSocket.OPEN) return false;
+    try {
+      const encoded = JSON.stringify(value);
+      if (encoded.length > 60 * 1024 ||
+          new TextEncoder().encode(encoded).byteLength > 60 * 1024) return false;
+      connection.send(encoded);
+      return true;
+    } catch (_) {
+      failRoomSocket(connection, generation, 4011, "controller_socket_send_failed");
+      return false;
+    }
   }
 
   function sendPeerOffer(controllerId, peer) {
@@ -198,7 +402,7 @@
       if (peer.pingTimer !== null) clearTimeout(peer.pingTimer);
       peer.recoveryTimer = null;
       peer.pingTimer = null;
-      peer.pc.close();
+      try { peer.pc.close(); } catch (_) {}
     }
     peers.delete(controllerId);
     const controller = controllerById(controllerId) || peer?.controller;
@@ -322,7 +526,12 @@
     if (peers.has(controllerId) || !signaledControllers.has(controllerId)) return;
     const controller = controllerById(controllerId);
     if (!controller || !["approved", "leased", "connected"].includes(controller.phase)) return;
-    const pc = new RTCPeerConnection(rtcConfig);
+    let pc;
+    try { pc = new RTCPeerConnection(rtcConfig); }
+    catch (_) {
+      announce("Could not open a direct phone connection. The phone can try again.");
+      return;
+    }
     const peer = {pc, controller, generation: ++peerGeneration,
       state: null, control: null, authenticated: false,
       retired: false, remoteReady: false, offerSentAt: 0,
@@ -509,6 +718,19 @@
     }
   }
 
+  function resetRemotePads() {
+    for (const pad of remotePads) {
+      pad.reserved = false;
+      pad.active = false;
+      pad.owner = 0;
+      pad.connectionSequence = 0;
+      pad.packets.length = 0;
+      pad.drops = 0;
+      pad.haptics = false;
+      pad.rumble = null;
+    }
+  }
+
   function seatPicker(controllers) {
     const label = document.createElement("label");
     label.append(document.createTextNode("Controller slot"));
@@ -552,10 +774,108 @@
     phraseTasks.set(controller.controllerId, task);
   }
 
+  const controllerPhases = new Set([
+    "pending", "approved", "leased", "connected",
+  ]);
+
+  function normalizedPublishedRoomState(value) {
+    const roomKeys = ["type", "transitionId", "inviteExpiresAt",
+      "inviteGeneration", "phase", "controllers"];
+    if (!exactKeys(value, roomKeys) || value.type !== "room_state" ||
+        !Number.isSafeInteger(value.transitionId) || value.transitionId < 1 ||
+        value.transitionId > 4097 ||
+        !Number.isSafeInteger(value.inviteExpiresAt) ||
+        value.inviteExpiresAt < 0 ||
+        !Number.isInteger(value.inviteGeneration) ||
+        value.inviteGeneration < 1 || value.inviteGeneration > 0xffff_ffff ||
+        !["open", "closed"].includes(value.phase) ||
+        !Array.isArray(value.controllers) || value.controllers.length > 12) {
+      return null;
+    }
+    const controllerKeys = ["controllerId", "name", "controllerPublicKey",
+      "phase", "seat", "leaseGeneration", "connectionSequence"];
+    const ids = new Set();
+    const seats = new Set();
+    const controllers = [];
+    for (const controller of value.controllers) {
+      if (!exactKeys(controller, controllerKeys) ||
+          !/^[A-Za-z0-9_-]{22}$/.test(controller.controllerId) ||
+          ids.has(controller.controllerId) ||
+          typeof controller.name !== "string" ||
+          controller.name.normalize("NFC") !== controller.name ||
+          controller.name.trim() !== controller.name ||
+          [...controller.name].length > 24 ||
+          /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/
+            .test(controller.name) ||
+          !/^[A-Za-z0-9_-]{87}$/.test(controller.controllerPublicKey) ||
+          !controllerPhases.has(controller.phase) ||
+          !Number.isInteger(controller.leaseGeneration) ||
+          controller.leaseGeneration < 0 ||
+          controller.leaseGeneration > 0xffff_ffff ||
+          !Number.isInteger(controller.connectionSequence) ||
+          controller.connectionSequence < 1 ||
+          controller.connectionSequence > 0xffff_ffff) return null;
+      if (controller.phase === "pending") {
+        if (controller.seat !== null || controller.leaseGeneration !== 0) return null;
+      } else if (!Number.isInteger(controller.seat) ||
+                 controller.seat < 1 || controller.seat > 4 ||
+                 controller.leaseGeneration < 1 || seats.has(controller.seat)) {
+        return null;
+      }
+      ids.add(controller.controllerId);
+      if (controller.seat !== null) seats.add(controller.seat);
+      controllers.push(Object.freeze({...controller}));
+    }
+    return Object.freeze({
+      type: "room_state", transitionId: value.transitionId,
+      inviteExpiresAt: value.inviteExpiresAt,
+      inviteGeneration: value.inviteGeneration, phase: value.phase,
+      controllers: Object.freeze(controllers),
+    });
+  }
+
+  function applyPublishedRoomState(value) {
+    const normalized = normalizedPublishedRoomState(value);
+    if (!normalized) throw new Error("invalid_party_state");
+    if (!room || normalized.transitionId < Number(room.transitionId || 0)) return false;
+    const fingerprint = JSON.stringify(normalized);
+    if (normalized.transitionId === publishedRoomTransition) {
+      if (fingerprint !== publishedRoomFingerprint) {
+        throw new Error("equivocated_party_state");
+      }
+      return false;
+    }
+    renderRoomState(normalized);
+    publishedRoomTransition = normalized.transitionId;
+    publishedRoomFingerprint = fingerprint;
+    return true;
+  }
+
   function renderRoomState(next) {
     if (!room || (Number(next.transitionId) < Number(room.transitionId || 0))) return;
+    const priorInviteGeneration = Number(room.inviteGeneration);
+    const publishedInviteGeneration = Number(next.inviteGeneration);
+    const invalidatesDisplayedInvite = inviteActive &&
+      ((Number.isInteger(publishedInviteGeneration) &&
+        publishedInviteGeneration !== priorInviteGeneration) ||
+       next.phase === "closed");
     room = {...room, ...next};
+    if (invalidatesDisplayedInvite) clearInvitePresentation(false);
     const controllers = activeControllers();
+    if (removeControllerId && !controllers.some((controller) =>
+        controller.controllerId === removeControllerId)) {
+      const wasConfirmingRemoval = removeDialog.open;
+      const returnTarget = removeReturnFocus?.closest("li");
+      removeControllerId = "";
+      removeReturnFocus = null;
+      if (removeDialog.open) removeDialog.close();
+      if (dialog.open && returnTarget?.isConnected) {
+        returnTarget.focus({preventScroll: true});
+      }
+      if (wasConfirmingRemoval) {
+        announce("That phone was already removed. Its controls are neutral.");
+      }
+    }
     syncRemoteReservations(controllers);
     const pending = controllers.filter((controller) => controller.phase === "pending");
     const pendingList = $("party-pending-list");
@@ -593,6 +913,13 @@
       tile.querySelector("small").textContent = controller
         ? (remotePads[seat - 1].active ? "Phone connected" : "Phone reconnecting — neutral")
         : (source || "Available");
+      const remove = tile.querySelector(".party-seat-remove");
+      remove.hidden = !controller;
+      remove.disabled = false;
+      remove.onclick = controller ? () => confirmRemove(controller, remove) : null;
+      remove.setAttribute("aria-label", controller
+        ? `Remove ${controller.name || "phone controller"} from Controller ${seat}`
+        : `No phone assigned to Controller ${seat}`);
       if (controller || source) ready++;
     }
     $("party-ready-count").textContent = `${ready} of 4 ready`;
@@ -607,54 +934,187 @@
     for (const controller of controllers) void ensurePeer(controller.controllerId);
   }
 
+  function clearRoomReconnectTimers() {
+    if (socketReconnectTimer !== null) clearTimeout(socketReconnectTimer);
+    if (socketStableTimer !== null) clearTimeout(socketStableTimer);
+    socketReconnectTimer = null;
+    socketStableTimer = null;
+  }
+
+  function scheduleRoomReconnect(generation) {
+    if (!room || leavingPage || generation !== socketGeneration ||
+        socketReconnectTimer !== null) return;
+    if (socketReconnectAttempt >= 5) {
+      socketReconnectExhausted = true;
+      $("party-error-message").textContent =
+        "The controller-room connection is paused. Approved phones may keep " +
+        "working directly; new pairings wait until you try again.";
+      if (dialog.open) {
+        show("error");
+        $("party-retry").focus();
+      }
+      announce("Controller room paused after five reconnect attempts. Try again when ready.");
+      return;
+    }
+    const delay = Math.min(4800, 300 * (2 ** Math.min(socketReconnectAttempt++, 4)));
+    socketReconnectTimer = setTimeout(() => {
+      socketReconnectTimer = null;
+      if (generation === socketGeneration) connectRoom();
+    }, delay);
+  }
+
+  function failRoomSocket(connection, generation, code, reason) {
+    if (connection !== socket || generation !== socketGeneration) return;
+    socket = null;
+    if (socketStableTimer !== null) clearTimeout(socketStableTimer);
+    socketStableTimer = null;
+    try { connection.close(code, reason); } catch (_) {}
+    announce("Controller room reconnecting… Approved phone controls remain direct.");
+    scheduleRoomReconnect(generation);
+  }
+
+  function failRoomSocketSetup(generation) {
+    if (generation !== socketGeneration) return;
+    socket = null;
+    if (socketStableTimer !== null) clearTimeout(socketStableTimer);
+    socketStableTimer = null;
+    announce("Controller room reconnecting… Approved phone controls remain direct.");
+    scheduleRoomReconnect(generation);
+  }
+
+  function applyTerminalRoomClose(reason) {
+    clearInvitePresentation(false);
+    removeControllerId = "";
+    removeReturnFocus = null;
+    endReturnFocus = null;
+    if (removeDialog.open) removeDialog.close();
+    if (endDialog.open) endDialog.close();
+    room = null;
+    inviteRevocation = null;
+    ++operation;
+    clearRoomReconnectTimers();
+    socketGeneration++;
+    socketReconnectAttempt = 0;
+    socketReconnectExhausted = false;
+    publishedRoomTransition = 0;
+    publishedRoomFingerprint = "";
+    for (const controllerId of [...peers.keys()]) retirePeer(controllerId, true);
+    resetRemotePads();
+    signaledControllers.clear();
+    pairingPhrases.clear();
+    phraseTasks.clear();
+    hostIdentity = null;
+    setOverlayOpen(false);
+    const expired = reason === "room_expired";
+    $("party-error-message").textContent = expired
+      ? "This controller room reached its 24-hour limit. Open a new room to pair phones again."
+      : "This controller room ended. Open a new room to pair phones again.";
+    if (dialog.open) {
+      show("error");
+      $("party-retry").focus();
+    }
+    announce(expired ? "Controller room expired. Phone controls were released."
+      : "Controller room ended. Phone controls were released.");
+  }
+
   function connectRoom() {
     if (testConfig) {
       if (testConfig.initialRoomState) renderRoomState(testConfig.initialRoomState);
-      return;
+      return true;
     }
-    if (!room) return;
-    const url = new URL(serviceUrl(`/api/party/${room.roomId}/connect`));
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const connection = new WebSocket(url, ["gb-control-v1", `gb-host.${room.hostCredential}`]);
-    socket = connection;
-    connection.addEventListener("open", () => {
-      socketReconnectAttempt = 0;
-      announce("Controller room connected.");
-      for (const [controllerId, peer] of peers) {
-        if (!peer.remoteReady && peer.pc.signalingState === "have-local-offer" &&
-            peer.pc.localDescription) {
-          sendPeerOffer(controllerId, peer);
-        } else if (peer.pc.connectionState !== "connected") {
-          scheduleIceRestart(controllerId, peer, 0);
+    if (!room || leavingPage) return false;
+    clearRoomReconnectTimers();
+    const previous = socket;
+    socket = null;
+    socketGeneration++;
+    const generation = socketGeneration;
+    try { previous?.close?.(1000, "controller_socket_replaced"); } catch (_) {}
+    let connection;
+    try {
+      const url = new URL(serviceUrl(`/api/party/${room.roomId}/connect`));
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      connection = new WebSocket(url,
+        ["gb-control-v1", `gb-host.${room.hostCredential}`]);
+      socket = connection;
+    } catch (_) {
+      failRoomSocketSetup(generation);
+      return false;
+    }
+    try {
+      connection.addEventListener("open", () => {
+        if (connection !== socket || generation !== socketGeneration) return;
+        socketReconnectExhausted = false;
+        if (dialog.open) show("room");
+        announce("Controller room connected.");
+        socketStableTimer = setTimeout(() => {
+          socketStableTimer = null;
+          if (connection === socket && generation === socketGeneration) {
+            socketReconnectAttempt = 0;
+          }
+        }, 30_000);
+        for (const [controllerId, peer] of peers) {
+          if (!peer.remoteReady && peer.pc.signalingState === "have-local-offer" &&
+              peer.pc.localDescription) {
+            sendPeerOffer(controllerId, peer);
+          } else if (peer.pc.connectionState !== "connected") {
+            scheduleIceRestart(controllerId, peer, 0);
+          }
         }
-      }
-      for (const controller of activeControllers()) {
-        void ensurePeer(controller.controllerId);
-      }
-    });
-    connection.addEventListener("message", (event) => {
-      try {
-        const value = JSON.parse(event.data);
-        if (value.type === "room_state") renderRoomState(value);
-        else void handleSignal(value);
-      } catch (_) { announce("Ignored a malformed room update."); }
-    });
-    connection.addEventListener("close", () => {
-      if (socket !== connection) return;
-      socket = null;
-      if (!room || leavingPage) return;
-      announce("Controller room reconnecting… Phone controls remain safe.");
-      const delay = Math.min(8000, 300 * (2 ** socketReconnectAttempt++));
-      socketReconnectTimer = setTimeout(connectRoom, delay);
-    });
+        for (const controller of activeControllers()) {
+          void ensurePeer(controller.controllerId);
+        }
+      });
+      connection.addEventListener("message", (event) => {
+        if (connection !== socket || generation !== socketGeneration) return;
+        if (typeof event.data !== "string" || event.data.length > 64 * 1024 ||
+            new TextEncoder().encode(event.data).byteLength > 64 * 1024) {
+          failRoomSocket(connection, generation, 4009, "invalid_party_message");
+          return;
+        }
+        try {
+          const value = JSON.parse(event.data);
+          if (value?.type === "room_state") applyPublishedRoomState(value);
+          else void handleSignal(value);
+        } catch (_) {
+          failRoomSocket(connection, generation, 4003, "invalid_party_message");
+        }
+      });
+      connection.addEventListener("error", () => {
+        failRoomSocket(connection, generation, 4011, "controller_socket_error");
+      });
+      connection.addEventListener("close", (event) => {
+        if (socket !== connection || generation !== socketGeneration) return;
+        socket = null;
+        if (socketStableTimer !== null) clearTimeout(socketStableTimer);
+        socketStableTimer = null;
+        if (!room || leavingPage) return;
+        if (event.code === 4000 &&
+            ["host_closed", "room_expired"].includes(event.reason)) {
+          applyTerminalRoomClose(event.reason);
+          return;
+        }
+        announce("Controller room reconnecting… Phone controls remain safe.");
+        scheduleRoomReconnect(generation);
+      });
+    } catch (_) {
+      failRoomSocket(connection, generation, 4011,
+        "controller_socket_setup_failed");
+      return false;
+    }
+    return true;
   }
 
   async function openRoom() {
     const generation = ++operation;
+    /* A terminal room may have left an HTTP revoke in flight. It belongs to
+     * the old capability generation and must never delay or annotate the next
+     * independently-created room. Its completion handlers are room-bound. */
+    inviteRevocation = null;
     show("opening");
     try {
       hostIdentity = await globalThis.MDKRPartySas.createIdentity();
       const created = await request("/api/party/create", {
+        pageBound: true,
         headers: {"content-type": "application/json"},
         body: {hostPublicKey: hostIdentity.publicKey},
       });
@@ -662,8 +1122,14 @@
       renderInvite(created);
       room.controllers = [];
       room.transitionId = 0;
+      publishedRoomTransition = 0;
+      publishedRoomFingerprint = "";
       show("room");
-      connectRoom();
+      if (!connectRoom()) {
+        show("opening");
+        announce("Private controller room opened. Reconnecting before showing the invite…");
+        return;
+      }
       announce("Private phone controller room ready. Scan the QR code.");
     } catch (error) {
       if (generation !== operation) return;
@@ -682,16 +1148,18 @@
       announce("Wait for the pairing phrase before approving this phone.");
       return;
     }
-    source.disabled = true;
+    if (source) source.disabled = true;
     try {
       await request(`/api/party/${room.roomId}/${action}`, {
         headers: {"content-type": "application/json",
           authorization: `Bearer ${room.hostCredential}`},
         body: {controllerId, ...(value && typeof value === "object" ? value : {})},
       });
-      announce(action === "approve" ? "Phone approved." : "Phone declined.");
+      announce(action === "approve" ? "Phone approved." :
+        action === "remove" ? "Phone removed. Its controls are now neutral." :
+        "Phone declined.");
     } catch (error) {
-      source.disabled = false;
+      if (source?.isConnected) source.disabled = false;
       announce(error?.message === "room_full"
         ? "All four phone controller seats are in use. Decline or remove a phone first."
         : "That controller action did not complete. Try again.");
@@ -704,13 +1172,18 @@
     const buttonElement = $("party-extend");
     buttonElement.disabled = true;
     try {
+      const pendingRevocation = inviteRevocation;
+      if (pendingRevocation) await pendingRevocation;
+      if (generation !== operation || !dialog.open || !room) return;
+      const expectedInviteGeneration = Number(room.inviteGeneration);
       const value = await request(`/api/party/${room.roomId}/rotate`, {
+        pageBound: true,
         headers: {"content-type": "application/json",
           authorization: `Bearer ${room.hostCredential}`},
-        body: {expectedInviteGeneration: Number(room.inviteGeneration)},
+        body: {expectedInviteGeneration},
       });
       if (generation !== operation || !dialog.open) return;
-      renderInvite(value);
+      renderInvite(value, expectedInviteGeneration);
       show("room");
       announce("Invite extended. The previous QR code is no longer valid.");
     } catch (_) {
@@ -726,33 +1199,59 @@
   function dismissRoom() {
     preserveOnClose = true;
     ++operation; // invalidate a still-pending create/rotate UI completion
-    inviteActive = false;
-    deadline = 0;
+    abortPageBoundRequests();
     setOverlayOpen(false);
+    if (removeDialog.open) removeDialog.close();
+    clearInvitePresentation(false);
     const current = room;
     if (current) {
-      void request(`/api/party/${current.roomId}/revoke`, {
+      const expectedGeneration = Number(current.inviteGeneration) + 1;
+      const task = request(`/api/party/${current.roomId}/revoke`, {
         headers: {"content-type": "application/json",
           authorization: `Bearer ${current.hostCredential}`}, body: {},
-      }).catch(() => announce(
-        "The invite could not be revoked immediately; it still expires within two minutes."));
+      }).then((value) => {
+        const normalized = normalizedRevocation(value, expectedGeneration);
+        if (!normalized) throw new Error("service_unavailable");
+        if (room?.roomId === current.roomId &&
+            Number(room.inviteGeneration) <= normalized.inviteGeneration) {
+          room = {...room, inviteGeneration: normalized.inviteGeneration};
+        }
+      }).catch(() => {
+        if (room?.roomId === current.roomId) announce(
+          "The invite could not be revoked immediately; it still expires within two minutes."
+        );
+      }).finally(() => {
+        if (inviteRevocation === task) inviteRevocation = null;
+      });
+      inviteRevocation = task;
     }
     closeDialog();
   }
 
   async function endRoom() {
     if (testState) testState.lifecycle.push("endRoom");
+    clearInvitePresentation(false);
     const ending = room;
     room = null;
-    inviteActive = false;
-    deadline = 0;
+    inviteRevocation = null;
+    if (removeDialog.open) removeDialog.close();
     setOverlayOpen(false);
     ++operation;
+    abortPageBoundRequests();
     if (socket) { socket.close(1000, "host_closed"); socket = null; }
     if (socketReconnectTimer !== null) {
       clearTimeout(socketReconnectTimer); socketReconnectTimer = null;
     }
+    if (socketStableTimer !== null) {
+      clearTimeout(socketStableTimer); socketStableTimer = null;
+    }
+    socketGeneration++;
+    socketReconnectAttempt = 0;
+    socketReconnectExhausted = false;
+    publishedRoomTransition = 0;
+    publishedRoomFingerprint = "";
     for (const controllerId of [...peers.keys()]) retirePeer(controllerId, true);
+    resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
     phraseTasks.clear();
@@ -773,10 +1272,24 @@
     requestAnimationFrame(() => $("party-end-cancel").focus());
   }
 
+  function confirmRemove(controller, source) {
+    if (!controller || removeDialog.open) return;
+    removeControllerId = controller.controllerId;
+    removeReturnFocus = source;
+    $("party-remove-copy").textContent =
+      `${controller.name || "This phone"} will stop controlling Controller ` +
+      `${controller.seat}. Its input becomes neutral and the seat becomes available.`;
+    removeDialog.showModal();
+    requestAnimationFrame(() => $("party-remove-cancel").focus());
+  }
+
   function updateCountdown() {
     if (!room) return;
     const remaining = Math.max(0, deadline - Date.now());
-    if (remaining === 0) inviteActive = false;
+    if (remaining === 0) {
+      if (inviteActive) clearInvitePresentation(true, true);
+      return;
+    }
     const seconds = Math.ceil(remaining / 1000);
     $("party-expiry").textContent = remaining
       ? `Invite expires in ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
@@ -833,12 +1346,37 @@
   trigger.addEventListener("click", () => openSheet(false));
   stageTrigger?.addEventListener("click", () => openSheet(true));
   $("party-retry").addEventListener("click", () => {
-    if (room) void extendInvite();
+    if (room && socketReconnectExhausted) {
+      socketReconnectAttempt = 0;
+      socketReconnectExhausted = false;
+      show("opening");
+      connectRoom();
+    } else if (room) void extendInvite();
     else void openRoom();
   });
   $("party-extend").addEventListener("click", () => void extendInvite());
   $("party-close").addEventListener("click", dismissRoom);
   $("party-end").addEventListener("click", confirmEndRoom);
+  $("party-remove-cancel").addEventListener("click", () => removeDialog.close());
+  $("party-remove-confirm").addEventListener("click", () => {
+    const controllerId = removeControllerId;
+    const source = removeReturnFocus;
+    const returnTarget = source?.closest("li");
+    removeControllerId = "";
+    removeReturnFocus = null;
+    removeDialog.close();
+    if (dialog.open && returnTarget?.isConnected) {
+      returnTarget.focus({preventScroll: true});
+    }
+    if (controllerId) void control("remove", controllerId, source);
+  });
+  removeDialog.addEventListener("close", () => {
+    if (removeReturnFocus?.isConnected && !removeReturnFocus.hidden && dialog.open) {
+      removeReturnFocus.focus({preventScroll: true});
+    }
+    removeReturnFocus = null;
+    removeControllerId = "";
+  });
   $("party-end-cancel").addEventListener("click", () => endDialog.close());
   $("party-end-confirm").addEventListener("click", () => {
     endReturnFocus = null;
@@ -858,8 +1396,10 @@
       return;
     }
     startingGame = true;
-    setOverlayOpen(false);
-    closeDialog();
+    /* Starting local play closes invite custody, not the approved controller
+     * room. Reuse the same immediate erase + generation-correlated revoke as
+     * Close/Escape before handing focus to the game. */
+    dismissRoom();
     $("play").click();
   });
   dialog.addEventListener("cancel", (event) => {
@@ -890,9 +1430,32 @@
   addEventListener("gamepaddisconnected", refreshSources);
   timer = setInterval(updateCountdown, 1000);
   addEventListener("pagehide", () => {
+    if (testState) testState.lifecycle.push("pagehide");
     leavingPage = true;
+    ++operation;
+    abortPageBoundRequests();
+    clearInvitePresentation(false);
     if (timer !== null) clearInterval(timer);
-    if (socket) socket.close(1000, "pagehide");
+    timer = null;
+    clearRoomReconnectTimers();
+    socketGeneration++;
+    try { socket?.close(1000, "pagehide"); } catch (_) {}
+    socket = null;
+    for (const controllerId of [...peers.keys()]) retirePeer(controllerId, false);
+    signaledControllers.clear();
+    resetRemotePads();
+  });
+  addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    if (testState) testState.lifecycle.push("pageshow:persisted");
+    leavingPage = false;
+    if (timer === null) timer = setInterval(updateCountdown, 1000);
+    if (room) {
+      connectRoom();
+      if (dialog.open) void extendInvite();
+    } else if (dialog.open) {
+      void openRoom();
+    }
   });
 
   globalThis.MDKRPartyHost = Object.freeze({

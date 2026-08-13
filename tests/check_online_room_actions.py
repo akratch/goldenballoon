@@ -24,7 +24,7 @@ RESULT_RE = re.compile(
 )
 INPUT_TOKEN = "mdkr64-app-ui-input-v1"
 ACTION_TOKEN = "mdkr64-online-action-v1"
-LAST_ACTION = 25
+LAST_ACTION = 27
 
 
 class ActionError(RuntimeError):

@@ -1,6 +1,18 @@
 "use strict";
 
 (() => {
+  const entryFragment = (() => {
+    const raw = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+    if (!location.hash) return {raw: "", scrubbed: true};
+    const exactRoute = location.pathname === "/controller/" && !location.search;
+    try { globalThis.history.replaceState(null, "", "/controller/"); }
+    catch (_) {
+      location.replace("/controller/");
+      return {raw: "", scrubbed: false};
+    }
+    return {raw: exactRoute ? raw : "", scrubbed: true};
+  })();
+  if (!entryFragment.scrubbed) return;
   const $ = (id) => document.getElementById(id);
   const testConfig = globalThis.__mdkrControllerTestConfig &&
     typeof globalThis.__mdkrControllerTestConfig === "object"
@@ -34,14 +46,18 @@
   let leavingPage = false;
   let reconnectResume = "controller";
   let leaveReturnFocus = null;
+  let errorRecoveryAction = "code";
+  const maxControllerResponseBytes = 16 * 1024;
+  const controllerRequestTimeoutMs = 10_000;
+  const pageBoundRequests = new Set();
 
   const errors = {
     missing_link: ["Controller link missing",
       "Scan the QR on the display again or enter its current room code."],
-    embedded: ["Open in Safari or Chrome",
-      "This in-app browser cannot make a reliable direct controller connection."],
-    unsupported: ["Browser update needed",
-      "This controller needs WebRTC and Pointer Events. Update Safari or Chrome and try again."],
+    embedded: ["Continue in Safari or Chrome",
+      "Share this controller link to Safari or Chrome. If it has no invitation, enter the current room code there."],
+    unsupported: ["Open in an updated browser",
+      "This browser cannot make the direct controller connection. Share this controller link to an updated Safari or Chrome."],
     update_required: ["Controller update required",
       "The display uses a newer controller protocol. Refresh this controller."],
     invite_expired: ["Invite expired",
@@ -61,9 +77,11 @@
     room_expired: ["Controller room ended",
       "This phone controller room reached its time limit."],
     duplicate_controller: ["Controller already joined",
-      "This phone already has an active controller connection."],
-    seat_reclaimed: ["Controller seat reassigned",
-      "The display reassigned this controller seat. Join again if needed."],
+      "This tab released its controls because another tab took over. Enter the current room code if you want to join again."],
+    insecure: ["Secure connection required",
+      "Phone controllers require HTTPS. Continue to the secure version of this controller page before pairing."],
+    seat_reclaimed: ["Phone controller removed",
+      "The display removed this phone controller. Its controls are neutral. Enter the newest code to join again."],
     rate_limited: ["Too many code attempts",
       "Wait a few minutes, then enter the newest code from the display."],
     service_budget_safe: ["Phone pairing is full right now",
@@ -98,35 +116,186 @@
     if (options.focus) requestAnimationFrame(() => options.focus.focus());
   }
 
-  function showError(id, recoveryLabel = "Enter another code") {
+  function showError(id, recoveryLabel = "Enter another code",
+                     recoveryAction = "code") {
     neutralize("error");
     const copy = errors[id] || ["Couldn’t join", "Try the current QR or room code again."];
     $("error-title").textContent = copy[0];
     $("error-message").textContent = copy[1];
     $("error-recovery").textContent = recoveryLabel;
-    $("copy-link").hidden = id !== "embedded";
+    errorRecoveryAction = recoveryAction;
+    $("copy-link").textContent = capability ? "Copy private link" : "Copy controller page";
+    $("copy-link").hidden = !["embedded", "unsupported"].includes(id);
     render("error", {focus: $("error-recovery")});
   }
 
   function bytesFromCapability(value) {
-    if (!/^[A-Za-z0-9_-]{22,256}$/.test(value)) return null;
+    if (!/^[A-Za-z0-9_-]{43}$/.test(value)) return null;
     try {
       const base64 = value.replace(/-/g, "+").replace(/_/g, "/") +
         "===".slice((value.length + 3) % 4);
       const binary = atob(base64);
-      if (binary.length < 16 || binary.length > 192) return null;
+      if (binary.length !== 32) return null;
       return Uint8Array.from(binary, (character) => character.charCodeAt(0));
     } catch (_) { return null; }
   }
 
+  function exactKeys(value, expected) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value).sort();
+    const wanted = [...expected].sort();
+    return keys.length === wanted.length &&
+      keys.every((key, index) => key === wanted[index]);
+  }
+
+  function normalizedDeviceName(value) {
+    const safe = String(value || "").normalize("NFC")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g,
+        "")
+      .trim();
+    return [...safe].slice(0, 24).join("");
+  }
+
+  async function readControllerJson(response) {
+    const declared = response.headers?.get?.("content-length");
+    if (declared && /^\d+$/.test(declared) &&
+        Number(declared) > maxControllerResponseBytes) {
+      try { await response.body?.cancel?.(); } catch (_) {}
+      throw new Error("service_unavailable");
+    }
+    if (!response.body?.getReader) {
+      const text = await response.text();
+      if (new TextEncoder().encode(text).byteLength > maxControllerResponseBytes) {
+        throw new Error("service_unavailable");
+      }
+      return JSON.parse(text);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8", {fatal: true});
+    let total = 0;
+    let text = "";
+    try {
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array) ||
+            total + value.byteLength > maxControllerResponseBytes) {
+          try { await reader.cancel(); } catch (_) {}
+          throw new Error("service_unavailable");
+        }
+        total += value.byteLength;
+        text += decoder.decode(value, {stream: true});
+      }
+      text += decoder.decode();
+      return JSON.parse(text);
+    } catch (error) {
+      try { await reader.cancel(); } catch (_) {}
+      throw error;
+    } finally {
+      try { reader.releaseLock(); } catch (_) {}
+    }
+  }
+
+  function normalizedControllerInfo(value) {
+    const keys = ["controllerId", "credential", "roomId", "protocol",
+      "hostPublicKey"];
+    if (!exactKeys(value, keys) ||
+        !/^[A-Za-z0-9_-]{22}$/.test(value.controllerId) ||
+        !/^[A-Za-z0-9_-]{43}$/.test(value.credential) ||
+        !/^[A-Za-z0-9_-]{22}$/.test(value.roomId) || value.protocol !== 1 ||
+        !/^[A-Za-z0-9_-]{87}$/.test(value.hostPublicKey)) return null;
+    return Object.freeze({...value});
+  }
+
   function consumeFragment() {
-    const raw = location.hash.startsWith("#") ? location.hash.slice(1) : "";
-    // Remove the bearer before any feature probe, network operation, referrer
-    // opportunity or error report. It remains only in this closure.
-    globalThis.history.replaceState(null, "", location.pathname + location.search);
+    const raw = entryFragment.raw;
+    entryFragment.raw = "";
+    if (!entryFragment.scrubbed) return "";
     if (testConfig) return testConfig.codeMode
       ? "" : (testConfig.capability || "test-controller-capability");
     return bytesFromCapability(raw) ? raw : "";
+  }
+
+  function controllerInviteUrl() {
+    if (!capability) return "";
+    const url = new URL("/controller/", location.origin);
+    url.hash = capability;
+    return url.toString();
+  }
+
+  function controllerRecoveryUrl() {
+    return secureControllerRecoveryUrl() || controllerInviteUrl() ||
+      new URL("/controller/", location.origin).toString();
+  }
+
+  function loopbackHostname(hostname) {
+    const value = String(hostname || "").toLowerCase();
+    return value === "localhost" || value.endsWith(".localhost") ||
+      value === "127.0.0.1" || value === "[::1]";
+  }
+
+  function trustedControllerLocation() {
+    try {
+      const url = new URL(location.href);
+      return isSecureContext === true && !url.username && !url.password &&
+        (url.protocol === "https:" ||
+          (url.protocol === "http:" && loopbackHostname(url.hostname)));
+    } catch (_) { return false; }
+  }
+
+  function secureControllerRecoveryUrl() {
+    try {
+      const url = new URL("/controller/", location.href);
+      if (url.protocol !== "http:" || loopbackHostname(url.hostname)) return "";
+      url.protocol = "https:";
+      url.port = "";
+      if (capability) url.hash = capability;
+      return url.toString();
+    } catch (_) { return ""; }
+  }
+
+  function shareRecoveryLabel() {
+    return capability ? "Share private link" : "Share controller page";
+  }
+
+  async function copyControllerInvite() {
+    const privateLink = !!capability;
+    const inviteUrl = controllerRecoveryUrl();
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      announce(privateLink ?
+        "Private link copied. Open Safari or Chrome and paste it there." :
+        "Controller page copied. Open it in Safari or Chrome, then enter the room code.");
+      return true;
+    } catch (_) {
+      announce(privateLink ?
+        "Could not copy the private link. Scan the current QR or enter its room code." :
+        "Could not copy the controller page. Open it manually, then enter the room code.");
+      return false;
+    }
+  }
+
+  async function shareControllerInvite() {
+    const privateLink = !!capability;
+    const inviteUrl = controllerRecoveryUrl();
+    if (!navigator.share) return copyControllerInvite();
+    try {
+      await navigator.share({title: "Golden Balloon phone controller",
+        text: privateLink
+          ? "Open this private controller link in Safari or Chrome."
+          : "Open this controller page in Safari or Chrome, then enter the current room code.",
+        url: inviteUrl});
+      announce(privateLink ? "Private controller link shared." :
+        "Controller page shared. Enter the current room code there.");
+      return true;
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        announce(privateLink ? "Sharing cancelled. Your invitation is still private." :
+          "Sharing cancelled. The controller page was not sent.");
+        return false;
+      }
+      return copyControllerInvite();
+    }
   }
 
   async function tabKey(value) {
@@ -139,18 +308,226 @@
     return "session"; // old browser fallback is intentionally room-scoped only
   }
 
-  async function acquireTabLease(value, force = false) {
-    if (!navigator.locks || typeof navigator.locks.request !== "function") return true;
-    const name = "golden-balloon-controller-" + await tabKey(value);
+  function tabLeaseId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(12));
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function waitForTabLease(milliseconds) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  }
+
+  function handleTabLeaseLoss() {
+    if (leavingPage || phase === "error") return;
+    capability = "";
+    showError("duplicate_controller");
+    try { transport?.close?.(); } catch (_) {}
+    if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
+    if (wakeLock) wakeLock.release().catch(() => {});
+    announce("This tab released the controller because another tab took over.");
+  }
+
+  function tabLeaseChannel(name, listener) {
+    if (typeof BroadcastChannel !== "function") return null;
+    try {
+      const channel = new BroadcastChannel(name);
+      channel.addEventListener("message", listener);
+      return channel;
+    } catch (_) { return null; }
+  }
+
+  function postTabLease(channel, value) {
+    try { channel?.postMessage(value); } catch (_) {}
+  }
+
+  async function acquireWebTabLease(name, force) {
+    const id = tabLeaseId();
+    let owned = false;
+    let releaseHold = null;
+    let channel = null;
+    const closeChannel = () => {
+      try { channel?.close(); } catch (_) {}
+      channel = null;
+    };
+    const relinquish = (taken = false) => {
+      if (!owned && !releaseHold) { closeChannel(); return; }
+      owned = false;
+      const release = releaseHold;
+      releaseHold = null;
+      if (releaseTabLease === relinquish) releaseTabLease = null;
+      closeChannel();
+      if (release) release();
+      if (taken) handleTabLeaseLoss();
+    };
+    channel = tabLeaseChannel(name, (event) => {
+      const message = event.data;
+      if (!message || typeof message !== "object" || message.id === id) return;
+      if (message.type === "probe" && owned) {
+        postTabLease(channel, {type: "held", id});
+      } else if (message.type === "steal" && owned) {
+        postTabLease(channel, {type: "released", id, to: message.id});
+        relinquish(true);
+      }
+    });
+    if (force) {
+      postTabLease(channel, {type: "steal", id});
+      await waitForTabLease(120);
+    }
     return new Promise((resolve) => {
       let settled = false;
-      navigator.locks.request(
-        name, force ? {steal: true} : {ifAvailable: true}, async (lock) => {
-        if (!lock) { settled = true; resolve(false); return; }
-        if (!settled) { settled = true; resolve(true); }
-        await new Promise((release) => { releaseTabLease = release; });
-        }).catch(() => { if (!settled) resolve(true); });
+      const settle = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      navigator.locks.request(name, {mode: "exclusive", ifAvailable: true},
+        async (lock) => {
+          if (!lock) { closeChannel(); settle(false); return; }
+          owned = true;
+          settle(true);
+          await new Promise((release) => {
+            releaseHold = release;
+            releaseTabLease = relinquish;
+          });
+        }).catch(() => {
+          closeChannel();
+          settle(false);
+        });
     });
+  }
+
+  function parsedFallbackLease(raw) {
+    try {
+      const value = JSON.parse(raw || "null");
+      if (!value || typeof value.id !== "string" || value.id.length > 80 ||
+          typeof value.name !== "string" ||
+          !/^golden-balloon-controller-[0-9a-f]{24}$/.test(value.name) ||
+          !Number.isSafeInteger(value.expiresAt) || value.expiresAt < 0) return null;
+      return value;
+    } catch (_) { return null; }
+  }
+
+  async function acquireFallbackTabLease(name, force) {
+    const id = tabLeaseId();
+    const storageKey = "gb-controller-tab-lease";
+    const ttlMs = 15_000;
+    let storageAvailable = true;
+    let blocked = false;
+    let takeoverAcknowledged = false;
+    let owned = false;
+    let beatTimer = null;
+    let channel = null;
+    const read = () => {
+      try { return parsedFallbackLease(localStorage.getItem(storageKey)); }
+      catch (_) { storageAvailable = false; return null; }
+    };
+    const write = () => {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({
+          name, id, expiresAt: Date.now() + ttlMs,
+        }));
+        return true;
+      } catch (_) { storageAvailable = false; return false; }
+    };
+    const closeChannel = () => {
+      try { channel?.close(); } catch (_) {}
+      channel = null;
+    };
+    const removeOwnStorage = () => {
+      if (!storageAvailable) return;
+      try {
+        if (read()?.id === id) localStorage.removeItem(storageKey);
+      } catch (_) {}
+    };
+    const release = (taken = false) => {
+      if (!owned && beatTimer === null) { closeChannel(); return; }
+      owned = false;
+      if (beatTimer !== null) clearInterval(beatTimer);
+      beatTimer = null;
+      removeEventListener("storage", storageListener);
+      removeOwnStorage();
+      closeChannel();
+      if (releaseTabLease === release) releaseTabLease = null;
+      if (taken) handleTabLeaseLoss();
+    };
+    const storageListener = (event) => {
+      if (!owned || event.key !== storageKey) return;
+      const next = parsedFallbackLease(event.newValue);
+      if (!next || next.id !== id) release(true);
+    };
+    channel = tabLeaseChannel(name, (event) => {
+      const message = event.data;
+      if (!message || typeof message !== "object" || message.id === id) return;
+      if ((message.type === "probe" || message.type === "candidate") && owned) {
+        postTabLease(channel, {type: "held", id});
+      } else if (message.type === "steal" && owned) {
+        postTabLease(channel, {type: "released", id, to: message.id});
+        release(true);
+      } else if (message.type === "released" && message.to === id) {
+        takeoverAcknowledged = true;
+      } else if (!owned && (message.type === "held" ||
+          (message.type === "candidate" && String(message.id) < id))) {
+        blocked = true;
+      }
+    });
+    const initialLease = read();
+    if (!storageAvailable && !channel) return false;
+    if (force) {
+      const liveStoredOwner = initialLease && initialLease.id !== id &&
+        initialLease.expiresAt > Date.now();
+      if (liveStoredOwner && !channel) return false;
+      postTabLease(channel, {type: "steal", id});
+      await waitForTabLease(120);
+      if (liveStoredOwner && !takeoverAcknowledged) {
+        closeChannel();
+        return false;
+      }
+    }
+    postTabLease(channel, {type: "probe", id});
+    postTabLease(channel, {type: "candidate", id});
+    await waitForTabLease(120);
+    if (blocked) { closeChannel(); return false; }
+    const prior = read();
+    if (!force && prior && prior.id !== id && prior.expiresAt > Date.now()) {
+      closeChannel();
+      return false;
+    }
+    if (storageAvailable && !write() && !channel) {
+      closeChannel();
+      return false;
+    }
+    await waitForTabLease(40);
+    if (blocked || (storageAvailable && read()?.id !== id)) {
+      removeOwnStorage();
+      closeChannel();
+      return false;
+    }
+    owned = true;
+    addEventListener("storage", storageListener);
+    beatTimer = setInterval(() => {
+      const current = read();
+      if (storageAvailable && current && current.id !== id &&
+          current.expiresAt > Date.now()) {
+        release(true);
+        return;
+      }
+      if (storageAvailable) write();
+      postTabLease(channel, {type: "held", id});
+    }, 4_000);
+    releaseTabLease = release;
+    postTabLease(channel, {type: "held", id});
+    return true;
+  }
+
+  async function acquireTabLease(value, force = false) {
+    const name = "golden-balloon-controller-" + await tabKey(value);
+    if (!testConfig?.forceFallbackLease && navigator.locks &&
+        typeof navigator.locks.request === "function") {
+      if (testState) testState.leaseMode = "web-lock";
+      return acquireWebTabLease(name, force);
+    }
+    if (testState) testState.leaseMode = "broadcast-storage";
+    return acquireFallbackTabLease(name, force);
   }
 
   function packetForCurrent() {
@@ -233,7 +610,11 @@
     let controlGeneration = 0;
     let reconnectTimer = null;
     let reconnectAttempt = 0;
+    let reconnectExhausted = false;
+    let controlStableTimer = null;
     let signalingLimited = false;
+    let publishedControllerTransition = 0;
+    let publishedControllerFingerprint = "";
     const wiredPeers = new WeakSet();
     const identityPromise = globalThis.MDKRPartySas.createIdentity();
 
@@ -269,20 +650,45 @@
     }
 
     async function post(path, body) {
-      if (testConfig?.request) return testConfig.request(path, body);
-      const response = await fetch(path, {
-        method: "POST", headers: {"content-type": "application/json"},
-        cache: "no-store", credentials: "omit", body: JSON.stringify(body),
-      });
-      if (testState) testState.requests.push(response.url);
-      if (!response.ok) {
-        const value = await response.json().catch(() => ({}));
-        throw new Error(value.error || "service_unavailable");
+      if (testConfig?.request) {
+        let timer = 0;
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("service_unavailable")),
+            controllerRequestTimeoutMs);
+        });
+        try {
+          const value = await Promise.race([
+            Promise.resolve(testConfig.request(path, body)), timeout]);
+          return value;
+        } finally { clearTimeout(timer); }
       }
-      return response.json();
+      const controller = new AbortController();
+      pageBoundRequests.add(controller);
+      const timer = setTimeout(() => controller.abort(), controllerRequestTimeoutMs);
+      try {
+        const response = await fetch(path, {
+          method: "POST", headers: {"content-type": "application/json"},
+          cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer",
+          signal: controller.signal, body: JSON.stringify(body),
+        });
+        if (testState) testState.requests.push(response.url);
+        const value = await readControllerJson(response).catch(() => ({}));
+        if (!response.ok) throw new Error(
+          typeof value.error === "string" ? value.error : "service_unavailable");
+        const normalized = normalizedControllerInfo(value);
+        if (!normalized) throw new Error("service_unavailable");
+        return normalized;
+      } catch (error) {
+        if (error?.name === "AbortError") throw new Error("service_unavailable");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        pageBoundRequests.delete(controller);
+      }
     }
 
     function signal(value) {
+      if (!controllerInfo) return false;
       if (testConfig?.directSignaling) {
         testState.signals ||= [];
         const encodedValue = {...value, controllerId: controllerInfo.controllerId};
@@ -292,13 +698,20 @@
       }
       if (controlSocket?.readyState !== WebSocket.OPEN) return false;
       const encoded = JSON.stringify({...value, controllerId: controllerInfo.controllerId});
-      if (encoded.length > 60 * 1024) return false;
-      controlSocket.send(encoded);
-      return true;
+      if (encoded.length > 60 * 1024 ||
+          new TextEncoder().encode(encoded).byteLength > 60 * 1024) return false;
+      try {
+        controlSocket.send(encoded);
+        return true;
+      } catch (_) {
+        failControlSocket(controlSocket, controlGeneration,
+          4011, "controller_signal_send_failed");
+        return false;
+      }
     }
 
     async function acceptOffer(message) {
-      if (message.to !== controllerInfo.controllerId || !message.sdp ||
+      if (!controllerInfo || message.to !== controllerInfo.controllerId || !message.sdp ||
           JSON.stringify(message.sdp).length > 60 * 1024 ||
           !Number.isSafeInteger(Number(message.peerGeneration)) ||
           Number(message.peerGeneration) <= 0) return;
@@ -315,9 +728,15 @@
         stateChannel = null;
         controlChannel = null;
         currentPeerGeneration = offeredGeneration;
-        connection = new RTCPeerConnection({iceServers: [{
-          urls: "stun:stun.cloudflare.com:3478",
-        }]});
+        try {
+          connection = new RTCPeerConnection({iceServers: [{
+            urls: "stun:stun.cloudflare.com:3478",
+          }]});
+        } catch (_) {
+          reconnect(1);
+          announce("Could not open a direct controller connection. Trying again.");
+          return;
+        }
         peer = connection;
       } else if (connection.signalingState !== "stable") {
         return;
@@ -356,12 +775,17 @@
           controlChannel = event.channel;
           controlChannel.addEventListener("open", () => {
             if (controlChannel !== event.channel) return;
-            controlChannel.send(JSON.stringify({
-              type: "controller_ready", protocol: 1,
-              controllerId: controllerInfo.controllerId,
-              connectionSequence,
-              capabilities: {vibration: typeof navigator.vibrate === "function"},
-            }));
+            try {
+              controlChannel.send(JSON.stringify({
+                type: "controller_ready", protocol: 1,
+                controllerId: controllerInfo.controllerId,
+                connectionSequence,
+                capabilities: {vibration: typeof navigator.vibrate === "function"},
+              }));
+            } catch (_) {
+              directTransportLost(connection, true);
+              return;
+            }
             completeDirectRecovery(connection);
           });
           controlChannel.addEventListener("close", () => {
@@ -406,11 +830,124 @@
       }
     }
 
+    function normalizedControllerState(value) {
+      const keys = ["type", "transitionId", "phase", "seat",
+        "leaseGeneration", "connectionSequence"];
+      if (!exactKeys(value, keys) || value.type !== "controller_state" ||
+          !Number.isSafeInteger(value.transitionId) || value.transitionId < 1 ||
+          value.transitionId > 4097 ||
+          !["pending", "approved", "leased", "connected", "closed"]
+            .includes(value.phase) ||
+          !Number.isInteger(value.leaseGeneration) ||
+          value.leaseGeneration < 0 || value.leaseGeneration > 0xffff_ffff ||
+          !Number.isInteger(value.connectionSequence) ||
+          value.connectionSequence < 0 ||
+          value.connectionSequence > 0xffff_ffff) return null;
+      if (value.seat !== null && (!Number.isInteger(value.seat) ||
+          value.seat < 1 || value.seat > 4)) return null;
+      if (["approved", "leased", "connected"].includes(value.phase) &&
+          (value.seat === null || value.leaseGeneration < 1 ||
+           value.connectionSequence < 1)) return null;
+      return Object.freeze({...value});
+    }
+
+    function acceptControllerState(value, handleMessage) {
+      const normalized = normalizedControllerState(value);
+      if (!normalized) throw new Error("invalid_controller_state");
+      if (normalized.transitionId < publishedControllerTransition) return false;
+      const fingerprint = JSON.stringify(normalized);
+      if (normalized.transitionId === publishedControllerTransition) {
+        if (fingerprint !== publishedControllerFingerprint) {
+          throw new Error("equivocated_controller_state");
+        }
+        return false;
+      }
+      handleMessage(normalized);
+      publishedControllerTransition = normalized.transitionId;
+      publishedControllerFingerprint = fingerprint;
+      return true;
+    }
+
+    function clearControlTimers() {
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      if (controlStableTimer !== null) clearTimeout(controlStableTimer);
+      reconnectTimer = null;
+      controlStableTimer = null;
+    }
+
+    function showSignalingInterruption(attempt) {
+      if (directChannelsOpen() && ["assigned", "controller"].includes(phase)) {
+        if (!signalingLimited) {
+          signalingLimited = true;
+          setConnection("limited",
+            "Controller connected directly; room service reconnecting");
+          announce("Controller remains connected directly. Room service reconnecting.");
+        }
+        return;
+      }
+      signalingLimited = false;
+      reconnect(attempt);
+    }
+
+    function scheduleControlReconnect(value, generation) {
+      if (!controllerInfo || leavingPage || generation !== controlGeneration ||
+          reconnectTimer !== null) return;
+      if (reconnectAttempt >= 5) {
+        reconnectExhausted = true;
+        if (directChannelsOpen() && ["assigned", "controller"].includes(phase)) {
+          signalingLimited = true;
+          setConnection("limited",
+            "Controller connected directly; room service retry paused");
+          announce("Direct controls still work. Room service retry is paused; open settings only if you need to leave.");
+        } else {
+          reconnect(5);
+          $("reconnect-progress").textContent =
+            "Automatic reconnect paused after five attempts. Try again when the connection is ready.";
+          requestAnimationFrame(() => $("controller-retry").focus());
+        }
+        return;
+      }
+      const attempt = ++reconnectAttempt;
+      showSignalingInterruption(attempt);
+      const delay = Math.min(4800, 300 * (2 ** Math.min(attempt - 1, 4)));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (generation === controlGeneration) connectControl(value);
+      }, delay);
+    }
+
+    function failControlSocket(connection, generation, code, reason) {
+      if (connection !== controlSocket || generation !== controlGeneration) return;
+      controlSocket = null;
+      if (controlStableTimer !== null) clearTimeout(controlStableTimer);
+      controlStableTimer = null;
+      try { connection.close(code, reason); } catch (_) {}
+      scheduleControlReconnect(controllerInfo, generation);
+    }
+
+    function failControlSocketSetup(generation) {
+      if (generation !== controlGeneration) return;
+      controlSocket = null;
+      if (controlStableTimer !== null) clearTimeout(controlStableTimer);
+      controlStableTimer = null;
+      scheduleControlReconnect(controllerInfo, generation);
+    }
+
     function connectControl(value) {
-      if (!value?.roomId || !value?.credential) return;
+      if (!value?.roomId || !value?.credential || leavingPage) return false;
+      if (!controllerInfo || controllerInfo.roomId !== value.roomId ||
+          controllerInfo.controllerId !== value.controllerId) {
+        publishedControllerTransition = 0;
+        publishedControllerFingerprint = "";
+      }
       controllerInfo = value;
       const handleMessage = (update) => {
-        if (update.type === "controller_state" &&
+        if (update.type === "controller_state" && update.phase === "pending") {
+          signalingLimited = false;
+          if (phase === "reconnecting" && reconnectResume === "waiting") {
+            render("waiting", {focus: $("device-name")});
+          }
+        } else if (update.type === "controller_state" &&
             ["approved", "leased", "connected"].includes(update.phase)) {
           const nextSequence = Number(update.connectionSequence) >>> 0;
           const sequenceChanged = connectionSequence !== 0 &&
@@ -432,7 +969,7 @@
           }
           signal({type: "controller_hello"});
         } else if (update.type === "controller_state" && update.phase === "closed") {
-          showError("approval_rejected");
+          showError(phase === "waiting" ? "approval_rejected" : "seat_reclaimed");
         } else if (update.type === "webrtc_offer") void acceptOffer(update);
         else if (update.type === "webrtc_ice" && update.to === value.controllerId &&
                  Number.isSafeInteger(update.peerGeneration) &&
@@ -452,89 +989,160 @@
         }, 0);
         return;
       }
-      const url = new URL(`/api/party/${value.roomId}/connect`, location.origin);
-      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      clearControlTimers();
+      const previous = controlSocket;
+      controlSocket = null;
       const generation = ++controlGeneration;
-      const connection = new WebSocket(url, ["gb-control-v1",
-        `gb-controller.${value.credential}`]);
-      controlSocket = connection;
-      connection.binaryType = "arraybuffer";
-      connection.addEventListener("open", () => {
-        reconnectAttempt = 0;
-        if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-        signal({type: "controller_hello"});
-      });
-      connection.addEventListener("message", (event) => {
-        if (typeof event.data !== "string") return;
-        try {
-          const update = JSON.parse(event.data);
-          handleMessage(update);
-        } catch (_) { /* malformed signaling cannot mutate controller state */ }
-      });
-      connection.addEventListener("close", () => {
-        if (generation !== controlGeneration || leavingPage) return;
-        reconnectAttempt++;
-        if (directChannelsOpen() && (phase === "assigned" || phase === "controller")) {
-          if (!signalingLimited) {
-            signalingLimited = true;
-            setConnection("limited",
-              "Controller connected directly; room service reconnecting");
-            announce("Controller remains connected directly. Room service reconnecting.");
+      try { previous?.close?.(1000, "controller_socket_replaced"); } catch (_) {}
+      let connection;
+      try {
+        const url = new URL(`/api/party/${value.roomId}/connect`, location.origin);
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        connection = new WebSocket(url, ["gb-control-v1",
+          `gb-controller.${value.credential}`]);
+        controlSocket = connection;
+        connection.binaryType = "arraybuffer";
+      } catch (_) {
+        failControlSocketSetup(generation);
+        return false;
+      }
+      try {
+        connection.addEventListener("open", () => {
+          if (connection !== controlSocket || generation !== controlGeneration) return;
+          reconnectExhausted = false;
+          controlStableTimer = setTimeout(() => {
+            controlStableTimer = null;
+            if (connection === controlSocket && generation === controlGeneration) {
+              reconnectAttempt = 0;
+            }
+          }, 30_000);
+          signal({type: "controller_hello"});
+        });
+        connection.addEventListener("message", (event) => {
+          if (connection !== controlSocket || generation !== controlGeneration) return;
+          if (typeof event.data !== "string" || event.data.length > 64 * 1024 ||
+              new TextEncoder().encode(event.data).byteLength > 64 * 1024) {
+            failControlSocket(connection, generation, 4009,
+              "invalid_controller_message");
+            return;
           }
-        } else {
-          signalingLimited = false;
-          reconnect(reconnectAttempt);
-        }
-        const delay = Math.min(8000,
-          300 * (2 ** Math.min(5, reconnectAttempt - 1)));
-        reconnectTimer = setTimeout(() => connectControl(value), delay);
-      });
+          try {
+            const update = JSON.parse(event.data);
+            if (update?.type === "controller_state") {
+              acceptControllerState(update, handleMessage);
+            } else {
+              handleMessage(update);
+            }
+          } catch (_) {
+            failControlSocket(connection, generation, 4003,
+              "invalid_controller_message");
+          }
+        });
+        connection.addEventListener("error", () => {
+          failControlSocket(connection, generation, 4011,
+            "controller_socket_error");
+        });
+        connection.addEventListener("close", (event) => {
+          if (connection !== controlSocket || generation !== controlGeneration ||
+              leavingPage) return;
+          controlSocket = null;
+          if (controlStableTimer !== null) clearTimeout(controlStableTimer);
+          controlStableTimer = null;
+          if (event.code === 4000 &&
+              ["approval_rejected", "seat_reclaimed", "host_closed", "room_expired"]
+                .includes(event.reason)) {
+            controlGeneration++;
+            clearControlTimers();
+            showError(event.reason);
+            if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
+            if (wakeLock) wakeLock.release().catch(() => {});
+            if (peer) { peer.close(); peer = null; }
+            stateChannel = null;
+            controlChannel = null;
+            controllerInfo = null;
+            publishedControllerTransition = 0;
+            publishedControllerFingerprint = "";
+            return;
+          }
+          scheduleControlReconnect(value, generation);
+        });
+      } catch (_) {
+        failControlSocket(connection, generation, 4011,
+          "controller_socket_setup_failed");
+        return false;
+      }
+      return true;
     }
 
     const api = {
       sendState(bytes) {
         if (stateChannel?.readyState !== "open" || stateChannel.bufferedAmount > 4096) return;
-        stateChannel.send(bytes);
+        try { stateChannel.send(bytes); }
+        catch (_) { if (peer) directTransportLost(peer, true); }
       },
       neutral() {},
       inputTest(pressed) {
         if (!pressed || controlChannel?.readyState !== "open") return true;
         inputTestNonce = (inputTestNonce + 1) >>> 0;
-        controlChannel.send(JSON.stringify({type: "input_test", nonce: inputTestNonce}));
+        try {
+          controlChannel.send(JSON.stringify({type: "input_test", nonce: inputTestNonce}));
+        } catch (_) {
+          if (peer) directTransportLost(peer, true);
+        }
         return true;
       },
       close() {
         signalingLimited = false;
         controlGeneration++;
-        if (reconnectTimer !== null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-        if (controlSocket) { controlSocket.close(1000, "controller_left"); controlSocket = null; }
-        if (peer) { peer.close(); peer = null; }
+        clearControlTimers();
+        reconnectAttempt = 0;
+        reconnectExhausted = false;
+        publishedControllerTransition = 0;
+        publishedControllerFingerprint = "";
+        if (controlSocket) {
+          try { controlSocket.close(1000, "controller_left"); } catch (_) {}
+          controlSocket = null;
+        }
+        if (peer) { try { peer.close(); } catch (_) {} peer = null; }
         stateChannel = null;
         controlChannel = null;
         controllerInfo = null;
       },
+      retry() {
+        if (!controllerInfo || leavingPage) return false;
+        reconnectAttempt = 0;
+        reconnectExhausted = false;
+        return connectControl(controllerInfo);
+      },
       async redeem(secret) {
         const identity = await identityPromise;
         const value = await post("/api/controller/redeem", {capability: secret,
-          protocol: 1, name: $("device-name").value,
+          protocol: 1, name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
-        if (value.hostPublicKey) value.phrase = await globalThis.MDKRPartySas.phrase(
+        const phrase = value.hostPublicKey
+          ? await globalThis.MDKRPartySas.phrase(
           identity.privateKey, value.hostPublicKey, {roomId: value.roomId,
             hostPublicKey: value.hostPublicKey,
-            controllerPublicKey: identity.publicKey});
-        connectControl(value);
-        return value;
+            controllerPublicKey: identity.publicKey})
+          : value.phrase;
+        const connected = {...value, phrase};
+        connectControl(connected);
+        return connected;
       },
       async redeemCode(code) {
         const identity = await identityPromise;
         const value = await post("/api/controller/code", {code, protocol: 1,
-          name: $("device-name").value, controllerPublicKey: identity.publicKey});
-        if (value.hostPublicKey) value.phrase = await globalThis.MDKRPartySas.phrase(
+          name: normalizedDeviceName($("device-name").value),
+          controllerPublicKey: identity.publicKey});
+        const phrase = value.hostPublicKey
+          ? await globalThis.MDKRPartySas.phrase(
           identity.privateKey, value.hostPublicKey, {roomId: value.roomId,
             hostPublicKey: value.hostPublicKey,
-            controllerPublicKey: identity.publicKey});
-        connectControl(value);
-        return value;
+            controllerPublicKey: identity.publicKey})
+          : value.phrase;
+        const connected = {...value, phrase};
+        connectControl(connected);
+        return connected;
       },
     };
     return api;
@@ -555,13 +1163,18 @@
     render("opening");
     try {
       const result = await transport.redeemCode(code);
-      if (result.protocol !== 1) { showError("update_required", "Refresh controller"); return; }
+      if (leavingPage) return;
+      if (result.protocol !== 1) {
+        showError("update_required", "Refresh controller", "reload");
+        return;
+      }
       $("pairing-phrase").textContent = result.phrase || "Bright Balloon";
       render("waiting", {focus: $("device-name")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
     } catch (error) {
+      if (leavingPage) return;
       if (error?.message && errors[error.message]) {
         showError(error.message);
         return;
@@ -636,6 +1249,7 @@
   function reconnect(attempt = 1) {
     if (phase !== "reconnecting") reconnectResume = phase;
     neutralize("transport-lost");
+    $("controller-retry").disabled = false;
     $("reconnect-progress").textContent =
       `Attempt ${Math.max(1, Math.min(5, attempt))} of 5. Controls are safely released.`;
     render("reconnecting", {focus: $("state-reconnecting")});
@@ -654,9 +1268,20 @@
     }
   }
 
+  function resumeControllerInput() {
+    if (phase !== "controller") return;
+    if (!active) {
+      active = true;
+      padHistory = [];
+      publishPad(true);
+    }
+    void requestWakeLock();
+  }
+
   function leave() {
+    capability = "";
     neutralize("leave");
-    transport?.close?.();
+    try { transport?.close?.(); } catch (_) {}
     if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
     if (wakeLock) wakeLock.release().catch(() => {});
     if (releaseTabLease) { releaseTabLease(); releaseTabLease = null; }
@@ -702,13 +1327,31 @@
 
   async function start() {
     capability = consumeFragment();
+    if (testConfig?.entryMode === "embedded") {
+      showError("embedded", shareRecoveryLabel(), "share");
+      return;
+    }
+    if (testConfig?.entryMode === "duplicate") {
+      render("duplicate", {focus: $("reclaim-controller")});
+      return;
+    }
     if (!testConfig) {
       try {
-        if (window.top !== window.self) { showError("embedded", "Open in browser"); return; }
-      } catch (_) { showError("embedded", "Open in browser"); return; }
+        if (window.top !== window.self) {
+          showError("embedded", shareRecoveryLabel(), "share"); return;
+        }
+      } catch (_) {
+        showError("embedded", shareRecoveryLabel(), "share"); return;
+      }
+      if (!trustedControllerLocation()) {
+        const secureUrl = secureControllerRecoveryUrl();
+        showError("insecure", secureUrl ? "Open secure controller page" :
+          "Enter another code", secureUrl ? "secure" : "code");
+        return;
+      }
       if (!("PointerEvent" in window) || !("RTCPeerConnection" in window) ||
           !globalThis.crypto?.subtle || !globalThis.MDKRPartySas) {
-        showError("unsupported", "Refresh controller"); return;
+        showError("unsupported", shareRecoveryLabel(), "share"); return;
       }
     }
     if (!capability) {
@@ -716,20 +1359,37 @@
       render("code", {focus: $("room-code")});
       return;
     }
-    if (!(await acquireTabLease(capability))) {
+    let ownsTab;
+    try { ownsTab = await acquireTabLease(capability); }
+    catch (_) {
+      showError("unsupported", shareRecoveryLabel(), "share"); return;
+    }
+    if (!ownsTab) {
       render("duplicate", {focus: $("reclaim-controller")}); return;
+    }
+    if (leavingPage) {
+      if (releaseTabLease) { releaseTabLease(); releaseTabLease = null; }
+      capability = "";
+      return;
     }
     transport = testConfig && !testConfig.directSignaling
       ? mockTransport() : networkTransport();
     try {
       const result = await transport.redeem(capability);
-      if (result.protocol !== 1) { showError("update_required", "Refresh controller"); return; }
+      capability = "";
+      if (leavingPage) return;
+      if (result.protocol !== 1) {
+        showError("update_required", "Refresh controller", "reload");
+        return;
+      }
       $("pairing-phrase").textContent = result.phrase || "Bright Balloon";
       render("waiting", {focus: $("device-name")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
       }
     } catch (error) {
+      capability = "";
+      if (leavingPage) return;
       const id = error && errors[error.message] ? error.message : "service_unavailable";
       if (testState) testState.errors.push(String(error));
       showError(id);
@@ -756,6 +1416,15 @@
     testPress(true); setTimeout(() => testPress(false), 90);
   });
   $("use-controller").addEventListener("click", useController);
+  $("controller-retry").addEventListener("click", () => {
+    $("controller-retry").disabled = true;
+    if (transport?.retry?.() === true) {
+      $("reconnect-progress").textContent = "Trying the controller room now…";
+      announce("Trying the controller room now.");
+    } else {
+      $("controller-retry").disabled = false;
+    }
+  });
   document.querySelectorAll('[data-action="leave"]').forEach((button) =>
     button.addEventListener("click", () => confirmLeave(button)));
   $("leave-controller").addEventListener("click", () => {
@@ -775,7 +1444,17 @@
     leave();
   });
   $("error-recovery").addEventListener("click", () => {
-    render("code", {focus: $("room-code")});
+    if (errorRecoveryAction === "share") {
+      void shareControllerInvite();
+    } else if (errorRecoveryAction === "reload") {
+      location.reload();
+    } else if (errorRecoveryAction === "secure") {
+      const secureUrl = secureControllerRecoveryUrl();
+      if (secureUrl) location.replace(secureUrl);
+      else render("code", {focus: $("room-code")});
+    } else {
+      render("code", {focus: $("room-code")});
+    }
   });
   $("code-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -788,34 +1467,58 @@
     $("code-error").hidden = true;
     $("room-code").setAttribute("aria-invalid", "false");
   });
-  $("copy-link").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(location.href); announce("Link copied."); }
-    catch (_) { announce("Could not copy the link. Use your browser’s Share command."); }
-  });
+  $("copy-link").addEventListener("click", () => { void copyControllerInvite(); });
   $("reclaim-controller").addEventListener("click", async () => {
-    if (await acquireTabLease(capability, true)) location.reload();
+    const inviteUrl = controllerInviteUrl();
+    try {
+      if (inviteUrl && await acquireTabLease(capability, true)) {
+        location.replace(inviteUrl); return;
+      }
+    } catch (_) {}
+    announce("Could not move the controller. Close the other tab, then try again.");
   });
   $("device-name").addEventListener("change", () => {
-    const value = $("device-name").value.trim().slice(0, 24);
+    const value = normalizedDeviceName($("device-name").value);
     $("device-name").value = value;
     try { localStorage.setItem("gb-controller-name", value); } catch (_) {}
   });
-  try { $("device-name").value = (localStorage.getItem("gb-controller-name") || "").slice(0, 24); } catch (_) {}
+  try {
+    $("device-name").value = normalizedDeviceName(
+      localStorage.getItem("gb-controller-name") || "");
+  } catch (_) {}
 
   addEventListener("pagehide", () => {
     leavingPage = true;
+    capability = "";
+    for (const controller of pageBoundRequests) controller.abort();
+    pageBoundRequests.clear();
     neutralize("pagehide");
+    try { transport?.close?.(); } catch (_) {}
+    if (releaseTabLease) { releaseTabLease(); releaseTabLease = null; }
   });
-  addEventListener("offline", () => reconnect(1));
+  addEventListener("pageshow", (event) => {
+    if (event.persisted) location.reload();
+  });
+  addEventListener("freeze", () => neutralize("freeze"));
+  addEventListener("resume", resumeControllerInput);
+  addEventListener("offline", () => {
+    if (["assigned", "controller", "reconnecting"].includes(phase)) reconnect(1);
+  });
+  addEventListener("online", () => {
+    if (phase === "reconnecting") transport?.retry?.();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") neutralize("hidden");
-    else if (phase === "controller") void requestWakeLock();
+    else resumeControllerInput();
   });
 
   if (testConfig) {
     globalThis.__mdkrControllerTest = Object.freeze({
       approve, reject: showError, reconnect, reconnectComplete, useController,
       showCode: () => render("code", {focus: $("room-code")}), joinCode,
+      showEmbedded: () => showError("embedded", shareRecoveryLabel(), "share"),
+      showDuplicate: () => render("duplicate", {focus: $("reclaim-controller")}),
+      inviteUrl: controllerInviteUrl,
       state: () => ({phase, seat, active, pad: {...pad}, connectionSequence}),
       receiveSignal: (value) => receiveTestSignal?.(value),
     });

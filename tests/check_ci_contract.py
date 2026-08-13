@@ -490,8 +490,114 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     )
     if ctest_route is None or '"--output-on-failure"' not in ctest_route.group("body"):
         failures.append("run_checks ROM-free CTest route is missing")
-    elif '"-LE"' in ctest_route.group("body") or '"gpu"' in ctest_route.group("body"):
-        failures.append("run_checks complete local CTest must include GPU-labelled tests")
+    elif ('if not with_gpu_tests:' not in ctest_route.group("body") or
+          'command += ["-LE", "gpu|app_process|browser"]'
+              not in ctest_route.group("body")):
+        failures.append(
+            "run_checks must exclude native app/GPU/browser processes by default"
+        )
+    if ('--with-gpu-tests' not in sources["run_checks"] or
+        'args.with_gpu_tests' not in sources["run_checks"]):
+        failures.append("run_checks has no explicit native GPU/window opt-in")
+    if ('--with-browser-tests' not in sources["run_checks"] or
+        'args.with_browser_tests' not in sources["run_checks"] or
+        'if browser_checks and not args.with_browser_tests:'
+            not in sources["run_checks"] or
+        'environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"'
+            not in sources["run_checks"]):
+        failures.append("run_checks has no fail-closed real-browser opt-in")
+    if ('--with-app-tests' not in sources["run_checks"] or
+        'args.with_app_tests' not in sources["run_checks"] or
+        'if app_checks and not args.with_app_tests:'
+            not in sources["run_checks"] or
+        'if check.role not in APP_ROLES' not in sources["run_checks"] or
+        'environment["MDKR_APP_TESTS_ALLOWED"] = "1"'
+            not in sources["run_checks"]):
+        failures.append("run_checks has no fail-closed native app/renderer opt-in")
+    if ('--with-compiled-tests' not in sources["run_checks"] or
+        'args.with_compiled_tests' not in sources["run_checks"] or
+        'if compiled_checks and not args.with_compiled_tests:'
+            not in sources["run_checks"] or
+        'if check.role not in COMPILED_TEST_ROLES'
+            not in sources["run_checks"]):
+        failures.append("run_checks has no fail-closed compiled-test opt-in")
+    if ('os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") == "1"'
+            not in sources["run_checks"] or
+        'environment["MDKR_DEDICATED_TEST_DESKTOP"] = "1"'
+            not in sources["run_checks"]):
+        failures.append(
+            "run_checks does not require and forward a caller-owned "
+            "dedicated-desktop attestation"
+        )
+    app_roles = sources["run_checks"].split(
+        "APP_ROLES = (", 1)[1].split(")", 1)[0]
+    if '"rom",' not in app_roles:
+        failures.append(
+            "ROM-backed checks can execute the native app and must require "
+            "the app-test opt-in"
+        )
+    if ('if args.with_gpu_tests and (' not in sources["run_checks"] or
+        'not args.with_app_tests or not args.with_compiled_tests'
+            not in sources["run_checks"]):
+        failures.append(
+            "run_checks GPU opt-in does not require app and compiled-test capabilities"
+        )
+    if ('option(MDKR_ENABLE_GPU_TESTS' not in sources["cmake"] or
+        'if(MDKR_ENABLE_GPU_TESTS AND NOT MDKR_SKIP_GPU_TESTS)'
+            not in sources["cmake"]):
+        failures.append("native GPU/window CTests must be absent by default")
+    if '-DMDKR_ENABLE_GPU_TESTS="$RUN_GPU_TESTS"' not in sources["ci_local"]:
+        failures.append("local CI configure does not honor its GPU opt-in")
+    if 'JOBS="${MDKR_CI_JOBS:-2}"' not in sources["ci_local"]:
+        failures.append("local CI does not default to bounded build concurrency")
+    if ('RUN_COMPILED_TESTS=0' not in sources["ci_local"] or
+        '--with-compiled-tests' not in sources["ci_local"] or
+        'if [ -f "$BUILD_DIR/CMakeCache.txt" ] && [ "$RUN_COMPILED_TESTS" -eq 1 ]; then'
+            not in sources["ci_local"]):
+        failures.append("local CI does not default to zero compiled-test execution")
+    if ('${MDKR_DEDICATED_TEST_DESKTOP:-}' not in sources["source_archive"] or
+        'source-archive smoke executes compiled tests and requires'
+            not in sources["source_archive"]):
+        failures.append(
+            "source-archive compiled tests do not require desktop attestation"
+        )
+    if 'if current_nice < 10:' not in sources["run_checks"]:
+        failures.append("run_checks does not lower child CPU priority")
+    if '["taskpolicy", "-b", "-p", str(os.getpid())]' not in sources["run_checks"]:
+        failures.append("run_checks does not enter macOS background scheduling policy")
+    for role in ("ctest", "rom", "native", "release", "asan", "instrumented", "layout",
+                 "wasm", "browser", "browser_save", "browser_local"):
+        if f'"{role}",' not in sources["run_checks"].split(
+                "SERIAL_ROLES = frozenset({", 1)[1].split("})", 1)[0]:
+            failures.append(
+                f"run_checks must serialize workstation-intensive role {role}"
+            )
+    for hint in ("SDL_MAC_BACKGROUND_APP", "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN"):
+        if f'"{hint}": "1"' not in sources["run_checks"]:
+            failures.append(f"run_checks omits SDL focus fail-safe {hint}=1")
+        if sources["ci_local"].count(f"{hint}=1") != 2:
+            failures.append(f"both local CTest lanes must set {hint}=1")
+    if sources["ci_local"].count("MDKR64_HIDDEN=1 MDKR_AUDIO=0") != 2:
+        failures.append(
+            "both local CTest lanes must force background, silent automation"
+        )
+    if ("env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED" not in
+            sources["ci_local"] or
+            "RUN_GPU_TESTS=0" not in sources["ci_local"] or
+            "MDKR_CI_WITH_GPU_TESTS" in sources["ci_local"]):
+        failures.append(
+            "safe local CTest must strip inherited launch capabilities and "
+            "reject ambient GPU opt-in"
+        )
+    if ("-LE 'gpu|app_process|browser'" not in sources["ci_local"] or
+        'taskpolicy -b -p "$$"' not in sources["ci_local"]):
+        failures.append(
+            "local CTest must exclude app/browser processes and use macOS "
+            "background policy by default"
+        )
+    if ('ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR64_HIDDEN=1;MDKR_AUDIO=0"'
+            not in sources["cmake"]):
+        failures.append("app_schema must explicitly use background automation")
     if sources["cmake"].count(
         'PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}"'
     ) != 1 or sources["cmake"].count(
@@ -1265,6 +1371,14 @@ def validate_release_checklist(sources: dict[str, str]) -> list[str]:
     if "--skip-wasm" in source.split("## 3. Behavioural regression suite")[0]:
         failures.append(
             "release checklist's complete-suite run must not skip the web lane"
+        )
+    if ("MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py --jobs 6"
+            not in source or
+            "--with-compiled-tests --with-app-tests --with-browser-tests"
+            not in source):
+        failures.append(
+            "release checklist's complete-suite run must attest its dedicated "
+            "host and explicitly opt into native app and real browser tests"
         )
     if "ctest --test-dir build-rel -L gpu --output-on-failure" not in source:
         failures.append("release checklist omits the gpu-labelled CTest lane")

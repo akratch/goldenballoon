@@ -25,8 +25,8 @@ PROVIDER_TOP_KEYS = frozenset({
     "schemaVersion", "day", "plan", "billing", "usage", "limits",
 })
 USAGE_KEYS = frozenset({
-    "workerRequests", "durableObjectRequests", "rowsRead", "rowsWritten",
-    "storageBytes",
+    "workerRequests", "durableObjectRequests",
+    "durableObjectDurationGbSeconds", "rowsRead", "rowsWritten", "storageBytes",
 })
 
 # Reviewed 2026-08-12 Free-plan ceilings. A provider report may lower these
@@ -35,6 +35,7 @@ USAGE_KEYS = frozenset({
 REVIEWED_FREE_CEILINGS = {
     "workerRequests": 100_000,
     "durableObjectRequests": 100_000,
+    "durableObjectDurationGbSeconds": 13_000,
     "rowsRead": 5_000_000,
     "rowsWritten": 100_000,
     "storageBytes": 5_000_000_000,
@@ -153,7 +154,7 @@ def parse_internal(value: Any) -> dict[str, Any]:
 
 def parse_provider(value: Any) -> dict[str, Any]:
     root = exact_object(value, PROVIDER_TOP_KEYS, "provider_schema")
-    if integer(root["schemaVersion"], 1, 1, "provider_version") != 1:
+    if integer(root["schemaVersion"], 2, 2, "provider_version") != 2:
         fail("provider_version")
     day = utc_day(root["day"], "provider_day")
     if root["plan"] != "free":

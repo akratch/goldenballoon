@@ -6,6 +6,8 @@ project(mdkr64 C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
+option(MDKR_ENABLE_GPU_TESTS
+    "Register native GPU/window tests (dedicated test desktop only)" OFF)
 
 # The launcher smoke tests share one physical graphics device and their isolated
 # files do not make concurrent GPU context creation safe.  Apply one named CTest
@@ -17,6 +19,10 @@ function(mdkr_serialize_gpu_ctests)
         get_property(MDKR_CTEST_LABELS TEST "${MDKR_CTEST_NAME}" PROPERTY LABELS)
         list(FIND MDKR_CTEST_LABELS "gpu" MDKR_GPU_LABEL_INDEX)
         if(NOT MDKR_GPU_LABEL_INDEX EQUAL -1)
+            # Registration is not runtime authorization. In particular, an old
+            # build tree can retain this inventory after the developer returns
+            # to an occupied desktop. The invoking environment must carry both
+            # runtime capabilities; never mint either one from CMake state.
             set_tests_properties("${MDKR_CTEST_NAME}" PROPERTIES
                 RESOURCE_LOCK mdkr_native_gpu)
         endif()
@@ -145,7 +151,7 @@ else()
         "-sMALLOC=emmalloc"
         "-sINITIAL_MEMORY=2097152"
         "-sSTACK_SIZE=65536"
-        "-sEXPORTED_FUNCTIONS=_mdkr_online_browser_version,_mdkr_online_browser_count,_mdkr_online_browser_select,_mdkr_online_browser_slug,_mdkr_online_browser_title,_mdkr_online_browser_explanation,_mdkr_online_browser_status,_mdkr_online_browser_timeout_title,_mdkr_online_browser_timeout_explanation,_mdkr_online_browser_kind,_mdkr_online_browser_failure,_mdkr_online_browser_announcement,_mdkr_online_browser_member_count,_mdkr_online_browser_seat_count,_mdkr_online_browser_ready_count,_mdkr_online_browser_requires_admission,_mdkr_online_browser_local_play_available,_mdkr_online_browser_timeout_visible,_mdkr_online_browser_control_action,_mdkr_online_browser_control_label,_mdkr_online_browser_control_enabled,_mdkr_online_browser_dispatch,_mdkr_online_browser_pending,_mdkr_online_browser_complete,_mdkr_online_browser_live_project"
+        "-sEXPORTED_FUNCTIONS=_mdkr_online_browser_version,_mdkr_online_browser_count,_mdkr_online_browser_select,_mdkr_online_browser_slug,_mdkr_online_browser_title,_mdkr_online_browser_explanation,_mdkr_online_browser_status,_mdkr_online_browser_verification_phrase,_mdkr_online_browser_timeout_title,_mdkr_online_browser_timeout_explanation,_mdkr_online_browser_kind,_mdkr_online_browser_failure,_mdkr_online_browser_announcement,_mdkr_online_browser_member_count,_mdkr_online_browser_seat_count,_mdkr_online_browser_ready_count,_mdkr_online_browser_requires_admission,_mdkr_online_browser_local_play_available,_mdkr_online_browser_timeout_visible,_mdkr_online_browser_control_action,_mdkr_online_browser_control_label,_mdkr_online_browser_control_enabled,_mdkr_online_browser_dispatch,_mdkr_online_browser_pending,_mdkr_online_browser_complete,_mdkr_online_browser_live_project"
         "-sEXPORTED_RUNTIME_METHODS=cwrap"
         "-sENVIRONMENT=web")
     set_target_properties(mdkr_online_tools PROPERTIES
@@ -286,6 +292,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/session/session_core.c # shared launcher/session reducer
     ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c # versioned engine session ABI
     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c # launcher-owned private-room reducer
+    ${CMAKE_SOURCE_DIR}/platform/online/compatibility_identity.c # clean provenance compatibility bytes
     ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c # sanitized launcher UX projection
     ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c # deterministic ON-03B adapter
     ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
@@ -295,6 +302,10 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_runtime.c # copy-out launcher-to-engine input provider
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_packet.c # fixed hostile-input-safe carrier codec
     ${CMAKE_SOURCE_DIR}/platform/net/match_input_bundle.c # redundant three-frame carrier bundle
+    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c # bounded direct/one-hop peer topology
+    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_forward.c # bounded opaque one-hop forwarding
+    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c # canonical peer keys + phrase
+    ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c # pure authenticated launch consensus gate
     ${CMAKE_SOURCE_DIR}/platform/net/net_input.c      # canonical predicted/confirmed input history
     ${CMAKE_SOURCE_DIR}/platform/net/net_local_input.c # endpoint seats -> canonical slots
     ${CMAKE_SOURCE_DIR}/platform/net/net_roster.c     # canonical players vs local viewports
@@ -731,7 +742,8 @@ if(NOT EMSCRIPTEN)
 
         if(MDKR_NATIVE_PHONE_PARTY)
             list(APPEND APP_SOURCES
-                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp)
+                ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp)
         else()
             list(APPEND APP_SOURCES
                 ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport_stub.cpp)
@@ -767,6 +779,28 @@ if(NOT EMSCRIPTEN)
                         -Wall -Wextra -Wpedantic -Werror)
                 endif()
                 add_test(NAME native_party_sas COMMAND mdkr_native_party_sas_test)
+
+                add_executable(mdkr_match_peer_crypto_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_peer_crypto.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+                    ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+                    ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+                target_include_directories(mdkr_match_peer_crypto_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}
+                    ${CMAKE_SOURCE_DIR}/platform)
+                target_compile_features(mdkr_match_peer_crypto_test PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_match_peer_crypto_test PRIVATE
+                    MbedTLS::MbedTLS)
+                if(MSVC)
+                    target_compile_options(mdkr_match_peer_crypto_test PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_match_peer_crypto_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME match_peer_crypto COMMAND mdkr_match_peer_crypto_test)
             endif()
         endif()
 
@@ -945,6 +979,10 @@ if(NOT EMSCRIPTEN)
             target_compile_features(mdkr_app_window_test PRIVATE cxx_std_17)
             add_test(NAME app_window COMMAND mdkr_app_window_test)
 
+            add_test(NAME app_background_activation_contract
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/check_app_background_activation.py)
+
             add_executable(mdkr_app_lifecycle_test
                 ${CMAKE_SOURCE_DIR}/tests/test_app_lifecycle.cpp
                 ${CMAKE_SOURCE_DIR}/platform/app/app_restart.cpp
@@ -973,6 +1011,7 @@ if(NOT EMSCRIPTEN)
                     -DMDKR_EXECUTABLE=$<TARGET_FILE:${MDKR_TARGET}>
                     -DMDKR_EXPECTED_VERSION=${MDKR_VERSION}
                     -P ${CMAKE_SOURCE_DIR}/tests/check_cli_version.cmake)
+            set_tests_properties(cli_version_exact PROPERTIES LABELS app_process)
 
             # Schema round-trip: every key the settings panel renders must have a
             # category, a label, help text, and must resolve back by name. Runs
@@ -988,15 +1027,21 @@ if(NOT EMSCRIPTEN)
 
             add_test(NAME app_schema COMMAND ${MDKR_TARGET})
             set_tests_properties(app_schema PROPERTIES
-                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR_AUDIO=0"
+                ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                LABELS app_process
                 PASS_REGULAR_EXPRESSION "${MDKR_FRAME_LIMIT_UI_CONTRACT_REGEX}")
 
             # Shell render smoke: drive the launcher for a few frames and require
             # a real captured frame. This is what makes the gate honest — it
             # proves pixels reached a framebuffer, not merely that main() returned
             # 0 (main_app.cpp fails the run when a requested capture is missing).
-            # Needs a GPU, so it is skipped when MDKR_SKIP_GPU_TESTS is set.
-            if(NOT MDKR_SKIP_GPU_TESTS)
+            # These tests create real native graphics surfaces. Keep them out
+            # of ordinary build trees entirely: a plain `ctest` must be safe
+            # on an interactive workstation, even when the caller forgets
+            # label exclusion. Release evidence enables them explicitly on a
+            # dedicated test desktop. MDKR_SKIP_GPU_TESTS remains a backwards-
+            # compatible emergency override for existing automation.
+            if(MDKR_ENABLE_GPU_TESTS AND NOT MDKR_SKIP_GPU_TESTS)
                 set(MDKR_APP_TEST_ROOT "${CMAKE_CURRENT_BINARY_DIR}/app-test-data")
                 file(MAKE_DIRECTORY
                     "${MDKR_APP_TEST_ROOT}/shell/prefs"
@@ -1159,7 +1204,7 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_online_room_gallery PROPERTIES
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION
-                        "PASS online room gallery: cases=42 views=10 failures=17 unique-captures=42"
+                        "PASS online room gallery: cases=43 views=10 failures=18 unique-captures=43"
                     TIMEOUT 300)
 
                 add_test(NAME app_online_room_accessibility
@@ -1169,7 +1214,7 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_online_room_accessibility PROPERTIES
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION
-                        "PASS online room accessibility: cases=42 titles=42 keyboard-action-sets=42"
+                        "PASS online room accessibility: cases=43 titles=43 keyboard-action-sets=43"
                     TIMEOUT 300)
 
                 # One representative rendered case for every public action,
@@ -1184,7 +1229,7 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_online_room_actions PROPERTIES
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION
-                        "PASS online room actions: actions=25 keyboard=25 gamepad=25"
+                        "PASS online room actions: actions=27 keyboard=27 gamepad=27"
                     TIMEOUT 300)
 
                 # The responsive launcher has three distinct navigation modes.

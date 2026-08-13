@@ -9,7 +9,18 @@ export const LIMITS = Object.freeze({
   maxTransitions: 4096,
 });
 
-export type RoomPhase = "open" | "racing" | "closed";
+export function partyInviteRemainingMs(inviteExpiresAt: unknown,
+                                       now: unknown): number | null {
+  if (!Number.isSafeInteger(inviteExpiresAt) || !Number.isSafeInteger(now) ||
+      Number(now) < 0 || Number(inviteExpiresAt) <= Number(now)) return null;
+  return Math.min(LIMITS.inviteTtlMs,
+    Number(inviteExpiresAt) - Number(now));
+}
+
+/* Phone Party owns controller admission/leases, not gameplay progression.
+ * Starting a local race revokes the displayed invite but leaves this room
+ * open, keeping the launcher/service boundary out of game state. */
+export type RoomPhase = "open" | "closed";
 export type ControllerPhase =
   "pending" | "approved" | "leased" | "connected" | "closed";
 export type CloseReason =

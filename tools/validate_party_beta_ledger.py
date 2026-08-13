@@ -22,6 +22,7 @@ OPERATIONS = {
     "matchControl": ("control", 2),
     "matchRotate": ("control", 10),
     "matchSocket": ("control", 4),
+    "matchSignalSocket": ("control", 15),
     "partyCreate": ("pairing", 10),
     "partyLinkJoin": ("pairing", 2),
     "partyCodeJoin": ("pairing", 3),
@@ -96,7 +97,7 @@ def parse_health(value: Any, expected_day: str,
         "schemaVersion", "reservationRequests", "reservations", "admitted",
         "tracked", "tracking", "day",
     }), "health_schema")
-    integer(root["schemaVersion"], 1, 1, "health_version")
+    integer(root["schemaVersion"], 2, 2, "health_version")
     if utc_day(root["day"], "health_day") != expected_day:
         fail("health_day_mismatch")
     reservations = exact_object(root["reservations"], RESERVATION_KEYS,
@@ -175,7 +176,7 @@ def validate(value: Any) -> LedgerResult:
     root = exact_object(value, frozenset({
         "schemaVersion", "window", "days", "finalDecision",
     }), "ledger_schema")
-    integer(root["schemaVersion"], 2, 2, "ledger_version")
+    integer(root["schemaVersion"], 3, 3, "ledger_version")
     window = exact_object(root["window"],
                           frozenset({"startDay", "endDay", "timeZone"}),
                           "window_schema")

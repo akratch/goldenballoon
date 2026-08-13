@@ -36,14 +36,16 @@ def internal(day: str) -> dict[str, object]:
 
 def provider(day: str) -> dict[str, object]:
     return {
-        "schemaVersion": 1, "day": day, "plan": "free",
+        "schemaVersion": 2, "day": day, "plan": "free",
         "billing": {"methodAttached": False, "paidOveragesEnabled": False,
                     "currencyCode": "USD", "chargeMicros": 0},
         "usage": {"workerRequests": 500, "durableObjectRequests": 450,
+                  "durableObjectDurationGbSeconds": 10,
                   "rowsRead": 1_000, "rowsWritten": 250,
                   "storageBytes": 65_536},
         "limits": {"workerRequests": 100_000,
                    "durableObjectRequests": 100_000,
+                   "durableObjectDurationGbSeconds": 13_000,
                    "rowsRead": 5_000_000, "rowsWritten": 100_000,
                    "storageBytes": 5_000_000_000},
     }
@@ -53,11 +55,12 @@ def health(day: str) -> dict[str, object]:
     reservations = {
         "matchCreate": 0, "matchLinkJoin": 0, "matchCodeJoin": 0,
         "matchControl": 21, "matchRotate": 0, "matchSocket": 0,
+        "matchSignalSocket": 0,
         "partyCreate": 12, "partyLinkJoin": 0, "partyCodeJoin": 0,
         "partyControl": 0, "partyRotate": 0, "partySocket": 0, "legacy": 0,
     }
     return {
-        "schemaVersion": 1, "day": day, "reservationRequests": 33,
+        "schemaVersion": 2, "day": day, "reservationRequests": 33,
         "reservations": reservations,
         "admitted": {"pairingUnits": 120, "controlUnits": 42},
         "tracked": {"pairingUnits": 120, "controlUnits": 42},
@@ -89,7 +92,7 @@ def ledger() -> dict[str, object]:
             "localPlayAvailable": True,
             "incidentOpen": False, "decision": "GO",
         })
-    return {"schemaVersion": 2,
+    return {"schemaVersion": 3,
             "window": {"startDay": "2026-08-01", "endDay": "2026-08-07",
                        "timeZone": "UTC"},
             "days": days, "finalDecision": "GO"}
@@ -113,6 +116,8 @@ def main() -> int:
     cases: list[tuple[str, dict[str, object]]] = []
     changed = ledger(); changed["private"] = "canary"
     cases.append(("ledger_schema", changed))
+    changed = ledger(); changed["schemaVersion"] = 2
+    cases.append(("ledger_version", changed))
     changed = ledger(); changed["days"] = changed["days"][:6]  # type: ignore[index]
     cases.append(("day_count", changed))
     changed = ledger(); changed["days"][3]["day"] = "2026-08-05"  # type: ignore[index]
@@ -128,6 +133,8 @@ def main() -> int:
     changed = ledger(); changed["days"][0]["decision"] = "STOP"  # type: ignore[index]
     cases.append(("daily_decision", changed))
     changed = ledger(); changed["days"][0]["provider"]["billing"]["chargeMicros"] = 1  # type: ignore[index]
+    cases.append(("daily_reconciliation", changed))
+    changed = ledger(); changed["days"][0]["provider"]["usage"]["durableObjectDurationGbSeconds"] = 9_750  # type: ignore[index]
     cases.append(("daily_reconciliation", changed))
     changed = ledger(); changed["days"][0]["health"]["tracking"] = "partial"  # type: ignore[index]
     cases.append(("health_tracking_incomplete", changed))

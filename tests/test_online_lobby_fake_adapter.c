@@ -142,7 +142,49 @@ static void test_two_race_create_vertical_and_mutations(void) {
            "preflight wait renders its bounded recovery contract");
     expect(mdkr_online_fake_complete(
                &adapter, token, MDKR_ONLINE_VIEW_FAILURE_NONE).accepted,
-           "preflight completion enters launcher selection");
+           "preflight completion publishes a locally derived phrase");
+    expect(mdkr_online_fake_view(&adapter, &model) &&
+               model.kind == MDKR_ONLINE_VIEW_PREFLIGHT &&
+               model.verification_phrase[0] != '\0' &&
+               strcmp(model.verification_phrase,
+                      "Nimble-Pilot Jolly-Star Sunny-Falcon") == 0 &&
+               model.primary.action == MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE &&
+               !model.timeout.present,
+           "completed check waits for explicit phrase comparison");
+    {
+        MdkrOnlineFakeAdapter mismatch = adapter;
+        MdkrOnlineFakeStep mismatch_step = send_action(
+            &mismatch, request_id,
+            MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH, 0u, 0u);
+        expect(mismatch_step.accepted &&
+                   !mismatch.verification_phrase_ready &&
+                   mismatch.failure ==
+                       MDKR_ONLINE_VIEW_FAILURE_VERIFICATION_MISMATCH &&
+                   mdkr_online_fake_view(&mismatch, &model) &&
+                   model.kind == MDKR_ONLINE_VIEW_RECOVERY &&
+                   strcmp(model.title, "Words Did Not Match") == 0 &&
+                   model.primary.action == MDKR_ONLINE_VIEW_ACTION_RETRY,
+               "Words Differ enters assertive secure recovery");
+        expect(send_action(&mismatch, request_id + 1u,
+                           MDKR_ONLINE_VIEW_ACTION_RETRY,
+                           0u, 0u).accepted &&
+                   mismatch.pending == MDKR_ONLINE_FAKE_PENDING_PREFLIGHT &&
+                   mismatch.failure == MDKR_ONLINE_VIEW_FAILURE_NONE,
+               "mismatch recovery preserves room and derives a fresh phrase");
+        expect(mdkr_online_fake_complete(
+                   &mismatch, mismatch.pending_token,
+                   MDKR_ONLINE_VIEW_FAILURE_NONE).accepted &&
+                   mdkr_online_fake_view(&mismatch, &model) &&
+                   strcmp(model.verification_phrase,
+                          "Golden-Otter Rapid-Moon Velvet-Kite") == 0,
+               "mismatch retry cannot reuse the rejected phrase");
+    }
+    expect(send_action(&adapter, request_id++,
+                       MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                       0u, 0u).accepted &&
+               adapter.session.state.room == MDKR_ROOM_SELECTING &&
+               !adapter.verification_phrase_ready,
+           "Words Match is the only transition into launcher selection");
     expect(mdkr_online_fake_prepare_peer(
                &adapter, adapter.revision, 2u, 0u, 5u).accepted,
            "friend selections use one atomic fake transaction over reducer commands");
@@ -199,8 +241,20 @@ static void test_two_race_create_vertical_and_mutations(void) {
     expect(send_action(&adapter, request_id++,
                        MDKR_ONLINE_VIEW_ACTION_RACE_AGAIN, 0u, 0u).accepted &&
                adapter.session.state.scene == MDKR_SCENE_LOBBY &&
-               adapter.lobby.phase == MDKR_ONLINE_LOBBY,
-           "Race Again returns to launcher-owned voting without disconnecting");
+               adapter.session.state.room == MDKR_ROOM_PREFLIGHT &&
+               adapter.lobby.phase == MDKR_ONLINE_LOBBY &&
+               adapter.pending == MDKR_ONLINE_FAKE_PENDING_PREFLIGHT,
+           "Race Again preserves the room and starts a fresh secure check");
+    token = adapter.pending_token;
+    expect(mdkr_online_fake_complete(
+               &adapter, token, MDKR_ONLINE_VIEW_FAILURE_NONE).accepted &&
+               mdkr_online_fake_view(&adapter, &model) &&
+               strcmp(model.verification_phrase,
+                      "Golden-Otter Rapid-Moon Velvet-Kite") == 0 &&
+               send_action(&adapter, request_id++,
+                           MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                           0u, 0u).accepted,
+           "rematch requires a changed phrase before new selections");
     expect(mdkr_online_fake_prepare_peer(
                &adapter, adapter.revision, 2u, 0u, 5u).accepted,
            "friend prepares second race");
@@ -392,8 +446,14 @@ static void test_deterministic_gallery(void) {
         expect(mdkr_online_fake_complete(
                    &adapter, step.pending_token,
                    MDKR_ONLINE_VIEW_FAILURE_NONE).accepted &&
+                   adapter.session.state.room == MDKR_ROOM_PREFLIGHT &&
+                   adapter.verification_phrase_ready,
+               "successful settings recheck publishes a fresh phrase");
+        expect(send_action(&adapter, adapter.last_request_id + 1u,
+                           MDKR_ONLINE_VIEW_ACTION_CONFIRM_PHRASE,
+                           0u, 0u).accepted &&
                    adapter.session.state.room == MDKR_ROOM_SELECTING,
-               "successful settings recheck advances to selection");
+               "settings recovery still requires explicit phrase confirmation");
 
         expect(mdkr_online_fake_init(&adapter, 3002u, &compat, false) &&
                    mdkr_online_fake_prepare_gallery(

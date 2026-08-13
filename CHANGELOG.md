@@ -1,5 +1,21 @@
 # Changelog
 
+- Hardened Phone Party origin and tab custody: the Worker now refuses a
+  noncanonical or non-HTTPS production `PARTY_ORIGIN` before any exception or
+  Durable Object work; browser host/controller routes enforce the same-origin
+  HTTPS boundary with loopback-only HTTP. Controller recovery now distinguishes
+  private from public share/copy text and falls back to copy after share-sheet
+  failure. Duplicate-tab takeover explicitly neutralizes and closes the prior
+  publisher before ordinary Web Lock acquisition, fails closed on lock errors,
+  and supplies a raw-secret-free broadcast/15-second hashed lease for browsers
+  without Web Locks. Phone and launcher host lifecycle cleanup now prevents
+  pagehide, freeze or BFCache restoration from reviving a bearer invitation,
+  direct publisher, stale QR or held remote input; connected resume clears old
+  edge history and publishes fresh neutral before re-arming controls. Host
+  create/rotate requests are page-bound and generation-checked so late
+  completion cannot repopulate erased invite custody; phone redemption is
+  likewise aborted and lifecycle-checked before credential-derived UI appears.
+
 Release history for Golden Balloon. The detailed test inventory is in
 [tests/README.md](tests/README.md); deferred work and known gaps are tracked in
 [docs/open-items/](docs/open-items/README.md).
@@ -12,6 +28,56 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Added
 
+- Native-window and real-browser automation now require two independent
+  runtime capabilities. Test-class flags alone cannot create Cocoa/SDL or
+  Chromium processes: the caller must also attest an isolated test desktop,
+  and neither CMake nor the test runner synthesizes that attestation.
+- Online Room preflight now pauses on a bounded three-compound verification
+  phrase, announces the exact phrase and mismatch warning, and requires an
+  explicit **Words Match** action before selection; rematches repeat the check.
+  **Words Differ** stops progression and offers a fresh secure connection.
+  Native/browser projections share ABI v4 and model-owned phrase storage,
+  exercised across all 43 room views and 27 actions; on-device visual
+  evidence remains gated.
+- The browser Online Room now renders through a pure semantic presenter shared
+  with a Node conformance test. All 43 authoritative C projections prove action
+  and selection order, timeout priority, singular/plural counts, local recovery,
+  phrase/mismatch announcements, immutable output and malformed-model refusal
+  without launching Chromium; the presenter is build-stamped and precached with
+  the rest of the offline shell.
+- Browser room effects now require an action that is both present and enabled in
+  the current immutable presentation. Stale, unrendered and out-of-range routes
+  stop before I/O; the production API cannot select gallery fixtures; and setup,
+  phrase and race actions that depend on the gated carrier explain that nothing
+  changed instead of silently failing or simulating success.
+- `/room/` links no longer stage private-room capabilities in session storage.
+  The role page uses a fragment-only same-origin handoff; the always-loaded
+  launcher scrubs the address before configuration access, keeps enabled pre-ROM
+  custody only in closure memory for at most ten minutes, and immediately
+  discards invitations in disabled builds while showing a specific local-first
+  recovery. If either History API scrub fails, it navigates clean and abandons
+  redemption instead of continuing with the capability.
+- Browser MatchRoom responses now cross an exact, pure live-state boundary
+  before reaching the launcher. Unknown/private fields, changed identity,
+  malformed room state, incompatible phases and unsafe invitations fail closed;
+  accepted state is deeply immutable, stale invite generations are revoked, and
+  projection/presenter failures restore both prior state and invite custody.
+  Successful guest leave no longer attempts a refresh with its revoked
+  credential. The boundary is build-stamped and precached with the offline shell.
+- MatchRoom invitation custody now expires against a conservative local
+  receipt-relative deadline, avoiding display/service clock-skew errors. Expiry
+  removes the QR/link/code before rendering and ABI v4 exposes a leader-only
+  **New Invitation** recovery. Snapshot validation also rejects revision/epoch/
+  leader regressions, equal-revision equivocation and control tails whose final
+  authority does not match the enclosing lobby.
+- Browser live-fixture hooks now require an explicit test configuration on a
+  loopback host. Production activation no longer creates a global test recorder,
+  and loopback diagnostics retain only request field names and credential
+  presence—not invite, code, bearer or command values. Terminal room states
+  close sockets and discard credentials before **Return Home** or **Play Here**.
+- Emscripten configuration no longer evaluates a `$<TARGET_FILE:…>` expression
+  for the native-only browser-model harness; the presenter/host-executable test
+  is registered only when that target exists.
 - Wizpig and Terry are playable. Wizpig unlocks after beating him the second
   time or with `WIZPIGPOWER`; Terry unlocks after the Dino Domain rematch or
   with `TERRYFLY`. Both keep normal attacks, items, and collisions, ride their
@@ -29,10 +95,147 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ### Fixed
 
+- Delayed MatchRoom HTTP responses no longer turn a newer WebSocket publication
+  into a false outage or roll member state back. A rotate response may recover
+  only its exact in-flight expected/current generation's secret under current
+  leader custody; replay cannot extend locally expired custody, and malformed,
+  changed or older-generation secrets still fail closed. MatchRoom
+  responses also advertise the actual remaining invite lifetime capped by the
+  room deadline, rather than a fresh full TTL near room expiry.
+- Phone controller links now scrub their exact query-free fragment before
+  configuration or browser probes and abandon redemption if URL scrubbing
+  fails. Embedded/unsupported **Share private link** with **Copy private link**
+  fallback and duplicate-tab **Use this tab** now reconstruct the closure-held
+  private link for the explicit gesture/new navigation instead of copying or
+  reloading the already-clean address. Capability-free recovery shares the
+  exact public controller page and requires the current code. Protocol-update
+  recovery now performs the reload its label promises.
+- A missing or failed QR encoder no longer leaves a blank canvas labelled as a
+  room QR. The online invite surface falls back to accurate Share/code guidance
+  and keeps the accessible six-digit code usable.
+- Phone Party host and controller clients now bound HTTP responses to 16 KiB
+  and ten seconds, validate exact monotonic socket state, reject same-transition
+  equivocation and stop signaling retry after five short-lived failures. A QR
+  encoder/canvas failure keeps `/controller/` plus the six-digit code usable,
+  and a phone without a healthy direct path exposes **Try now**. Host offers and
+  ICE are now relayed only to the addressed authenticated controller instead of
+  every controller socket; create/rotate countdowns use the room's actual
+  remaining invite lifetime and committed generation. Dismissal/expiry erases
+  QR/code/URL custody immediately; exact revoke generations serialize rapid
+  reopen rotation without dropping approved leases. Broken hibernated socket
+  sends, closes and attachment reads are contained per peer after state commits.
+  Native and HTTP room mutations now share one object-wide transition gate
+  across budget, directory and storage awaits.
+  **Start local game** erases/revokes the displayed invite before Play while
+  preserving approved phones; controller-room authority stays independent of
+  launcher-owned gameplay phase.
+  Invite rotation now survives honest socket-before-HTTP publication while
+  refusing a response after any newer generation has become authoritative;
+  public generation changes erase old displayed custody before state merge.
+  Worker request bodies now stream into fixed ceilings with early cancellation
+  and fatal UTF-8 instead of aggregating unknown-length input first.
+  Public Phone Party and MatchRoom requests now reject unknown top-level fields,
+  and match compatibility rejects unknown nested fields, instead of silently
+  accepting ambiguous or future-looking input at the authority boundary. JSON
+  protocol bodies—including Match commands—also require the JSON media type at
+  the Worker edge before parsing. Phone signaling is rebuilt from exact
+  role-specific hello/SDP/ICE envelopes with attachment-derived controller
+  identity and bounded nested fields; native host mutations now reject extra or
+  wrong-action fields before budget reservation or room mutation.
+  Controller names now remove zero-width/bidirectional control characters and
+  use one NFC, 24-code-point contract across phone, service and host display.
+  Approved browser phones can now be removed from their exact launcher seat
+  through a safe-default confirmation. Cancel is non-mutating and restores the
+  invoking action; confirm focuses the now-available seat, neutralizes the
+  phone, releases only its lease and closes only its signaling socket with
+  accurate removal recovery copy. A stale confirmation also closes cleanly if
+  another host removes the target first. The typed terminal close independently
+  stops retry if the preceding state frame is lost.
+- MatchRoom HTTP responses now use the same 64 KiB ceiling as state sockets.
+  The launcher streams and cancels an oversized or invalid response before its
+  control state can reach projection. Corrupt subscriptions close and require a
+  current-state refresh before reconnect, and superseded callbacks are rejected
+  by a launcher-owned subscription generation.
+- Automatic room-state reconnect now stops after five consecutive or short-lived
+  socket failures. Thirty stable seconds reset the counter; otherwise the calm
+  Retry path refreshes state before spending more control reserve. Synchronous
+  adapter/WebSocket construction failures and invalid subscription handles are
+  contained, invalidate partial custody and spend that same bounded sequence
+  instead of escaping as an unhandled page error.
+- An accepted solo-host Close is terminal at its command receipt; the launcher
+  clears locally instead of issuing a doomed state request after the service
+  closes every room socket.
+- Native launcher and direct-engine automation no longer activate the
+  application, steal keyboard focus, raise a window or switch into a fullscreen
+  Space on macOS. The runner uses both the application policy and SDL's native
+  background/no-activation hints, so hermetic tests that scrub `MDKR*` cannot
+  discard the safety boundary. Native GPU/window CTests are absent unless the
+  build explicitly enables them, and Chromium creation requires a separate
+  dedicated-desktop capability. Native game/renderer roles also require the
+  separate `--with-app-tests` dedicated-desktop capability; ordinary runner
+  use excludes them entirely. Compiled CTest execution is also absent from the
+  ordinary runner and local-CI paths unless `--with-compiled-tests` accompanies
+  the caller-owned dedicated-desktop attestation. ROM-backed roles are included in that boundary
+  because their scripts can resolve and launch the native game internally.
+  All application-launching roles are serialized
+  even under `--jobs`. The application now independently refuses automated
+  native surfaces unless it receives the exact dedicated-desktop capability,
+  local CTest excludes production-app/browser processes, and macOS descendants
+  inherit Darwin background scheduling in addition to reduced CPU priority and
+  capped concurrency so ordinary validation remains usable. The macOS
+  accessory/background policy now takes effect before `SDL_Init`, closing the
+  last interval in which SDL could foreground a nominally hidden test. An
+  explicitly authorized local CTest lane deletes inherited app/browser launch
+  capabilities, the source-archive smoke refuses to start without the desktop
+  attestation, and ambient environment variables can no longer opt local CI
+  into native GPU/window tests.
 - Simultaneous room commands can no longer both commit from one revision or
   lease the same Phone Party seat. Direct controller channels now use stale-
   generation rejection and a bounded liveness watchdog, fail neutral when the
   reliable path closes, and recover inside the approved seat.
+- Native and service room reducers now replay one shared lifecycle trace after
+  every valid and invalid command. This aligned stale-revision precedence and
+  prevents the service from accepting ROM revisions the launcher rejects.
+- Native and browser Online Room launchers now share an exact clean-release
+  provenance recipe for build/gameplay compatibility; dirty or malformed
+  provenance and unsupported ROM revisions fail before room access.
+- The disabled Online Room carrier foundation now rejects asymmetric or
+  diameter-three peer graphs, authenticates deterministic one-hop forwarding,
+  and uses recipient-encrypted, replay-bounded native/browser input envelopes.
+  Envelope opening now requires the complete caller-expected direction, so an
+  authenticated peer cannot use its valid key while claiming another source.
+  Native transcript validation now checks every key before sorting, forwarding
+  separately binds the immediate channel generation, replay windows reset on
+  authenticated connection-generation changes, graph
+  copies discard ABI padding, and corrupt preflight counts fail without walking
+  outside the bounded roster. Preflight fragments and completed reports bind to
+  separately authenticated peer custody, preventing cross-peer splicing or
+  forged attribution. Caller-selected AES-GCM sequences are removed: one
+  direction-bound sender window allocates them across input and preflight,
+  rejects concurrent browser seals and fails atomically on provider error or
+  exhaustion. The online room now compares three short
+  compounds (30 transcript bits); Phone Party's existing SAS is unchanged.
+- The disabled Online Room preflight foundation now binds every authenticated
+  endpoint to one launch descriptor, peer-key transcript, canonical directed
+  graph, verified supported ROM, confirmed phrase and ready route with typed
+  fail-closed recovery. Native and browser share one fixed 124-byte
+  authenticated-channel report vector; graph hashing is endpoint-order
+  independent and detects route equivocation. The report crosses the existing
+  fixed 64-byte AEAD carrier as three bounded, sequence-bound reliable-control
+  fragments with an authenticated payload type, including one-hop paths.
+- The disabled Online Room now has a separately authenticated, lifetime-bounded
+  signaling seam for P-256 hello and WebRTC setup. It assigns and injects peer
+  generations, targets one current room member, survives object hibernation,
+  replaces duplicate sockets, and has its own honest 15-unit $0 reservation
+  bucket. The dormant same-origin launcher adapter is not loaded by the
+  disabled policy; gameplay input and preflight reports still have no service
+  relay route. Broken WebSocket delivery can no longer turn a committed room
+  command into a failure or block healthy peers; a replacement connection is
+  persisted before its predecessor is closed.
+- Zero-cost reconciliation now treats Durable Object duration as an independent
+  daily provider ceiling, alongside requests and SQLite storage operations.
+  Provider evidence is schema v2 and the seven-day ledger is v3, so an older
+  aggregate with no duration measurement fails closed instead of assuming zero.
 - Rollback races now keep projectile models, glow attachments and shared model
   lifetimes deterministic across rewinds. A 15-configuration item matrix covers
   every balloon tier through the real inventory path and guards the fix.

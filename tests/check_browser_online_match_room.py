@@ -17,23 +17,34 @@ ROOT = Path(__file__).resolve().parent.parent
 
 FIXTURE = r"""
 (() => {
+  globalThis.__mdkrOnlineRoomTestConfig={liveFixture:true};
   const compatibility={protocolVersion:1,
     buildId:Array.from({length:16},(_,i)=>i+1),
     gameplayDigest:Array.from({length:32},(_,i)=>128+i),
     romRevision:1,cadenceHz:30};
   const host='100', guest='200';
-  let callback=null, closed=null, subscriptions=0;
+  let fixtureNow=Date.now();
+  Date.now=()=>fixtureNow;
+  let callback=null, staleCallback=null, closed=null, subscriptions=0;
+  let flapRemaining=0;
+  let throwSubscribeRemaining=0;
   let inviteGeneration=1, code='123456';
+  let nextInviteTtl=600000;
+  let raceNextRotate=false;
+  let loseLeadershipNextRotate=false;
+  let closedReason=null;
+  const roomExpiresAt=fixtureNow+86400000;
+  let inviteExpiresAt=fixtureNow+600000;
   let lobby={protocolVersion:1,revision:1,matchEpoch:0,leaderGeneration:1,
     roomId:'42',leaderEndpointId:host,phase:'lobby',compatibility,
     members:[{endpointId:host,seatCount:1,connected:true,ready:false,loaded:false}],
     seats:[{endpointId:host,selectionRevision:0,voteTrack:null,localIndex:0,
       characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0};
   const snapshot=(extra={})=>({type:'match_state',schemaVersion:1,
-    expiresAt:Date.now()+86400000,inviteExpiresAt:Date.now()+600000,
-    inviteGeneration,closedReason:null,lobby:structuredClone(lobby),
+    expiresAt:roomExpiresAt,inviteExpiresAt,
+    inviteGeneration,closedReason,lobby:structuredClone(lobby),
     controlTail:[],...extra});
-  const publish=()=>queueMicrotask(()=>callback?.(snapshot({serviceAdmission:true})));
+  const publish=()=>queueMicrotask(()=>callback?.(snapshot()));
   const joined=()=>{
     if (!lobby.members.some(item=>item.endpointId===guest)) {
       lobby.members.push({endpointId:guest,seatCount:1,connected:true,
@@ -41,7 +52,9 @@ FIXTURE = r"""
       lobby.seats.push({endpointId:guest,selectionRevision:0,voteTrack:null,
         localIndex:0,characterId:null,vehicleId:null});
       lobby.revision++;
+      return true;
     }
+    return false;
   };
   globalThis.__mdkrOnlineRoomLiveConfig={enabled:true,compatibility,
     async request(path,{body,credential}) {
@@ -49,18 +62,34 @@ FIXTURE = r"""
         hash:location.hash});
       if (path==='/api/match/create') return {...snapshot(),roomId:'roomroomroomroomroomro',
         endpointId:host,credential:'H'.repeat(43),fallbackCode:code,
+        inviteExpiresInMs:600000,
         inviteUrl:location.origin+'/room/#match='+'A'.repeat(43)};
       if (path==='/api/match/join' || path==='/api/match/code') {
         joined();
         return {...snapshot(),roomId:'roomroomroomroomroomro',endpointId:guest,
           credential:'G'.repeat(43)};
       }
-      if (path.endsWith('/state')) return snapshot({serviceAdmission:true});
+      if (path.endsWith('/state')) return snapshot();
       if (path.endsWith('/rotate')) {
         if (body.expectedInviteGeneration!==inviteGeneration) return {error:'invalid_state'};
-        inviteGeneration++; code='654321';
-        return {...snapshot(),fallbackCode:code,
+        inviteGeneration++; code=inviteGeneration===2?'654321':'777888';
+        const ttl=nextInviteTtl; nextInviteTtl=600000;
+        inviteExpiresAt=Math.min(fixtureNow+ttl,roomExpiresAt);
+        const response={...snapshot(),fallbackCode:code,
+          inviteExpiresInMs:ttl,
           inviteUrl:location.origin+'/room/#match='+'B'.repeat(43)};
+        if (raceNextRotate) {
+          raceNextRotate=false;
+          joined();
+          callback?.(snapshot());
+        }
+        if (loseLeadershipNextRotate) {
+          loseLeadershipNextRotate=false;
+          joined(); lobby.leaderEndpointId=guest;
+          lobby.leaderGeneration++; lobby.revision++;
+          callback?.(snapshot());
+        }
+        return response;
       }
       if (path.endsWith('/command')) {
         if (body.expectedRevision!==lobby.revision) return {error:'stale_revision'};
@@ -81,17 +110,53 @@ FIXTURE = r"""
       return {error:'not_found'};
     },
     subscribe(_room,onState,onClose) {
-      subscriptions++; callback=onState; closed=onClose;
+      subscriptions++;
+      if (throwSubscribeRemaining>0) {
+        throwSubscribeRemaining--;
+        throw new Error('fixture subscribe construction failed');
+      }
+      callback=onState; closed=onClose;
+      if (flapRemaining>0) queueMicrotask(()=>{
+        if (closed!==onClose) return;
+        flapRemaining--; staleCallback=callback; callback=null; closed=null;
+        onClose();
+      });
       return {close(){ callback=null; closed=null; }};
     }};
   globalThis.__liveRequests=[];
-  globalThis.__livePeerJoin=()=>{ joined();
+  globalThis.__livePeerJoin=()=>{ const added=joined();
     const peer=lobby.members.find(item=>item.endpointId===guest);
     const seat=lobby.seats.find(item=>item.endpointId===guest);
     peer.ready=true; seat.characterId=1; seat.vehicleId=0; seat.voteTrack=3;
-    seat.selectionRevision=2; publish(); };
-  globalThis.__liveDisconnect=()=>{ const value=closed; callback=null; closed=null; value?.(); };
+    seat.selectionRevision=2; if (!added) lobby.revision++; publish(); };
+  globalThis.__liveDisconnect=()=>{ const value=closed; staleCallback=callback;
+    callback=null; closed=null; value?.(); };
+  globalThis.__liveStalePublish=()=>staleCallback?.({...snapshot(),unexpected:true});
+  globalThis.__liveFlap=()=>{ flapRemaining=10; const value=closed;
+    staleCallback=callback; callback=null; closed=null; value?.(); };
+  globalThis.__liveStopFlap=()=>{ flapRemaining=0; };
+  globalThis.__liveThrowNextSubscribe=()=>{ throwSubscribeRemaining=1;
+    const value=closed; staleCallback=callback; callback=null; closed=null;
+    value?.(); };
+  globalThis.__liveExpireInvite=()=>{ fixtureNow=inviteExpiresAt; publish(); };
+  globalThis.__liveUseShortInvite=()=>{ nextInviteTtl=200; };
+  globalThis.__liveRaceNextRotate=()=>{ raceNextRotate=true; };
+  globalThis.__liveLoseLeadershipNextRotate=()=>{
+    loseLeadershipNextRotate=true;
+  };
+  globalThis.__liveAdvanceInviteClock=()=>{ fixtureNow=inviteExpiresAt; };
   globalThis.__liveCorrupt=()=>callback?.({...snapshot(),lobby:{...structuredClone(lobby),receipts:[]}});
+  globalThis.__liveHostClose=()=>{ lobby.phase='closed'; lobby.revision++;
+    closedReason='host_closed'; publish(); };
+  globalThis.__liveResetSolo=()=>{
+    inviteGeneration=1; code='123456'; nextInviteTtl=600000;
+    inviteExpiresAt=fixtureNow+600000; closedReason=null;
+    lobby={protocolVersion:1,revision:1,matchEpoch:0,leaderGeneration:1,
+      roomId:'42',leaderEndpointId:host,phase:'lobby',compatibility,
+      members:[{endpointId:host,seatCount:1,connected:true,ready:false,loaded:false}],
+      seats:[{endpointId:host,selectionRevision:0,voteTrack:null,localIndex:0,
+        characterId:null,vehicleId:null}],selectedTrack:null,selectedVehicleMask:0};
+  };
   globalThis.__liveSubscriptions=()=>subscriptions;
 })();
 """
@@ -116,7 +181,8 @@ def click_action(cdp: CDPClient, action: int) -> None:
 def run(args: argparse.Namespace) -> None:
     shell = resolve(args.shell_dir)
     for relative in ("index.html", "online/online-control-config.js",
-                     "online/online-room.js",
+                     "online/online-room-live-state.js",
+                     "online/online-room-presenter.js", "online/online-room.js",
                      "online/online-room.css", "mdkr-online-tools.js",
                      "mdkr-online-tools.wasm", "room/index.html",
                      "room/room-entry.js", "room/room-entry.css"):
@@ -177,11 +243,54 @@ def run(args: argparse.Namespace) -> None:
                 require(invite["code"] == "123 456" and invite["width"] > 0 and
                         invite["replace"],
                         f"online invite surface is incomplete: {invite}")
+                qr_fallback = cdp.evaluate("""(() => {
+                  const saved=globalThis.qrcodegen;
+                  globalThis.qrcodegen=undefined;
+                  document.querySelector('[data-online-action="3"]').click();
+                  const value={qr:Boolean(document.querySelector('.online-room-qr')),
+                    copy:document.getElementById('online-room-auxiliary').textContent,
+                    code:document.querySelector('.online-room-code')?.textContent};
+                  globalThis.qrcodegen=saved;
+                  return value;
+                })()""")
+                require(not qr_fallback["qr"] and
+                        qr_fallback["code"] == "123 456" and
+                        "Share this room link or enter the code" in qr_fallback["copy"],
+                        f"missing QR dependency had no usable fallback: {qr_fallback}")
+                cdp.evaluate("__liveRaceNextRotate()")
                 require(cdp.evaluate("""(() => { const b=[...document.querySelectorAll('button')]
                   .find(item=>item.textContent==='Replace Invitation'); b.click(); return true; })()"""),
                         "invite replacement control missing")
                 wait_value(cdp, "document.querySelector('.online-room-code')?.textContent",
                            lambda value: value == "654 321", "rotated room invite", args.timeout)
+                cdp.evaluate("__liveExpireInvite()")
+                expired = wait_value(cdp, """(() => ({
+                  status:document.getElementById('online-room-model-status').textContent,
+                  oldSecret:Boolean(document.querySelector('.online-room-code, .online-room-qr')),
+                  replacement:[...document.querySelectorAll('[data-online-action="3"]')]
+                    .map(item=>({label:item.textContent,disabled:item.disabled}))}))()""",
+                    lambda value: isinstance(value, dict) and
+                        value.get("status") == "Invitation Expired",
+                    "expired invitation recovery", args.timeout)
+                require(not expired["oldSecret"] and expired["replacement"] == [{
+                            "label": "New Invitation", "disabled": False}],
+                        f"expired invitation leaked or lacked recovery: {expired}")
+                cdp.evaluate("__liveUseShortInvite()")
+                click_action(cdp, 3)
+                wait_value(cdp, "document.querySelector('.online-room-code')?.textContent",
+                           lambda value: value == "777 888",
+                           "replacement after invite expiry", args.timeout)
+                cdp.evaluate("__liveAdvanceInviteClock()")
+                timed_expiry = wait_value(cdp, """(() => ({
+                  heading:document.querySelector('#online-room-auxiliary h3')?.textContent,
+                  oldSecret:Boolean(document.querySelector('.online-room-code, .online-room-qr')),
+                  button:document.querySelector('#online-room-auxiliary button')?.textContent
+                }))()""", lambda value: isinstance(value, dict) and
+                    value.get("heading") == "Invitation Expired",
+                    "receipt-relative invite timer", args.timeout)
+                require(not timed_expiry["oldSecret"] and
+                        timed_expiry["button"] == "Create New Invitation",
+                        f"invite timer retained secret or lost recovery: {timed_expiry}")
 
                 cdp.evaluate("__livePeerJoin()")
                 wait_value(cdp, "document.getElementById('online-room-model-status').textContent",
@@ -210,6 +319,15 @@ def run(args: argparse.Namespace) -> None:
                 cdp.evaluate("__liveDisconnect()")
                 wait_value(cdp, "__liveSubscriptions()",
                            lambda value: value > before, "bounded state reconnect", args.timeout)
+                stale_result = cdp.evaluate("""(() => {
+                  const before=__mdkrOnlineRoomTestState.errors.length;
+                  __liveStalePublish();
+                  return {before,after:__mdkrOnlineRoomTestState.errors.length,
+                    title:document.getElementById('online-room-title').textContent};
+                })()""")
+                require(stale_result["before"] == stale_result["after"] and
+                        stale_result["title"] == "Choose Your Racers",
+                        f"superseded subscription mutated current UX: {stale_result}")
                 cdp.evaluate("__liveCorrupt()")
                 wait_value(cdp, "document.getElementById('online-room-title').textContent",
                            lambda value: value == "Could Not Reach the Room",
@@ -224,6 +342,82 @@ def run(args: argparse.Namespace) -> None:
                 folded = {name.casefold() for name in names}
                 require("change selection" in folded and "leave room" in folded,
                         f"live room actions missing from accessibility tree: {sorted(names)}")
+                flap_start = cdp.evaluate("__liveSubscriptions()")
+                cdp.evaluate("__liveFlap()")
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Could Not Reach the Room",
+                           "bounded socket-flap recovery", args.timeout)
+                require(cdp.evaluate("__liveSubscriptions()") == flap_start + 5,
+                        "state socket exceeded five automatic reconnect attempts")
+                cdp.evaluate("__liveStopFlap()")
+                click_action(cdp, 14)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Choose Your Racers",
+                           "explicit retry after socket-flap exhaustion", args.timeout)
+                setup_failure_start = cdp.evaluate("__liveSubscriptions()")
+                cdp.evaluate("__liveThrowNextSubscribe()")
+                wait_value(cdp, "__liveSubscriptions()",
+                           lambda value: value == setup_failure_start + 2,
+                           "recovery from synchronous subscription failure",
+                           args.timeout)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Choose Your Racers",
+                           "state restored after subscription setup failure",
+                           args.timeout)
+                cdp.evaluate("__liveLoseLeadershipNextRotate()")
+                click_action(cdp, 3)
+                leadership_loss = wait_value(cdp, """(() => ({
+                  connection:Boolean(document.querySelector('[data-online-action="5"]')),
+                  replacement:Boolean(document.querySelector('[data-online-action="3"]')),
+                  secret:Boolean(document.querySelector('.online-room-code, .online-room-qr')),
+                  auxiliary:document.getElementById('online-room-auxiliary').textContent
+                }))()""", lambda value: isinstance(value, dict) and
+                    value.get("connection") is True,
+                    "leadership loss during invitation rotation", args.timeout)
+                require(not leadership_loss["replacement"] and
+                        not leadership_loss["secret"] and
+                        "Create New Invitation" not in leadership_loss["auxiliary"],
+                        f"former leader retained invite custody: {leadership_loss}")
+                terminal_request_count = cdp.evaluate("__liveRequests.length")
+                cdp.evaluate("__liveHostClose()")
+                terminal = wait_value(cdp, """(() => ({
+                  title:document.getElementById('online-room-title').textContent,
+                  oldSecret:Boolean(document.querySelector('.online-room-code, .online-room-qr')),
+                  actions:[...document.querySelectorAll('[data-online-action]')]
+                    .map(item=>Number(item.dataset.onlineAction))}))()""",
+                    lambda value: isinstance(value, dict) and
+                        value.get("title") == "Room Ended",
+                    "terminal host-close recovery", args.timeout)
+                require(not terminal["oldSecret"] and 23 in terminal["actions"],
+                        f"terminal room retained secret or lost Home: {terminal}")
+                click_action(cdp, 23)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Play Online",
+                           "offline terminal return home", args.timeout)
+                require(cdp.evaluate("__liveRequests.length") == terminal_request_count,
+                        "terminal Return Home made a doomed network request")
+                cdp.evaluate("MDKROnlineRoom.disable()")
+                cdp.evaluate("__liveResetSolo()")
+                require(cdp.evaluate(
+                    "MDKROnlineRoom.configure(__mdkrOnlineRoomLiveConfig)",
+                    await_promise=True) is True,
+                    "could not reset the live fixture for solo host close")
+                cdp.evaluate("MDKROnlineRoom.open()")
+                click_action(cdp, 1)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Private Room",
+                           "fresh solo room before host close", args.timeout)
+                solo_close_start = cdp.evaluate("__liveRequests.length")
+                click_action(cdp, 24)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Play Online",
+                           "accepted solo host close", args.timeout)
+                solo_close_requests = cdp.evaluate(
+                    f"__liveRequests.slice({solo_close_start})")
+                require([item["path"].rsplit("/", 1)[-1]
+                         for item in solo_close_requests] == ["command"],
+                        f"accepted host close made a doomed state request: "
+                        f"{solo_close_requests}")
                 requests = cdp.evaluate("__liveRequests.slice()")
                 require(any(item["path"] == "/api/match/create" for item in requests) and
                         any(item["path"].endswith("/rotate") for item in requests) and
@@ -257,6 +451,17 @@ def run(args: argparse.Namespace) -> None:
                     cdp.call(f"{domain}.enable")
                 cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": FIXTURE})
                 secret = "A" * 43
+                cdp.call("Page.navigate", {"url": server.origin +
+                         "/room/#match=" + secret + "&extra=1"})
+                invalid = wait_value(cdp, """(() => ({
+                  title:document.getElementById('room-entry-title')?.textContent,
+                  hash:location.hash,
+                  staged:sessionStorage.getItem('mdkr-online-room-entry-v1')}))()""",
+                    lambda value: isinstance(value, dict) and
+                        value.get("title") == "Check the Room Invitation",
+                    "exact room-fragment rejection", args.timeout)
+                require(invalid["hash"] == "" and invalid["staged"] is None,
+                        f"invalid room fragment survived or staged: {invalid}")
                 cdp.call("Page.navigate", {"url": server.origin + "/room/#match=" + secret})
                 wait_value(cdp, "Boolean(globalThis.MDKROnlineRoom)", bool,
                            "deep-link Online Room API", args.timeout)
@@ -266,6 +471,7 @@ def run(args: argparse.Namespace) -> None:
                   title:document.getElementById('online-room-title').textContent,
                   open:document.getElementById('online-room-dialog').open,
                   hash:location.hash,
+                  staged:sessionStorage.getItem('mdkr-online-room-entry-v1'),
                   requests:__liveRequests.slice()}))()""",
                     lambda value: isinstance(value, dict) and
                         value.get("title") == "Private Room",
@@ -273,6 +479,7 @@ def run(args: argparse.Namespace) -> None:
                 join_requests = [item for item in joined["requests"]
                                  if item["path"] == "/api/match/join"]
                 require(joined["open"] and joined["hash"] == "" and
+                        joined["staged"] is None and
                         len(join_requests) == 1 and
                         join_requests[0]["body"] == {
                             "capability": secret,

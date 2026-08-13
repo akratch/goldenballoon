@@ -829,12 +829,94 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR})
     add_test(NAME match_input_bundle COMMAND mdkr_match_input_bundle_test)
 
+    add_executable(mdkr_match_peer_graph_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c)
+    target_include_directories(mdkr_match_peer_graph_test PRIVATE
+        ${CMAKE_SOURCE_DIR})
+    if(MSVC)
+        target_compile_options(mdkr_match_peer_graph_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_peer_graph_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_peer_graph COMMAND mdkr_match_peer_graph_test)
+
+    add_executable(mdkr_match_peer_forward_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_peer_forward.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_forward.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c)
+    target_include_directories(mdkr_match_peer_forward_test PRIVATE
+        ${CMAKE_SOURCE_DIR})
+    if(MSVC)
+        target_compile_options(mdkr_match_peer_forward_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_peer_forward_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_peer_forward COMMAND mdkr_match_peer_forward_test)
+
+    add_executable(mdkr_match_peer_transcript_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_peer_transcript.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_transcript.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_match_peer_transcript_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_match_peer_transcript_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_peer_transcript_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_peer_transcript COMMAND mdkr_match_peer_transcript_test)
+
+    add_executable(mdkr_match_preflight_test
+        ${CMAKE_SOURCE_DIR}/tests/test_match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_preflight.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_peer_graph.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_launch_descriptor.c
+        ${CMAKE_SOURCE_DIR}/platform/net/match_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_match_preflight_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_match_preflight_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_match_preflight_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME match_preflight COMMAND mdkr_match_preflight_test)
+
     add_executable(mdkr_online_lobby_core_test
         ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_core.c
         ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c)
     target_include_directories(mdkr_online_lobby_core_test PRIVATE
         ${CMAKE_SOURCE_DIR})
+    target_compile_definitions(mdkr_online_lobby_core_test PRIVATE
+        MDKR_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME online_lobby_core COMMAND mdkr_online_lobby_core_test)
+
+    add_executable(mdkr_online_compatibility_identity_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_compatibility_identity.c
+        ${CMAKE_SOURCE_DIR}/platform/online/compatibility_identity.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_online_compatibility_identity_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_online_compatibility_identity_test PRIVATE
+            /W4 /WX)
+    else()
+        target_compile_options(mdkr_online_compatibility_identity_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME online_compatibility_identity
+        COMMAND mdkr_online_compatibility_identity_test)
 
     add_executable(mdkr_online_lobby_view_model_test
         ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_view_model.c
@@ -858,6 +940,28 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME online_lobby_fake_adapter
         COMMAND mdkr_online_lobby_fake_adapter_test)
+
+    # Compile the Emscripten-facing projection as ordinary C so its complete
+    # 43-case/27-action ABI can be exercised without starting a browser.
+    add_executable(mdkr_online_lobby_browser_wasm_test
+        ${CMAKE_SOURCE_DIR}/tests/test_online_lobby_browser_wasm.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_browser_wasm.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_fake_adapter.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_view_model.c
+        ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c
+        ${CMAKE_SOURCE_DIR}/platform/session/session_core.c)
+    target_include_directories(mdkr_online_lobby_browser_wasm_test PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_online_lobby_browser_wasm_test PRIVATE
+            /W4 /WX)
+    else()
+        target_compile_options(mdkr_online_lobby_browser_wasm_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME online_lobby_browser_wasm
+        COMMAND mdkr_online_lobby_browser_wasm_test)
 
     add_executable(mdkr_match_launch_descriptor_test
         ${CMAKE_SOURCE_DIR}/tests/test_match_launch_descriptor.c
@@ -1504,6 +1608,14 @@ if(BUILD_TESTING)
         NAME multiplayer_boundaries
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_multiplayer_boundaries.py)
+    # This is deliberately the source-only arm.  The full check owns real
+    # Chromium activation evidence and therefore remains in run_checks.py's
+    # serialized browser lane; ordinary CTest must never launch a browser.
+    add_test(
+        NAME online_compatibility_source_contract
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_browser_online_activation.py
+                --source-only)
     if(MDKR_NODE_EXECUTABLE)
         add_test(
             NAME party_protocol_js
@@ -1513,6 +1625,33 @@ if(BUILD_TESTING)
             NAME touch_surface_js
             COMMAND ${MDKR_NODE_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/web/touch-surface.test.cjs)
+        add_test(
+            NAME match_peer_crypto_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_peer_crypto_js.mjs)
+        add_test(
+            NAME match_preflight_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_preflight_js.mjs)
+        add_test(
+            NAME match_signal_client_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_match_signal_client_js.mjs)
+        # The presenter consumes JSON from the native browser-ABI harness.
+        # Emscripten builds intentionally do not define that host executable;
+        # do not leave a generator expression naming an absent target in their
+        # CTest inventory.
+        if(TARGET mdkr_online_lobby_browser_wasm_test)
+            add_test(
+                NAME online_room_presenter_js
+                COMMAND ${MDKR_NODE_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/test_online_room_presenter.mjs
+                        $<TARGET_FILE:mdkr_online_lobby_browser_wasm_test>)
+        endif()
+        add_test(
+            NAME online_room_live_state_js
+            COMMAND ${MDKR_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_online_room_live_state.mjs)
     endif()
     add_test(
         NAME oracle_reference_replay

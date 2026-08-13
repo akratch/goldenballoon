@@ -57,6 +57,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from harness_utils import resolve_binary
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUILD = ROOT / "build" / "mdkr64"
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -189,9 +191,12 @@ def main() -> int:
     # cwd=run_dir, so a relative --build or --rom would be looked up under the
     # temporary directory and fail with a bare FileNotFoundError that reads
     # like a missing build rather than a path bug.
-    binary = Path(args.build).resolve()
-    if binary.is_dir():
-        binary = binary / "mdkr64"
+    # Do not resolve the native product independently. The shared harness
+    # refuses this boundary unless the caller supplied both the app-test class
+    # capability and an independent dedicated-desktop attestation. That check
+    # intentionally happens before we inspect or launch an old build, because
+    # the old executable itself may predate the no-focus guard.
+    binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
     if not binary.exists():
         print(f"check_enhancement_authority: FAIL — no binary at {binary}")

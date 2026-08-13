@@ -25,6 +25,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # The hosted macOS runner is an isolated test desktop.
+  MDKR_DEDICATED_TEST_DESKTOP: "1"
+
 concurrency:
   group: macos-release
   cancel-in-progress: false
@@ -88,6 +92,7 @@ jobs:
       - name: Build self-contained ad-hoc integrity bundle
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          MDKR_APP_TESTS_ALLOWED: "1"
         run: |
           : "${MDKR_RELEASE_SDL2_PREFIX:?pinned SDL2 prefix was not exported}"
           export PKG_CONFIG_PATH="${MDKR_RELEASE_SDL2_PREFIX}/lib/pkgconfig"
@@ -187,6 +192,7 @@ jobs:
         if: ${{ !inputs.trusted_signing }}
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          MDKR_APP_TESTS_ALLOWED: "1"
         run: |
           set -euo pipefail
           DMG_PATH="dist/Golden-Balloon-${RELEASE_VERSION}-macos-arm64-unsigned.dmg"

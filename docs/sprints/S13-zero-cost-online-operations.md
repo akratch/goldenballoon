@@ -3,7 +3,7 @@
 > **Foundation and automated native UX implemented; production remains gated.**
 > The pure launcher room reducer, protocol-v1 lifecycle/authorization tests,
 > per-seat race selection, canonical descriptor, V3 descriptor handoff, engine
-> direct-load application, 42-case native state/failure gallery and 25-action
+> direct-load application, 43-case native state/failure gallery and 27-action
 > keyboard/gamepad gate exist. The browser has an honest zero-I/O release-gated
 > entry plus an isolated shared-C fake/gallery binding. Local workerd now proves
 > the bounded MatchRoom lifecycle and recovery; live adapter, human/device
@@ -219,9 +219,9 @@ removed.
 |---|---|---|---|
 | ON-03A — state and copy contract | DONE | Pure projection over validated S10 session + lobby snapshots emits one title, explanation, primary/secondary/Cancel set, timeout recovery and announcement priority | Exhaustive typed/unknown failure fixtures exclude raw transport/provider copy; Start requires local GO policy, leader, 2+ members and everyone Ready |
 | ON-03B — fake adapter vertical slice | DONE | Create/join → invite → preflight → select → ready → vote → load/cancel → race → results → second race works offline through the real reducers | Versioned UI commands and callback tokens reject stale/conflicting/route-confused work atomically; exact double actions are idempotent; canceled load cannot resurrect |
-| ON-03C — responsive interaction polish | EVIDENCE REVIEW | Native renders all 42 deterministic views/failures and all 25 public actions activate through keyboard and gamepad; full spoken title/action walks pass. Browser keeps an honest zero-I/O default entry, uses an isolated module compiled from the same C reducer/view model for all 42 cases/25 keyboard routes, and binds the live MatchRoom control seam. Human screen-reader/device review remains | Wide and 640×480/200% native captures, real touch scrolling, native and browser 42-case galleries, 42 spoken native action sets, 25×2 native input actions, browser 25-keyboard/touch/a11y paths and every-case portrait/landscape 200% reflow |
-| ON-03D — typed failure and recovery | DONE AUTOMATED / EVIDENCE REVIEW | All 17 typed failures plus six elapsed-timeout outcomes render deterministic safe actions. Retry preserves preflight rooms, invite replacement starts a clean join, room settings rerun checks, engine/epoch failures return to the intact lobby, and confirmed Leave Race stops before disconnect | Unknown/provider copy remains bounded; stale/duplicate callbacks reject atomically; local routes, privacy-safe Connection Doctor and non-automatic update guidance are action-gated |
-| ON-03E — live adapter binding | DONE BROWSER CONTROL / NATIVE+CARRIER GATED | Browser create/join/share/rotate/select/ready/reconnect effects bind MatchRoom beneath the unchanged shared-C model. Native carrier/race phases remain post-A3 | Fixture replay stays identical; malformed snapshots fail closed; service data cannot reveal Start or bypass reducer validation |
+| ON-03C — responsive interaction polish | IMPLEMENTED / RENDERED EVIDENCE REFRESH | Native and browser project all 43 deterministic cases and 27 public actions from the shared model. A browser-free native ABI test drives the entire contract under normal/ASan, while the exact pure presenter used by the shipped browser renderer consumes all 43 C projections in Node and proves semantic ordering, selections, timeout priority, count grammar, local recovery, immutable output and accessible phrase/mismatch announcements. The preflight phrase card is bounded, prominent, announced, non-translatable and requires an explicit **Words Match** or **Words Differ** decision; mismatch stops progression and preserves the room for fresh secure setup, while rematches repeat comparison. The prior 25-action rendered/speech baseline passed, while the expanded 27-action native/browser render, real-input and human screen-reader/device review remain | Wide and 640×480/200% native captures, real touch scrolling, native and browser 43-case galleries, phrase copy/announcement correlation, 43 spoken native action sets, 27×2 native input actions, browser 27-keyboard/touch/a11y paths and every-case portrait/landscape 200% reflow |
+| ON-03D — typed failure and recovery | DONE AUTOMATED / EVIDENCE REVIEW | All 18 typed failures plus six elapsed-timeout outcomes render deterministic safe actions. Retry preserves preflight rooms, phrase mismatch forces fresh secure setup, invite replacement starts a clean join, room settings rerun checks, engine/epoch failures return to the intact lobby, and confirmed Leave Race stops before disconnect | Unknown/provider copy remains bounded; service projection cannot synthesize local mismatch; stale/duplicate callbacks reject atomically; local routes, privacy-safe Connection Doctor and non-automatic update guidance are action-gated |
+| ON-03E — live adapter binding | IMPLEMENTED / HARDENED RERUN QUEUED; NATIVE+CARRIER GATED | Browser create/join/share/rotate/select/ready/reconnect effects bind MatchRoom beneath the unchanged shared-C model. The exact immutable state/identity boundary now treats fully older publications as no-ops, correlates rotate secrets to the in-flight expected/current generation, byte-bounds HTTP/socket state, rejects superseded subscriptions, limits automatic socket flapping and makes terminal credential-revoking leave local. Syntax and service type compilation pass; native carrier/race phases remain post-A3 | Execute the pure boundary gate and browser create/join/rotate/member-race/leadership-loss/expiry/socket-flap/leave journey on the dedicated desktop. Exact schemas reject private/unknown/impossible snapshots, identity substitution and stale invitation custody; service data cannot reveal Start or bypass reducer validation |
 
 The UI never waits on a service to show **Play here**, never replaces calm
 quality words with volatile latency numbers, and never enables a production race
@@ -232,9 +232,9 @@ action while A3 is gated.
 | Order | Slice | Deliverable | Exit evidence |
 |---:|---|---|---|
 | 1 | C1 native shell | **DONE:** Online Room destination, gated production copy, fake-adapter journey surface, launcher-owned selections/actions and responsive scroll owner | Wide capture plus 640×480 at 200% UI scale; production-input touch reaches the below-fold primary action; generic launcher and handheld captures remain green |
-| 2 | C2 deterministic state gallery | **DONE:** product binary publishes and renders 42 reducer-constructed cases covering 10 views, 17 failures and six elapsed timeout outcomes | Unique non-flat captures, semantic/copy inventory, stale/duplicate deadline and callback controls pass |
-| 3 | C3 native input/accessibility | **DONE automated / human review remains:** drive every public action and enumerate every state/action announcement | 25 actions pass through keyboard and virtual gamepad; all 42 title/action sets pass keyboard speech walk; physical SR/device review remains |
-| 4 | C4 browser binding | **AUTOMATED CONTROL COMPLETE / EVIDENCE REVIEW:** the honest zero-I/O entry remains production behavior. Explicit gallery/live adapters load a 35 KiB ROM-/engine-/provider-free shared-C projection; JS owns bounded transport, validation, DOM and launcher routes | All 42 views/25 routes/touch/AX/reflow pass; live fragment erasure, create/join, QR/share, rotate, select/Ready, reconnect and corrupt-state recovery pass without game Wasm. Adversarial service admission cannot reveal Start. Remaining: human screen-reader/device and first-time-friend review |
+| 2 | C2 deterministic state gallery | **DONE HEADLESS / RENDER REFRESH:** product contract publishes 43 reducer-constructed cases covering 10 views, 18 failures and six elapsed timeout outcomes | Headless semantic/copy/action inventory passes; prior 42-case unique non-flat captures pass. Refresh 43-case captures on a dedicated desktop. |
+| 3 | C3 native input/accessibility | **IMPLEMENTED / RENDERED EVIDENCE REFRESH:** drive every public action and enumerate every state/action/phrase announcement | Prior 25-action keyboard/gamepad and 42-case speech walks pass. Actions 26–27, both phrase paths and assertive mismatch announcement are source/model/compiler validated; rerun the expanded native render/input/speech gate on a dedicated desktop, then physical SR/device review. |
+| 4 | C4 browser binding | **IMPLEMENTED / EXECUTABLE + RENDERED EVIDENCE REFRESH:** the honest zero-I/O entry remains production behavior. Explicit gallery/live adapters load a ROM-/engine-/provider-free shared-C projection; JS owns bounded transport, exact immutable state ingestion, DOM and launcher routes | Native ABI conformance previously passed all 43 cases/27 routes, both phrase paths, timeouts and local-only mismatch under normal/ASan. Current hardening exact-validates public MatchRoom/identity shapes, rejects private and unknown data, deep-freezes accepted state, generation-revokes invitations, phase-correlates the 21-field projection, restores state+invite on false/throw projection outcomes and treats accepted guest Leave as terminal after credential revocation. Its exhaustive Node gate is authored and syntax-valid; execute it with the hardened live create/join/rotate/stale/leave journey and expanded browser render gate on a dedicated desktop. Prior rendered 42-case/25-route/touch/AX/reflow evidence remains. |
 | 5 | C5 first-time usability | **AUTOMATED FLOW COMPLETE / HUMAN EVIDENCE REMAINS:** two clean Chrome profiles over the real local Worker complete create/share, wrong-role recovery, `/room/` join, outage/retry, distinct selections, Ready/backtrack/re-Ready and leave; Start remains absent | Run the uncoached human task, record human time-to-share/time-to-ready, cancel/rematch, backtracks and recovery success; resolve P0/P1 findings before release |
 
 Every C slice leaves the default build in the honest unavailable state and makes
@@ -297,10 +297,14 @@ closes with the documented recoverable reason.
 - Derive a distinct sender→recipient gameplay key through the authenticated
   room handshake. Forwarded and relayed packets remain recipient-encrypted;
   never give every participant one symmetric key that permits impersonation.
-- Show one stable room verification phrase in Connection details. High-entropy
-  role links resist guessing, but neither a link nor a short code alone proves a
-  non-malicious signaling service. Friends can compare the phrase to detect key
-  substitution. Never claim anonymity or protection from a malicious endpoint.
+- After authenticated peer setup, stop on a dedicated **Compare These Words**
+  step and show one stable three-compound phrase prominently on every display.
+  Require **Words Match** before selection and repeat the comparison for each
+  rematch epoch; a mismatch means leave and reconnect, never continue. Also
+  expose the phrase in Connection Details. High-entropy role links resist
+  guessing, but neither a link nor a short code alone proves a non-malicious
+  signaling service. Never claim anonymity or protection from a malicious
+  endpoint.
 - Race direct and one-hop paths during recovery and deduplicate by source/epoch/
   sequence. WebSocket fallback uses the same inner encrypted bytes.
 - Backpressure drops superseded input bundles. Message size stays below measured
@@ -353,9 +357,14 @@ backtracking and whether each failure's next action succeeds.
 - Measure direct connection quality before ready; poor is warning, impossible is
   blocked or offered capped fallback.
 - A waiting service-worker update may wait through the session. A required
-  version blocks ready with **Update and rejoin**, preserves only the scoped
-  invite in session storage and activates outside a live race. Never mix client,
-  reducer or wire versions silently inside one room epoch.
+  version blocks ready with **Update and rejoin** and activates outside a live
+  race. A private-room deep-link handoff may retain only the scoped capability
+  in launcher closure memory for the remaining bounded invite window—never in
+  session/local storage—and must erase it before activation/reload if an exact
+  rejoin cannot be guaranteed. A failed URL scrub abandons redemption and
+  clean-navigates; it never proceeds on the assumption that navigation will
+  eventually hide the capability. Never mix client, reducer or wire versions
+  silently inside one room epoch.
 
 **Negative control:** each manifest field mismatches independently; presentation
 changes must not reject.

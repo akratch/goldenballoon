@@ -29,6 +29,7 @@ struct OnlineRoomUiState {
     unsigned scheduledFrames = 0u;
     MdkrOnlineViewKind announcedKind = static_cast<MdkrOnlineViewKind>(0);
     MdkrOnlineViewFailure announcedFailure = MDKR_ONLINE_VIEW_FAILURE_NONE;
+    char announcedVerificationPhrase[64]{};
     const MdkrOnlineFakeGallerySpec *gallerySpec = nullptr;
     bool galleryTraced = false;
     MdkrOnlineViewAction focusedAction = MDKR_ONLINE_VIEW_ACTION_NONE;
@@ -71,7 +72,7 @@ MdkrOnlineViewAction focusedAction() {
     const long parsed = value != nullptr ? std::strtol(value, &end, 10) : 0;
     if (value == nullptr || end == value || *end != '\0' ||
         parsed <= MDKR_ONLINE_VIEW_ACTION_NONE ||
-        parsed > MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE) {
+        parsed > MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH) {
         return MDKR_ONLINE_VIEW_ACTION_NONE;
     }
     g_online.focusedAction = static_cast<MdkrOnlineViewAction>(parsed);
@@ -224,19 +225,49 @@ void drawUnavailablePanel() {
 }
 
 void announceView(const MdkrOnlineViewModel &model) {
+    const char *phrase = model.verification_phrase;
     if (!ui::SpeechEnabled() ||
         (model.kind == g_online.announcedKind &&
-         model.failure == g_online.announcedFailure)) return;
+         model.failure == g_online.announcedFailure &&
+         std::strcmp(phrase, g_online.announcedVerificationPhrase) == 0)) return;
     g_online.announcedKind = model.kind;
     g_online.announcedFailure = model.failure;
+    std::snprintf(g_online.announcedVerificationPhrase,
+                  sizeof(g_online.announcedVerificationPhrase), "%s", phrase);
     char message[MDKR_A11Y_TEXT_MAX];
-    std::snprintf(message, sizeof(message), "%s. %s", model.title,
-                  model.explanation);
+    if (phrase[0] != '\0') {
+        std::snprintf(message, sizeof(message),
+                      "%s. %s Verification phrase: %s. Do not continue if "
+                      "even 1 word differs.",
+                      model.title, model.explanation, phrase);
+    } else {
+        std::snprintf(message, sizeof(message), "%s. %s", model.title,
+                      model.explanation);
+    }
     mdkr_a11y_announce(
         MDKR_A11Y_CAT_STATUS,
         model.announcement == MDKR_ONLINE_ANNOUNCE_ASSERTIVE
             ? MDKR_A11Y_PRI_CRITICAL : MDKR_A11Y_PRI_NORMAL,
         message);
+}
+
+void drawVerificationPhrase(const MdkrOnlineViewModel &model) {
+    if (model.verification_phrase[0] == '\0') return;
+    ui::Gap(ui::kGapM);
+    if (ui::CardBegin("##online-verification-phrase", AppTheme::accent(), 0.0f)) {
+        ImGui::TextUnformatted("Compare on Every Display");
+        ui::Gap(ui::kGapXS);
+        ImGui::PushFont(AppTheme::fonts().title);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(model.verification_phrase);
+        ImGui::PopTextWrapPos();
+        ImGui::PopFont();
+        ui::Gap(ui::kGapXS);
+        ui::TextSubtleWrapped(
+            "Do not continue if even 1 word differs. Leave the room and retry "
+            "the secure connection instead.");
+    }
+    ui::CardEnd();
 }
 
 void drawConnectionDetails(const MdkrOnlineViewModel &model) {
@@ -454,6 +485,7 @@ void drawFakePanel(LauncherState &state) {
         }
     }
     ui::CardEnd();
+    drawVerificationPhrase(model);
     ui::Gap(ui::kGapM);
 
     const MdkrOnlineViewAction timeoutAction =
@@ -551,14 +583,16 @@ int OnlineRoom_dumpGalleryContract() {
             adapter.timeout_expired && model.timeout.present &&
                     model.timeout.primary.visible
                 ? model.timeout.primary.label : "",
+            model.verification_phrase,
         };
         for (const char *field : copy) {
             if (field == nullptr || std::strchr(field, '|') != nullptr ||
                 std::strchr(field, '\n') != nullptr ||
                 std::strchr(field, '\r') != nullptr) return 1;
         }
-        std::printf("online-gallery-copy-v1|%s|%s|%s|%s|%s|%s\n",
-                    copy[0], copy[1], copy[2], copy[3], copy[4], copy[5]);
+        std::printf("online-gallery-copy-v2|%s|%s|%s|%s|%s|%s|%s\n",
+                    copy[0], copy[1], copy[2], copy[3], copy[4], copy[5],
+                    copy[6]);
         std::printf(
             "online-gallery-actions-v1|%s|%u|%u|%u|%u\n",
             spec->slug,
@@ -577,7 +611,7 @@ int OnlineRoom_dumpGalleryContract() {
 
 bool OnlineRoom_smokeActionResult(unsigned action, bool *accepted) {
     if (accepted == nullptr || action == MDKR_ONLINE_VIEW_ACTION_NONE ||
-        action > MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE ||
+        action > MDKR_ONLINE_VIEW_ACTION_REPORT_PHRASE_MISMATCH ||
         g_online.completedAction != static_cast<MdkrOnlineViewAction>(action)) {
         return false;
     }

@@ -106,7 +106,7 @@ class SwitchingServer:
 def stage(source: Path, target: Path, stamp: str) -> None:
     shutil.copytree(source, target)
     subprocess.run([str(STAMPER), "--dir", str(target), "--stamp", stamp,
-                    "--version", "1.2.1"], cwd=ROOT, check=True,
+                    "--version", "1.3.0"], cwd=ROOT, check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 

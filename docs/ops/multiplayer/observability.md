@@ -31,7 +31,13 @@ The fixed weights are:
 | `matchControl`, `partyControl` | control | 2 |
 | `matchRotate`, `partyRotate` | control | 10 |
 | `matchSocket` | control | 4 |
+| `matchSignalSocket` | control | 15 |
 | `partySocket` | control | 28 |
+
+The additive signaling bucket makes `/api/ops/health` schema version 2. The
+capacity snapshot remains version 1. Old health consumers must stop on the
+version mismatch and update their exact schema before promotion; there is no
+permissive unknown-field path.
 
 The budget object increments these buckets inside its existing accepted
 reservation write. Metrics therefore add no per-request object call or storage
@@ -78,8 +84,8 @@ reproducible fixtures, never by creating a server-side person/room trail.
 ## Executable evidence
 
 ```bash
-(cd services/party && npm run check)
-python3 tests/check_party_capacity.py --shell-dir dist/web
+(cd services/party && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)
+MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_party_capacity.py --shell-dir dist/web
 ```
 
 The unit contract rejects malformed operation labels/weights, proves the

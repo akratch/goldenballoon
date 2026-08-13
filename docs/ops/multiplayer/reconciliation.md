@@ -15,7 +15,7 @@ The exact accepted schema is:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "day": "2026-08-12",
   "admitted": {"pairingUnits": 120, "controlUnits": 42},
   "refusalObserved": {"pairing": false, "control": false},
@@ -42,6 +42,7 @@ aggregate as `provider.json`:
   "usage": {
     "workerRequests": 500,
     "durableObjectRequests": 450,
+    "durableObjectDurationGbSeconds": 10,
     "rowsRead": 1000,
     "rowsWritten": 250,
     "storageBytes": 65536
@@ -49,12 +50,19 @@ aggregate as `provider.json`:
   "limits": {
     "workerRequests": 100000,
     "durableObjectRequests": 100000,
+    "durableObjectDurationGbSeconds": 13000,
     "rowsRead": 5000000,
     "rowsWritten": 100000,
     "storageBytes": 5000000000
   }
 }
 ```
+
+Provider schema v2 adds `durableObjectDurationGbSeconds`. Normalize provider
+duration upward to a whole GB-s; never round it down. This is a separate daily
+Free-plan ceiling from Durable Object requests and is essential because an
+object that cannot hibernate can exhaust duration while request volume remains
+low. A v1 aggregate is intentionally rejected as incomplete evidence.
 
 These files must contain aggregate numbers only. Never add an account id,
 deployment token, request header, room/code/capability, address, player field,
@@ -109,6 +117,7 @@ python3 tests/test_party_usage_reconciliation.py
 
 The adversarial test covers unknown/private fields, billing and paid-overage
 configuration, nonzero charge, stale arithmetic, refusal latches, clock skew,
-provider exhaustion/activity mismatch and secret-canary non-reflection. It
+provider-v1 downgrade, missing/boolean duration, provider exhaustion/activity
+mismatch and secret-canary non-reflection. It
 uses fixtures only; hosted reconciliation and the seven-day zero-currency
 ledger remain operational evidence.

@@ -53,7 +53,7 @@ def run(args: argparse.Namespace) -> None:
                 initialRoomState:%s,
                 async request(path){return {roomId:'abcdefghijklmnopqrstuv',
                   hostCredential:'H'.repeat(43),fallbackCode:'123456',
-                  inviteExpiresInMs:120000,
+                  inviteGeneration:1,inviteExpiresInMs:120000,
                   controllerUrl:location.origin+'/controller/#'+'A'.repeat(43)}}
               };
             """ % json.dumps(room_state, separators=(",", ":"))

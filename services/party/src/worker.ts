@@ -4,11 +4,12 @@ import {PartyRoom} from "./party-room";
 import {PartyCodeDirectory} from "./party-code-directory";
 import {MatchRoom} from "./match/match-room";
 import {MATCH_LIMITS, type MatchCompatibilityV1,
-  validCompatibility} from "./match/protocol";
+  inviteRemainingMs, validCompatibility,
+  validMatchCommandRequest} from "./match/protocol";
 import {allowedOrigin, base64Url, boundCredential, constantTimeEqual, digest,
   fromBase64Url, json, normalizeName, readJson,
-  randomToken, validBoundCredential} from "./security";
-import type {Env} from "./types";
+  randomToken, validBoundCredential, validPartyOrigin} from "./security";
+import {LIMITS, partyInviteRemainingMs, type Env} from "./types";
 import {internalRequest} from "./internal-api";
 
 export {MatchRoom, PartyBudget, PartyCodeDirectory, PartyRoom};
@@ -28,6 +29,18 @@ function fallbackCode(): string {
 
 function validPublicKey(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{87}$/.test(value);
+}
+
+function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return keys.length === wanted.length &&
+    keys.every((key, index) => key === wanted[index]);
+}
+
+function exactKeysWithOptionalName(value: Record<string, unknown>,
+                                   required: readonly string[]): boolean {
+  return exactKeys(value, required) || exactKeys(value, [...required, "name"]);
 }
 
 async function budget(env: Env, kind: "pairing" | "control",
@@ -76,7 +89,8 @@ async function createMatch(request: Request, env: Env): Promise<Response> {
   const admission = await budget(env, "pairing", 10, "matchCreate");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
-  if (!validCompatibility(body.compatibility) ||
+  if (!exactKeys(body, ["compatibility", "seatCount"]) ||
+      !validCompatibility(body.compatibility) ||
       !Number.isInteger(body.seatCount) || Number(body.seatCount) < 1 ||
       Number(body.seatCount) > MATCH_LIMITS.maxSeatsPerEndpoint) {
     return json({error: "invalid_match"}, 400);
@@ -108,8 +122,12 @@ async function createMatch(request: Request, env: Env): Promise<Response> {
   }));
   if (!initialized.ok) return json({error: "room_create_failed"}, 503);
   const state = await initialized.json() as Record<string, unknown>;
+  const inviteExpiresInMs = inviteRemainingMs(state.inviteExpiresAt, Date.now());
+  if (inviteExpiresInMs === null) {
+    return json({error: "room_create_failed"}, 503);
+  }
   return json({...state, roomId, endpointId, credential, fallbackCode: matchCode,
-    inviteExpiresInMs: MATCH_LIMITS.inviteTtlMs,
+    inviteExpiresInMs,
     inviteUrl: `${env.PARTY_ORIGIN}/room/#match=${capability}`}, 201);
 }
 
@@ -143,7 +161,10 @@ async function joinMatch(request: Request, env: Env): Promise<Response> {
   const admission = await budget(env, "pairing", 2, "matchLinkJoin");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
-  if (typeof body.capability !== "string") return json({error: "invalid_invite"}, 400);
+  if (!exactKeys(body, ["capability", "compatibility", "seatCount"]) ||
+      typeof body.capability !== "string") {
+    return json({error: "invalid_invite"}, 400);
+  }
   const decoded = fromBase64Url(body.capability);
   if (!decoded || decoded.byteLength !== 32) return json({error: "invalid_invite"}, 400);
   return joinMatchToRoom(body, env, roomName(decoded),
@@ -154,6 +175,9 @@ async function joinMatchCode(request: Request, env: Env): Promise<Response> {
   const admission = await budget(env, "pairing", 3, "matchCodeJoin");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
+  if (!exactKeys(body, ["code", "compatibility", "seatCount"])) {
+    return json({error: "invalid_code"}, 400);
+  }
   const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
   if (!/^\d{6}$/.test(code)) return json({error: "invalid_code"}, 400);
   const codeDigest = await digest(env, "match-code", code);
@@ -181,14 +205,28 @@ async function matchControl(request: Request, env: Env, roomId: string,
   }
   const admission = await budget(env, "control", 2, "matchControl");
   if (!admission.ok) return admission;
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MATCH_LIMITS.maxCommandBytes) {
-    return json({error: "request_too_large"}, 413);
+  if (action === "state") {
+    const stateRequest = await readJson<Record<string, unknown>>(request,
+      MATCH_LIMITS.maxCommandBytes);
+    if (!exactKeys(stateRequest, [])) {
+      return json({error: "invalid_request"}, 400);
+    }
+    return matchStub(env, roomId).fetch("https://match/state", internalRequest({
+      method: "POST", headers: {"content-type": "application/json",
+        "x-match-credential-digest": await digest(
+          env, "match-endpoint", bearer.slice(7))},
+      body: new Uint8Array(),
+    }));
   }
-  return matchStub(env, roomId).fetch(`https://match/${action}`, internalRequest({
+  const command = await readJson<Record<string, unknown>>(request,
+    MATCH_LIMITS.maxCommandBytes);
+  if (!validMatchCommandRequest(command)) {
+    return json({error: "invalid_command"}, 400);
+  }
+  return matchStub(env, roomId).fetch("https://match/command", internalRequest({
     method: "POST", headers: {"content-type": "application/json",
       "x-match-credential-digest": await digest(env, "match-endpoint", bearer.slice(7))},
-    body: action === "state" ? new Uint8Array() : body,
+    body: JSON.stringify(command),
   }));
 }
 
@@ -203,6 +241,9 @@ async function rotateMatch(request: Request, env: Env,
   const admission = await budget(env, "control", 10, "matchRotate");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
+  if (!exactKeys(body, ["expectedInviteGeneration"])) {
+    return json({error: "invalid_invite_generation"}, 400);
+  }
   const expectedInviteGeneration = Number(body.expectedInviteGeneration);
   if (!Number.isInteger(expectedInviteGeneration) || expectedInviteGeneration < 1) {
     return json({error: "invalid_invite_generation"}, 400);
@@ -228,22 +269,20 @@ async function rotateMatch(request: Request, env: Env,
     }));
     if (!response.ok) return response;
     const state = await response.json() as Record<string, unknown>;
+    const inviteExpiresInMs = inviteRemainingMs(state.inviteExpiresAt, Date.now());
+    if (inviteExpiresInMs === null) {
+      return json({error: "invite_expired"}, 409);
+    }
     return json({...state, fallbackCode: code,
-      inviteExpiresInMs: MATCH_LIMITS.inviteTtlMs,
+      inviteExpiresInMs,
       inviteUrl: `${env.PARTY_ORIGIN}/room/#match=${capability}`});
   }
   return json({error: "invite_rotation_failed"}, 503);
 }
 
 async function connectMatch(request: Request, env: Env, roomId: string): Promise<Response> {
-  const offered = (request.headers.get("sec-websocket-protocol") || "").split(",")
-    .map(value => value.trim());
-  const credentialProtocol = offered.find(value => value.startsWith("gb-match."));
-  if (!offered.includes("gb-match-v1") || !credentialProtocol) {
-    return json({error: "unauthorized"}, 401);
-  }
-  const credential = credentialProtocol.slice("gb-match.".length);
-  if (!/^[A-Za-z0-9_-]{43}$/.test(credential) ||
+  const credential = matchSocketCredential(request, "gb-match-v1");
+  if (!credential ||
       !(await validBoundCredential(env, "match-endpoint", roomId, credential))) {
     return json({error: "unauthorized"}, 401);
   }
@@ -256,9 +295,37 @@ async function connectMatch(request: Request, env: Env, roomId: string): Promise
     internalRequest({headers}));
 }
 
+function matchSocketCredential(request: Request, version: string): string | null {
+  const offered = (request.headers.get("sec-websocket-protocol") || "").split(",")
+    .map(value => value.trim()).filter(Boolean);
+  if (offered.length !== 2 || offered.filter(value => value === version).length !== 1) {
+    return null;
+  }
+  const credential = offered.find(value => /^gb-match\.[A-Za-z0-9_-]{43}$/.test(value));
+  return credential ? credential.slice("gb-match.".length) : null;
+}
+
+async function connectMatchSignal(request: Request, env: Env,
+                                  roomId: string): Promise<Response> {
+  const credential = matchSocketCredential(request, "gb-match-signal-v1");
+  if (!credential ||
+      !(await validBoundCredential(env, "match-endpoint", roomId, credential))) {
+    return json({error: "unauthorized"}, 401);
+  }
+  // Budget + room upgrade + 13 request-equivalents for the hard lifetime cap
+  // of 256 inbound signaling messages (billed in 20-message increments).
+  const admission = await budget(env, "control", 15, "matchSignalSocket");
+  if (!admission.ok) return admission;
+  const headers = new Headers(request.headers);
+  headers.set("x-match-credential-digest", await digest(env, "match-endpoint", credential));
+  headers.set("sec-websocket-protocol", "gb-match-signal-v1");
+  return matchStub(env, roomId).fetch("https://match/signal",
+    internalRequest({headers}));
+}
+
 async function registerCode(env: Env, code: string, roomId: string,
                             directory = "v1", purpose = "party-code",
-                            expiresInMs = 120_000): Promise<boolean> {
+                            expiresInMs = LIMITS.inviteTtlMs): Promise<boolean> {
   const response = await codeStub(env, directory).fetch("https://code/register",
     internalRequest({
     method: "POST", headers: {"content-type": "application/json"},
@@ -300,14 +367,22 @@ async function createRoomForKey(hostPublicKey: string, env: Env,
       fallbackCodeDigest: await digest(env, "party-code", code), now: Date.now()}),
   }));
   if (!initialized.ok) return json({error: "room_create_failed"}, 503);
+  const state = await initialized.json() as Record<string, unknown>;
+  const inviteExpiresInMs = partyInviteRemainingMs(
+    state.inviteExpiresAt, Date.now());
+  if (inviteExpiresInMs === null) {
+    return json({error: "room_create_failed"}, 503);
+  }
   return json({roomId: name, hostCredential, fallbackCode: code,
-    inviteGeneration: 1, inviteExpiresInMs: 120_000,
+    inviteGeneration: 1, inviteExpiresInMs,
     controllerUrl: `${env.PARTY_ORIGIN}/controller/#${capability}`}, 201);
 }
 
 async function createRoom(request: Request, env: Env): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
-  if (!validPublicKey(body.hostPublicKey)) return json({error: "invalid_host_key"}, 400);
+  if (!exactKeys(body, ["hostPublicKey"]) || !validPublicKey(body.hostPublicKey)) {
+    return json({error: "invalid_host_key"}, 400);
+  }
   return createRoomForKey(body.hostPublicKey, env);
 }
 
@@ -340,7 +415,11 @@ async function redeem(request: Request, env: Env): Promise<Response> {
   const admission = await budget(env, "pairing", 2, "partyLinkJoin");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
-  if (typeof body.capability !== "string") return json({error: "invalid_invite"}, 400);
+  if (!exactKeysWithOptionalName(body,
+      ["capability", "protocol", "controllerPublicKey"]) ||
+      typeof body.capability !== "string") {
+    return json({error: "invalid_invite"}, 400);
+  }
   const decoded = fromBase64Url(body.capability);
   if (!decoded || decoded.byteLength !== 32) return json({error: "invalid_invite"}, 400);
   return redeemToRoom(body, env, roomName(decoded),
@@ -351,6 +430,10 @@ async function redeemCode(request: Request, env: Env): Promise<Response> {
   const admission = await budget(env, "pairing", 3, "partyCodeJoin");
   if (!admission.ok) return admission;
   const body = await readJson<Record<string, unknown>>(request);
+  if (!exactKeysWithOptionalName(body,
+      ["code", "protocol", "controllerPublicKey"])) {
+    return json({error: "invalid_code"}, 400);
+  }
   const code = typeof body.code === "string" ? body.code.replace(/\s/g, "") : "";
   if (!/^\d{6}$/.test(code)) return json({error: "invalid_code"}, 400);
   const resolved = await codeStub(env).fetch("https://code/resolve",
@@ -389,7 +472,13 @@ async function rotateInvite(env: Env, roomId: string,
     }));
     if (!response.ok) return response;
     const state = await response.json() as Record<string, unknown>;
-    return json({...state, fallbackCode: code, inviteExpiresInMs: 120_000,
+    const inviteExpiresInMs = partyInviteRemainingMs(
+      state.inviteExpiresAt, Date.now());
+    if (inviteExpiresInMs === null) {
+      return json({error: "invite_expired"}, 409);
+    }
+    return json({fallbackCode: code,
+      inviteGeneration: state.inviteGeneration, inviteExpiresInMs,
       controllerUrl: `${env.PARTY_ORIGIN}/controller/#${capability}`});
   }
   return json({error: "invite_rotation_failed"}, 503);
@@ -408,16 +497,26 @@ async function hostControl(request: Request, env: Env, roomId: string,
     action === "rotate" ? "partyRotate" : "partyControl");
   if (!admission.ok) return admission;
   const hostDigest = await digest(env, "host", bearer.slice(7));
+  const input = await readJson<Record<string, unknown>>(request);
   if (action === "rotate") {
-    const input = await readJson<Record<string, unknown>>(request);
+    if (!exactKeys(input, ["expectedInviteGeneration"])) {
+      return json({error: "invalid_invite_generation"}, 400);
+    }
     const expected = Number(input.expectedInviteGeneration);
     if (!Number.isInteger(expected) || expected < 1) {
       return json({error: "invalid_invite_generation"}, 400);
     }
     return rotateInvite(env, roomId, hostDigest, expected);
   }
-  const body = await request.arrayBuffer();
-  if (body.byteLength > 16 * 1024) return json({error: "request_too_large"}, 413);
+  const expectedKeys = action === "approve"
+    ? ["controllerId", "seat"]
+    : action === "reject" || action === "remove"
+    ? ["controllerId"]
+    : [];
+  if (!exactKeys(input, expectedKeys)) {
+    return json({error: "invalid_request"}, 400);
+  }
+  const body = JSON.stringify(input);
   return roomStub(env, roomId).fetch(`https://room/${action}`, internalRequest({
     method: "POST", headers: {"content-type": "application/json",
       "x-party-host-digest": hostDigest}, body,
@@ -509,17 +608,31 @@ async function nativeCreateSocket(request: Request, env: Env,
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    /* This value is also interpolated into bearer-capability URLs. Refuse the
+     * entire API before origin exceptions or Durable Object work if deployment
+     * configuration is not one canonical HTTPS origin (or local loopback). */
+    if (!validPartyOrigin(env.PARTY_ORIGIN)) {
+      return json({error: "service_unavailable"}, 503);
+    }
     const url = new URL(request.url);
     const partySocket = /^\/api\/party\/([A-Za-z0-9_-]{22})\/connect$/.exec(url.pathname);
+    const matchSocket = /^\/api\/match\/([A-Za-z0-9_-]{22})\/connect$/.exec(url.pathname);
+    const matchSignalSocket = /^\/api\/match\/([A-Za-z0-9_-]{22})\/signal$/.exec(
+      url.pathname);
     const nativeSocket = url.pathname === "/api/party/native-create" &&
       request.method === "GET" && !request.headers.has("origin")
       ? nativeSocketProtocols(request) : null;
     const nativeReconnect = partySocket && request.method === "GET" &&
       !request.headers.has("origin") && nativeReconnectProtocols(request);
+    const nativeMatchSocket = request.method === "GET" &&
+      !request.headers.has("origin") && Boolean(
+        (matchSocket && matchSocketCredential(request, "gb-match-v1")) ||
+        (matchSignalSocket && matchSocketCredential(request, "gb-match-signal-v1")));
     /* Browsers always send Origin on WebSocket handshakes. Originless access is
      * reserved for the versioned native bootstrap shape; all ordinary HTTP and
      * sockets retain strict same-origin enforcement. */
-    if (!allowedOrigin(request, env) && !nativeSocket && !nativeReconnect) {
+    if (!allowedOrigin(request, env) && !nativeSocket && !nativeReconnect &&
+        !nativeMatchSocket) {
       return json({error: "origin_forbidden"}, 403);
     }
     if (nativeSocket) {
@@ -538,11 +651,13 @@ export default {
       // rate-limited.
       return connect(request, env, partySocket[1]!);
     }
-    const matchSocket = /^\/api\/match\/([A-Za-z0-9_-]{22})\/connect$/.exec(url.pathname);
     if (matchSocket && request.method === "GET") {
       // Match sockets are state subscriptions; their first client message is
       // rejected and closes the socket. Reserve budget + upgrade + message.
       return connectMatch(request, env, matchSocket[1]!);
+    }
+    if (matchSignalSocket && request.method === "GET") {
+      return connectMatchSignal(request, env, matchSignalSocket[1]!);
     }
     if (request.method !== "POST") return json({error: "method_not_allowed"}, 405);
     try {
@@ -552,7 +667,7 @@ export default {
       if (url.pathname === "/api/match/code") return await joinMatchCode(request, env);
       if (url.pathname === "/api/controller/redeem") return await redeem(request, env);
       if (url.pathname === "/api/controller/code") return await redeemCode(request, env);
-      const match = /^\/api\/party\/([A-Za-z0-9_-]{22})\/(approve|reject|rotate|revoke|close)$/.exec(url.pathname);
+      const match = /^\/api\/party\/([A-Za-z0-9_-]{22})\/(approve|reject|remove|rotate|revoke|close)$/.exec(url.pathname);
       if (match) return await hostControl(request, env, match[1]!, match[2]!);
       const matchAction = /^\/api\/match\/([A-Za-z0-9_-]{22})\/(command|state)$/.exec(url.pathname);
       if (matchAction) return await matchControl(request, env, matchAction[1]!,
