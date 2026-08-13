@@ -56,8 +56,15 @@ static bool s_speaking;   /* the worker is inside mdkr_a11y_speech_speak() */
 /* Bumped, under the same mutex, every time the backlog is thrown away. The
  * worker stamps each line with it at the pop and re-reads it before speaking,
  * which is how a line that left the queue before the purge arrived still gets
- * cancelled. See backlog_purge() for what that does and does not close. */
+ * cancelled. See backlog_purge() for what that does and does not close.
+ *
+ * Native only: the browser build has no worker thread and so no pop-to-speak
+ * window -- speak_inline() runs under the same context as the purge -- which
+ * leaves the stamp with no reader there. Newer compilers reject the write-only
+ * global under -Werror, so the browser build compiles it out entirely. */
+#ifndef __EMSCRIPTEN__
 static unsigned s_generation;
+#endif
 
 /* --- the test seam --------------------------------------------------------
  *
@@ -175,7 +182,9 @@ static bool backlog_idle(void) {
 static void backlog_discard(void) {
     s_head = 0;
     s_count = 0;
+#ifndef __EMSCRIPTEN__
     s_generation++;
+#endif
 }
 
 /* Barge-in. Throw the queue away, stamp the throw, then cut the engine off.
