@@ -1612,6 +1612,19 @@ build, persists through IDBFS, creates a fresh document, and requires the
 16:10/FOV-50/3× state to return. Save-only wipe and ROM forget controls must
 retain `/save/mdkr64.ini`.
 
+## Portable settings placement — `tests/check_portable_paths.py`
+
+```bash
+python3 tests/check_portable_paths.py --build build
+```
+
+A `portable.txt` marker beside the executable must relocate the settings write
+next to the game, and its absence must leave the home-directory path in use
+(issue #33, the non-ASCII home path). Both arms drive the real binary against
+isolated directories; a control arm proves the CWD-relative fallback stays
+untouched. The check needs no ROM and accepts `--rom` only for the suite's
+common invocation shape.
+
 ## Original Audio Options persistence — `tests/check_audio_options_persistence.py`
 
 ```bash

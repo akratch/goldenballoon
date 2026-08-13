@@ -78,6 +78,7 @@ def run_write(install_dir: Path, work_dir: Path, home: Path) -> tuple[int, str]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
+    parser.add_argument("--rom", help="accepted for the suite's common invocation shape")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
