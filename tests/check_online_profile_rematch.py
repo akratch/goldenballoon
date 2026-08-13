@@ -137,11 +137,24 @@ def main() -> int:
     if len(profiles) != ROUNDS:
         return fail(f"profile witnesses were {profiles!r}", output)
     for index, stats in enumerate(profiles, 1):
-        # sent/loss/duplicate/reorder/decoded/offer/skip/long are all required;
-        # corruption/outage/rejection belong to harsher named profiles.
-        if any(stats[field] == 0 for field in (0, 1, 2, 3, 8, 10, 11, 12)) \
+        # Per-round witnesses only for the fields the profile makes near-certain
+        # per round: sent/decoded/offer/skip/long are structural, and reorder at
+        # 75/1000 over a few hundred packets misses a round with probability
+        # ~1e-12. Loss (5/1000) and duplication (10/1000) are NOT per-round
+        # certainties: at ~344 sends a round has no drop about one time in six,
+        # and the impairment RNG is deterministically seeded, so any upstream
+        # change to packet flow re-rolls a fixed die. Asserting them per round
+        # made the gate fail on trees whose netcode was healthy. They are
+        # witnessed across the whole session below instead.
+        # Corruption/outage/rejection belong to harsher named profiles.
+        if any(stats[field] == 0 for field in (0, 3, 8, 10, 11, 12)) \
                 or stats[7] != 0:
             return fail(f"round {index} profile was vacuous: {stats!r}", output)
+    for field, name in ((1, "loss"), (2, "duplication")):
+        if sum(stats[field] for stats in profiles) == 0:
+            return fail(
+                f"profile applied no {name} across any round: {profiles!r}",
+                output)
 
     transports = [tuple(map(int, row)) for row in TRANSPORT_RE.findall(output)]
     if len(transports) != ROUNDS:
