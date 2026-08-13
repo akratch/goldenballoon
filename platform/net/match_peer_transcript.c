@@ -17,7 +17,11 @@ static const char *const kRight[32] = {
     "Sparrow", "Star", "Tiger", "Toucan", "Turtle", "Whale", "Wing", "Cloud",
     "Dolphin", "Lantern", "Meteor", "Penguin", "Planet", "Raven", "Sunrise",
     "Thunder"};
-static const char kDomain[] = "golden-balloon-match-peer-transcript-v1";
+/* v2 adds the round-1 key commitments. The domain change is the version tag:
+ * a v1 peer and a v2 peer derive different digests, so they cannot agree on a
+ * phrase or a key and fail closed rather than negotiating down. */
+static const char kDomain[] = "golden-balloon-match-peer-transcript-v2";
+static const char kCommitDomain[] = "golden-balloon-match-peer-commit-v1";
 
 static bool nonzero(const uint8_t *bytes, size_t count) {
     uint8_t value = 0u;
@@ -42,7 +46,55 @@ static void store64(uint8_t out[8], uint64_t value) {
 static bool entry_valid(const MdkrMatchPeerTranscriptEntry *entry) {
     return entry->endpoint_id != 0u && entry->generation != 0u &&
         entry->public_key[0] == 4u &&
-        nonzero(entry->public_key + 1u, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES - 1u);
+        nonzero(entry->public_key + 1u, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES - 1u) &&
+        /* An all-zero opening nonce is a negligible random draw and a likely
+         * uninitialized buffer; refusing it keeps a degenerate commitment from
+         * silently weakening the round. */
+        nonzero(entry->commit_nonce, MDKR_MATCH_PEER_COMMIT_NONCE_BYTES) &&
+        nonzero(entry->commitment, MDKR_MATCH_PEER_COMMIT_BYTES);
+}
+
+bool mdkr_match_peer_commitment(
+    uint32_t match_epoch, uint64_t endpoint_id, uint32_t generation,
+    const uint8_t nonce[MDKR_MATCH_PEER_COMMIT_NONCE_BYTES],
+    const uint8_t public_key[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES],
+    uint8_t commitment[MDKR_MATCH_PEER_COMMIT_BYTES]) {
+    MdkrSha256 hash;
+    uint8_t encoded[8];
+    if (nonce == NULL || public_key == NULL || commitment == NULL ||
+        match_epoch == 0u || endpoint_id == 0u || generation == 0u ||
+        public_key[0] != 4u ||
+        !nonzero(public_key + 1u, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES - 1u) ||
+        !nonzero(nonce, MDKR_MATCH_PEER_COMMIT_NONCE_BYTES)) return false;
+    mdkr_sha256_init(&hash);
+    mdkr_sha256_update(&hash, kCommitDomain, sizeof(kCommitDomain) - 1u);
+    store32(encoded, match_epoch);
+    mdkr_sha256_update(&hash, encoded, 4u);
+    store64(encoded, endpoint_id);
+    mdkr_sha256_update(&hash, encoded, 8u);
+    store32(encoded, generation);
+    mdkr_sha256_update(&hash, encoded, 4u);
+    mdkr_sha256_update(&hash, nonce, MDKR_MATCH_PEER_COMMIT_NONCE_BYTES);
+    mdkr_sha256_update(&hash, public_key, MDKR_MATCH_PEER_PUBLIC_KEY_BYTES);
+    mdkr_sha256_final(&hash, commitment);
+    return true;
+}
+
+bool mdkr_match_peer_commitment_verify(
+    uint32_t match_epoch, uint64_t endpoint_id, uint32_t generation,
+    const uint8_t nonce[MDKR_MATCH_PEER_COMMIT_NONCE_BYTES],
+    const uint8_t public_key[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES],
+    const uint8_t commitment[MDKR_MATCH_PEER_COMMIT_BYTES]) {
+    uint8_t expected[MDKR_MATCH_PEER_COMMIT_BYTES];
+    uint8_t difference = 0u;
+    unsigned index;
+    if (commitment == NULL ||
+        !mdkr_match_peer_commitment(match_epoch, endpoint_id, generation, nonce,
+                                    public_key, expected)) return false;
+    for (index = 0u; index < MDKR_MATCH_PEER_COMMIT_BYTES; index++)
+        difference |= (uint8_t)(expected[index] ^ commitment[index]);
+    memset(expected, 0, sizeof(expected));
+    return difference == 0u;
 }
 
 bool mdkr_match_peer_transcript_digest(
@@ -65,6 +117,17 @@ bool mdkr_match_peer_transcript_digest(
     for (index = 0u; index < transcript->entry_count; index++) {
         unsigned other;
         if (!entry_valid(&sorted[index])) return false;
+        /* Re-run round 2 here, not only at the call site. A phrase derived
+         * from a key that was never committed to is exactly the value an
+         * active man in the middle wants, so the digest refuses to produce
+         * one rather than trusting the caller to have checked. */
+        if (!mdkr_match_peer_commitment_verify(
+                transcript->match_epoch, sorted[index].endpoint_id,
+                sorted[index].generation, sorted[index].commit_nonce,
+                sorted[index].public_key, sorted[index].commitment)) {
+            memset(sorted, 0, sizeof(sorted));
+            return false;
+        }
         for (other = 0u; other < index; other++)
             if (sorted[index].endpoint_id == sorted[other].endpoint_id)
                 return false;
@@ -99,6 +162,10 @@ bool mdkr_match_peer_transcript_digest(
         mdkr_sha256_update(&hash, encoded, 8u);
         store32(encoded, sorted[index].generation);
         mdkr_sha256_update(&hash, encoded, 4u);
+        /* The commitment is hashed as well as the key it opens, so the phrase
+         * covers the whole two-round handshake rather than only its outcome. */
+        mdkr_sha256_update(&hash, sorted[index].commitment,
+                           sizeof(sorted[index].commitment));
         mdkr_sha256_update(&hash, sorted[index].public_key,
                            sizeof(sorted[index].public_key));
     }

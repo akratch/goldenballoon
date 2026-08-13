@@ -74,6 +74,28 @@ typedef struct MdkrMatchPeerReplayWindow {
     bool initialized;
 } MdkrMatchPeerReplayWindow;
 
+#define MDKR_MATCH_PEER_KEYRING_SLOTS 8u
+#define MDKR_MATCH_PEER_FINGERPRINT_BYTES 32u
+
+/* A derived directional key and the one seal window that owns its nonce
+ * sequence, in a single object. There is deliberately no way to obtain the key
+ * without its window, and no way to mint a second window for one key: that
+ * pairing is what keeps an AES-GCM nonce from ever repeating. */
+typedef struct MdkrMatchPeerSealingKey {
+    MdkrMatchPeerKeyContext direction;
+    uint8_t fingerprint[MDKR_MATCH_PEER_FINGERPRINT_BYTES];
+    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES];
+    MdkrMatchPeerSealWindow window;
+    bool occupied;
+} MdkrMatchPeerSealingKey;
+
+/* Caller-owned, zero-initialized. Scoped per room/epoch rather than global so
+ * the adapter stays reentrant. Deriving the same inputs twice returns the same
+ * slot, so a second derivation cannot restart the sequence space. */
+typedef struct MdkrMatchPeerKeyring {
+    MdkrMatchPeerSealingKey slots[MDKR_MATCH_PEER_KEYRING_SLOTS];
+} MdkrMatchPeerKeyring;
+
 typedef enum MdkrMatchPeerCryptoResult {
     MDKR_MATCH_PEER_CRYPTO_OK = 0,
     MDKR_MATCH_PEER_CRYPTO_INVALID,
@@ -94,21 +116,29 @@ void mdkr_match_peer_identity_destroy(MdkrMatchPeerIdentity *identity);
 bool mdkr_match_peer_identity_public_key(
     const MdkrMatchPeerIdentity *identity,
     uint8_t public_key[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES]);
-bool mdkr_match_peer_identity_derive_key(
+MdkrMatchPeerSealingKey *mdkr_match_peer_identity_derive_key(
+    MdkrMatchPeerKeyring *ring,
     MdkrMatchPeerIdentity *identity,
     const uint8_t peer_public_key[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES],
     const uint8_t transcript_digest[MDKR_MATCH_PEER_TRANSCRIPT_BYTES],
-    const MdkrMatchPeerKeyContext *context,
-    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]);
+    const MdkrMatchPeerKeyContext *context);
 
 /* HKDF-SHA-256. The transcript digest is the salt; direction, epoch and both
- * authenticated endpoint generations are domain-separated HKDF info. */
-bool mdkr_match_peer_derive_key(
+ * authenticated endpoint generations are domain-separated HKDF info. The key
+ * and its seal window are minted together into a keyring slot.
+ *
+ * Deriving the identical (secret, transcript, direction) twice returns the
+ * SAME slot rather than a second key with a fresh sequence — two windows over
+ * one key would repeat a nonce and leak the GHASH subkey. Returns NULL when
+ * the inputs are invalid or the ring is full; a full ring fails closed. */
+MdkrMatchPeerSealingKey *mdkr_match_peer_derive_key(
+    MdkrMatchPeerKeyring *ring,
     const uint8_t shared_secret[MDKR_MATCH_PEER_SECRET_BYTES],
     const uint8_t transcript_digest[MDKR_MATCH_PEER_TRANSCRIPT_BYTES],
-    const MdkrMatchPeerKeyContext *context,
-    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]);
-void mdkr_match_peer_forget_key(uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]);
+    const MdkrMatchPeerKeyContext *context);
+
+/* Retires every slot, including key bytes and sequence state. */
+void mdkr_match_peer_keyring_forget(MdkrMatchPeerKeyring *ring);
 
 /* Parses authenticated-header-shaped routing metadata without authenticating
  * it. Forwarders must compare it to a current generation-checked graph route;
@@ -117,21 +147,14 @@ bool mdkr_match_peer_inspect(
     const uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES],
     MdkrMatchPeerEnvelopeContext *context);
 
-/* Initialize an all-zero window exactly once for a freshly derived directional
- * key. An active or exhausted window cannot be reset. Reconnects derive a new
- * generation-bound key and therefore require a different zeroed window. */
-bool mdkr_match_peer_seal_window_init(
-    MdkrMatchPeerSealWindow *window,
-    const MdkrMatchPeerKeyContext *direction);
-
 /* AES-256-GCM. The fixed header is authenticated additional data. Sequence is
- * assigned and advanced only by the direction-bound window after encryption
- * succeeds, so callers cannot accidentally reuse or reorder a nonce. Output
- * and window remain unchanged on failure; UINT64_MAX seals once then exhausts
- * the window permanently. */
+ * assigned and advanced only by the sealing key's own window after encryption
+ * succeeds, so callers cannot reuse or reorder a nonce — there is no separate
+ * window argument to get wrong. Output and window remain unchanged on failure;
+ * UINT64_MAX seals once then exhausts the window permanently, after which the
+ * direction requires a reconnect and a fresh generation-bound key. */
 bool mdkr_match_peer_seal(
-    const uint8_t key[MDKR_MATCH_PEER_KEY_BYTES],
-    MdkrMatchPeerSealWindow *window,
+    MdkrMatchPeerSealingKey *sealing,
     const MdkrMatchPeerSendContext *context,
     const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES],
     uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES]);
@@ -141,7 +164,7 @@ bool mdkr_match_peer_seal(
  * generations before decryption. Authentication happens before replay state
  * or output changes. Each replay window belongs to exactly one direction. */
 MdkrMatchPeerCryptoResult mdkr_match_peer_open(
-    const uint8_t key[MDKR_MATCH_PEER_KEY_BYTES],
+    const MdkrMatchPeerSealingKey *opening,
     const MdkrMatchPeerKeyContext *expected_context,
     MdkrMatchPeerReplayWindow *replay,
     const uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES],

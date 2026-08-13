@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {webcrypto} from "node:crypto";
 import {createMatchPeerIdentity, createMatchPeerReplayWindow,
-  createMatchPeerSealWindow, deriveMatchPeerKey,
+  deriveMatchPeerKey,
   deriveMatchPeerKeyFromIdentity, digestMatchPeerTranscript,
   forgetMatchPeerIdentity, forgetMatchPeerKey, inspectMatchPeerEnvelope,
-  MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT, matchPeerVerificationPhrase,
-  openMatchPeerEnvelope, sealMatchPeerEnvelope}
+  matchPeerCommitment, MATCH_PEER_COMMIT_BYTES,
+  MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT, MATCH_PEER_VERSION,
+  matchPeerVerificationPhrase, openMatchPeerEnvelope, sealMatchPeerEnvelope,
+  verifyMatchPeerCommitment}
   from "../dist/web/online/match-peer-crypto.js";
 import {createMatchPreflightFragmentState, encodeMatchPreflightFragments,
   MATCH_PREFLIGHT_ALL_FLAGS, MATCH_PREFLIGHT_FRAGMENT_COUNT,
@@ -19,7 +21,7 @@ const directionOf = value => ({matchEpoch: value.matchEpoch,
   destinationGeneration: value.destinationGeneration});
 async function sealForgedEnvelope(key, forged, sequence = 1n) {
   const aad = new Uint8Array(52);
-  aad.set([0x4d, 0x50, 0x45, 0x31, 1,
+  aad.set([0x4d, 0x50, 0x45, 0x31, MATCH_PEER_VERSION,
     forged.intermediateEndpointId === 0n ? 0 : 1, forged.payloadType, 0]);
   const view = new DataView(aad.buffer);
   view.setUint32(8, forged.matchEpoch, false);
@@ -40,11 +42,11 @@ async function sealForgedEnvelope(key, forged, sequence = 1n) {
   envelope.set(encrypted, 52);
   return envelope;
 }
-const envelopeHex = "4d50453101010000000000070000000000000064000000020000000000000190" +
-  "0000000900000000000000c800000000000000012bd9f1554abd62235a212387" +
-  "c3d2cd82030455aa45e53f72d45d982c44ced93ea300c68543d2e9b9c16ce23" +
-  "ed3b5d35f57d13a9dbf3a3010fa37df24c6aefaedeb1d33859f2376cde014319" +
-  "33d5f1fad";
+const envelopeHex = "4d50453102010000000000070000000000000064000000020000000000000190" +
+  "0000000900000000000000c80000000000000001f51c2e8a849b8a8e48aba590" +
+  "238f4b4a42ad2017043dc723841ce6955caad4ecea6dddd15df2e07494afc0d9" +
+  "3024366db9095a0a4219bda447fa73d765b1b9dbf5db7ea7551bfa70d48b88e2" +
+  "0d6b4386";
 const secret = Uint8Array.from({length: 32}, (_, index) => index);
 const transcript = Uint8Array.from({length: 32}, (_, index) => 0xa0 + index);
 const payload = Uint8Array.from({length: 64}, (_, index) => 0x40 + index);
@@ -56,62 +58,122 @@ const compatibility = {protocolVersion: 1,
   buildId: Uint8Array.from({length: 16}, (_, index) => index + 1),
   gameplayDigest: Uint8Array.from({length: 32}, (_, index) => 0x80 + index),
   romRevision: 1, cadenceHz: 30};
-const entries = [300n, 100n, 200n].map((endpointId, index) => ({endpointId,
-  generation: Number(endpointId / 100n),
-  publicKey: Uint8Array.from({length: 65}, (_, byte) => byte === 0 ? 4 :
-    Number(endpointId / 100n) + byte)}));
+const commitNonceFor = (endpointId) => Uint8Array.from({length: 32},
+  (_, byte) => Number(endpointId / 100n) * 16 + byte + 1);
+const entries = [];
+for (const endpointId of [300n, 100n, 200n]) {
+  const generation = Number(endpointId / 100n);
+  const publicKey = Uint8Array.from({length: 65},
+    (_, byte) => byte === 0 ? 4 : generation + byte);
+  const commitNonce = commitNonceFor(endpointId);
+  const commitment = await matchPeerCommitment(7, endpointId, generation,
+    commitNonce, publicKey, webcrypto);
+  entries.push({endpointId, generation, publicKey, commitNonce, commitment});
+}
 const digest = await digestMatchPeerTranscript({roomId: Uint8Array.from(
   {length: 16}, (_, index) => index + 1), matchEpoch: 7, compatibility, entries},
 webcrypto);
 assert.equal(toHex(digest),
-  "83591b0d6f3d7852b564dbe1976a50b9dcb1bdd82114c937f12a903505ec7019");
+  "7ae1f0dae7ca2f575475b8278815071b1a32b929c44022bad73c093f62e3c3d2");
 assert.equal(matchPeerVerificationPhrase(digest),
-  "Nimble-Pilot Jolly-Star Sunny-Falcon");
+  "Neon-Parrot Nimble-Thunder Brave-Wing");
 const reorderedDigest = await digestMatchPeerTranscript({roomId: Uint8Array.from(
   {length: 16}, (_, index) => index + 1), matchEpoch: 7, compatibility,
 entries: [entries[2], entries[1], entries[0]]}, webcrypto);
 assert.equal(toHex(reorderedDigest), toHex(digest));
+// The commitment bytes get the same exhaustive treatment as the 132-byte
+// envelope sweep below: every single-byte change to a commitment or to the
+// nonce that opens it must refuse to produce a phrase. A digest derived from
+// key material that was never committed to is precisely what an active MITM
+// needs, so this fails closed rather than degrading.
+const transcriptBase = {roomId: Uint8Array.from({length: 16},
+  (_, index) => index + 1), matchEpoch: 7, compatibility, entries};
+for (let index = 0; index < MATCH_PEER_COMMIT_BYTES; index++) {
+  const mutated = entries.map((entry, position) => position !== 1 ? entry
+    : {...entry, commitment: entry.commitment.map((byte, at) =>
+      at === index ? byte ^ 0x40 : byte)});
+  await assert.rejects(
+    () => digestMatchPeerTranscript({...transcriptBase, entries: mutated},
+      webcrypto),
+    /commitment does not open/, `commitment byte ${index}`);
+}
+for (let index = 0; index < 32; index++) {
+  const mutated = entries.map((entry, position) => position !== 1 ? entry
+    : {...entry, commitNonce: entry.commitNonce.map((byte, at) =>
+      at === index ? byte ^ 0x40 : byte)});
+  await assert.rejects(
+    () => digestMatchPeerTranscript({...transcriptBase, entries: mutated},
+      webcrypto),
+    /commitment does not open/, `nonce byte ${index}`);
+}
+// Swapping a peer's revealed key for another valid key cannot be repaired by
+// keeping the old commitment: this is the grinding attack the round exists to
+// stop, and it now fails before any phrase exists.
+await assert.rejects(() => digestMatchPeerTranscript({...transcriptBase,
+  entries: entries.map((entry, position) => position !== 0 ? entry
+    : {...entry, publicKey: entries[2].publicKey})}, webcrypto),
+/commitment does not open/);
+// A degenerate all-zero opening nonce is refused rather than silently weakening
+// the round.
+await assert.rejects(() => digestMatchPeerTranscript({...transcriptBase,
+  entries: entries.map((entry, position) => position !== 0 ? entry
+    : {...entry, commitNonce: new Uint8Array(32)})}, webcrypto),
+/invalid match peer transcript/);
+assert.equal(await verifyMatchPeerCommitment(7, entries[0].endpointId,
+  entries[0].generation, entries[0].commitNonce, entries[0].publicKey,
+  entries[0].commitment, webcrypto), true);
+// A commitment is bound to its epoch and identity, so it cannot be lifted into
+// another room, epoch or generation.
+assert.equal(await verifyMatchPeerCommitment(8, entries[0].endpointId,
+  entries[0].generation, entries[0].commitNonce, entries[0].publicKey,
+  entries[0].commitment, webcrypto), false);
+assert.equal(await verifyMatchPeerCommitment(7, entries[0].endpointId,
+  entries[0].generation + 1, entries[0].commitNonce, entries[0].publicKey,
+  entries[0].commitment, webcrypto), false);
+
 const leftIdentity = await createMatchPeerIdentity(webcrypto);
 const rightIdentity = await createMatchPeerIdentity(webcrypto);
 const leftKey = await deriveMatchPeerKeyFromIdentity(leftIdentity,
   rightIdentity.publicKey, digest, context, webcrypto);
 const rightKey = await deriveMatchPeerKeyFromIdentity(rightIdentity,
   leftIdentity.publicKey, digest, context, webcrypto);
-const leftIdentityWindow = createMatchPeerSealWindow(leftKey, expectedDirection);
-const rightIdentityWindow = createMatchPeerSealWindow(rightKey, expectedDirection);
+// Both ECDH directions agree on one key, which the derivation registry makes
+// directly observable: identical inputs yield the identical record, so two
+// peers can never end up with separate windows over one AES key. If ECDH
+// symmetry broke, the fingerprints would differ and these would be distinct.
+assert.equal(leftKey, rightKey,
+  "both ECDH directions must derive one shared key record");
 const leftIdentityEnvelope = await sealMatchPeerEnvelope(
-  leftKey, leftIdentityWindow, context, payload, webcrypto);
+  leftKey, context, payload, webcrypto);
+assert.equal(inspectMatchPeerEnvelope(leftIdentityEnvelope).sequence, 1n);
 const rightIdentityEnvelope = await sealMatchPeerEnvelope(
-  rightKey, rightIdentityWindow, context, payload, webcrypto);
-assert.equal(toHex(leftIdentityEnvelope), toHex(rightIdentityEnvelope));
+  rightKey, context, payload, webcrypto);
+assert.equal(inspectMatchPeerEnvelope(rightIdentityEnvelope).sequence, 2n,
+  "a shared record advances one monotonic sequence and never restarts");
+assert.notEqual(toHex(leftIdentityEnvelope), toHex(rightIdentityEnvelope));
 forgetMatchPeerIdentity(leftIdentity);
 await assert.rejects(() => deriveMatchPeerKeyFromIdentity(leftIdentity,
   rightIdentity.publicKey, digest, context, webcrypto), /invalid match peer identity/);
 forgetMatchPeerIdentity(rightIdentity);
 const key = await deriveMatchPeerKey(secret, transcript, context, webcrypto);
-const directionCheckKey = await deriveMatchPeerKey(
-  secret, transcript, context, webcrypto);
-assert.throws(() => createMatchPeerSealWindow(directionCheckKey,
-  {...expectedDirection, sourceGeneration: 3}),
-  /invalid match peer seal direction/);
-const directionCheckWindow = createMatchPeerSealWindow(
-  directionCheckKey, expectedDirection);
-assert.equal(directionCheckWindow.nextSequence, 1n);
-forgetMatchPeerKey(directionCheckKey);
-const sealWindow = createMatchPeerSealWindow(key, expectedDirection);
-assert.throws(() => createMatchPeerSealWindow(key, expectedDirection),
-  /invalid match peer seal direction/);
-assert.equal(key.handle.extractable, false);
+const sealWindow = key.sealWindow;
+// G-2: deriving the identical inputs again must hand back the SAME key and the
+// SAME window. A second window would restart the sequence at 1 under one AES
+// key, repeating a (key, nonce) pair and leaking the GHASH subkey.
+const rederived = await deriveMatchPeerKey(secret, transcript, context, webcrypto);
+assert.equal(rederived, key, "a repeated derivation must share one record");
+assert.equal(rederived.sealWindow, sealWindow,
+  "a repeated derivation must share one seal window");
+assert.equal(key.key.handle.extractable, false);
 await assert.rejects(() => sealMatchPeerEnvelope(
-  key, sealWindow, {...context, payloadType: 2}, payload, webcrypto),
+  key, {...context, payloadType: 2}, payload, webcrypto),
   /invalid match peer envelope/);
 assert.equal(sealWindow.nextSequence, 1n);
 await assert.rejects(() => sealMatchPeerEnvelope(
-  key, sealWindow, {...context, sequence: 1n}, payload, webcrypto),
+  key, {...context, sequence: 1n}, payload, webcrypto),
   /invalid match peer envelope/);
 assert.equal(sealWindow.nextSequence, 1n);
-const envelope = await sealMatchPeerEnvelope(
-  key, sealWindow, context, payload, webcrypto);
+const envelope = await sealMatchPeerEnvelope(key, context, payload, webcrypto);
 assert.equal(toHex(envelope), envelopeHex);
 assert.deepEqual(inspectMatchPeerEnvelope(envelope), {...context, sequence: 1n});
 assert.equal(sealWindow.nextSequence, 2n);
@@ -142,7 +204,7 @@ const fragmentOrder = [2, 0, 1];
 for (let index = 0; index < fragmentOrder.length; index++) {
   const preflightContext = {...context,
     payloadType: MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT};
-  const preflightEnvelope = await sealMatchPeerEnvelope(key, sealWindow,
+  const preflightEnvelope = await sealMatchPeerEnvelope(key,
     preflightContext, fragmentPayloads[fragmentOrder[index]], webcrypto);
   assert.equal(preflightEnvelope[6], MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT);
   const preflightOpened = await openMatchPeerEnvelope(key, expectedDirection, replay,
@@ -161,19 +223,19 @@ for (let index = 0; index < fragmentOrder.length; index++) {
 // Sealing is monotonic even when delivery is reordered. The receiver accepts
 // unseen packets within 63 prior sequence positions and rejects older ones.
 const envelope5 = await sealMatchPeerEnvelope(
-  key, sealWindow, context, payload, webcrypto);
+  key, context, payload, webcrypto);
 const envelope6 = await sealMatchPeerEnvelope(
-  key, sealWindow, context, payload, webcrypto);
+  key, context, payload, webcrypto);
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection, replay,
   envelope6, webcrypto)).context.sequence, 6n);
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection, replay,
   envelope5, webcrypto)).context.sequence, 5n);
 const envelope7 = await sealMatchPeerEnvelope(
-  key, sealWindow, context, payload, webcrypto);
+  key, context, payload, webcrypto);
 let envelope71;
 for (let sequence = 8n; sequence <= 71n; sequence++) {
   envelope71 = await sealMatchPeerEnvelope(
-    key, sealWindow, context, payload, webcrypto);
+    key, context, payload, webcrypto);
   assert.equal(inspectMatchPeerEnvelope(envelope71).sequence, sequence);
 }
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection, replay,
@@ -207,9 +269,8 @@ const reverse = {...context, sourceEndpointId: 400n, sourceGeneration: 9,
   destinationEndpointId: 100n, destinationGeneration: 2};
 const reverseDirection = directionOf(reverse);
 const reverseKey = await deriveMatchPeerKey(secret, transcript, reverse, webcrypto);
-const reverseWindow = createMatchPeerSealWindow(reverseKey, reverseDirection);
 const reverseEnvelope = await sealMatchPeerEnvelope(
-  reverseKey, reverseWindow, reverse, payload, webcrypto);
+  reverseKey, reverse, payload, webcrypto);
 assert.notEqual(toHex(reverseEnvelope), envelopeHex);
 assert.equal((await openMatchPeerEnvelope(key, {...expectedDirection, matchEpoch: 6},
   createMatchPeerReplayWindow(), envelope, webcrypto)).result, "stale_epoch");
@@ -224,19 +285,19 @@ assert.equal((await openMatchPeerEnvelope(key, {...expectedDirection,
 // direct-channel caller supplies this peer's valid key, the protected header
 // cannot claim a different source endpoint or generation.
 const forgedSource = {...context, sourceEndpointId: 300n, sourceGeneration: 5};
-const forgedSourceEnvelope = await sealForgedEnvelope(key, forgedSource);
+const forgedSourceEnvelope = await sealForgedEnvelope(key.key, forgedSource);
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection,
   createMatchPeerReplayWindow(), forgedSourceEnvelope, webcrypto)).result,
   "wrong_source");
 const forgedGeneration = {...context, sourceGeneration: 3};
-const forgedGenerationEnvelope = await sealForgedEnvelope(key, forgedGeneration);
+const forgedGenerationEnvelope = await sealForgedEnvelope(key.key, forgedGeneration);
 assert.equal((await openMatchPeerEnvelope(key, expectedDirection,
   createMatchPeerReplayWindow(), forgedGenerationEnvelope, webcrypto)).result,
   "stale_generation");
 
 forgetMatchPeerKey(reverseKey);
 await assert.rejects(() => sealMatchPeerEnvelope(
-  reverseKey, reverseWindow, reverse, payload, webcrypto),
+  reverseKey, reverse, payload, webcrypto),
   /invalid match peer envelope/);
 
 // WebCrypto is asynchronous: a second send must not observe the same sequence
@@ -246,8 +307,7 @@ const concurrentContext = {...context, destinationGeneration: 10};
 const concurrentDirection = directionOf(concurrentContext);
 const concurrentKey = await deriveMatchPeerKey(
   secret, transcript, concurrentDirection, webcrypto);
-const concurrentWindow = createMatchPeerSealWindow(
-  concurrentKey, concurrentDirection);
+const concurrentWindow = concurrentKey.sealWindow;
 let releaseEncrypt;
 let reportEncryptEntered;
 const encryptEntered = new Promise(resolve => { reportEncryptEntered = resolve; });
@@ -257,10 +317,10 @@ const blockingProvider = {subtle: {encrypt: async (...args) => {
   await encryptRelease;
   return webcrypto.subtle.encrypt(...args);
 }}};
-const inFlight = sealMatchPeerEnvelope(concurrentKey, concurrentWindow,
+const inFlight = sealMatchPeerEnvelope(concurrentKey,
   concurrentContext, payload, blockingProvider);
 await encryptEntered;
-await assert.rejects(() => sealMatchPeerEnvelope(concurrentKey, concurrentWindow,
+await assert.rejects(() => sealMatchPeerEnvelope(concurrentKey,
   concurrentContext, payload, webcrypto), /invalid match peer envelope/);
 assert.equal(concurrentWindow.nextSequence, 1n);
 releaseEncrypt();
@@ -269,11 +329,23 @@ assert.equal(concurrentWindow.nextSequence, 2n);
 const failingProvider = {subtle: {encrypt: async () => {
   throw new Error("injected provider failure");
 }}};
-await assert.rejects(() => sealMatchPeerEnvelope(concurrentKey, concurrentWindow,
+await assert.rejects(() => sealMatchPeerEnvelope(concurrentKey,
   concurrentContext, payload, failingProvider), /injected provider failure/);
 assert.equal(concurrentWindow.nextSequence, 2n);
 assert.equal(inspectMatchPeerEnvelope(await sealMatchPeerEnvelope(
-  concurrentKey, concurrentWindow, concurrentContext, payload, webcrypto)).sequence, 2n);
+  concurrentKey, concurrentContext, payload, webcrypto)).sequence, 2n);
 forgetMatchPeerKey(concurrentKey);
+
+// Cross-version confusion fails closed. A v1 envelope — the protocol that
+// predates the key-commitment round — is refused at the header before any
+// decryption is attempted, so a peer cannot be talked down to the grindable
+// phrase by presenting an older envelope.
+const downgraded = Uint8Array.from(envelope);
+downgraded[4] = 1;
+assert.equal(inspectMatchPeerEnvelope(downgraded), null,
+  "a v1 envelope must not even parse");
+assert.equal((await openMatchPeerEnvelope(key, expectedDirection,
+  createMatchPeerReplayWindow(), downgraded, webcrypto)).result, "invalid",
+"a v1 envelope must fail closed before decryption, not as an auth failure");
 
 console.log("test_match_peer_crypto_js: PASS");

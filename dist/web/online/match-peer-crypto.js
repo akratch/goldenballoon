@@ -7,9 +7,20 @@ export const MATCH_PEER_PAYLOAD_INPUT = 0;
 export const MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT = 1;
 
 const MAGIC = new Uint8Array([0x4d, 0x50, 0x45, 0x31]);
-const KEY_DOMAIN = new TextEncoder().encode("golden-balloon-match-input-key-v1");
+const KEY_DOMAIN = new TextEncoder().encode("golden-balloon-match-input-key-v2");
+// v2 is the committed-transcript protocol: round 1 publishes a hiding
+// commitment to each endpoint's public key, round 2 opens it. A v1 peer derives
+// a different digest and therefore a different key, so the versions cannot
+// interoperate or negotiate down to the grindable phrase.
 const TRANSCRIPT_DOMAIN = new TextEncoder().encode(
-  "golden-balloon-match-peer-transcript-v1");
+  "golden-balloon-match-peer-transcript-v2");
+const COMMIT_DOMAIN = new TextEncoder().encode(
+  "golden-balloon-match-peer-commit-v1");
+// Envelope protocol version. v1 predates the key-commitment round; a v1
+// envelope is rejected before decryption rather than negotiated down.
+export const MATCH_PEER_VERSION = 2;
+export const MATCH_PEER_COMMIT_NONCE_BYTES = 32;
+export const MATCH_PEER_COMMIT_BYTES = 32;
 const LEFT = ["Amber", "Brave", "Bright", "Calm", "Coral", "Cosmic", "Daring",
   "Flying", "Gentle", "Golden", "Happy", "Icy", "Jolly", "Lucky", "Mighty",
   "Neon", "Nimble", "Orange", "Rapid", "Royal", "Silver", "Solar", "Sunny",
@@ -25,7 +36,35 @@ const SEND_CONTEXT_FIELDS = new Set(["matchEpoch", "sourceEndpointId",
   "sourceGeneration", "destinationEndpointId", "destinationGeneration",
   "intermediateEndpointId", "payloadType"]);
 const SEAL_WINDOWS = new WeakMap();
+// Belt and braces under the registry below: even reached directly, a key can
+// only ever be given one window.
 const ISSUED_SEAL_KEYS = new WeakSet();
+// Derived keys, named by a hash of the inputs that produce them. Deriving the
+// identical (secret, transcript, direction) twice returns the SAME record, so
+// the sequence space cannot restart under one key — two windows over one AES
+// key would repeat a nonce and leak the GHASH subkey. Keyed on the inputs
+// rather than the key material, so nothing key-derived is retained.
+const KEY_REGISTRY = new Map();
+const KEY_FINGERPRINT_DOMAIN = new TextEncoder().encode(
+  "golden-balloon-match-peer-key-fingerprint-v1");
+
+function hex(value) {
+  return [...value].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function keyFingerprint(sharedSecret, transcriptDigest, info, provider) {
+  const output = new Uint8Array(KEY_FINGERPRINT_DOMAIN.length +
+    sharedSecret.byteLength + transcriptDigest.byteLength + info.byteLength);
+  let offset = 0;
+  output.set(KEY_FINGERPRINT_DOMAIN, offset);
+  offset += KEY_FINGERPRINT_DOMAIN.length;
+  output.set(sharedSecret, offset); offset += sharedSecret.byteLength;
+  output.set(transcriptDigest, offset); offset += transcriptDigest.byteLength;
+  output.set(info, offset);
+  const digest = new Uint8Array(await provider.subtle.digest("SHA-256", output));
+  output.fill(0);
+  return hex(digest);
+}
 
 function bytes(value, length) {
   return value instanceof Uint8Array && value.byteLength === length;
@@ -93,6 +132,47 @@ function keyInfo(context) {
   return output;
 }
 
+// Round 1: published before any public key is revealed, so no endpoint can
+// choose its key after seeing another's. The epoch and authenticated identity
+// are bound in, so a commitment cannot be lifted into another room or epoch.
+export async function matchPeerCommitment(matchEpoch, endpointId, generation,
+                                          nonce, publicKey,
+                                          provider = globalThis.crypto) {
+  if (!provider?.subtle || !u32(matchEpoch, true) || !u64(endpointId, true) ||
+      !u32(generation, true) || !bytes(nonce, MATCH_PEER_COMMIT_NONCE_BYTES) ||
+      !nonce.some(byte => byte !== 0) || !bytes(publicKey, 65) ||
+      publicKey[0] !== 4 || !publicKey.subarray(1).some(byte => byte !== 0))
+    throw new TypeError("invalid match peer commitment input");
+  const output = new Uint8Array(COMMIT_DOMAIN.length + 16 +
+    MATCH_PEER_COMMIT_NONCE_BYTES + 65);
+  output.set(COMMIT_DOMAIN);
+  const view = new DataView(output.buffer);
+  let offset = COMMIT_DOMAIN.length;
+  put32(view, offset, matchEpoch); offset += 4;
+  put64(view, offset, endpointId); offset += 8;
+  put32(view, offset, generation); offset += 4;
+  output.set(nonce, offset); offset += MATCH_PEER_COMMIT_NONCE_BYTES;
+  output.set(publicKey, offset);
+  return new Uint8Array(await provider.subtle.digest("SHA-256", output));
+}
+
+// Round 2. Constant-time comparison; false rather than throwing on mismatch.
+export async function verifyMatchPeerCommitment(matchEpoch, endpointId,
+                                                generation, nonce, publicKey,
+                                                commitment,
+                                                provider = globalThis.crypto) {
+  if (!bytes(commitment, MATCH_PEER_COMMIT_BYTES)) return false;
+  let expected;
+  try {
+    expected = await matchPeerCommitment(matchEpoch, endpointId, generation,
+      nonce, publicKey, provider);
+  } catch (_) { return false; }
+  let difference = 0;
+  for (let index = 0; index < MATCH_PEER_COMMIT_BYTES; index++)
+    difference |= expected[index] ^ commitment[index];
+  return difference === 0;
+}
+
 export async function digestMatchPeerTranscript(transcript,
                                                 provider = globalThis.crypto) {
   const compatibility = transcript?.compatibility;
@@ -108,13 +188,26 @@ export async function digestMatchPeerTranscript(transcript,
       entries.length < 2 || entries.length > 4 || entries.some(entry =>
         !u64(entry?.endpointId, true) || !u32(entry?.generation, true) ||
         !bytes(entry?.publicKey, 65) || entry.publicKey[0] !== 4 ||
-        !entry.publicKey.subarray(1).some(byte => byte !== 0)) ||
+        !entry.publicKey.subarray(1).some(byte => byte !== 0) ||
+        !bytes(entry?.commitment, MATCH_PEER_COMMIT_BYTES) ||
+        !entry.commitment.some(byte => byte !== 0) ||
+        !bytes(entry?.commitNonce, MATCH_PEER_COMMIT_NONCE_BYTES) ||
+        !entry.commitNonce.some(byte => byte !== 0)) ||
       new Set(entries.map(entry => entry.endpointId)).size !== entries.length)
     throw new TypeError("invalid match peer transcript");
   const sorted = [...entries].sort((left, right) =>
     left.endpointId < right.endpointId ? -1 : left.endpointId > right.endpointId ? 1 : 0);
+  // Re-run round 2 here, not only at the call site: a phrase derived from a key
+  // that was never committed to is exactly what an active MITM wants, so the
+  // digest refuses rather than trusting the caller to have verified.
+  for (const entry of sorted) {
+    if (!await verifyMatchPeerCommitment(transcript.matchEpoch, entry.endpointId,
+        entry.generation, entry.commitNonce, entry.publicKey, entry.commitment,
+        provider))
+      throw new TypeError("match peer commitment does not open");
+  }
   const output = new Uint8Array(TRANSCRIPT_DOMAIN.length + 16 + 4 + 4 + 16 + 32 +
-    3 + sorted.length * 77);
+    3 + sorted.length * 109);
   output.set(TRANSCRIPT_DOMAIN);
   let offset = TRANSCRIPT_DOMAIN.length;
   output.set(transcript.roomId, offset); offset += 16;
@@ -129,6 +222,9 @@ export async function digestMatchPeerTranscript(transcript,
   for (const entry of sorted) {
     put64(view, offset, entry.endpointId); offset += 8;
     put32(view, offset, entry.generation); offset += 4;
+    // The commitment is hashed as well as the key it opens, so the phrase
+    // covers the whole two-round handshake rather than only its outcome.
+    output.set(entry.commitment, offset); offset += MATCH_PEER_COMMIT_BYTES;
     output.set(entry.publicKey, offset); offset += 65;
   }
   if (offset !== output.length) throw new Error("match transcript size mismatch");
@@ -147,7 +243,7 @@ export function matchPeerVerificationPhrase(digest) {
 function header(context) {
   const output = new Uint8Array(MATCH_PEER_HEADER_BYTES);
   output.set(MAGIC);
-  output[4] = 1;
+  output[4] = MATCH_PEER_VERSION;
   output[5] = context.intermediateEndpointId === 0n ? 0 : 1;
   output[6] = context.payloadType;
   const view = new DataView(output.buffer);
@@ -163,7 +259,7 @@ function header(context) {
 
 function parseHeader(envelope) {
   if (!bytes(envelope, MATCH_PEER_ENVELOPE_BYTES) ||
-      MAGIC.some((byte, index) => envelope[index] !== byte) || envelope[4] !== 1 ||
+      MAGIC.some((byte, index) => envelope[index] !== byte) || envelope[4] !== MATCH_PEER_VERSION ||
       envelope[5] > 1 || envelope[6] > MATCH_PEER_PAYLOAD_PREFLIGHT_FRAGMENT ||
       envelope[7] !== 0) return null;
   const view = new DataView(envelope.buffer, envelope.byteOffset, MATCH_PEER_HEADER_BYTES);
@@ -195,6 +291,12 @@ export async function deriveMatchPeerKey(sharedSecret, transcriptDigest, context
                                          provider = globalThis.crypto) {
   if (!provider?.subtle || !bytes(sharedSecret, 32) || !bytes(transcriptDigest, 32) ||
       !keyContextValid(context)) throw new TypeError("invalid match peer key context");
+  const fingerprint = await keyFingerprint(sharedSecret, transcriptDigest,
+    keyInfo(context), provider);
+  const existing = KEY_REGISTRY.get(fingerprint);
+  // Same inputs, same key: hand back the live window rather than a second one
+  // whose sequence would restart at 1 under the same key.
+  if (existing && existing.key.destroyed === false) return existing;
   const material = await provider.subtle.importKey("raw", sharedSecret, "HKDF", false,
     ["deriveKey"]);
   const handle = await provider.subtle.deriveKey({name: "HKDF", hash: "SHA-256",
@@ -205,7 +307,10 @@ export async function deriveMatchPeerKey(sharedSecret, transcriptDigest, context
     sourceGeneration: context.sourceGeneration,
     destinationEndpointId: context.destinationEndpointId,
     destinationGeneration: context.destinationGeneration});
-  return {handle, direction, destroyed: false};
+  const key = {handle, direction, destroyed: false, fingerprint};
+  const record = Object.freeze({key, sealWindow: mintSealWindow(key, direction)});
+  KEY_REGISTRY.set(fingerprint, record);
+  return record;
 }
 
 export async function createMatchPeerIdentity(provider = globalThis.crypto) {
@@ -241,13 +346,21 @@ export async function deriveMatchPeerKeyFromIdentity(identity, peerPublicKey,
   } finally { shared.fill(0); }
 }
 
-export function forgetMatchPeerKey(key) {
-  if (!key || typeof key !== "object") return;
+// Accepts the record returned by derive (or a bare key) and retires both the
+// handle and its registry entry, so a later derive of the same inputs starts a
+// genuinely fresh key rather than resurrecting a spent sequence space.
+export function forgetMatchPeerKey(value) {
+  if (!value || typeof value !== "object") return;
+  const key = value.key && typeof value.key === "object" ? value.key : value;
+  if (typeof key.fingerprint === "string") KEY_REGISTRY.delete(key.fingerprint);
   key.destroyed = true;
   key.handle = null;
 }
 
-export function createMatchPeerSealWindow(key, direction) {
+// Internal: the only seal-window constructor, reachable only from derive. It is
+// deliberately not exported — handing callers a way to mint a second window for
+// a key is exactly the nonce-reuse seam this module must not have.
+function mintSealWindow(key, direction) {
   if (!usableKey(key) || ISSUED_SEAL_KEYS.has(key) || !keyContextValid(direction) ||
       !directionEqual(key.direction, direction))
     throw new TypeError("invalid match peer seal direction");
@@ -276,9 +389,12 @@ function sealWindowValid(window) {
      (!state.ready && state.nextSequence === 0n)) ? state : null;
 }
 
-export async function sealMatchPeerEnvelope(key, window, context, payload,
+// Takes the record minted by derive: the key and its one window travel
+// together, so there is no way to pair a key with someone else's window.
+export async function sealMatchPeerEnvelope(sealing, context, payload,
                                             provider = globalThis.crypto) {
-  const state = sealWindowValid(window);
+  const key = sealing && typeof sealing === "object" ? sealing.key : null;
+  const state = sealWindowValid(sealing && sealing.sealWindow);
   if (!provider?.subtle || !usableKey(key) || !bytes(payload, MATCH_PEER_PAYLOAD_BYTES) ||
       !state || state.key !== key || !state.ready || state.busy ||
       !sendContextValid(context) ||
@@ -341,8 +457,9 @@ export function inspectMatchPeerEnvelope(envelope) {
   return parseHeader(envelope);
 }
 
-export async function openMatchPeerEnvelope(key, expected, replay, envelope,
+export async function openMatchPeerEnvelope(opening, expected, replay, envelope,
                                             provider = globalThis.crypto) {
+  const key = opening && typeof opening === "object" ? opening.key : null;
   if (!provider?.subtle || !usableKey(key) || !keyContextValid(expected))
     return {result: "invalid"};
   const context = parseHeader(envelope);

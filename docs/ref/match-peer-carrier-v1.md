@@ -1,4 +1,4 @@
-# Match peer carrier v1
+# Match peer carrier v1 (transcript v2, envelope v2)
 
 Status: local foundation; production online-race admission remains disabled.
 
@@ -46,16 +46,69 @@ and any forwarder receive public keys and ciphertext, never the ECDH secret or
 derived gameplay key. A room verification phrase must bind the same transcript
 before production admission; that UI/handshake integration remains open.
 
-The canonical transcript is SHA-256 over a domain label, the 128-bit room id,
+### Key commitment round
+
+The verification phrase is agreed over **two rounds**, so that no endpoint can
+choose its key after seeing anyone else's.
+
+**Round 1 — commit.** Before any public key is revealed, every endpoint
+publishes
+
+```
+commitment = SHA-256( "golden-balloon-match-peer-commit-v1"
+                      || u32 match_epoch
+                      || u64 endpoint_id
+                      || u32 connection_generation
+                      || nonce[32]          // fresh random, per epoch
+                      || public_key[65] )   // uncompressed P-256
+```
+
+The nonce hides the key, so a commitment reveals nothing; the epoch and the
+authenticated identity are bound in, so a commitment cannot be lifted into
+another room, epoch or generation. An all-zero nonce is refused.
+
+**Round 2 — open.** Each endpoint reveals `(public_key, nonce)`. Every peer
+recomputes the commitment and compares it in constant time. A mismatch fails
+closed with no phrase produced.
+
+Verification is **not** left to the caller: `mdkr_match_peer_transcript_digest`
+and `digestMatchPeerTranscript` re-run round 2 for every entry and refuse to
+emit a digest if any commitment does not open. A phrase derived from key
+material that was never committed to is exactly what an active man in the middle
+needs, so it cannot be produced by forgetting a check.
+
+**Why the round exists.** Without it, a man in the middle presenting key `M1` to
+A and `M2` to B may choose both *after* seeing A's and B's real keys, and can
+search for `phrase(transcript_A) == phrase(transcript_B)`. That is a birthday
+search over the 30-bit phrase space — about 2^15 work, measured at **19,231
+keypairs per side in 0.15 s**. With the commitment the attacker must fix `M1`
+and `M2` before the reveal, so each session is one independent 2^-30 guess:
+**0 successes in 3,000,000 simulated sessions**. See §Evidence.
+
+### Transcript
+
+The canonical transcript is SHA-256 over the domain label
+`golden-balloon-match-peer-transcript-v2`, the 128-bit room id,
 protocol/build/gameplay compatibility, ROM/cadence, match epoch and two to four
 entries sorted by numeric endpoint id. Each entry contains endpoint id,
-connection generation and its 65-byte uncompressed P-256 public key. Every
-endpoint replaces its own projected key with its locally generated key before
-hashing; a service that substitutes that key therefore produces a different
-30-bit, three-compound-word verification phrase. This online-room phrase is
-deliberately stronger than Phone Party's separate one-controller approval SAS,
-because a multi-peer room can perform more setup retries. Native and browser share an
-exact digest/phrase vector, and entry order cannot change it.
+connection generation, **its round-1 commitment** and its 65-byte uncompressed
+P-256 public key — the phrase therefore covers the whole two-round handshake,
+not only its outcome. Every endpoint replaces its own projected key with its
+locally generated key before hashing; a service that substitutes that key
+produces a different 30-bit, three-compound-word verification phrase. This
+online-room phrase is deliberately stronger than Phone Party's separate
+one-controller approval SAS, because a multi-peer room can perform more setup
+retries. Native and browser share an exact digest/phrase vector, and entry order
+cannot change it.
+
+### Versioning and downgrade
+
+The transcript domain carries the version (`…-transcript-v2`) and the envelope
+header carries protocol version byte `2`. The two versions cannot interoperate
+and cannot negotiate: a v1 transcript yields a different digest and therefore a
+different key, and a v1 envelope is rejected by the header parser **before any
+decryption is attempted**, surfacing as `INVALID` rather than an authentication
+failure. There is no version negotiation step to downgrade.
 
 ## Envelope
 
@@ -121,9 +174,31 @@ epochs/generations, stale-channel generation impersonation, malicious forwarding
 generation-reset replay windows,
 duplicates and direct-path replacement. Preflight carrier tests additionally
 cover cross-direction splicing and forged report attribution. Transcript negatives include an invalid
-lowest-id entry that sorting previously could have skipped. Real browser/native
+lowest-id entry that sorting previously could have skipped, and sweep **every
+byte of a commitment and of the opening nonce** the way the envelope sweep
+covers all 132 envelope bytes: each single-byte change must refuse to produce a
+phrase. Substituting another peer's otherwise valid key while keeping the old
+commitment — the grinding attack itself — is refused, as is a degenerate
+all-zero nonce and a commitment lifted to a different epoch or generation.
+Both implementations also refuse a v1 envelope before decryption. Real browser/native
 WebRTC, signaling-loss and reconnect matrices remain required before ON-02 can
 close.
+
+### Evidence: phrase grinding, before and after
+
+Measured against the shipped digest/commitment implementation (the fast search
+loop is validated to reproduce the module's exact pinned digest and phrase
+before it runs):
+
+| attacker model | result |
+|---|---|
+| v1 semantics — MITM picks its keys *after* seeing both honest keys, re-rolling freely | collision found after **19,231 keypairs per side, 0.15 s** |
+| v2 committed round — MITM must fix both keys before the reveal | **0 successes in 3,000,000 full sessions** (35.1 s); 0.0028 expected by chance at 2^-30 |
+
+The bound is therefore what a 30-bit phrase should be worth: one independent
+guess per session, detectable because the humans compare and abort, rather than
+a seconds-long offline search. The commitment does not widen the phrase; it
+removes the attacker's ability to search it.
 
 The pure [preflight consensus gate](match-preflight-v1.md) consumes a frozen
 graph and this transcript digest. Its 124-byte report is sequence-bound into

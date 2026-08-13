@@ -14,8 +14,12 @@
 
 namespace {
 constexpr uint8_t kMagic[4] = {'M', 'P', 'E', '1'};
-constexpr uint8_t kVersion = 1u;
-constexpr char kKeyDomain[] = "golden-balloon-match-input-key-v1";
+/* v2 is the committed-transcript protocol. A v1 envelope is rejected by
+ * readHeader before decryption, so a peer that predates the key-commitment
+ * round fails closed at the first byte rather than negotiating down to the
+ * grindable phrase. */
+constexpr uint8_t kVersion = 2u;
+constexpr char kKeyDomain[] = "golden-balloon-match-input-key-v2";
 
 void store32(uint8_t *out, uint32_t value) {
     out[0] = static_cast<uint8_t>(value >> 24u);
@@ -72,15 +76,6 @@ bool sealWindowValid(const MdkrMatchPeerSealWindow *window) {
     return window != nullptr && keyContextValid(&window->direction) &&
         ((window->ready && window->next_sequence != 0u) ||
          (!window->ready && window->next_sequence == 0u));
-}
-
-bool sealWindowEmpty(const MdkrMatchPeerSealWindow *window) {
-    return window != nullptr && window->direction.match_epoch == 0u &&
-        window->direction.source_endpoint_id == 0u &&
-        window->direction.source_generation == 0u &&
-        window->direction.destination_endpoint_id == 0u &&
-        window->direction.destination_generation == 0u &&
-        window->next_sequence == 0u && !window->ready;
 }
 
 bool envelopeContextValid(const MdkrMatchPeerEnvelopeContext *context) {
@@ -240,55 +235,116 @@ extern "C" bool mdkr_match_peer_identity_public_key(
     return true;
 }
 
-extern "C" bool mdkr_match_peer_identity_derive_key(
+extern "C" MdkrMatchPeerSealingKey *mdkr_match_peer_identity_derive_key(
+    MdkrMatchPeerKeyring *ring,
     MdkrMatchPeerIdentity *identity,
     const uint8_t peer_public_key[MDKR_MATCH_PEER_PUBLIC_KEY_BYTES],
     const uint8_t transcript_digest[MDKR_MATCH_PEER_TRANSCRIPT_BYTES],
-    const MdkrMatchPeerKeyContext *context,
-    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]) {
+    const MdkrMatchPeerKeyContext *context) {
     std::array<uint8_t, MDKR_MATCH_PEER_SECRET_BYTES> secret{};
-    if (identity == nullptr || peer_public_key == nullptr ||
-        transcript_digest == nullptr || key == nullptr ||
-        !keyContextValid(context)) return false;
+    if (ring == nullptr || identity == nullptr || peer_public_key == nullptr ||
+        transcript_digest == nullptr || !keyContextValid(context)) return nullptr;
     const bool shared = identity->shared(peer_public_key, secret.data());
-    const bool derived = shared && mdkr_match_peer_derive_key(
-        secret.data(), transcript_digest, context, key);
+    MdkrMatchPeerSealingKey *sealing = shared
+        ? mdkr_match_peer_derive_key(ring, secret.data(), transcript_digest,
+                                     context)
+        : nullptr;
     /* The ECDH adapter may have written part of X before reporting a library
      * failure. Retire the temporary on every attempted exchange, not only the
      * successful path. */
     mbedtls_platform_zeroize(secret.data(), secret.size());
-    return derived;
+    return sealing;
 }
 
-extern "C" bool mdkr_match_peer_derive_key(
+namespace {
+/* Names one derived key by its inputs, never by its output. Two derivations of
+ * the same (secret, transcript, direction) produce the same fingerprint, which
+ * is how the ring recognizes a repeat and hands back the existing window. */
+bool keyFingerprint(const uint8_t *shared_secret,
+                    const uint8_t *transcript_digest,
+                    const uint8_t *info, size_t infoSize,
+                    uint8_t out[MDKR_MATCH_PEER_FINGERPRINT_BYTES]) {
+    const mbedtls_md_info_t *sha256 =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    mbedtls_md_context_t context;
+    bool ok = sha256 != nullptr;
+    mbedtls_md_init(&context);
+    ok = ok && mbedtls_md_setup(&context, sha256, 0) == 0 &&
+        mbedtls_md_starts(&context) == 0 &&
+        mbedtls_md_update(&context, shared_secret,
+                          MDKR_MATCH_PEER_SECRET_BYTES) == 0 &&
+        mbedtls_md_update(&context, transcript_digest,
+                          MDKR_MATCH_PEER_TRANSCRIPT_BYTES) == 0 &&
+        mbedtls_md_update(&context, info, infoSize) == 0 &&
+        mbedtls_md_finish(&context, out) == 0;
+    mbedtls_md_free(&context);
+    return ok;
+}
+} // namespace
+
+extern "C" MdkrMatchPeerSealingKey *mdkr_match_peer_derive_key(
+    MdkrMatchPeerKeyring *ring,
     const uint8_t shared_secret[MDKR_MATCH_PEER_SECRET_BYTES],
     const uint8_t transcript_digest[MDKR_MATCH_PEER_TRANSCRIPT_BYTES],
-    const MdkrMatchPeerKeyContext *context,
-    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]) {
+    const MdkrMatchPeerKeyContext *context) {
     std::array<uint8_t, sizeof(kKeyDomain) - 1u + 28u> info{};
     std::array<uint8_t, MDKR_MATCH_PEER_KEY_BYTES> next{};
+    std::array<uint8_t, MDKR_MATCH_PEER_FINGERPRINT_BYTES> fingerprint{};
+    MdkrMatchPeerSealingKey *slot = nullptr;
     size_t offset = sizeof(kKeyDomain) - 1u;
-    if (shared_secret == nullptr || transcript_digest == nullptr || key == nullptr ||
-        !keyContextValid(context)) return false;
+    if (ring == nullptr || shared_secret == nullptr ||
+        transcript_digest == nullptr || !keyContextValid(context)) return nullptr;
     std::memcpy(info.data(), kKeyDomain, offset);
     store32(info.data() + offset, context->match_epoch); offset += 4u;
     store64(info.data() + offset, context->source_endpoint_id); offset += 8u;
     store32(info.data() + offset, context->source_generation); offset += 4u;
     store64(info.data() + offset, context->destination_endpoint_id); offset += 8u;
     store32(info.data() + offset, context->destination_generation);
+    if (!keyFingerprint(shared_secret, transcript_digest, info.data(),
+                        info.size(), fingerprint.data())) return nullptr;
+    for (unsigned index = 0u; index < MDKR_MATCH_PEER_KEYRING_SLOTS; ++index) {
+        MdkrMatchPeerSealingKey *candidate = &ring->slots[index];
+        if (candidate->occupied) {
+            /* Same inputs: hand back the live window instead of a second one
+             * whose sequence would restart at 1 under the same key. */
+            if (std::memcmp(candidate->fingerprint, fingerprint.data(),
+                            fingerprint.size()) == 0) {
+                mbedtls_platform_zeroize(fingerprint.data(), fingerprint.size());
+                return candidate;
+            }
+            continue;
+        }
+        if (slot == nullptr) slot = candidate;
+    }
+    if (slot == nullptr) {
+        mbedtls_platform_zeroize(fingerprint.data(), fingerprint.size());
+        return nullptr;
+    }
     const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     const bool derived = sha256 != nullptr && mbedtls_hkdf(
         sha256, transcript_digest, MDKR_MATCH_PEER_TRANSCRIPT_BYTES,
         shared_secret, MDKR_MATCH_PEER_SECRET_BYTES, info.data(), info.size(),
         next.data(), next.size()) == 0;
-    if (derived) std::memcpy(key, next.data(), next.size());
+    if (!derived) {
+        mbedtls_platform_zeroize(next.data(), next.size());
+        mbedtls_platform_zeroize(fingerprint.data(), fingerprint.size());
+        return nullptr;
+    }
+    std::memset(slot, 0, sizeof(*slot));
+    std::memcpy(slot->key, next.data(), next.size());
+    std::memcpy(slot->fingerprint, fingerprint.data(), fingerprint.size());
+    slot->direction = *context;
+    slot->window.direction = *context;
+    slot->window.next_sequence = 1u;
+    slot->window.ready = true;
+    slot->occupied = true;
     mbedtls_platform_zeroize(next.data(), next.size());
-    return derived;
+    mbedtls_platform_zeroize(fingerprint.data(), fingerprint.size());
+    return slot;
 }
 
-extern "C" void mdkr_match_peer_forget_key(
-    uint8_t key[MDKR_MATCH_PEER_KEY_BYTES]) {
-    if (key != nullptr) mbedtls_platform_zeroize(key, MDKR_MATCH_PEER_KEY_BYTES);
+extern "C" void mdkr_match_peer_keyring_forget(MdkrMatchPeerKeyring *ring) {
+    if (ring != nullptr) mbedtls_platform_zeroize(ring, sizeof(*ring));
 }
 
 extern "C" bool mdkr_match_peer_inspect(
@@ -301,21 +357,8 @@ extern "C" bool mdkr_match_peer_inspect(
     return true;
 }
 
-extern "C" bool mdkr_match_peer_seal_window_init(
-    MdkrMatchPeerSealWindow *window,
-    const MdkrMatchPeerKeyContext *direction) {
-    MdkrMatchPeerSealWindow next{};
-    if (!sealWindowEmpty(window) || !keyContextValid(direction)) return false;
-    next.direction = *direction;
-    next.next_sequence = 1u;
-    next.ready = true;
-    *window = next;
-    return true;
-}
-
 extern "C" bool mdkr_match_peer_seal(
-    const uint8_t key[MDKR_MATCH_PEER_KEY_BYTES],
-    MdkrMatchPeerSealWindow *window,
+    MdkrMatchPeerSealingKey *sealing,
     const MdkrMatchPeerSendContext *context,
     const uint8_t payload[MDKR_MATCH_PEER_PAYLOAD_BYTES],
     uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES]) {
@@ -325,8 +368,11 @@ extern "C" bool mdkr_match_peer_seal(
     uint8_t iv[12];
     mbedtls_gcm_context cipher;
     int result;
-    if (key == nullptr || payload == nullptr || envelope == nullptr ||
-        !sealWindowValid(window) || !window->ready ||
+    if (sealing == nullptr || !sealing->occupied || payload == nullptr ||
+        envelope == nullptr) return false;
+    const uint8_t *key = sealing->key;
+    MdkrMatchPeerSealWindow *window = &sealing->window;
+    if (!sealWindowValid(window) || !window->ready ||
         !sendContextValid(context) ||
         !keyContextEqual(window->direction, context->key)) return false;
     sealed.key = context->key;
@@ -359,7 +405,7 @@ extern "C" bool mdkr_match_peer_seal(
 }
 
 extern "C" MdkrMatchPeerCryptoResult mdkr_match_peer_open(
-    const uint8_t key[MDKR_MATCH_PEER_KEY_BYTES],
+    const MdkrMatchPeerSealingKey *opening,
     const MdkrMatchPeerKeyContext *expected_context,
     MdkrMatchPeerReplayWindow *replay,
     const uint8_t envelope[MDKR_MATCH_PEER_ENVELOPE_BYTES],
@@ -371,7 +417,9 @@ extern "C" MdkrMatchPeerCryptoResult mdkr_match_peer_open(
     uint8_t iv[12];
     mbedtls_gcm_context cipher;
     int result;
-    if (key == nullptr || replay == nullptr || envelope == nullptr ||
+    if (opening == nullptr || !opening->occupied) return MDKR_MATCH_PEER_CRYPTO_INVALID;
+    const uint8_t *key = opening->key;
+    if (replay == nullptr || envelope == nullptr ||
         context == nullptr || payload == nullptr ||
         !keyContextValid(expected_context) || !replayWindowValid(*replay) ||
         !readHeader(envelope, parsed))
