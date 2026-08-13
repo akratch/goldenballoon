@@ -383,8 +383,10 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
     ui::Gap(ui::kGapL);
     ImGui::Separator();
     ui::Gap(ui::kGapM);
-    ui::SectionHeader("Play Together on This Screen",
-        "Turn any phone into a private browser controller. Scan, compare the pairing phrase, approve a slot, and play on this screen.");
+    ui::SectionHeader("Use a Phone as a Controller",
+        "Scan the code with any phone to play with it — just you, or up to four "
+        "players on this screen. Compare the pairing phrase, approve the phone, "
+        "and it becomes Controller 1 (or the next open slot).");
     drawFull(host, serviceOrigin);
     partyTraceEmitOnce(host, serviceOrigin);
 }

@@ -16,16 +16,31 @@ Before starting, all of these must already be true:
 
 - [ ] The Party service is deployed and `python3 tools/verify_party_deploy.py --origin https://<your-party-origin>` printed `PASS`.
 - [ ] The RC build was compiled with `-DMDKR_PARTY_ORIGIN=https://<your-party-origin>` — the **same** origin the verifier passed against. A build pointing at the placeholder `.invalid` origin cannot pair and must not be blessed.
-- [ ] **Confirm the surface is there at all.** A build compiled with no party origin deliberately shows *no* Phone Party surface — no launcher card, no in-game overlay entry. So "I can't find Phone Party" means the RC was built without an origin, not that the feature broke. Open the launcher's **Play** panel with a ROM loaded and confirm **Play Together on This Screen** is present before starting anything below.
+- [ ] **Confirm the surface is there at all.** A build compiled with no party origin deliberately shows *no* Phone Party surface — no launcher card, no in-game overlay entry. So "I can't find Phone Party" means the RC was built without an origin, not that the feature broke. Open the launcher's **Play** panel with a ROM loaded and confirm the **Use a Phone as a Controller** card is present before starting anything below.
 - [ ] The release workflow for this exact commit is green, including the party-host bring-up smoke and the binary-size gate on all three platforms.
 
 ---
 
-## 1. Four-phone race
+## 1. Solo phone controller (single-player)
 
-**Do:** From a cold launcher with a ROM loaded, open **Play → Play Together on This
-Screen** and pair four different phones by QR. Approve each into a distinct seat. Start a
-four-player standard race and run it to the results screen. Mid-race, open the in-game
+**Do:** From a cold launcher with a ROM loaded, open **Play → Use a Phone as a
+Controller** and pair ONE phone by QR. Approve it (it defaults to Controller 1). With no
+keyboard or gamepad touched, start an ordinary single-player Adventure/race and play with
+the phone alone.
+
+**Expected observable:**
+- The single approved phone drives player one: steering, accelerate, brake, item and horn
+  all respond, with no perceptible lag versus a wired pad.
+- A connected-but-idle desktop keyboard/gamepad does not fight the phone for player one
+  (the phone holds the seat); unpairing the phone returns control to the keyboard.
+- Nothing about the flow implies a second player is required — a solo player can pair one
+  phone and play the whole game with it.
+
+## 2. Four-phone race
+
+**Do:** From a cold launcher with a ROM loaded, open **Play → Use a Phone as a
+Controller** and pair four different phones by QR. Approve each into a distinct seat. Start
+a four-player standard race and run it to the results screen. Mid-race, open the in-game
 overlay's compact Phone Party entry and confirm it lists the same four seats.
 
 **Expected observable:**
@@ -38,7 +53,7 @@ overlay's compact Phone Party entry and confirm it lists the same four seats.
   teleporting, or reverting to AI mid-race.
 - No phone drops, reconnects, or shows a recovery banner at any point during the race.
 
-## 2. iOS Safari pairing
+## 3. iOS Safari pairing
 
 **Do:** On an iPhone running current iOS, open the stock Camera app, scan the launcher's
 QR code, and follow the link into Safari. Pair and take a seat.
@@ -53,7 +68,7 @@ QR code, and follow the link into Safari. Pair and take a seat.
   rotation.
 - Input reaches the game within one screen refresh of the touch.
 
-## 3. Android Chrome pairing
+## 4. Android Chrome pairing
 
 **Do:** On an Android phone running current Chrome, scan the same QR with the stock
 camera or Chrome's scanner. Pair and take a seat.
@@ -65,7 +80,7 @@ camera or Chrome's scanner. Pair and take a seat.
   the same room. Then rotate the invite in the launcher and confirm the **old** code is
   refused with a neutral message, and the **new** code works.
 
-## 4. Real-phone lifecycle: rotation, background, sleep/wake, network change
+## 5. Real-phone lifecycle: rotation, background, sleep/wake, network change
 
 Run all four on at least one iOS and one Android device, with the phone **already racing
 in a seat**.
@@ -91,7 +106,7 @@ room-service interruption. If the direct channel does drop, the phone shows the 
 recovery state, the kart coasts, and reconnect returns the **same** seat. Meanwhile the
 game itself never stalls, and local keyboard/gamepad players are unaffected.
 
-## 5. Firewall / blocked-network observation
+## 6. Firewall / blocked-network observation
 
 **Do:** Put the host machine behind a restrictive network (guest Wi-Fi with client
 isolation, or block outbound UDP), then attempt to pair.
@@ -101,7 +116,7 @@ than hanging or crashing; **Play Here** and local keyboard/gamepad play remain f
 usable throughout. The automated gate proves the code path; this item confirms a real
 restrictive network produces the same message and the same recovery.
 
-## 6. Haptics feel
+## 7. Haptics feel
 
 **Do:** With haptics enabled on the phone, race a lap that includes an item hit, a wall
 collision and a boost.
@@ -112,7 +127,7 @@ the phone's local haptics opt-out **immediately** stops all vibration and does n
 disturb the seat or any other player. A phone that reports no vibration support pairs and
 plays normally with no error.
 
-## 7. Signing and notarization
+## 8. Signing and notarization
 
 **Do:** Sign and notarize the macOS RC; sign the Windows RC. Then download each artifact
 the way a player would — through a browser, from the release page — onto a machine that
