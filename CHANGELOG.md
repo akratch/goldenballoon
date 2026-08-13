@@ -1,5 +1,11 @@
 # Changelog
 
+- Windows players whose account name uses non-English characters can now keep
+  their settings: drop a file named `portable.txt` next to the game and it saves
+  your options, saves, and add-ons right beside the game instead of in your
+  Windows user folder (#33). Even without that file, if the game can't write to
+  your user folder it now saves next to the game and tells you so, rather than
+  losing your settings.
 - Hardened Phone Party origin and tab custody: the Worker now refuses a
   noncanonical or non-HTTPS production `PARTY_ORIGIN` before any exception or
   Durable Object work; browser host/controller routes enforce the same-origin

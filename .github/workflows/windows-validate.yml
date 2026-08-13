@@ -151,6 +151,55 @@ jobs:
         run: |
           ctest --test-dir build --output-on-failure -LE gpu
 
+      # Authoritative proof of the issue #33 fix on the actual failing platform:
+      # a Windows home path whose account name contains non-ASCII characters
+      # means %APPDATA%\mdkr64\mdkr64\ cannot be written, so settings are lost.
+      # The owner-approved fix is a portable.txt marker beside the executable
+      # that relocates config/save/mods next to the exe (a UTF-8-safe,
+      # user-chosen directory), sidestepping the home path entirely. This step
+      # reproduces the non-ASCII directory the reporter hit, drives a real
+      # launcher-persist config write, and proves the settings file is written
+      # to -- and reads back from -- that non-ASCII path. It mirrors how the #32
+      # fs_utf8 exclusive-create fix is validated on this same UCRT64 lane.
+      - name: Portable config write from a non-ASCII path (issue #33)
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: |
+          set -euo pipefail
+          # A directory whose name is deliberately non-ASCII (Cyrillic + CJK),
+          # standing in for a Windows profile like C:\Users\Пользователь. Kept
+          # under RUNNER_TEMP so it never touches the checkout.
+          install="$RUNNER_TEMP/Пользователь-游戏/GoldenBalloon"
+          workdir="$RUNNER_TEMP/unrelated-portable-cwd"
+          mkdir -p "$install" "$workdir"
+          cp build/mdkr64.exe "$install/mdkr64.exe"
+          printf 'portable\n' > "$install/portable.txt"
+
+          # Persist a launcher choice, then exit through --video-list. The write
+          # target is resolved from the executable's own directory (portable
+          # mode), NOT from %APPDATA% and NOT from the working directory.
+          ( cd "$workdir" && "$install/mdkr64.exe" \
+              --video-launch-persist --video-launch-mode remastered --video-list \
+              > "$RUNNER_TEMP/portable-write.out" 2>&1 )
+          cat "$RUNNER_TEMP/portable-write.out"
+
+          test -f "$install/mdkr64.ini" \
+            || { echo "FAIL: mdkr64.ini was not written next to the binary on the non-ASCII path"; exit 1; }
+          test ! -f "$workdir/mdkr64.ini" \
+            || { echo "FAIL: portable mode leaked mdkr64.ini into the working directory"; exit 1; }
+
+          # Read it back: a fresh run must resolve the persisted config FROM the
+          # non-ASCII path and report the mode that was saved.
+          ( cd "$install" && "$install/mdkr64.exe" --video-list \
+              > "$RUNNER_TEMP/portable-read.out" 2>&1 )
+          cat "$RUNNER_TEMP/portable-read.out"
+          grep -qx '[video] mode=remastered' "$RUNNER_TEMP/portable-read.out" \
+            || { echo "FAIL: persisted mode did not read back from the non-ASCII path"; exit 1; }
+          grep -q 'mdkr64.ini' "$RUNNER_TEMP/portable-read.out" \
+            || { echo "FAIL: read-back did not cite the on-disk config as its source"; exit 1; }
+          echo "PASS: settings written and read back from a non-ASCII path via portable.txt."
+
       # Asset-free verify (mirror the release job's post-build check): the binary
       # must contain no ROM-derived copyrighted data. MSYS2 `nm` reads the PE and
       # the ROM-magic byte scan is portable Python.

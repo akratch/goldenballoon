@@ -34,6 +34,12 @@ First-launch notes:
   ([Apple's guide](https://support.apple.com/102445)).
 - **Windows**: the app is not code-signed. If SmartScreen warns, choose
   **More info → Run anyway**.
+- **Windows, non-English account names**: if your Windows username contains
+  non-English characters and settings will not save, create an empty file named
+  `portable.txt` next to `GoldenBalloon.exe`. The game then keeps your settings,
+  saves, and add-ons in the game's own folder instead of your Windows user
+  folder. If that folder is ever unwritable, the game falls back to saving next
+  to itself automatically and tells you it did.
 
 ## Features
 

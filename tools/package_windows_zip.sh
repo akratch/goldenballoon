@@ -127,6 +127,13 @@ and extended-length ROM, config, diagnostic, and save paths are supported.
 Do not launch the executable from inside the zip: extract the whole folder so
 settings and the controller database remain available.
 
+Portable settings (for Windows account names with non-English characters):
+if your Windows username contains non-English letters and settings will not
+save, create an empty file named portable.txt in this GoldenBalloon folder
+(next to GoldenBalloon.exe). The game then keeps your settings, saves, and any
+add-ons in this folder instead of your Windows user folder. If that folder is
+ever unwritable, the game falls back to saving here on its own and says so.
+
 WebGPU is the default. If startup fails, copy the launcher's Diagnostics details
 before closing it. `set MDKR_RENDERER=gl` selects the diagnostic OpenGL backend
 for that Command Prompt session. Press F1 in-game for the pause overlay.
