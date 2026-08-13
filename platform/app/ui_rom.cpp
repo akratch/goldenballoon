@@ -597,14 +597,18 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
      * settings rows use rather than implying a live change. */
     if (ready && !g_changing && !s.romValidationPending) {
         const char *mode = Settings_effectiveLabel(MDKR_VIDEO_MODE);
-        const char *rate = Settings_effectiveLabel(MDKR_VIDEO_FRAME_LIMIT);
+        // Frame rate is the merged Original/Smooth/Custom preset, so name it in
+        // the vocabulary the player set it with rather than the underlying
+        // Frame limit option label ("Match Display") they no longer choose.
+        const char *rate = Settings_effectivePaceLabel();
         ui::Gap(ui::kGapS);
+        // A purely informational summary. It is not a focusable control, so it
+        // carries no self-voicing of its own -- both values are announced where
+        // they are set, under Settings > Display -- and voicing a non-focusable
+        // line here only ever produced dead code that could not fire.
         if (ui::CardBegin("##willlaunch", AppTheme::surface(), 0.0f)) {
             ui::TextSubtle("This launch");
             ImGui::TextUnformatted(mode);
-            ui::SpeakFocusedItem("This launch", mode,
-                                 "The picture style the next launch will use. "
-                                 "Change it in Settings, Graphics.");
             ImGui::SameLine();
             ui::TextSubtle("  \xE2\x80\xA2  ");
             ImGui::SameLine();

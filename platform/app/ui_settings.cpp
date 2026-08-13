@@ -1962,6 +1962,23 @@ const char *Settings_effectiveLabel(int videoKey) {
     return optionLabel(key, value->text);
 }
 
+const char *Settings_effectivePaceLabel() {
+    // The frame rate is now ONE merged control (drawFrameRate) with the choices
+    // Original / Smooth / Custom, so its effective value is named in that
+    // vocabulary rather than by the underlying Frame limit option label the
+    // player no longer selects directly. Read from the desired (effective)
+    // config so a staged edit shows immediately, exactly like the raw labels.
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    if (config == nullptr) return "";
+    const MdkrPresentationPace pace = mdkr_video_presentation_pace(config);
+    for (const PaceChoice &choice : kPaceChoices) {
+        if (choice.pace == pace) return choice.label;
+    }
+    // Custom is a revealed state rather than a kPaceChoices value; it shares its
+    // one spelling with the "Custom" radio in drawFrameRate.
+    return "Custom";
+}
+
 int Settings_collectStagedOverrides(const char **out, int cap) {
     // Static storage: the caller (the launcher's boot config) holds these
     // pointers until mdkr64_engine_boot copies them, which happens on the same

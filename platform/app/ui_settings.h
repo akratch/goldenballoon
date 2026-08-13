@@ -78,6 +78,12 @@ bool Settings_restartPending();
 // widened to int so this header need not include the engine enum.
 const char *Settings_effectiveLabel(int videoKey);
 
+// The player-facing name of what the next launch will use for the frame rate,
+// in the merged control's own vocabulary: "Original", "Smooth", or "Custom".
+// The frame rate is one control now, not the raw Frame limit key, so the Play
+// summary names it the way the player set it. Stable string, never null.
+const char *Settings_effectivePaceLabel();
+
 // Opens and scrolls the launcher Settings panel to Controller on its next
 // draw. Used by recovery routes; one-shot and process-local.
 void Settings_requestControllerSection();
