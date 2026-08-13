@@ -2052,6 +2052,67 @@ static int camera_obstruction_publish_elevated_emergency(
             }
         }
     }
+    /*
+     * Every rung above is anchored at the desired eye or the pivot and every
+     * lift is upward, which quietly assumes the target is at or below the
+     * authored composition. The adventure post-race drop inverts that: the
+     * racer falls through the shelf the authored camera stands on, the pivot
+     * ends up inside the slab, and for eight straight ticks every candidate
+     * up there is either embedded or looking at floor -- while the target
+     * itself is falling through provable open air. So when the whole
+     * authored-side ladder has failed, walk the same ladder anchored at the
+     * TARGET -- and walk it in BOTH vertical directions. Above is tried
+     * first, preserving the elevated-shot preference; but a target that fell
+     * through the shelf sits under a slab every above-the-slab candidate is
+     * blind to, and the only provable compositions are below it, between the
+     * slab's underside and the target. The descending tiers reach exactly
+     * that space. These shots concede the authored composition entirely --
+     * they are the last rung before an unpublished tick leaves a stale
+     * penetrating camera on screen, which is the one outcome the FULL
+     * treatment contract ("never target-blind with the fan free") does not
+     * permit. Same bounded shape, same per-candidate proof; runs only on
+     * ticks that today publish nothing at all.
+     */
+    {
+        static const float vertical_signs[] = { 1.0f, -1.0f };
+        size_t sign_index;
+
+        for (sign_index = 0U; sign_index < ARRAY_COUNT(vertical_signs);
+             sign_index++) {
+            for (factor_index = 0U;
+                 factor_index < sizeof(lift_factors) / sizeof(lift_factors[0]);
+                 factor_index++) {
+                float lift = observe->guard.radius * lift_factors[factor_index] + 20.0f;
+                if (lift < 60.0f) {
+                    lift = 60.0f;
+                }
+                lift *= vertical_signs[sign_index];
+                {
+                    MdkrCameraVec3 candidate = observe->intent.target;
+                    candidate.y += lift;
+                    if (camera_obstruction_try_emergency_candidate(
+                            observe, physical_slot, sphere_query, exact_query,
+                            use_exact, candidate)) {
+                        return TRUE;
+                    }
+                }
+                for (direction_index = 0U;
+                     direction_index < ARRAY_COUNT(ring_directions);
+                     direction_index++) {
+                    MdkrCameraVec3 candidate = observe->intent.target;
+                    const float radius = observe->guard.radius * 2.0f + 40.0f;
+                    candidate.x += ring_directions[direction_index][0] * radius;
+                    candidate.y += lift;
+                    candidate.z += ring_directions[direction_index][1] * radius;
+                    if (camera_obstruction_try_emergency_candidate(
+                            observe, physical_slot, sphere_query, exact_query,
+                            use_exact, candidate)) {
+                        return TRUE;
+                    }
+                }
+            }
+        }
+    }
     return FALSE;
 }
 
