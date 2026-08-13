@@ -881,6 +881,10 @@
     const pendingList = $("party-pending-list");
     pendingList.replaceChildren();
     $("party-pending-empty").hidden = pending.length !== 0;
+    // The phrase-comparison instruction is the host half of the MITM defense:
+    // showing the phrase is decorative unless the operator is told to compare
+    // it and approve only on an exact match. Mirrors the native launcher.
+    $("party-pending-instruction").hidden = pending.length === 0;
     for (const controller of pending) {
       ensurePhrase(controller);
       const verifiedPhrase = pairingPhrases.get(controller.controllerId) ||
