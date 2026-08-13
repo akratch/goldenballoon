@@ -58,6 +58,34 @@ ImVec4 line()    { return ImVec4(1, 1, 1, 0.08f); }
 ImVec4 raised()  { return hex(0x1E1E22); }
 ImVec4 field()   { return hex(0x27272C); }
 
+// Navigation. See the contract in app_theme.h: the selected fill is solid brand
+// cobalt on purpose, and the modern treatment lives in the geometry.
+ImVec4 navSelected()       { return primary(); }
+ImVec4 navSelectedActive() { return hex(0x284B7C); }
+ImVec4 navHover()          { return hex(0x3A3A3D); }
+ImVec4 navPressed()        { return hex(0x424247); }
+
+ImVec4 groupHeader()       { return hex(0x212127); }
+ImVec4 groupHeaderHover()  { return hex(0x2C2C33); }
+ImVec4 groupHeaderActive() { return hex(0x37373F); }
+
+ImVec4 focusRing()         { return accent(); }
+
+ButtonColors destructiveButton() {
+    const ImVec4 base = bad();
+    const auto clamp1 = [](float v) { return v > 1.0f ? 1.0f : v; };
+    return {
+        base,
+        ImVec4(clamp1(base.x * 1.12f), clamp1(base.y * 1.12f),
+               clamp1(base.z * 1.12f), 1.0f),
+        ImVec4(base.x * 0.82f, base.y * 0.82f, base.z * 0.82f, 1.0f),
+        hex(0x1A0A08),
+    };
+}
+
+ImVec4 qrLight() { return ImVec4(1, 1, 1, 1); }
+ImVec4 qrDark()  { return ImVec4(0, 0, 0, 1); }
+
 const AppFonts &fonts() { return g_fonts; }
 
 static void applyStyle() {
@@ -159,7 +187,7 @@ static void applyStyle() {
     c[ImGuiCol_TabUnfocused]         = card;
     c[ImGuiCol_TabUnfocusedActive]   = hex(0x284B7C);
     c[ImGuiCol_TextSelectedBg]       = ImVec4(pri.x, pri.y, pri.z, 0.45f);
-    c[ImGuiCol_NavHighlight]         = acc;
+    c[ImGuiCol_NavHighlight]         = focusRing();
     c[ImGuiCol_DragDropTarget]       = acc;
 }
 

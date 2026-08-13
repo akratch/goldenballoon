@@ -24,6 +24,11 @@ float  kControlWidth(float multiplier) {
     return std::max(1.0f, std::min(requested, available));
 }
 float  kNavWidth()     { return 244.0f * AppTheme::uiScale(); }
+ImVec2 kBtnFullWidth() { return ImVec2(-1.0f, kBtnSecondary().y); }
+float  kNavPillRounding() { return 8.0f * AppTheme::uiScale(); }
+float  kNavRuleWidth()    { return 3.0f * AppTheme::uiScale(); }
+float  kDropZoneHeight()  { return 86.0f * AppTheme::uiScale(); }
+float  kPairMinWidth()    { return 140.0f * AppTheme::uiScale(); }
 // Two checker rows of one tile each; BrandRule() below reserves exactly this.
 float  kBrandRuleHeight() { return 8.0f * AppTheme::uiScale(); }
 
@@ -149,32 +154,6 @@ void SectionHeader(const char *title, const char *subtitle) {
     }
     ImGui::Separator();
     Gap(kGapS);
-}
-
-void RestartBadge() {
-    ImGui::SameLine();
-    ImGui::PushFont(AppTheme::fonts().small);
-    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::accent());
-    ImGui::TextUnformatted("• restart required");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
-}
-
-/*
- * The counterpart chip, for a setting that changes under the running game.
- *
- * It is deliberately SUBTLE where the restart badge is accent-coloured. The
- * restart badge warns: it tells a player their choice is not what they are
- * looking at yet. This one only informs, and a screen where every row shouts is
- * a screen where the one row that matters does not stand out.
- */
-void LiveBadge(const char *text) {
-    ImGui::SameLine();
-    ImGui::PushFont(AppTheme::fonts().small);
-    ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::subtle());
-    ImGui::Text("• %s", text != nullptr ? text : "");
-    ImGui::PopStyleColor();
-    ImGui::PopFont();
 }
 
 static void pushFilledButtonColors(const ImVec4 &p, const ImVec4 &text) {

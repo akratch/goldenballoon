@@ -122,55 +122,85 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     }
 }
 
-ImVec4 selectedNavigationColor() {
-    const ImVec4 primary = AppTheme::primary();
-    return ImVec4(primary.x, primary.y, primary.z, 1.0f);
-}
-
-ImVec4 neutralNavigationColor() {
-    return AppTheme::surface();
-}
-
-ImVec4 neutralNavigationHoverColor() {
-    return AppTheme::hex(0x3A3A3D);
-}
-
+/*
+ * One rail destination.
+ *
+ * The fill is painted here rather than left to Selectable, because Selectable's
+ * own fill is a square, full-bleed rectangle and that slab -- fully saturated
+ * cobalt, hard corners, edge to edge -- was the loudest element in the window
+ * and the one that most dated the interface. It out-shouted the gold launch
+ * action, which is the thing a launcher should be pointing at.
+ *
+ * What replaces it is the same solid cobalt in a rounded pill with a gold
+ * leading rule and the label indented clear of that rule. Keeping the FILL
+ * solid is deliberate: tests/check_launcher_tabs.py finds the selected
+ * destination by locating exactly one connected #315C98 component above a
+ * minimum area, so a low-alpha tint would have looked calmer and left that
+ * assertion unable to fail. The geometry carries the redesign; the colour
+ * carries the gate.
+ *
+ * Hover is resolved from the row rectangle before the item is submitted, which
+ * is how the rounded fill can be painted UNDER the label. Painting it after
+ * would cover the text, and the alternative -- an ImDrawList channel split for
+ * one rectangle -- costs more than it explains.
+ */
 bool drawRailPanelItem(const char *label, bool selected) {
-    ImGui::PushStyleColor(
-        ImGuiCol_Header,
-        selected ? selectedNavigationColor() : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(
-        ImGuiCol_HeaderHovered,
-        selected ? selectedNavigationColor()
-                 : neutralNavigationHoverColor());
+    const float height = ui::kTouchRowHeight();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const ImVec2 max(min.x + width, min.y + height);
+    const bool hovered =
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+        ImGui::IsMouseHoveringRect(min, max);
+
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    if (selected || hovered) {
+        draw->AddRectFilled(
+            min, max,
+            ImGui::GetColorU32(selected ? AppTheme::navSelected()
+                                        : AppTheme::navHover()),
+            ui::kNavPillRounding());
+    }
+    if (selected) {
+        draw->AddRectFilled(
+            min, ImVec2(min.x + ui::kNavRuleWidth(), max.y),
+            ImGui::GetColorU32(AppTheme::accent()),
+            ui::kNavRuleWidth() * 0.5f);
+    }
+
+    // The fill above is the whole visual state, so the widget contributes only
+    // its label and its hit box.
+    const ImVec4 clear(0, 0, 0, 0);
+    ImGui::PushStyleColor(ImGuiCol_Header, clear);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, clear);
     ImGui::PushStyleColor(
         ImGuiCol_HeaderActive,
-        selected ? AppTheme::hex(0x284B7C) : neutralNavigationColor());
+        selected ? clear : AppTheme::navPressed());
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign,
+                        ImVec2(0.0f, 0.5f));
+    ImGui::Indent(ui::kGapM);
     const bool pressed = ImGui::Selectable(
-        label, selected, 0, ImVec2(0, ui::kTouchRowHeight()));
-    if (selected) {
-        const ImVec2 min = ImGui::GetItemRectMin();
-        const ImVec2 max = ImGui::GetItemRectMax();
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            min, ImVec2(min.x + 3.0f * AppTheme::uiScale(), max.y),
-            ImGui::GetColorU32(AppTheme::accent()),
-            2.0f * AppTheme::uiScale());
-    }
+        label, selected, 0,
+        ImVec2((std::max)(1.0f, width - ui::kGapM), height));
+    ImGui::Unindent(ui::kGapM);
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
     return pressed;
 }
 
 bool drawTopPanelTab(const char *label, bool selected) {
+    // Buttons already carry the style's FrameRounding, so the compact strip
+    // needs only the shared colours -- the same three the rail reads, so the
+    // two navigation surfaces cannot drift apart.
     ImGui::PushStyleColor(
         ImGuiCol_Button,
-        selected ? selectedNavigationColor() : neutralNavigationColor());
+        selected ? AppTheme::navSelected() : AppTheme::surface());
     ImGui::PushStyleColor(
         ImGuiCol_ButtonHovered,
-        selected ? selectedNavigationColor()
-                 : neutralNavigationHoverColor());
+        selected ? AppTheme::navSelected() : AppTheme::navHover());
     ImGui::PushStyleColor(
         ImGuiCol_ButtonActive,
-        selected ? AppTheme::hex(0x284B7C) : AppTheme::hex(0x424247));
+        selected ? AppTheme::navSelectedActive() : AppTheme::navPressed());
     const bool pressed = ImGui::Button(
         label, ImVec2(0.0f, ui::kTouchRowHeight()));
     if (selected) {

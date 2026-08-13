@@ -22,6 +22,18 @@ ImVec2 kBtnWide();       // 210 x 44
 float  kTouchRowHeight(); // 44 px baseline for rows, tabs, and menu choices
 float  kControlWidth(float multiplier = 1.0f);  // clamped to available width
 float  kNavWidth();      // nav rail width (244)
+// A full-width action. Four panels spelled this ImVec2(-1, kBtnSecondary().y)
+// inline; naming it is what stops the fifth from picking a different height.
+ImVec2 kBtnFullWidth();
+// Navigation selection geometry. The selected destination is a rounded pill
+// with a gold leading rule (see drawRailPanelItem), so both numbers belong to
+// the design system rather than to the one function that draws them.
+float  kNavPillRounding();  // 8
+float  kNavRuleWidth();     // 3
+// The ROM drop target's height, and the floor below which a side-by-side button
+// pair stacks instead of shrinking.
+float  kDropZoneHeight();   // 86
+float  kPairMinWidth();     // 140
 // Layout height BrandRule() consumes. Published by its owner so a header that
 // must reserve room for the rule cannot drift from what the rule draws.
 float  kBrandRuleHeight();
@@ -44,10 +56,11 @@ void BrandRule();
 // Call inside the scroll-owning child before EndChild().
 void TouchScrollCurrentWindow();
 void SectionHeader(const char *title, const char *subtitle);
-void RestartBadge();                                 // non-interactive muted chip
-// The "this one changes under the running game" chip. Subtle, not accent: it
-// informs where RestartBadge warns.
-void LiveBadge(const char *text);
+// There is no separate restart/live badge helper. "Takes effect at the next
+// launch" has ONE spelling in this product -- the gold "Next launch" chip that
+// RowStyle::restart draws -- and the two helpers that used to offer a second
+// and third spelling ("* restart required", "* <live note>") were carried for
+// several releases without a single call site. One fact, one chip.
 
 // Filled actions. BrandPrimaryButton is the launcher’s persistent gold CTA;
 // PrimaryButton remains cobalt for in-game overlay actions.

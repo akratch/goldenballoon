@@ -68,6 +68,49 @@ ImVec4 line();        // hairline border
 ImVec4 raised();      // elevated group surface
 ImVec4 field();       // control background
 
+// --- Navigation ------------------------------------------------------------
+// The rail and the compact top-tab strip are the same idea in two geometries,
+// so they read their states from one place. They used to hand-roll
+// hex(0x3A3A3D) / hex(0x284B7C) / hex(0x424247) at four separate call sites,
+// which is how two surfaces that must agree start disagreeing.
+//
+// navSelected() stays SOLID brand cobalt rather than a low-alpha tint, and that
+// is load-bearing beyond taste: tests/check_launcher_tabs.py locates the
+// selected destination by finding exactly one connected #315C98 component of a
+// minimum area. A tinted selection would look calmer and leave that assertion
+// unable to fail. The modernisation is in the geometry -- inset, rounded, with
+// a gold leading rule -- which ui_launcher.cpp draws.
+ImVec4 navSelected();       // active destination fill
+ImVec4 navSelectedActive(); // active destination, pressed
+ImVec4 navHover();          // neutral lift under the pointer; never a 2nd selection
+ImVec4 navPressed();        // neutral, pressed
+
+// --- Settings group header --------------------------------------------------
+// Deliberately NOT the navigation colours. A settings group is an independent
+// expandable region, not a mutually exclusive destination, and painting an open
+// group cobalt made every open group look like another selected panel.
+ImVec4 groupHeader();
+ImVec4 groupHeaderHover();
+ImVec4 groupHeaderActive();
+
+// Keyboard/gamepad focus. One colour for focus everywhere, so "where am I" is
+// never answered by two different visual languages.
+ImVec4 focusRing();
+
+// A destructive action's filled button. Returned as a triple so the one
+// derivation lives here instead of being re-multiplied at each call site.
+struct ButtonColors {
+    ImVec4 normal, hovered, active, text;
+};
+ButtonColors destructiveButton();
+
+// The QR code's own two values. A quiet zone must be light and the modules dark
+// for a phone camera to read it, whatever the surrounding theme does, so these
+// are fixed -- but named, because an unexplained IM_COL32_WHITE in a panel
+// looks like an oversight rather than a decision.
+ImVec4 qrLight();
+ImVec4 qrDark();
+
 // Convert a 0xRRGGBB literal (+ alpha) to an ImVec4.
 ImVec4 hex(unsigned rgb, float a = 1.0f);
 
