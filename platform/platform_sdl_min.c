@@ -936,10 +936,17 @@ static int sdl_should_hide_window(void) {
            getenv("MDKR64_HIDDEN") != NULL;
 }
 
+#ifndef __EMSCRIPTEN__
+/* Distinct from sdl_should_hide_window() on purpose: the pre-SDL_Init macOS
+ * no-focus-steal hints below must fire even under MDKR_TEST_VISIBLE_HEADLESS,
+ * where a human wants to watch the window but still not have it seize the
+ * desktop. Native-only — its sole caller is under the same guard, and the
+ * browser has no window-activation concept. */
 static int sdl_automation_surface_requested(void) {
     return g_headlessFrames >= 0 || g_headlessTicks >= 0 ||
            getenv("MDKR64_HIDDEN") != NULL;
 }
+#endif
 
 static int sdl_should_start_fullscreen(void) {
 #ifdef __EMSCRIPTEN__
