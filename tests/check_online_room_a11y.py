@@ -134,6 +134,7 @@ def walk(binary: str, root: Path, case: CopyCase, timeout: int) -> None:
         # one short focus cycle at 960x720. Keep one fixed budget for every
         # case so a layout change cannot selectively starve the hard cases.
         MDKR_APP_SMOKE_FRAMES="72",
+        MDKR_ONLINE_ROOM_PREVIEW="1",
         MDKR_APP_SMOKE_A11Y_WALK="1",
         MDKR_APP_SMOKE_INPUT="keyboard",
         MDKR_APP_SMOKE_INPUT_TOKEN=INPUT_TOKEN,

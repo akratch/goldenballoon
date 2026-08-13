@@ -1213,6 +1213,14 @@ bool drawFrameRate(SDL_Window *window, bool compact, bool selectingFrameLimit) {
     if (current == MDKR_PRESENTATION_PACE_CUSTOM || selectingFrameLimit) {
         g_frameRateCustomRevealed = true;
     }
+    /* Same scaffolding, and the same reason, as drawSettingsSectionHeader
+     * force-opening every collapsed group for the walk: the scripted
+     * accessibility walk cannot reach a row that is not drawn, and off Custom
+     * these three deliberately are not. check_a11y_shell caught precisely that
+     * and named the three rows, which is the gate working -- so the fix is to
+     * make them REACHABLE for the walk, never to stop requiring them to speak.
+     * This changes what is on screen for the walk, not what any row says. */
+    if (AppUi_a11yWalkArmed()) g_frameRateCustomRevealed = true;
     bool changed = false;
 
     ImGui::PushID("presentation-pace");

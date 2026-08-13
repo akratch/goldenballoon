@@ -57,6 +57,7 @@ def select_240(executable: Path, root: Path, input_mode: str,
     env.update({
         "MDKR_APP_SMOKE_FRAMES": "24" if input_mode == "gamepad" else "18",
         "MDKR_APP_SMOKE_SELECT_FRAME_LIMIT": "240",
+        "MDKR_ONLINE_ROOM_PREVIEW": "1",
         "MDKR_APP_SMOKE_INPUT": input_mode,
         "MDKR_APP_SMOKE_INPUT_TOKEN": "mdkr64-app-ui-input-v1",
     })

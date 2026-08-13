@@ -238,6 +238,7 @@ def main() -> int:
         environment = os.environ.copy()
         environment.update({
             "MDKR_APP_SMOKE_FRAMES": "4",
+            "MDKR_ONLINE_ROOM_PREVIEW": "1",
             "MDKR_APP_SMOKE_SHOT": str(bmp),
             "MDKR_APP_PANEL": "Settings",
             "MDKR_APP_PREFS_DIR": str(prefs),
