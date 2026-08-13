@@ -1459,7 +1459,11 @@
     },
     selectedIndex: () => testConfig ? selectedIndex : -1,
   });
-  if (entryFragment.attempted) requestAnimationFrame(() => {
-    if (!dialog.open) open();
-  });
+  // Open synchronously, in the same turn that showReleaseGate() set the
+  // fail-closed explanation above. A player who followed an invite link must
+  // see why it did not open a room — a disabled build, an invalid link or a
+  // ROM prompt — rather than a silently dismissed dialog. Deferring this to a
+  // rAF left an observable frame where the gate copy was set but the modal was
+  // still closed, which read as a dead end.
+  if (entryFragment.attempted && !dialog.open) open();
 })();
