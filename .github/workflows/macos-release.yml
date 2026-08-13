@@ -110,6 +110,47 @@ jobs:
             --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" \
             dist/mdkr64.app
 
+      # Qualify the packaged app's Phone Party host without a GPU, a window, a
+      # network or a ROM. The smoke executable is built from build-macos-release
+      # -- the same configured tree, flags and version the shipped bundle came
+      # from -- so no second configure is needed and the evidence belongs to
+      # this artifact. Honest limits: this proves the host's pairing surface
+      # (secure-origin bootstrap, invite URL + six-digit code, QR encoding,
+      # pairing phrase, fail-closed on a missing/insecure origin) and that the
+      # bundle links the native WSS/WebRTC transport. It does not prove the
+      # launcher draws a QR code or that a bootstrap listener is up; the
+      # launcher's party panel only renders with a ROM loaded, and this lane is
+      # asset-free.
+      - name: Phone Party bring-up smoke and packaged version stamp
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          app="dist/mdkr64.app"
+          executable="$app/Contents/MacOS/mdkr64"
+          plist_version="$(/usr/libexec/PlistBuddy -c \
+            'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          test "$plist_version" = "$RELEASE_VERSION"
+          bundle_version="$("$executable" --version | tr -d '\r')"
+          test "$bundle_version" = "mdkr64 $RELEASE_VERSION"
+          python3 tests/check_party_binary_surface.py "$app"
+          cmake --build build-macos-release \
+            --target mdkr_native_party_bringup_test \
+                     mdkr_native_party_host_test \
+                     mdkr_native_party_qr_test \
+                     mdkr_native_party_sas_test \
+            --parallel "$(sysctl -n hw.ncpu)"
+          ctest --test-dir build-macos-release --output-on-failure \
+            --no-tests=error \
+            -R '^(native_party_bringup|native_party_host|native_party_qr|native_party_sas)$'
+          # Stamp the smoke record with the version read back out of the
+          # packaged bundle, binding the evidence to the shipped artifact.
+          MDKR_PARTY_BRINGUP_VERSION="${bundle_version#mdkr64 }" \
+            ./build-macos-release/mdkr_native_party_bringup_test \
+            | tee "$RUNNER_TEMP/party-bringup-macos.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-macos.txt"
+
       - name: Import certificate, sign, notarize, and build final DMG
         if: ${{ inputs.trusted_signing }}
         env:

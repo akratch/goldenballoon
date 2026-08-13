@@ -683,6 +683,15 @@ CHECKS = (
           "versioned Worker/Durable Object envelope and pre-storage skew rejection"),
     Check("party_edge_policy", "check_party_edge_policy.py", "source",
           "free-plan /api-only edge rate limit and static local-play isolation"),
+    Check("party_production_config", "check_party_production_config.py",
+          "source",
+          "production Worker environment: custom-domain route matching "
+          "PARTY_ORIGIN, /api-only worker routing, and a fail-closed "
+          "placeholder host"),
+    Check("party_binary_surface", "check_party_binary_surface.py", "native",
+          "packaged-artifact Phone Party host/transport linkage and compiled "
+          "service origin, plus the validator's own rejection paths",
+          args=("--self-test",)),
     Check("phone_party_webrtc", "check_phone_party_webrtc.py", "browser_local",
           "direct phone state/control channels, input-test RTT and wasm handoff queue"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",

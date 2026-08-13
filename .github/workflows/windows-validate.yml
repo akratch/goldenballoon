@@ -172,4 +172,19 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
+          # Phone Party evidence for the packaged .exe. GPU-free by
+          # construction, so it belongs in this lane. It proves the packaged
+          # binary links the party host and the native WSS/WebRTC transport,
+          # and re-runs the host pairing-surface smoke stamped with the version
+          # the packaged launcher itself reported. It does not prove an
+          # on-screen QR code or a live bootstrap listener.
+          python3 tests/check_party_binary_surface.py "$executable"
+          # This lane does not pass -DMDKR_VERSION, so the bound version is
+          # whatever the packaged launcher reports, not a workflow input.
+          built_version="${expected_version#mdkr64 }"
+          MDKR_PARTY_BRINGUP_VERSION="$built_version" \
+            ./build/mdkr_native_party_bringup_test.exe \
+            | tee "$RUNNER_TEMP/party-bringup-package.txt"
+          grep -qE "^\[party-bringup\] version=${built_version} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-package.txt"
           echo "Windows artifact not uploaded: hosted GPU launcher qualification is unavailable."

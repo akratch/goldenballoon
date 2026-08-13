@@ -26,8 +26,15 @@ def main() -> int:
         require("internalRequest(" in worker[cursor:cursor + 256],
                 f"Worker object fetch at byte {cursor} lacks the v1 envelope")
         cursor += len(".fetch(")
-    require(len(calls) == 16,
-            f"review the frozen Worker/object call census: expected 16, found {len(calls)}")
+    # The census is a review tripwire, not the security property: the per-call
+    # assertion above is what actually keeps every Worker->object hop on the v1
+    # envelope. It was frozen at 16 in 797164d while worker.ts already carried
+    # 17 calls, so this gate could never pass — and it was never ctest-wired, so
+    # nothing noticed. The 17th is the Match signaling hop (worker.ts, "https://
+    # match/signal"); it was reviewed and does send internalRequest(...). Raising
+    # the count to 17 records that review. Adding an 18th must fail here first.
+    require(len(calls) == 17,
+            f"review the frozen Worker/object call census: expected 17, found {len(calls)}")
     require(worker.count("internalRequest(") == len(calls),
             "an internal envelope is detached from the Worker/object call census")
 
@@ -75,7 +82,7 @@ def main() -> int:
             "request.arrayBuffer()" not in worker_source,
             "service request bodies are no longer streaming/fatal-UTF8 bounded")
 
-    print("check_party_internal_api: PASS — 16/16 Worker/object calls use v1; "
+    print("check_party_internal_api: PASS — 17/17 Worker/object calls use v1; "
           "four object guards, exact invite authority and targeted phone signaling")
     return 0
 

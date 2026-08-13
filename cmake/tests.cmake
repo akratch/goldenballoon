@@ -1034,6 +1034,34 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME native_party_host COMMAND mdkr_native_party_host_test)
 
+    # Packaged-build Phone Party bring-up smoke: GPU-, network- and ROM-free,
+    # so every release lane (including the Windows build+inspect lane, which
+    # has no qualifying adapter) can qualify the pairing surface a phone
+    # actually needs. qrcodegen.cpp is compiled in directly rather than linked
+    # through mdkr_qrcodegen because this file is included from CMakeLists.txt
+    # before that library — or MDKR_APP/MDKR_VERSION/MDKR_PARTY_ORIGIN — exist;
+    # the release version and origin arrive by environment instead.
+    add_executable(mdkr_native_party_bringup_test
+        ${CMAKE_SOURCE_DIR}/tests/test_native_party_bringup.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c
+        ${CMAKE_SOURCE_DIR}/third_party/qrcodegen/qrcodegen.cpp)
+    target_include_directories(mdkr_native_party_bringup_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/third_party/qrcodegen)
+    target_compile_features(mdkr_native_party_bringup_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_native_party_bringup_test PRIVATE
+        Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_native_party_bringup_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_native_party_bringup_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME native_party_bringup
+        COMMAND mdkr_native_party_bringup_test)
+
     # Rollback primitives are kept ROM-, renderer- and window-free. Their
     # boundaries must stay cheap enough to run on every native presubmit.
     add_executable(mdkr_net_input_test
@@ -1769,6 +1797,26 @@ if(BUILD_TESTING)
         NAME party_experience_canary
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_party_experience_canary.py)
+    # Phone Party service/deploy static gates. These were runnable by hand but
+    # unwired, which is how check_party_internal_api.py sat red from the commit
+    # that introduced it. Registering them makes a regression a suite failure.
+    add_test(
+        NAME party_internal_api
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_party_internal_api.py)
+    add_test(
+        NAME party_edge_policy
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_party_edge_policy.py)
+    add_test(
+        NAME party_production_config
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_party_production_config.py)
+    add_test(
+        NAME party_binary_surface
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_party_binary_surface.py
+                --self-test)
     add_test(
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}

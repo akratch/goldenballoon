@@ -148,6 +148,29 @@ jobs:
           grep -q '^Usage: ' "$RUNNER_TEMP/linux-help.txt"
           ./build/mdkr64 --video-list | tee "$RUNNER_TEMP/linux-video.txt"
           grep -qE '^\[video\] mode=' "$RUNNER_TEMP/linux-video.txt"
+      # What this proves headlessly: the Phone Party host's pairing surface
+      # (secure-origin bootstrap, invite URL + six-digit code, QR encoding,
+      # pairing phrase, fail-closed on a missing/insecure origin) through the
+      # real MdkrNativePartyHost, and that the shipped executable actually
+      # links that host and the native WSS/WebRTC transport. It does NOT prove
+      # the launcher draws a QR code or that a bootstrap listener is up: the
+      # launcher's party panel only renders once a ROM is loaded, and release
+      # jobs are asset-free. That needs a launcher seam or a real device.
+      - name: Phone Party bring-up smoke and linked-transport check (built tree)
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          built_version="$(./build/mdkr64 --version | tr -d '\r')"
+          test "$built_version" = "mdkr64 $RELEASE_VERSION"
+          # Stamp the smoke record with the version the executable itself
+          # reported, so the evidence is bound to this build.
+          MDKR_PARTY_BRINGUP_VERSION="${built_version#mdkr64 }" \
+            ./build/mdkr_native_party_bringup_test \
+            | tee "$RUNNER_TEMP/party-bringup-built.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-built.txt"
+          python3 tests/check_party_binary_surface.py build/mdkr64
       - name: Qualify built AppHost pixels (lavapipe WebGPU + llvmpipe OpenGL)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -209,6 +232,18 @@ jobs:
           test -x "$app_run"
           LD_LIBRARY_PATH="$lib_dir" ldd "$binary" | \
             grep -E "libSDL2[^ ]* => $lib_dir/libSDL2[^ ]*"
+
+          # Version stamp + Phone Party evidence for the artifact players get,
+          # not for the tree it was built from. The version fed to the smoke is
+          # read back out of the packaged launcher itself.
+          package_version="$(cd "$unrelated" && "$app_run" --version | tr -d '\r')"
+          test "$package_version" = "mdkr64 $RELEASE_VERSION"
+          python3 tests/check_party_binary_surface.py "$binary"
+          MDKR_PARTY_BRINGUP_VERSION="${package_version#mdkr64 }" \
+            "$GITHUB_WORKSPACE/build/mdkr_native_party_bringup_test" \
+            | tee "$RUNNER_TEMP/party-bringup-package.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-package.txt"
 
           qualify_package() {
             local label="$1" renderer="$2"
@@ -308,8 +343,13 @@ jobs:
             -DMDKR_VERSION="$RELEASE_VERSION"
           # The full ROM-free suite runs in the cross-platform correctness
           # matrix. This Windows lane builds the product plus the native
-          # formatter/allocator sentinel that exercises MinGW CRT compatibility.
-          cmake --build build --target mdkr64 mdkr_memory_allocator_test -j
+          # formatter/allocator sentinel that exercises MinGW CRT
+          # compatibility, plus the Phone Party host gates -- those need no
+          # GPU, window or network, so the documented GPU limitation that
+          # keeps a launcher gate off this runner does not apply to them.
+          cmake --build build --target mdkr64 mdkr_memory_allocator_test \
+            mdkr_native_party_bringup_test mdkr_native_party_host_test \
+            mdkr_native_party_qr_test mdkr_native_party_sas_test -j
       - name: Verify portable executable
         run: |
           version_output="$(./build/mdkr64.exe --version | tr -d '\r')"
@@ -353,7 +393,24 @@ jobs:
           PY
           ./tools/check_windows_imports.sh build/mdkr64.exe
           ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
-          ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'
+          ctest --test-dir build --output-on-failure --no-tests=error \
+            -R '^(memory_allocator|native_party_bringup|native_party_host|native_party_qr|native_party_sas)$'
+      # GPU-free by construction, so this lane can carry it despite having no
+      # qualifying adapter for a launcher gate. Same honest limits as Linux:
+      # host pairing surface + linkage, not an on-screen QR or a live listener.
+      - name: Phone Party bring-up smoke and linked-transport check
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          built_version="$(./build/mdkr64.exe --version | tr -d '\r')"
+          test "$built_version" = "mdkr64 $RELEASE_VERSION"
+          MDKR_PARTY_BRINGUP_VERSION="${built_version#mdkr64 }" \
+            ./build/mdkr_native_party_bringup_test.exe \
+            | tee "$RUNNER_TEMP/party-bringup-built.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-built.txt"
+          python3 tests/check_party_binary_surface.py build/mdkr64.exe
       - name: Smoke-launch ROM-free early-exit surfaces
         env:
           SDL_VIDEODRIVER: dummy
@@ -383,6 +440,13 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
+          # The packaged .exe, not the build tree, must carry the party host.
+          python3 tests/check_party_binary_surface.py "$executable"
+          MDKR_PARTY_BRINGUP_VERSION="$RELEASE_VERSION" \
+            ./build/mdkr_native_party_bringup_test.exe \
+            | tee "$RUNNER_TEMP/party-bringup-package.txt"
+          grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
+            "$RUNNER_TEMP/party-bringup-package.txt"
       - name: Confirm automatic Windows publication is disabled
         run: |
           echo "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached."
