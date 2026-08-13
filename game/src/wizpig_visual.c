@@ -50,6 +50,7 @@ typedef struct WizpigVisualSlot {
     s32 attempts;
     s32 retryTimer;
     s32 composed;
+    u32 animationWitness;
 } WizpigVisualSlot;
 
 typedef struct WizpigSelectVisual {
@@ -69,6 +70,7 @@ typedef struct WizpigSelectVisual {
     s32 active;
     s32 signCycleTimer;
     s32 signCycleOffset;
+    u32 animationWitness;
 } WizpigSelectVisual;
 
 static WizpigVisualIdentityPredicate sIdentityPredicate;
@@ -92,6 +94,19 @@ static ObjectModel *wizpig_model_find(const Object *obj, s32 expectedModel) {
     return NULL;
 }
 
+/* Every animationID this module drives must exist on the model that will play it.
+ * obj_clamp_model_animation() silently clamps an out-of-range animationID down to
+ * numberOfAnimations - 1 (object_models.c), so a short asset would play a different clip forever
+ * with no failure signal. Fold the bound into the schema instead, so a short asset fails
+ * composition and the complete donor is drawn -- the fail-visible contract every other check here
+ * follows.
+ *
+ * A lower bound rather than an exact count: an asset carrying EXTRA animations still plays every
+ * clip we ask for correctly, so pinning the count would reject assets that are actually fine. */
+static s32 wizpig_animations_ready(const ObjectModel *model) {
+    return model != NULL && model->numberOfAnimations > WIZPIG_ANIM_JUMP;
+}
+
 static s32 wizpig_race_schema_ready(const Object *obj, s32 objectID) {
     ObjectModel *model;
     if (objectID == ASSET_OBJECT_ID_WIZPIG) {
@@ -99,14 +114,14 @@ static s32 wizpig_race_schema_ready(const Object *obj, s32 objectID) {
         return model != NULL && model->numberOfTextures == 17 &&
                model->numberOfVertices == 740 &&
                model->numberOfTriangles == 561 &&
-               model->numberOfBatches == 58;
+               model->numberOfBatches == 58 && wizpig_animations_ready(model);
     }
     if (objectID != ASSET_OBJECT_ID_WIZPIGROCKET)
         return FALSE;
     model = wizpig_model_find(obj, ASSET_OBJECTMODEL_WIZPIGROCKET);
     return model != NULL && model->numberOfTextures == 20 &&
            model->numberOfVertices == 887 && model->numberOfTriangles == 654 &&
-           model->numberOfBatches == 68;
+           model->numberOfBatches == 68 && wizpig_animations_ready(model);
 }
 
 static s32 wizpig_donor_model_schema_ready(const Object *obj, s32 lod,
@@ -132,6 +147,11 @@ static s32 wizpig_donor_model_schema_ready(const Object *obj, s32 lod,
         vertices = hoverVertices;
         triangles = hoverTriangles;
         batches = hoverBatches;
+    } else if (obj->racer->vehicleIDPrev == VEHICLE_PLANE) {
+        /* Whole-plane hiding consumes no batch index, so there is nothing for a per-LOD geometry
+         * fingerprint to protect here. Identity is still asserted by the modelIds check in the
+         * caller. */
+        return TRUE;
     } else {
         return FALSE;
     }
@@ -155,8 +175,15 @@ static s32 wizpig_donor_schema_ready(const Object *obj) {
     } else if (obj->racer->vehicleIDPrev == VEHICLE_HOVERCRAFT) {
         firstModel = ASSET_OBJECTMODEL_KREMLINHOVER_0;
     } else if (obj->racer->vehicleIDPrev == VEHICLE_PLANE) {
-        /* The plane is hidden whole, so no donor batch schema is consumed. */
-        return TRUE;
+        /* The plane is hidden WHOLE -- no batch index of it is ever consumed -- so unlike the car
+         * and hovercraft there is no carve that a wrong geometry fingerprint could misapply, and no
+         * per-LOD vertex/triangle/batch table is required for correctness.
+         *
+         * What still has to hold is identity: we must be hiding the plane we think we are hiding.
+         * Fall through to the shared model-ID loop below, which asserts the donor really is
+         * KREMPLANE_0..5 and fails to a complete donor otherwise. The geometry fingerprint is
+         * skipped for the plane by wizpig_donor_model_schema_ready() returning TRUE for it. */
+        firstModel = ASSET_OBJECTMODEL_KREMPLANE_0;
     } else {
         return FALSE;
     }
@@ -180,7 +207,7 @@ static s32 wizpig_select_schema_ready(const Object *obj) {
     ObjectModel *model = wizpig_model_find(obj, ASSET_OBJECTMODEL_WIZPIG);
     return model != NULL && model->numberOfTextures == 17 &&
            model->numberOfVertices == 740 && model->numberOfTriangles == 561 &&
-           model->numberOfBatches == 58;
+           model->numberOfBatches == 58 && wizpig_animations_ready(model);
 }
 
 static s32 wizpig_sign_schema_ready(const Object *obj) {
@@ -364,19 +391,25 @@ static void wizpig_apply_owner_pose(Object *rider, const Object *owner) {
 }
 
 static void wizpig_sync(WizpigVisualSlot *slot, s32 updateRate) {
-    ModelInstance *modelInstance;
+    /* Report the buffers obj_animate_tick published for the PREVIOUS tick, before this tick's
+     * clock advance overwrites the inputs that produced them. */
+    bonus_visual_trace_animation("WIZPIG", slot->rider, slot->animationWitness++);
     wizpig_apply_owner_pose(slot->rider, slot->owner);
     slot->rider->animationID = 0;
     slot->rider->animFrame += (s16)(updateRate * 2);
     obj_clamp_model_animation(slot->rider);
-    /* Presentation actors are claimed before obj_init_racer(), so publish the
-     * boss animation explicitly. This is the visual half of the retail
-     * contract only; no boss controller or racer update is invoked. */
-    obj_animate(slot->rider);
-    modelInstance =
-        slot->rider->modelInstances[slot->rider->modelIndex];
-    slot->rider->curVertData =
-        modelInstance->vertices[modelInstance->animationTaskNum];
+    /* Advance the clock only. obj_animate_tick() owns the deformation and the published
+     * curVertData for every animated object, presentation actors included, and it runs after
+     * obj_update() in both mode_game and update_menu_scene.
+     *
+     * This used to call obj_animate() and assign curVertData here as well. That ran the deformation
+     * TWICE per tick against one animFrame: obj_animate() flips animationTaskNum and writes the
+     * newly selected half (hasm_native/obj_animate.c:271-275), so both halves of the double buffer
+     * ended up holding the same frame and retained animated-vertex interpolation had nothing to
+     * blend -- the rider's deformation snapped at tick rate under an interpolated camera. It also
+     * bypassed the animUpdateTimer cadence obj_animate_tick exists to own, and indexed
+     * modelInstances[] without the NULL and range guards that loop carries. Terry never did this;
+     * the two modules now agree. */
 }
 
 void wizpig_visual_set_identity_predicate(
@@ -531,13 +564,14 @@ void wizpig_visual_tick(s32 updateRate) {
                            sSelect.confirmedMask, sSelect.confirmTimer);
             }
         }
+        bonus_visual_trace_animation("WIZPIG_SELECT", actor,
+                                     sSelect.animationWitness++);
         actor->animFrame += (s16)updateRate;
         obj_clamp_model_animation(actor);
-        obj_animate(actor);
-        actor->curVertData =
-            actor->modelInstances[actor->modelIndex]
-                ->vertices[actor->modelInstances[actor->modelIndex]
-                               ->animationTaskNum];
+        /* Clock only; obj_animate_tick() deforms and publishes. update_menu_scene() runs
+         * obj_update() (which reaches here) before obj_animate_tick(), the same order mode_game
+         * uses, so the picker actor is animated on exactly the same contract as the race actor.
+         * See wizpig_sync() for why the explicit obj_animate() call was removed. */
         if (!sSelectPoseTraced) {
             ObjectModel *model =
                 wizpig_model_find(actor, ASSET_OBJECTMODEL_WIZPIG);

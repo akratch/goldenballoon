@@ -59,6 +59,7 @@ typedef struct TerryVisualSlot {
     s32 attempts;
     s32 retryTimer;
     s32 composed;
+    u32 animationWitness;
 } TerryVisualSlot;
 
 typedef struct TerrySelectVisual {
@@ -78,6 +79,7 @@ typedef struct TerrySelectVisual {
     s32 active;
     s32 signCycleTimer;
     s32 signCycleOffset;
+    u32 animationWitness;
 } TerrySelectVisual;
 
 static TerryVisualIdentityPredicate sIdentityPredicate;
@@ -106,11 +108,17 @@ static ObjectModel *terry_model_find(const Object *obj, s32 expectedModel) {
     return NULL;
 }
 
+/* See wizpig_animations_ready(): TERRY_ANIM_FLY is the highest clip this module selects, and
+ * obj_clamp_model_animation() would silently substitute a different one on a short asset. */
+static s32 terry_animations_ready(const ObjectModel *model) {
+    return model != NULL && model->numberOfAnimations > TERRY_ANIM_FLY;
+}
+
 static s32 terry_actor_schema_ready(const Object *obj) {
     ObjectModel *model = terry_model_find(obj, ASSET_OBJECTMODEL_TERRYBOSS);
     return model != NULL && model->numberOfTextures == 6 &&
            model->numberOfVertices == 205 && model->numberOfTriangles == 166 &&
-           model->numberOfBatches == 19;
+           model->numberOfBatches == 19 && terry_animations_ready(model);
 }
 
 static s32 terry_donor_model_schema_ready(const Object *obj, s32 lod,
@@ -136,6 +144,11 @@ static s32 terry_donor_model_schema_ready(const Object *obj, s32 lod,
         vertices = hoverVertices;
         triangles = hoverTriangles;
         batches = hoverBatches;
+    } else if (obj->racer->vehicleIDPrev == VEHICLE_PLANE) {
+        /* Whole-plane hiding consumes no batch index, so there is nothing for a per-LOD geometry
+         * fingerprint to protect here. Identity is still asserted by the modelIds check in the
+         * caller. */
+        return TRUE;
     } else {
         return FALSE;
     }
@@ -158,7 +171,15 @@ static s32 terry_donor_schema_ready(const Object *obj) {
     } else if (obj->racer->vehicleIDPrev == VEHICLE_HOVERCRAFT) {
         firstModel = ASSET_OBJECTMODEL_KREMLINHOVER_0;
     } else if (obj->racer->vehicleIDPrev == VEHICLE_PLANE) {
-        return TRUE;
+        /* The plane is hidden WHOLE -- no batch index of it is ever consumed -- so unlike the car
+         * and hovercraft there is no carve that a wrong geometry fingerprint could misapply, and no
+         * per-LOD vertex/triangle/batch table is required for correctness.
+         *
+         * What still has to hold is identity: we must be hiding the plane we think we are hiding.
+         * Fall through to the shared model-ID loop below, which asserts the donor really is
+         * KREMPLANE_0..5 and fails to a complete donor otherwise. The geometry fingerprint is
+         * skipped for the plane by terry_donor_model_schema_ready() returning TRUE for it. */
+        firstModel = ASSET_OBJECTMODEL_KREMPLANE_0;
     } else {
         return FALSE;
     }
@@ -313,6 +334,8 @@ static void terry_clear_slot(TerryVisualSlot *slot, s32 freeActor) {
 
 static void terry_sync(TerryVisualSlot *slot, s32 updateRate) {
     Object *actor = slot->actor;
+    /* Buffers obj_animate_tick published for the previous tick; see wizpig_sync(). */
+    bonus_visual_trace_animation("TERRY", actor, slot->animationWitness++);
     Object *owner = slot->owner;
     Object_Racer *racer = owner->racer;
     s32 flying = terry_is_flying(owner);
@@ -542,6 +565,8 @@ void terry_visual_tick(s32 updateRate) {
                            sSelect.confirmedMask, sSelect.confirmTimer);
             }
         }
+        bonus_visual_trace_animation("TERRY_SELECT", actor,
+                                     sSelect.animationWitness++);
         actor->animFrame += (s16)updateRate;
         obj_clamp_model_animation(actor);
         if (!sSelectPoseTraced) {

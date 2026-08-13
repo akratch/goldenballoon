@@ -3,6 +3,7 @@
 #ifdef NATIVE_PORT
 
 #include "math_util.h"
+#include "mdkr_trace.h"
 #include "structs.h"
 
 #include <math.h>
@@ -95,6 +96,56 @@ s32 bonus_visual_krunch_driver_batch(s32 vehicle, s32 lod, s32 batch) {
         }
     }
     return FALSE;
+}
+
+static u64 bonus_visual_vertex_hash(const Vertex *vertices, s32 count) {
+    u64 hash = UINT64_C(1469598103934665603);
+    s32 i;
+
+    if (vertices == NULL || count <= 0) {
+        return 0;
+    }
+    for (i = 0; i < count; i++) {
+        hash ^= (u16) vertices[i].x;
+        hash *= UINT64_C(1099511628211);
+        hash ^= (u16) vertices[i].y;
+        hash *= UINT64_C(1099511628211);
+        hash ^= (u16) vertices[i].z;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+void bonus_visual_trace_animation(const char *identity, const Object *actor,
+                                  u32 sequence) {
+    ModelInstance *instance;
+    ObjectModel *model;
+    u64 front;
+    u64 back;
+
+    if (!mdkr_trace_enabled() || (sequence & 31u) != 0u || identity == NULL ||
+        actor == NULL || actor->header == NULL || actor->modelInstances == NULL ||
+        actor->modelIndex < 0 || actor->modelIndex >= actor->header->numberOfModelIds) {
+        return;
+    }
+    instance = actor->modelInstances[actor->modelIndex];
+    if (instance == NULL || instance->objModel == NULL) {
+        return;
+    }
+    model = instance->objModel;
+    if (model->numberOfVertices <= 0) {
+        return;
+    }
+    /* vertices[0] and vertices[1] are the animated double buffer; vertices[2] is obj_animate's
+     * absolute-position scratch and is deliberately not sampled. */
+    front = bonus_visual_vertex_hash(instance->vertices[0], model->numberOfVertices);
+    back = bonus_visual_vertex_hash(instance->vertices[1], model->numberOfVertices);
+    MDKR_TRACE("bonus_animation: identity=%s anim=%d frame=%d task=%d verts=%d "
+               "front=%016llx back=%016llx distinct=%d",
+               identity, (s32) actor->animationID, (s32) actor->animFrame,
+               (s32) instance->animationTaskNum, (s32) model->numberOfVertices,
+               (unsigned long long) front, (unsigned long long) back,
+               front != back);
 }
 
 #endif
