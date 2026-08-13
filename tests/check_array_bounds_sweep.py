@@ -140,6 +140,31 @@ SHAPE_TRIAGE = {
     #    call site. Kept listed because the shape is still "writes through a
     #    pointer in a loop" -- the enumerator cannot see the bound, only a human
     #    can, so the entry IS the record that a human did.
+    # -- The online/session campaign's wire encoders (2026-08-14, first
+    #    full-suite traversal; task 187 had never run anywhere).
+    ("bare-pointer", "platform/net/match_manifest.c", "put64:out"):
+        "BOUNDED BY THE ENCODER'S GATE: fixed eight-byte big-endian store; "
+        "both call sites are literal offsets inside "
+        "mdkr_match_manifest_encode (64+slot*8 with slot < 4, and 96), "
+        "whose entry check refuses capacity < MDKR_MATCH_MANIFEST_BYTES "
+        "(112). Highest byte touched is 103.",
+    ("bare-pointer", "platform/net/match_preflight.c", "put64:output"):
+        "BOUNDED BY LOCALS: one call writes encoded[8] (exactly the store's "
+        "width), the other next[MDKR_MATCH_PREFLIGHT_DIGEST_BYTES] at "
+        "+20..27 with the later memcpys reaching +92+32 and the function "
+        "gated on capacity < sizeof(next).",
+    ("bare-pointer", "platform/pacing_policy.c",
+     "present_interval_sort:values"):
+        "BOUNDED BY CONSTRUCTION: insertion sort; every write index is "
+        "position <= i < count. The sole caller sorts a local "
+        "ordered[MDKR_PRESENT_INTERVAL_WINDOW] filled by memcpy of "
+        "sizeof(ordered) and passes that same constant as count.",
+    ("bare-pointer", "platform/party/party_protocol.c",
+     "mdkr_party_pad_encode:output"):
+        "BOUNDED BY THE ENCODER'S GATE: entry check refuses capacity < "
+        "mdkr_party_pad_encoded_size(edge_count) and validate_packet bounds "
+        "edge_count; every write offset stays below that encoded size by "
+        "construction of the same arithmetic.",
     ("bare-pointer", "game/src/camera.c",
      "mdkr_camera_interpolated_view_projections:out"):
         "BOUNDED BY CONSTRUCTION: the loop is `for (viewport = 0; viewport < "
@@ -292,6 +317,28 @@ SHAPE_TRIAGE = {
     # equality-cap: `i == CAP` guarding a write indexed by i, where a second
     # increment can advance i past CAP.
     # ---------------------------------------------------------------------
+    # -- The rollback span builders (2026-08-14, first full-suite traversal).
+    #    Both enumerate file-scope state into a caller-sized
+    #    spans[SPAN_COUNT] through an unchecked spans[count++] macro and
+    #    return `count == SPAN_COUNT` at the end. The equality is a
+    #    POST-verification, not a bound: an ADD line added without bumping
+    #    the constant overflows the array first and fails the check second.
+    #    What keeps that survivable today: the constant and the ADD list
+    #    live in the same file, both counts were hand-verified equal at
+    #    triage time (34/34 and 8/8), and the rollback span gates execute
+    #    the builders every run, so a mismatch cannot land silently. The
+    #    honest fix -- a capacity parameter checked per write -- is noted
+    #    for the next edit of either file.
+    ("equality-cap", "game/src/fade_transition.c",
+     "transition_rollback_state_spans:count==MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT"):
+        "POST-VERIFIED, NOT BOUNDED: unchecked spans[count++] enumeration "
+        "over spans[34]; the trailing equality converts a mismatched ADD "
+        "list into a gate failure after the writes. 34 ADD lines == the "
+        "constant, verified 2026-08-14.",
+    ("equality-cap", "game/src/joypad.c",
+     "input_rollback_state_spans:count==MDKR_INPUT_ROLLBACK_STATE_SPAN_COUNT"):
+        "POST-VERIFIED, NOT BOUNDED: same builder shape over spans[8]; 8 ADD "
+        "lines == the constant, verified 2026-08-14.",
     # These HUD_* values are element identifiers, not capacities. The detector
     # conservatively treats all-caps constants as possible caps, but this block
     # is a set of per-element scale exceptions inside
@@ -590,7 +637,16 @@ SHAPE_INFO_MAX = {
     # The `== 0` / `!= 0` comparisons the enumerator sees are empty-set
     # early-outs before a median is taken, not saturation caps on a shared
     # counter.
-    "equality-cap": 45,
+    #
+    # 45 -> 48, RE-MEASURED 2026-08-14 on the first full-suite traversal in
+    # the project's history (tools/sweep_bug_shapes.py; the qualification
+    # pass that finally reached task 187). The growth is the multiplayer-
+    # foundation campaign (ba28eae): rollback_engine_registry.c contributes
+    # two registry-full `count ==` saturation guards over fixed-size span
+    # tables, and one further site rides the campaign's growth of the
+    # objects.c/menu.c populations. Measured, not summed, per the 2026-08-09
+    # merge-hazard note below.
+    "equality-cap": 48,
     # +116 from platform/. Overwhelmingly `1u << port` / `1u << slot` bit masks
     # over small fixed domains and `value >> (i * 8)` byte extractions -- the
     # var-count flavour the enumerator reports without an added constant. The
@@ -683,7 +739,20 @@ SHAPE_INFO_MAX = {
     #     camera_count >= PRESENTATION_SNAPSHOT_MAX_VIEWPORTS failure guard.
     # These are the same four-viewport domain as the neighboring camera-cut
     # journal sites documented above; none can approach the 32-bit width.
-    "shift-count": 269,
+    #
+    # 269 -> 367, RE-MEASURED 2026-08-14 on the first full-suite traversal
+    # (task 187 had never executed on any machine before this pass). The +98
+    # is the online/session campaign's arrival in the sweep's field of view:
+    # match_preflight.c (22), match_transport.c (10), party_protocol.c (10),
+    # session_bridge.c (9), match_manifest.c, match_signal, sha256.c and the
+    # rollback registry -- overwhelmingly `1u << slot` masks over the
+    # four-slot roster domain and `value >> (i * 8u)` byte extraction in the
+    # wire encoders, the same var-count flavour the +116 note above already
+    # describes for platform/. The remainder is campaign growth inside
+    # already-counted files (gfx_pc_dkr.c effect-recipe paths, menu.c,
+    # object_functions.c). Ceiling set to the measured population, not a
+    # guess, per the standing rule.
+    "shift-count": 367,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
