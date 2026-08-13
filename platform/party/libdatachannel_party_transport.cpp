@@ -803,8 +803,8 @@ private:
         MdkrPartyTransportEvent event;
         event.type = MdkrPartyTransportEventType::ControllerPacket;
         event.controllerId = peer->id;
-        event.packet.reserve(bytes.size());
-        for (std::byte byte : bytes) event.packet.push_back(std::to_integer<uint8_t>(byte));
+        const auto *first = reinterpret_cast<const uint8_t *>(bytes.data());
+        event.packet.assign(first, first + bytes.size());
         enqueue(std::move(event));
     }
 

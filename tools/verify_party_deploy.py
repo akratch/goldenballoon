@@ -63,7 +63,10 @@ SELF_TEST_HMAC_KEY = "verify-party-deploy-fixture-32-byte-secret"
 SELF_TEST_OPS_TOKEN = "verify-party-deploy-ops-fixture-0123456789"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SDP_OFFER = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"
-SDP_ANSWER = SDP_OFFER.replace("m=application 9", "m=application 9")
+# Deliberately distinct from the offer (different session id) so the answer
+# round-trip proves the service delivered the answer body, not an echo of the
+# offer it had already forwarded.
+SDP_ANSWER = SDP_OFFER.replace("o=- 1 1", "o=- 2 1")
 
 
 class CheckFailure(Exception):

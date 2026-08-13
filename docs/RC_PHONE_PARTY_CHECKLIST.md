@@ -74,7 +74,7 @@ QR code, and follow the link into Safari. Pair and take a seat.
 camera or Chrome's scanner. Pair and take a seat.
 
 **Expected observable:**
-- Same as item 2: HTTPS with no warning, no install prompt, phrase matches exactly.
+- Same as item 3: HTTPS with no warning, no install prompt, phrase matches exactly.
 - Also verify the **fallback code** path on this device: dismiss the QR, enter the
   six-digit code shown by the launcher on the controller page, and confirm it lands in
   the same room. Then rotate the invite in the launcher and confirm the **old** code is
