@@ -225,6 +225,11 @@ bool drawRailPanelItem(const char *label, bool selected) {
     ImGui::Unindent(ui::kGapM);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
+    // Now that the rail shares the shell's focus scope (see panelChildFlags),
+    // Tab lands on these destinations, so they announce like every other
+    // control rather than becoming reachable-but-silent.
+    ui::SpeakFocusedItem(label, selected ? "current section" : nullptr,
+                         "Switches the launcher to this section.");
     return pressed;
 }
 
@@ -254,6 +259,8 @@ bool drawTopPanelTab(const char *label, bool selected) {
             ImGui::GetColorU32(AppTheme::accent()), thickness * 0.5f);
     }
     ImGui::PopStyleColor(3);
+    ui::SpeakFocusedItem(label, selected ? "current section" : nullptr,
+                         "Switches the launcher to this section.");
     return pressed;
 }
 
@@ -322,7 +329,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
      * clipped by a constant that could not know about it.
      */
     static float measuredFooterHeight = 0.0f;
-    ImGui::BeginChild("##nav", ImVec2(ui::kNavWidth(), 0), true,
+    ImGui::BeginChild("##nav", ImVec2(ui::kNavWidth(), 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PushFont(AppTheme::fonts().small);
@@ -335,7 +343,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
         measuredFooterHeight > 0.0f ? measuredFooterHeight : footerSeed;
     const float bodyHeight =
         (std::max)(1.0f, ImGui::GetContentRegionAvail().y - footerHeight);
-    ImGui::BeginChild("##nav-body", ImVec2(0, bodyHeight), false,
+    ImGui::BeginChild("##nav-body", ImVec2(0, bodyHeight),
+                      ImGuiChildFlags_NavFlattened,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
     ui::BrandWordmark();
@@ -360,7 +369,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
 
     // This measured footer is a separate non-scrolling region. Readiness and
     // Play therefore stay put while another panel scrolls independently.
-    ImGui::BeginChild("##nav-footer", ImVec2(0, 0), false,
+    ImGui::BeginChild("##nav-footer", ImVec2(0, 0),
+                      ImGuiChildFlags_NavFlattened,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
     const float footerTop = ImGui::GetWindowPos().y;
@@ -455,7 +465,7 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
     ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
     ImGui::BeginChild("##topnav",
                       ImVec2(0, dense ? denseHeight : wideHeight),
-                      ImGuiChildFlags_Borders,
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
     const float navTop = ImGui::GetWindowPos().y;
@@ -488,6 +498,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         }
         sectionMin = ImGui::GetItemRectMin();
         sectionMax = ImGui::GetItemRectMax();
+        ui::SpeakFocusedItem("Section", activeLabel,
+                             "Choose which launcher section to view.");
         ImGui::SameLine();
         if (ImGui::Button(
                 "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
@@ -618,12 +630,16 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
 }
 
 // Nav can cross into a child window only when the child shares the parent's
-// focus scope. The scripted accessibility walk needs that to Tab off the nav
-// rail and into the panel; ordinary sessions keep ImGui's default, where the
-// launcher shell and its panel are separate nav scopes.
+// focus scope. The launcher is meant to be ONE keyboard/gamepad surface -- Tab
+// off the nav rail, through the panel, onto the persistent Play and Quit
+// actions, with no scope you cannot leave -- so every launcher child is
+// flattened into the root window's scope. This used to be armed only for the
+// scripted accessibility walk, which meant the walk could Tab everywhere but an
+// ordinary keyboard player could not reach Play at all: the shell and its panel
+// were separate scopes and Tab stopped at the boundary. Flattening always is
+// what makes "you can reach Play with the keyboard" true off the test bench.
 ImGuiChildFlags panelChildFlags(ImGuiChildFlags flags) {
-    return AppUi_a11yWalkArmed() ? (flags | ImGuiChildFlags_NavFlattened)
-                                 : flags;
+    return flags | ImGuiChildFlags_NavFlattened;
 }
 
 // Last panel announced. Guarding on the CHANGE, not on ui::SpeakSection's own
