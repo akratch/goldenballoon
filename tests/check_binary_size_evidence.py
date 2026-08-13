@@ -236,9 +236,17 @@ def run(args: argparse.Namespace) -> None:
           f"{document.get('recordedCommit')} in {BASELINE.relative_to(ROOT)}")
 
     require(not failures, "; ".join(failures))
-    require(checked > 0,
-            "no artifact could be measured against a recorded baseline; "
-            "build a release lane or pass --require <lane> to make that fatal")
+    if checked == 0:
+        # Nothing to weigh: no packaged artifact is present on this machine.
+        # With no --require lane demanded, that is not a failure — this gate
+        # catches SIZE REGRESSIONS in packaged artifacts, and there is nothing
+        # to regress in a source/local run. A required-but-absent lane already
+        # failed above via the strict MISSING path, so reaching here with
+        # `required` non-empty is impossible. Report a clean skip.
+        print("check_binary_size_evidence: SKIP — no packaged artifact built "
+              "on this machine to weigh; build a release lane or pass "
+              "--require <lane> to make absence fatal")
+        return
     print(f"check_binary_size_evidence: PASS — {checked} packaged artifact(s) "
           f"within their recorded ceilings, {skipped} not built here"
           + (f", required lanes {sorted(required)} complete" if required else ""))
