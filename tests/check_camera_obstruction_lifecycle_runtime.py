@@ -140,7 +140,7 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
         hidden = field(row, "target_hidden")
         if hidden > 0 and field(row, "depenetrate_only") == 0:
             follow_hidden += 1
-            follow_hidden_sample = follow_hidden_sample or row[:300]
+            follow_hidden_sample = follow_hidden_sample or row
         if hidden > 0:
             hidden_rows += 1
             hidden_run += 1
@@ -153,7 +153,7 @@ def inspect(scenario: Scenario, output: str) -> list[str]:
                      "invalid_sweeps", "sphere_invalid_sweeps",
                      "exact_invalid_sweeps"):
             if field(row, name) != 0:
-                failures.append(f"{scenario.name}: nonzero {name}: {row[:300]}")
+                failures.append(f"{scenario.name}: nonzero {name}: {row}")
                 break
     # The post-race route is the obstruction stimulus. Pause/restart routes
     # exist to prove state retirement and may remain entirely in open space.

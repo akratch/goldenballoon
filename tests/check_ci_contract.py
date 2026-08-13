@@ -1382,9 +1382,60 @@ def validate_release_checklist(sources: dict[str, str]) -> list[str]:
     return failures
 
 
+def validate_invocation_shapes() -> list[str]:
+    """Every artifact-role gate must accept the suite's invocation shape.
+
+    Two release-blocking task deaths (portable_paths, party_binary_surface)
+    were argparse exits at task depths no machine had ever reached: the
+    manifest promised a role whose flags the script never declared, and the
+    task died in zero seconds with 'unrecognized arguments'. Spawn each
+    artifact-role gate exactly as command_for() builds it, with paths that
+    do not exist, and require it to fail like a check that is missing its
+    inputs -- never like a broken contract. Source-role gates append no
+    role flags, run their real logic on invocation, and are exercised by
+    the suite itself, so they are out of scope here.
+    """
+    import concurrent.futures
+    import subprocess as sp
+
+    manifest = run_checks_manifest()
+    missing = Path("/nonexistent-mdkr64-shape-probe")
+    failures: list[str] = []
+
+    def probe(check) -> str | None:
+        cmd = manifest.command_for(
+            check, missing / "native", missing / "release", missing / "asan",
+            missing / "rom.z64", missing / "roms", missing / "web.wasm",
+            True)
+        try:
+            proc = sp.run(cmd, stdout=sp.PIPE, stderr=sp.STDOUT,
+                          timeout=30, check=False)
+        except sp.TimeoutExpired:
+            return (f"{check.name}: did not fail fast with missing "
+                    "artifacts (shape probe timed out)")
+        output = proc.stdout.decode(errors="replace")
+        if proc.returncode == 2 and (
+                "unrecognized arguments" in output
+                or "the following arguments are required" in output):
+            reason = output.strip().splitlines()[-1] if output.strip() else ""
+            return (f"{check.name}: rejects the suite's {check.role!r} "
+                    f"invocation shape: {reason}")
+        return None
+
+    shaped = [check for check in manifest.CHECKS
+              if check.script and check.role not in {
+                  "source", "browser_local", "ctest"}]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for verdict in pool.map(probe, shaped):
+            if verdict:
+                failures.append(verdict)
+    return failures
+
+
 def main() -> int:
     sources = read_sources()
     failures = validate(sources)
+    failures.extend(validate_invocation_shapes())
     failures.extend(validate_app_source_manifest(sources["cmake"]))
     failures.extend(validate_desktop_release(sources))
     failures.extend(validate_windows_nonpublishing(sources))

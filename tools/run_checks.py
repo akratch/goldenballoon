@@ -228,6 +228,11 @@ SERIAL_NAMES = frozenset({
     "rollback_item_matrix",      # per-weapon capture-restore budgets
     "rollback_vehicle_matrix",   # per-level/vehicle timing histograms
     "persistent_rollback_rematch",  # ASAN engine with internal 240s deadlines
+    # The unit battery contains the audio sink contract, whose drain/stall
+    # accounting is wall-clock against a real device: the documented flake
+    # ("passes standalone, stalls under a busy batch") is pool pressure by
+    # another name. One minute of solo time buys a deterministic verdict.
+    "rom_free_units",
 })
 
 # The strict verdict-bearing render/GPU-surface markers validate_manifest()
@@ -1224,6 +1229,49 @@ def total_physical_memory() -> int | None:
     return pages * page_size
 
 
+def stale_artifacts(
+    artifacts: tuple[Path | str, ...]) -> list[tuple[str, str]]:
+    """Artifacts older than the newest compiled source: (artifact, source).
+
+    A binary that predates the tree it claims to test produces verdicts about
+    a tree that no longer exists. This is not hypothetical: during the v1.3.0
+    qualification an incrementally rebuilt worktree binary reproduced a
+    RETIRED weather-oracle digest and nearly re-pinned a wrong constant.
+    Sources are the git-tracked files that feed the binaries (game/, platform/,
+    lib/, cmake/, CMakeLists.txt); tests and tools are interpreted, not
+    compiled in. Unknown (no git, unreadable) means no claim either way.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z", "--",
+             "game", "platform", "lib", "cmake", "CMakeLists.txt"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    newest_mtime = 0.0
+    newest_source = ""
+    for name in listing.stdout.decode(errors="replace").split("\0"):
+        if not name:
+            continue
+        try:
+            mtime = os.stat(ROOT / name).st_mtime
+        except OSError:
+            continue
+        if mtime > newest_mtime:
+            newest_mtime, newest_source = mtime, name
+    if not newest_source:
+        return []
+    stale: list[tuple[str, str]] = []
+    for artifact in artifacts:
+        try:
+            if os.stat(artifact).st_mtime < newest_mtime:
+                stale.append((str(artifact), newest_source))
+        except OSError:
+            continue  # preflight owns missing-artifact reporting
+    return stale
+
+
 def memory_capped_jobs(requested: int) -> tuple[int, str | None]:
     """Clamp the requested worker count to what physical RAM can hold.
 
@@ -1460,6 +1508,10 @@ def main() -> int:
         )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
+        "--require-fresh", action="store_true",
+        help="fail instead of warn when a tested artifact is older than the "
+             "newest compiled source (qualification runs should set this)")
+    parser.add_argument(
         "--jobs", type=int, default=1,
         help="run parallel-safe tasks with this many workers; tasks whose "
              "verdicts depend on wall-clock measurements, a quiet GPU, a "
@@ -1553,6 +1605,18 @@ def main() -> int:
     except RuntimeError as exc:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2
+
+    stale = stale_artifacts((native, release, asan, wasm))
+    if stale:
+        for artifact, source in stale:
+            print(f"run_checks: STALE ARTIFACT — {artifact} is older than "
+                  f"{source}; its verdicts describe a tree that no longer "
+                  "exists. Rebuild before trusting this run.",
+                  file=sys.stderr, flush=True)
+        if args.require_fresh:
+            print("run_checks: FAIL — --require-fresh refuses stale artifacts",
+                  file=sys.stderr)
+            return 2
 
     environment = {
         key: value
@@ -1745,6 +1809,20 @@ def main() -> int:
                                     errors="replace").splitlines()
                         except OSError as read_error:
                             tail = [f"(no captured log: {read_error})"]
+                        # Gates print their verdict first and their evidence
+                        # after it, so a chatty engine log can scroll the
+                        # verdict line out of a fixed tail: the suite log then
+                        # shows a task that failed with no reason anywhere.
+                        # Replay the last verdict-bearing lines that the tail
+                        # window would drop, then the tail itself.
+                        dropped = tail[:-60]
+                        verdicts = [line for line in dropped if "FAIL" in line]
+                        if verdicts:
+                            print("    | --- verdict lines above the tail "
+                                  "window ---", flush=True)
+                            for line in verdicts[-15:]:
+                                print(f"    | {line}", flush=True)
+                            print("    | --- log tail ---", flush=True)
                         for line in tail[-60:]:
                             print(f"    | {line}", flush=True)
                         if args.fail_fast:

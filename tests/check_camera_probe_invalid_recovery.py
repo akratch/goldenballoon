@@ -91,7 +91,7 @@ def main() -> int:
     elif len(marked) > 1:
         failures.append(
             f"{len(marked)} rows carry probe_degraded -- the seam leaked "
-            f"beyond its one probe: {marked[1][:300]}")
+            f"beyond its one probe: {marked[1]}")
 
     # The contract: one unprovable probe may cost its own answer, never the
     # tick. Every tick in the run still publishes a proven, target-visible
@@ -101,7 +101,7 @@ def main() -> int:
             if field(row, name) != 0:
                 failures.append(
                     f"tick {field(row, 'tick')} died of one unprovable probe "
-                    f"({name}!=0): {row[:300]}")
+                    f"({name}!=0): {row}")
                 break
 
     if failures:
