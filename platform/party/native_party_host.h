@@ -124,6 +124,7 @@ public:
     /* Drain bounded network events and newest engine rumble requests. */
     void service(uint64_t nowMs);
     const MdkrNativePartyView &view() const { return view_; }
+    bool transportAvailable() const { return transport_.available(); }
 
 private:
     MdkrNativePartyController *controller(const std::string &id);

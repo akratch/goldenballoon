@@ -25,6 +25,44 @@ std::string g_removeController;
 std::string g_removeName;
 uint64_t g_inviteCopiedUntilMs = 0u;
 
+/* MDKR_APP_PARTY_TRACE=1: one line, once per process, on the first frame the
+ * party surface actually commits draws — the packaged-build lanes assert the
+ * surface exists in the shipped launcher without a phone or a ROM. The three
+ * flags are set AT the draw sites, so a frame that skipped the invite/QR/code
+ * cannot report them. */
+bool g_traceDrewInvite = false;
+bool g_traceDrewQr = false;
+bool g_traceDrewCode = false;
+
+const char *partyPhaseName(MdkrNativePartyPhase phase) {
+    switch (phase) {
+        case MdkrNativePartyPhase::Closed: return "closed";
+        case MdkrNativePartyPhase::Opening: return "opening";
+        case MdkrNativePartyPhase::Open: return "open";
+        case MdkrNativePartyPhase::InviteRevoked: return "invite-revoked";
+        case MdkrNativePartyPhase::Recovering: return "recovering";
+        case MdkrNativePartyPhase::Error: return "error";
+    }
+    return "unknown";
+}
+
+void partyTraceEmitOnce(MdkrNativePartyHost &host, const char *serviceOrigin) {
+    static bool emitted = false;
+    const char *armed = std::getenv("MDKR_APP_PARTY_TRACE");
+    if (emitted || armed == nullptr || armed[0] != '1') return;
+    emitted = true;
+    std::printf("[app] party: origin=%s transport=%s phase=%s "
+                "invite=%d qr=%d code=%d\n",
+                serviceOrigin != nullptr && serviceOrigin[0] != '\0'
+                    ? serviceOrigin : "unset",
+                host.transportAvailable() ? "available" : "unavailable",
+                partyPhaseName(host.view().phase),
+                g_traceDrewInvite ? 1 : 0, g_traceDrewQr ? 1 : 0,
+                g_traceDrewCode ? 1 : 0);
+    std::fflush(stdout);
+}
+
+
 void announceState(const MdkrNativePartyView &view) {
     if (!ui::SpeechEnabled()) return;
     unsigned pending = 0u;
@@ -89,6 +127,7 @@ bool seatOccupied(const MdkrNativePartyView &view, unsigned seat) {
 
 void drawQr(const std::string &url) {
     try {
+        g_traceDrewQr = true;
         const qrcodegen::QrCode qr = qrcodegen::QrCode::encodeText(
             url.c_str(), qrcodegen::QrCode::Ecc::QUARTILE);
         const float available = ImGui::GetContentRegionAvail().x;
@@ -121,6 +160,7 @@ void drawQr(const std::string &url) {
 
 void drawInvite(MdkrNativePartyHost &host) {
     const MdkrNativePartyView &view = host.view();
+    g_traceDrewInvite = view.inviteVisible;
     if (!view.inviteVisible) {
         ImGui::TextUnformatted("Invite closed");
         ui::TextSubtleWrapped(
@@ -131,6 +171,7 @@ void drawInvite(MdkrNativePartyHost &host) {
     drawQr(view.controllerUrl);
     ui::Gap(ui::kGapS);
     ImGui::PushFont(AppTheme::fonts().title);
+    g_traceDrewCode = true;
     ImGui::Text("Code  %s", view.fallbackCode.c_str());
     ImGui::PopFont();
     const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
@@ -341,6 +382,7 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
     ui::SectionHeader("Play Together on This Screen",
         "Turn any phone into a private browser controller. Scan, compare the pairing phrase, approve a slot, and play on this screen.");
     drawFull(host, serviceOrigin);
+    partyTraceEmitOnce(host, serviceOrigin);
 }
 
 void PhoneParty_drawOverlay(MdkrNativePartyHost &host,

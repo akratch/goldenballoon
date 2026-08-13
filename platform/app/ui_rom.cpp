@@ -823,7 +823,15 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
      * the ready state. Drawn unconditionally, this section offered a first-run
      * player a way to invite friends to a game they do not have yet, directly
      * underneath the drop zone they still had to use. */
-    if (s.phoneParty != nullptr && ready && !g_changing) {
+    /* MDKR_APP_PARTY_TRACE=1 also relaxes the ROM gate for this draw: every
+     * release lane is asset-free, so without this the packaged-build party
+     * qualification could never execute one line of party UI and its gate
+     * would pass on nothing. Trace-only surface; still non-interactive CI. */
+    static const bool partyTraceArmed = [] {
+        const char *value = std::getenv("MDKR_APP_PARTY_TRACE");
+        return value != nullptr && value[0] == '1';
+    }();
+    if (s.phoneParty != nullptr && (ready || partyTraceArmed) && !g_changing) {
         PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
     }
 }
