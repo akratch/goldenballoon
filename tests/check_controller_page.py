@@ -24,6 +24,22 @@ from check_browser_runtime import (
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def load_controller(cdp: CDPClient, url: str, label: str, timeout: float) -> None:
+    """Force a fresh controller document at ``url``.
+
+    ``Page.navigate`` from ``/controller/`` to ``/controller/#<secret>`` is a
+    same-document fragment navigation: no document is created, so neither the
+    entry code nor the pending ``Page.addScriptToEvaluateOnNewDocument``
+    configuration ever runs and the check would silently observe the previous
+    document.  Detour through ``about:blank`` so each entry case really is a
+    fresh load.
+    """
+    cdp.call("Page.navigate", {"url": "about:blank"})
+    wait_value(cdp, "location.href", lambda value: value == "about:blank",
+               f"{label} blank detour", timeout)
+    cdp.call("Page.navigate", {"url": url})
+
+
 def resolve(value: str) -> Path:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -253,8 +269,8 @@ def run(args: argparse.Namespace) -> None:
 
             cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
                      "globalThis.__mdkrControllerTestConfig.entryMode='embedded';"})
-            cdp.call("Page.navigate", {"url": server.origin +
-                     "/controller/#" + secret})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "embedded entry", args.timeout)
             embedded_copy = wait_value(cdp, """(() => ({
               phase:globalThis.__mdkrControllerTest?.state().phase,
               heading:document.getElementById('error-title')?.textContent,
@@ -289,8 +305,8 @@ def run(args: argparse.Namespace) -> None:
 
             cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
                      "globalThis.__mdkrControllerTestConfig.entryMode='duplicate';"})
-            cdp.call("Page.navigate", {"url": server.origin +
-                     "/controller/#" + secret})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "duplicate entry", args.timeout)
             duplicate = wait_value(cdp, """(() => ({
               phase:globalThis.__mdkrControllerTest?.state().phase,
               hash:location.hash,
@@ -317,8 +333,8 @@ def run(args: argparse.Namespace) -> None:
 
             cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source":
                      "globalThis.__mdkrControllerTestConfig.forceFallbackLease=true;"})
-            cdp.call("Page.navigate", {"url": server.origin +
-                     "/controller/#" + secret})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "fallback-lease entry", args.timeout)
             fallback_lease = wait_value(cdp, """(() => ({
               phase:globalThis.__mdkrControllerTest?.state().phase,
               mode:globalThis.__mdkrControllerTestState?.leaseMode,
@@ -342,8 +358,8 @@ def run(args: argparse.Namespace) -> None:
                 value(){throw new DOMException('fixture denial', 'SecurityError');}
               });
             """})
-            cdp.call("Page.navigate", {"url": server.origin +
-                     "/controller/#" + secret})
+            load_controller(cdp, server.origin + "/controller/#" + secret,
+                            "scrub-denial entry", args.timeout)
             scrub_denied = wait_value(cdp, """(() => ({
               phase:globalThis.__mdkrControllerTest?.state().phase,
               hash:location.hash,href:location.href,

@@ -87,7 +87,14 @@ def run(args: argparse.Namespace) -> None:
             cdp.call("Page.navigate", {"url": server.origin + "/"})
             wait_value(cdp, "Boolean(globalThis.MDKRPartyHost)", bool,
                        "party host API", args.timeout)
-            cdp.evaluate("globalThis.MDKRPartyHost.setRomReady(true); globalThis.MDKRPartyHost.open()")
+            # publishPartyRomReady() derives the party room's romReady from the
+            # same ROM availability that ungates the launcher Play button, so a
+            # real ready launcher never has Play disabled. Forcing only the
+            # party half would leave Play disabled, and click() on a disabled
+            # button dispatches nothing -- Start local game could not hand off.
+            cdp.evaluate("globalThis.MDKRPartyHost.setRomReady(true);"
+                         "document.getElementById('play').disabled=false;"
+                         "globalThis.MDKRPartyHost.open()")
             ready = wait_value(cdp, """(() => ({
               room: !document.getElementById('party-room').hidden,
               code: document.getElementById('party-code').textContent,
@@ -301,8 +308,13 @@ def run(args: argparse.Namespace) -> None:
                     .filter(path=>path.endsWith('/remove')).length""") ==
                     removal_requests_before,
                     "cancelling phone removal mutated the room")
-            require(cdp.evaluate("document.activeElement?.classList.contains('party-seat-remove')"),
-                    "cancelled phone removal did not restore focus")
+            # The dialog's `close` event, and therefore the focus return, is
+            # queued after `open` flips to false. Wait for the same condition
+            # instead of sampling the one task in between.
+            wait_value(cdp,
+                       "document.activeElement?.classList.contains('party-seat-remove')",
+                       lambda value: value is True,
+                       "cancelled phone removal restored focus", args.timeout)
 
             cdp.evaluate("""(() => {
               document.querySelector('[data-seat="2"] .party-seat-remove').click();

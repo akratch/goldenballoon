@@ -1472,7 +1472,10 @@
     const inviteUrl = controllerInviteUrl();
     try {
       if (inviteUrl && await acquireTabLease(capability, true)) {
-        location.replace(inviteUrl); return;
+        location.replace(inviteUrl);
+        // A fragment-only replace stays in this document; force the entry.
+        if (location.href === inviteUrl) location.reload();
+        return;
       }
     } catch (_) {}
     announce("Could not move the controller. Close the other tab, then try again.");
