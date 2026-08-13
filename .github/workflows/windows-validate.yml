@@ -82,9 +82,19 @@ jobs:
       # (ON by default via include(CTest) in CMakeLists.txt) so the ROM-free
       # CTest unit exes are produced alongside mdkr64.exe. No --target filter:
       # the default build target builds mdkr64 plus every ctest executable.
+      #
+      # MDKR_PARTY_ORIGIN is threaded through for the same reason: this lane
+      # exists to mirror the release.yml Windows job, and a mirror that omits a
+      # compiled-in build parameter stops mirroring the artifact. There is no
+      # origin GATE here, deliberately -- this lane publishes nothing, so it
+      # must stay runnable on a fork or a repository with no variables set, and
+      # an empty origin is a legal (party-free) build.
       - name: Build the app + ROM-free test exes (Release)
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
         run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
           test -f build/mdkr64.exe || { echo "FAIL: build/mdkr64.exe missing"; exit 1; }
           file build/mdkr64.exe

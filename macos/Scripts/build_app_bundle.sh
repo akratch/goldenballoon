@@ -170,6 +170,13 @@ Options:
                          (default: native)
   --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.3.0)
   --build-stamp SHA      Source commit shown in the About panel (default: empty)
+  --party-origin URL     Phone Party service origin compiled into the launcher
+                         (-DMDKR_PARTY_ORIGIN; default: empty). Must be empty
+                         or an https:// origin -- CMake rejects anything else.
+                         Empty is legal and means the built app shows no Phone
+                         Party surface at all, so release lanes must pass the
+                         deployed origin here. See
+                         docs/multiplayer/DEPLOY_PHONE_PARTY.md.
   --deployment-target V  Minimum macOS version (default: 13.0)
   --strict-deployment-target
                          Fail if the local SDL2 dylib requires a newer macOS
@@ -193,6 +200,9 @@ OUTPUT_APP=""
 ARCH="native"
 APP_VERSION="1.3.0"
 BUILD_STAMP=""
+# Empty by default: a local developer build has no deployed Phone Party
+# service to point at, and an empty origin is a legal (party-free) build.
+PARTY_ORIGIN=""
 DEPLOYMENT_TARGET="13.0"
 STRICT_DEPLOYMENT_TARGET=false
 BUNDLE_SDL2=false
@@ -238,6 +248,13 @@ while [[ $# -gt 0 ]]; do
         --build-stamp)
             [[ $# -ge 2 ]] || die "--build-stamp requires a full commit SHA"
             BUILD_STAMP="$2"
+            shift 2
+            ;;
+        --party-origin)
+            # An explicit empty value is accepted (party-free build); only a
+            # missing operand is an error.
+            [[ $# -ge 2 ]] || die "--party-origin requires an https:// origin (or an empty string)"
+            PARTY_ORIGIN="$2"
             shift 2
             ;;
         --deployment-target)
@@ -390,6 +407,11 @@ fi
 if [[ "${BUNDLE_SDL2}" == true ]]; then
     info "Bundle SDL2       : enabled"
 fi
+if [[ -n "${PARTY_ORIGIN}" ]]; then
+    info "Phone Party origin: ${PARTY_ORIGIN}"
+else
+    warn "Phone Party origin: (none) -- this build shows no Phone Party surface"
+fi
 
 if [[ "${RUN_CMAKE}" == true ]]; then
     info "Configuring mdkr64..."
@@ -399,6 +421,7 @@ if [[ "${RUN_CMAKE}" == true ]]; then
         -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
         -DMDKR_VERSION="${APP_VERSION}" \
         -DMDKR_BUILD_STAMP="${BUILD_STAMP}" \
+        -DMDKR_PARTY_ORIGIN="${PARTY_ORIGIN}" \
         -DMDKR_WEBGPU_BACKEND=ON \
         || die "CMake configuration failed."
 

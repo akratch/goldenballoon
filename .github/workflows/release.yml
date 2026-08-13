@@ -62,6 +62,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
+      party_origin: ${{ steps.party.outputs.party_origin }}
     steps:
       - name: Checkout full tag history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -96,6 +97,56 @@ jobs:
             }
           fi
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+      # Phone Party origin gate. MDKR_PARTY_ORIGIN is COMPILED INTO the
+      # launcher (CMakeLists.txt), so an artifact built without it shows no
+      # Phone Party surface at all (PhoneParty_availableInBuild): players get a
+      # build that does not have the feature, silently and irreversibly. No
+      # release lane used to set it, which made every packaged artifact
+      # partyless for three releases. Fail closed here, before anything
+      # is built: either a valid deployed origin is configured, or a partyless
+      # release is declared on purpose and said out loud in the log. The build
+      # jobs consume the resolved value as this job's `party_origin` output.
+      - id: party
+        name: Resolve and gate the compiled Phone Party origin
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
+          ALLOW_PARTYLESS: ${{ vars.MDKR_ALLOW_PARTYLESS_RELEASE }}
+        run: |
+          set -euo pipefail
+          origin="${PARTY_ORIGIN:-}"
+          allow="${ALLOW_PARTYLESS:-}"
+          if [[ -n "$origin" ]]; then
+            # Exactly https://HOST[:PORT]. A trailing slash, path, query,
+            # fragment or embedded credentials all change the URL the phone
+            # dials, and the service compares origins byte for byte.
+            if [[ ! "$origin" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+              echo "::error::vars.MDKR_PARTY_ORIGIN must be exactly https://HOST[:PORT] with no trailing slash, path, query, fragment or credentials (got '$origin')"
+              exit 1
+            fi
+            host="${origin#https://}"
+            host="$(printf '%s' "${host%%:*}" | tr '[:upper:]' '[:lower:]')"
+            case "$host" in
+              localhost|*.invalid|*.example|example.com|example.net|example.org|*.example.com|*.example.net|*.example.org)
+                echo "::error::vars.MDKR_PARTY_ORIGIN is a reserved placeholder host ('$host'); a release must be built against the deployed Phone Party service"
+                exit 1
+                ;;
+            esac
+            echo "Phone Party origin compiled into this release: $origin"
+          elif [[ "$allow" == "1" ]]; then
+            echo "::warning::PARTYLESS RELEASE: these artifacts ship with Phone Party absent"
+            echo "=============================================================="
+            echo "PARTYLESS RELEASE (vars.MDKR_ALLOW_PARTYLESS_RELEASE=1)"
+            echo "These artifacts ship with Phone Party UNAVAILABLE. With no"
+            echo "compiled origin the launcher shows no Phone Party surface at"
+            echo "all -- players get a build that does not have the feature."
+            echo "To ship a working Phone Party, set the repository variable"
+            echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
+            echo "=============================================================="
+          else
+            echo "::error::No Phone Party origin for this release: these artifacts would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
+            exit 1
+          fi
+          echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
       # A dispatch can name any ref. Run the same clean-room / public-surface
       # policy gates correctness.yml runs, before anything is built or
       # published, so an unvetted ref cannot ship.
@@ -126,9 +177,14 @@ jobs:
       - name: Build the app (Release)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          # Gated by the validate job: either a valid deployed https:// origin
+          # or, deliberately and loudly, empty. Empty stays legal (that is the
+          # partyless path), so this must not be quoted away or defaulted.
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-            -DMDKR_VERSION="$RELEASE_VERSION"
+            -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
       - name: ROM-free unit tests (GPU tests routed separately)
         env:
@@ -152,10 +208,9 @@ jobs:
       # (secure-origin bootstrap, invite URL + six-digit code, QR encoding,
       # pairing phrase, fail-closed on a missing/insecure origin) through the
       # real MdkrNativePartyHost, and that the shipped executable actually
-      # links that host and the native WSS/WebRTC transport. It does NOT prove
-      # the launcher draws a QR code or that a bootstrap listener is up: the
-      # launcher's party panel only renders once a ROM is loaded, and release
-      # jobs are asset-free. That needs a launcher seam or a real device.
+      # links that host and the native WSS/WebRTC transport. What the launcher
+      # itself draws is proven separately, by the MDKR_APP_PARTY_TRACE witness
+      # in the two AppHost qualification steps below.
       - name: Phone Party bring-up smoke and linked-transport check (built tree)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -177,6 +232,7 @@ jobs:
           VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           set -euo pipefail
           mkdir -p "$XDG_RUNTIME_DIR" "$RUNNER_TEMP/launcher-built"
@@ -210,6 +266,74 @@ jobs:
 
           qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
           qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
+
+          # Phone Party surface witness (direct, not a proxy). The party
+          # section lives on the launcher's Play panel, so this run opens that
+          # panel with MDKR_APP_PARTY_TRACE=1 armed. The trace line is emitted
+          # once per process, from inside the party draw itself, after the
+          # surface has committed draws -- a frame that skipped the surface
+          # cannot report it (platform/app/ui_phone_party.cpp).
+          #
+          # A build with no compiled origin shows no Phone Party surface at all
+          # (PhoneParty_availableInBuild); only the trace lane still draws it,
+          # reporting origin=unset. So a NONEMPTY origin in this line is direct
+          # evidence that a real player of this artifact gets the surface.
+          #
+          # PROVEN here: the shipped launcher's party surface really drew, it
+          # reports the origin THIS artifact was compiled with, and the native
+          # WSS/WebRTC transport is linked and available.
+          # NOT proven here: pairing. With no ROM and no network the phase is
+          # `closed` and the invite/QR/code draw flags are 0, so they are not
+          # asserted -- an assertion that cannot hold in this lane would be
+          # worse than none. Live pairing is tools/verify_party_deploy.py's
+          # job, against the same origin.
+          # Pixels and presents are the four qualification runs above; this run
+          # exists only for the party trace, so it does not repeat those
+          # assertions. The trace is emitted from inside the draw, so it cannot
+          # be reported by a launcher that never rendered the surface.
+          qualify_party_surface() {
+            local label="$1" executable="$2" launch_cwd="$3"
+            local expected_origin="${PARTY_ORIGIN:-unset}"
+            local party="$RUNNER_TEMP/launcher-party/$label"
+            mkdir -p "$party/prefs" "$party/saves"
+            (
+              cd "$launch_cwd"
+              xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+                env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                  MDKR_APP_SMOKE_FRAMES=4 \
+                  MDKR_APP_PANEL=Play MDKR_APP_PARTY_TRACE=1 \
+                  MDKR_APP_PREFS_DIR="$party/prefs" \
+                  MDKR_VIDEO_CONFIG_PATH="$party/video.ini" \
+                  MDKR_SAVE_DIR="$party/saves" MDKR_AUDIO=0 \
+                  "$executable"
+            ) 2>&1 | tee "$party/launcher.log"
+            local count line expected_prefix
+            count="$(grep -cE '^\[app\] party: ' "$party/launcher.log" || true)"
+            if [[ "$count" != "1" ]]; then
+              echo "$label: expected exactly one [app] party: line, got $count" >&2
+              exit 1
+            fi
+            line="$(grep -E '^\[app\] party: ' "$party/launcher.log")"
+            expected_prefix="[app] party: origin=$expected_origin transport=available "
+            if [[ "$line" != "$expected_prefix"* ]]; then
+              echo "$label: party trace mismatch -- this artifact does not" >&2
+              echo "report the origin it was supposed to be built with." >&2
+              echo "  expected prefix: $expected_prefix" >&2
+              echo "  actual line    : $line" >&2
+              exit 1
+            fi
+            # Belt and braces on the partyful path: an artifact built for a
+            # deployed service must never report origin=unset, which is what a
+            # build that ships Phone Party hidden entirely would print.
+            if [[ -n "${PARTY_ORIGIN:-}" && "$line" == *"origin=unset"* ]]; then
+              echo "$label: artifact reports origin=unset but this release was built for ${PARTY_ORIGIN}" >&2
+              exit 1
+            fi
+            echo "$label: party surface drew, $line"
+          }
+
+          qualify_party_surface built "$GITHUB_WORKSPACE/build/mdkr64" \
+            "$GITHUB_WORKSPACE"
       - name: Package AppImage + tar.gz
         run: ./tools/package_linux_appimage.sh --binary build/mdkr64 --version "${{ needs.validate.outputs.version }}"
       - name: Qualify extracted tar/AppRun from an unrelated directory
@@ -219,6 +343,7 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           set -euo pipefail
           extract="$RUNNER_TEMP/linux-package"
@@ -276,6 +401,51 @@ jobs:
 
           qualify_package webgpu ""
           qualify_package gl gl
+
+          # Phone Party surface witness for the artifact players actually get.
+          # Same seam and same honest limits as the built-tree step above: the
+          # party section is on the Play panel, MDKR_APP_PARTY_TRACE=1 makes it
+          # draw without a ROM and emits one line from inside the draw. An
+          # origin-less build hides the surface from players entirely, so a
+          # nonempty origin here is evidence the packaged launcher really
+          # offers it. Phase is `closed` and invite/qr/code are 0 in an offline
+          # lane; asserting otherwise would be an assertion that cannot hold.
+          # Pixels and presents belong to the four qualification runs above;
+          # this run exists only for the trace, which is emitted from inside
+          # the draw and so cannot come from a launcher that never rendered.
+          party_work="$RUNNER_TEMP/launcher-party-package"
+          expected_origin="${PARTY_ORIGIN:-unset}"
+          mkdir -p "$party_work/prefs" "$party_work/saves"
+          (
+            cd "$unrelated"
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                MDKR_APP_SMOKE_FRAMES=4 \
+                MDKR_APP_PANEL=Play MDKR_APP_PARTY_TRACE=1 \
+                MDKR_APP_PREFS_DIR="$party_work/prefs" \
+                MDKR_VIDEO_CONFIG_PATH="$party_work/video.ini" \
+                MDKR_SAVE_DIR="$party_work/saves" MDKR_AUDIO=0 \
+                "$app_run"
+          ) 2>&1 | tee "$party_work/launcher.log"
+          party_count="$(grep -cE '^\[app\] party: ' "$party_work/launcher.log" || true)"
+          if [[ "$party_count" != "1" ]]; then
+            echo "package: expected exactly one [app] party: line, got $party_count" >&2
+            exit 1
+          fi
+          party_line="$(grep -E '^\[app\] party: ' "$party_work/launcher.log")"
+          party_expected="[app] party: origin=$expected_origin transport=available "
+          if [[ "$party_line" != "$party_expected"* ]]; then
+            echo "package: party trace mismatch -- the packaged artifact does" >&2
+            echo "not report the origin it was supposed to be built with." >&2
+            echo "  expected prefix: $party_expected" >&2
+            echo "  actual line    : $party_line" >&2
+            exit 1
+          fi
+          if [[ -n "${PARTY_ORIGIN:-}" && "$party_line" == *"origin=unset"* ]]; then
+            echo "package: artifact reports origin=unset but this release was built for ${PARTY_ORIGIN}" >&2
+            exit 1
+          fi
+          echo "package: party surface drew, $party_line"
       - name: Stamp provenance (bind assets to this commit)
         run: |
           for f in dist/Golden-Balloon-*-linux-x86_64.*; do
@@ -338,9 +508,14 @@ jobs:
       - name: Build the app (Release)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          # Same gated value as the Linux lane. This zip is not published
+          # automatically, but a maintainer may hand-attach the exact archive
+          # after real-hardware acceptance, so it must be built partyful too.
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-            -DMDKR_VERSION="$RELEASE_VERSION"
+            -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           # The full ROM-free suite runs in the cross-platform correctness
           # matrix. This Windows lane builds the product plus the native
           # formatter/allocator sentinel that exercises MinGW CRT
@@ -393,8 +568,12 @@ jobs:
           PY
           ./tools/check_windows_imports.sh build/mdkr64.exe
           ./macos/Scripts/verify_asset_free.sh build/mdkr64.exe
+          # The MinGW CRT portability sentinel stays its own exact invocation so
+          # the CI contract can pin it; the GPU-free party host gates run as a
+          # separate selection right after.
+          ctest --test-dir build --output-on-failure --no-tests=error -R '^memory_allocator$'
           ctest --test-dir build --output-on-failure --no-tests=error \
-            -R '^(memory_allocator|native_party_bringup|native_party_host|native_party_qr|native_party_sas)$'
+            -R '^(native_party_bringup|native_party_host|native_party_qr|native_party_sas)$'
       # GPU-free by construction, so this lane can carry it despite having no
       # qualifying adapter for a launcher gate. Same honest limits as Linux:
       # host pairing surface + linkage, not an on-screen QR or a live listener.

@@ -1865,6 +1865,11 @@ if(BUILD_TESTING)
                 ${CMAKE_SOURCE_DIR}/tests/check_party_binary_surface.py
                 --self-test)
     add_test(
+        NAME release_party_origin
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_release_party_origin.py
+                --self-test)
+    add_test(
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_audio_sink_evidence_contract.py)

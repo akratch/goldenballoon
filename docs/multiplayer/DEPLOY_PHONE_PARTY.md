@@ -108,11 +108,75 @@ cmake --build build/release
 
 CMake refuses any value that does not begin with `https://`. Leaving it empty
 builds a launcher with Phone Party unaddressed — that is the correct default
-for a build that is not for your deployment.
+for a build that is not for your deployment. Such a build shows **no Phone
+Party surface at all** (`PhoneParty_availableInBuild`): no launcher card, no
+in-game overlay entry. It is not a degraded feature, it is an absent one.
 
 Order matters: deploy and verify the service first, then build the release
 against the verified origin. A build compiled against the placeholder origin
 cannot pair and must not be shipped.
+
+### Releases must be built pointing at the deployed origin
+
+The value is compiled in, so it is a property of the **artifact**, not of the
+machine that runs it. A release built without it ships without Phone Party,
+silently and irreversibly — no runtime setting recovers it.
+
+Two repository variables drive the release lanes (Settings → Secrets and
+variables → Actions → Variables — plain variables, not secrets; the origin is
+public by construction, it is printed on the player's own screen as a QR code):
+
+| Variable | Value | Meaning |
+| --- | --- | --- |
+| `MDKR_PARTY_ORIGIN` | `https://PARTY_DOMAIN` | Compiled into every packaged artifact. |
+| `MDKR_ALLOW_PARTYLESS_RELEASE` | `1` | Deliberate escape hatch: ship with Phone Party absent. |
+
+**How the guard behaves.** `.github/workflows/release.yml` (the `validate`
+job) and `.github/workflows/macos-release.yml` (the `party` step, before any
+build tool is installed) fail the run before anything is compiled unless
+either:
+
+- `MDKR_PARTY_ORIGIN` is set and is exactly `https://HOST[:PORT]` — no
+  trailing slash, path, query, fragment or embedded credentials, and not a
+  reserved placeholder host (`*.invalid`, `*.example`, `example.com`,
+  `localhost`); or
+- `MDKR_ALLOW_PARTYLESS_RELEASE` is exactly `1`, in which case the run
+  continues and prints a loud banner recording that these artifacts ship with
+  Phone Party unavailable. That escape hatch exists so an unrelated release is
+  never blocked, but it is a deliberate, logged choice — never a default.
+
+The resolved origin is a job output that every build lane consumes:
+`release.yml` threads it into both the Linux and the Windows
+`cmake -B build …` configure, and `macos-release.yml` passes it to
+`macos/Scripts/build_app_bundle.sh --party-origin`, which forwards it as
+`-DMDKR_PARTY_ORIGIN`. Empty stays legal everywhere — that is the partyless
+path — so nothing defaults it to a placeholder.
+
+**One origin, verified once.** The origin compiled into the artifact and the
+origin `tools/verify_party_deploy.py` passed against must be the *same string*.
+Verifying `https://party.example.com` and then shipping a build compiled
+against anything else — a staging host, a trailing slash, a stale variable —
+means nothing was verified about what players actually run.
+
+**What the release lanes prove.** `release.yml`'s Linux job launches the real
+launcher (built tree and extracted package) under xvfb with
+`MDKR_APP_PARTY_TRACE=1`, which makes the Phone Party surface draw without a
+ROM and emit exactly one line from inside the draw itself:
+
+```
+[app] party: origin=https://PARTY_DOMAIN transport=available phase=closed invite=0 qr=0 code=0
+```
+
+The lane asserts the line appears exactly once, that `origin=` equals the
+origin this artifact was built with (`unset` on the partyless path — the
+expected value is fixed per run, never "either"), and that
+`transport=available`. That proves the surface committed draws and that the
+compiled origin and the linked native WSS/WebRTC transport reached the shipped
+binary. It does **not** prove pairing: with no network and no ROM the phase is
+`closed` and `invite`/`qr`/`code` are `0`. Live pairing is what
+`tools/verify_party_deploy.py` proves, against the same origin. The macOS lane
+has no AppHost launch, so it carries the guard and the compiled origin but no
+drawn-surface witness.
 
 ## The edge rate-limit rule
 

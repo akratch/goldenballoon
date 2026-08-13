@@ -1232,7 +1232,7 @@ keeps forged/refused floods at zero observations. The second environment proves 
 while static/local paths remain available and its health aggregate remains
 empty/complete.
 
-`tests/check_party_internal_api.py` freezes the 16-call Worker→Durable Object
+`tests/check_party_internal_api.py` freezes the 17-call Worker→Durable Object
 census and requires every call to use the internal v1 envelope. It also requires
 PartyBudget, PartyRoom, PartyCodeDirectory and MatchRoom to reject an unknown
 version before URL/body parsing or storage access. Service tests exercise all
@@ -1246,6 +1246,46 @@ secret material, and no match for launcher/controller/room/static routes. It
 also freezes the browser mapping from a provider-generated HTML `429` to the
 typed capacity recovery. Actual zone installation and Security Events evidence
 remain human/provisioned work.
+
+`tests/check_party_production_config.py` validates the production Worker
+environment in `services/party/wrangler.jsonc`: an `env.production` carrying the
+custom-domain route, the four Durable Object bindings, the v1/v2/v3 migrations,
+`workers_dev`/observability off, and a route host that matches `PARTY_ORIGIN`.
+It requires only `/api/*` to run the Worker so `/controller/`, `/party/` and
+`/room/` stay static, and it fails closed while the tracked config still carries
+the unresolvable `party.example.invalid` placeholder.
+
+`tests/check_party_binary_surface.py` inspects a packaged desktop artifact (or,
+with `--self-test`, a synthetic fixture) for the real WSS/WebRTC Phone Party
+transport rather than the stub and for the compiled service origin, so a build
+that dropped the transport or shipped an empty origin fails before release.
+
+`tests/check_release_party_origin.py` requires every workflow that packages
+*and* uploads a distributable to gate on `vars.MDKR_PARTY_ORIGIN` (or the
+deliberate `MDKR_ALLOW_PARTYLESS_RELEASE=1` escape hatch) and to thread the
+resolved origin into every CMake configure it runs; without it a release lane
+can silently ship a launcher whose Phone Party surface is compiled out.
+`--self-test` proves each assertion still rejects the lane it names.
+
+`tests/check_party_service_chaos.py` drives the real local Worker headlessly
+through four release-depth scenarios: a restart with live phone leases that
+rebinds each lease to its own seat and rotates the epoch while refusing
+pre-restart generations; a concurrent abuse flood during a live session that
+buys zero admission and moves no foreign seat; the literal-zero kill switch,
+which refuses new pairing while established control coasts; and quota exhaustion
+seen by a paired phone as a typed, `no-store`, identity-free refusal while its
+seat coasts.
+
+`tests/check_party_firewall_negative.py` simulates the blocked-socket condition
+against the real Worker and the native host: a killed listener and a rebound
+blackhole both fail neutral, the established room announces its bounded reconnect
+and stops, a blocked room-open and a refused code entry land in the shipped
+recovery copy verbatim, and local play stays reachable throughout.
+
+`tests/check_binary_size_evidence.py` records the packaged release-lane artifact
+sizes against generous checked-in ceilings in `tests/binary_size_baseline.json`,
+skips artifacts a given machine did not build, and fails strictly when a named
+lane exceeds its ceiling. Re-baseline deliberately with `--record`.
 
 `tests/test_party_usage_reconciliation.py` adversarially validates the offline
 operator gate that compares the exact privacy-safe capacity snapshot with a

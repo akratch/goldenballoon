@@ -692,6 +692,10 @@ CHECKS = (
           "packaged-artifact Phone Party host/transport linkage and compiled "
           "service origin, plus the validator's own rejection paths",
           args=("--self-test",)),
+    Check("release_party_origin", "check_release_party_origin.py", "source",
+          "every distributable release lane gates on a valid Phone Party "
+          "origin and compiles it into the artifact, plus the gate's own "
+          "rejection paths", args=("--self-test",)),
     Check("binary_size_evidence", "check_binary_size_evidence.py", "source",
           "recorded packaged-artifact sizes for every release lane against "
           "generous checked-in ceilings, with skip-on-absent and a strict "
@@ -1099,11 +1103,14 @@ def preflight(
         )
 
     # Deliberately NOT all of BROWSER_ROLES. This guard is about the STAGED
-    # tree under dist/web/, which only the served browser lanes read. The
-    # "wasm" role's sole check inspects the linked module in build-web/
+    # tree under dist/web/, which the served browser lanes read. "browser",
+    # "browser_save", and "browser_local" all serve that staged tree, so a
+    # stale/dirty stage poisons every one of them — a stale mdkr-online-tools
+    # wasm silently hung the whole online/party lane before this was widened.
+    # The "wasm" role's sole check inspects the linked module in build-web/
     # directly and never touches dist/web/, so demanding a fresh stage from it
     # would fail a lane whose inputs are provably unaffected.
-    if roles & {"browser", "browser_save"}:
+    if roles & {"browser", "browser_save", "browser_local"}:
         # A commit landing mid-suite would otherwise poison every browser
         # task silently except the one check that reads build-info.json —
         # and that one only when its turn comes, deep into the run.

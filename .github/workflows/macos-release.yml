@@ -73,6 +73,55 @@ jobs:
             }
           fi
 
+      # Phone Party origin gate, before anything is built. MDKR_PARTY_ORIGIN is
+      # COMPILED INTO the launcher (CMakeLists.txt) and a build without it
+      # shows no Phone Party surface at all, so an unset origin ships a bundle
+      # that silently does not have the feature. Fail closed: either a valid
+      # deployed origin is configured, or a partyless release is declared on
+      # purpose and said out loud in the log. Kept byte-identical in intent to
+      # the same gate in release.yml's validate job.
+      - id: party
+        name: Resolve and gate the compiled Phone Party origin
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
+          ALLOW_PARTYLESS: ${{ vars.MDKR_ALLOW_PARTYLESS_RELEASE }}
+        run: |
+          set -euo pipefail
+          origin="${PARTY_ORIGIN:-}"
+          allow="${ALLOW_PARTYLESS:-}"
+          if [[ -n "$origin" ]]; then
+            # Exactly https://HOST[:PORT]. A trailing slash, path, query,
+            # fragment or embedded credentials all change the URL the phone
+            # dials, and the service compares origins byte for byte.
+            if [[ ! "$origin" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$ ]]; then
+              echo "::error::vars.MDKR_PARTY_ORIGIN must be exactly https://HOST[:PORT] with no trailing slash, path, query, fragment or credentials (got '$origin')"
+              exit 1
+            fi
+            host="${origin#https://}"
+            host="$(printf '%s' "${host%%:*}" | tr '[:upper:]' '[:lower:]')"
+            case "$host" in
+              localhost|*.invalid|*.example|example.com|example.net|example.org|*.example.com|*.example.net|*.example.org)
+                echo "::error::vars.MDKR_PARTY_ORIGIN is a reserved placeholder host ('$host'); a release must be built against the deployed Phone Party service"
+                exit 1
+                ;;
+            esac
+            echo "Phone Party origin compiled into this release: $origin"
+          elif [[ "$allow" == "1" ]]; then
+            echo "::warning::PARTYLESS RELEASE: this bundle ships with Phone Party absent"
+            echo "=============================================================="
+            echo "PARTYLESS RELEASE (vars.MDKR_ALLOW_PARTYLESS_RELEASE=1)"
+            echo "This bundle ships with Phone Party UNAVAILABLE. With no"
+            echo "compiled origin the launcher shows no Phone Party surface at"
+            echo "all -- players get a build that does not have the feature."
+            echo "To ship a working Phone Party, set the repository variable"
+            echo "MDKR_PARTY_ORIGIN to the deployed https:// origin and re-run."
+            echo "=============================================================="
+          else
+            echo "::error::No Phone Party origin for this release: this bundle would ship with Phone Party absent (an origin-less build shows no Phone Party surface at all). Set the repository variable MDKR_PARTY_ORIGIN to the deployed https:// origin, or set MDKR_ALLOW_PARTYLESS_RELEASE=1 to ship deliberately without Phone Party."
+            exit 1
+          fi
+          echo "party_origin=$origin" >> "$GITHUB_OUTPUT"
+
       - name: Install build tools
         run: brew install cmake pkg-config
 
@@ -91,11 +140,16 @@ jobs:
       - name: Build self-contained ad-hoc integrity bundle
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          # Gated above: either a valid deployed https:// origin or,
+          # deliberately and loudly, empty. Empty stays legal (that is the
+          # partyless path), so it must not be defaulted to anything here.
+          PARTY_ORIGIN: ${{ steps.party.outputs.party_origin }}
         run: |
           : "${MDKR_RELEASE_SDL2_PREFIX:?pinned SDL2 prefix was not exported}"
           export PKG_CONFIG_PATH="${MDKR_RELEASE_SDL2_PREFIX}/lib/pkgconfig"
           ./macos/Scripts/build_app_bundle.sh \
             --release \
+            --party-origin "$PARTY_ORIGIN" \
             --build-dir build-macos-release \
             --output dist/mdkr64.app \
             --arch arm64 \
@@ -117,10 +171,15 @@ jobs:
       # this artifact. Honest limits: this proves the host's pairing surface
       # (secure-origin bootstrap, invite URL + six-digit code, QR encoding,
       # pairing phrase, fail-closed on a missing/insecure origin) and that the
-      # bundle links the native WSS/WebRTC transport. It does not prove the
-      # launcher draws a QR code or that a bootstrap listener is up; the
-      # launcher's party panel only renders with a ROM loaded, and this lane is
-      # asset-free.
+      # bundle links the native WSS/WebRTC transport. It does not prove that a
+      # bootstrap listener is up, and it does not witness the launcher's own
+      # drawn party surface: the MDKR_APP_PARTY_TRACE seam that Linux uses for
+      # that (platform/app/ui_phone_party.cpp) needs a real AppHost launch, and
+      # this lane never starts one -- there is no xvfb equivalent here and the
+      # hosted macOS runner's window/GPU behaviour is not qualified. What
+      # guarantees this bundle is not partyless is the origin gate at the top
+      # of this job plus the --party-origin threaded into the build above; the
+      # drawn-surface witness runs on the Linux lane, on the same origin.
       - name: Phone Party bring-up smoke and packaged version stamp
         env:
           RELEASE_VERSION: ${{ inputs.version }}
