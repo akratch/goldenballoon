@@ -139,6 +139,16 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size) {
     if (busy) ImGui::BeginDisabled();
     const bool pressed = ui::BrandPrimaryButton(label, size);
     if (busy) ImGui::EndDisabled();
+    // The launcher's single most important control was the one control it never
+    // said out loud: the settings rows, the ROM controls and the phone-party
+    // buttons all voice on focus, but the persistent Play action did not, so a
+    // blind player tabbing onto it heard nothing. Route it through the same
+    // choke point. A disabled (busy) button is not focusable, so this no-ops
+    // during a check without a special case.
+    ui::SpeakFocusedItem(
+        label, nullptr,
+        ready ? "Starts the game with your current ROM and settings."
+              : "Opens a file picker to choose the game ROM before you can play.");
     if (!pressed) return;
 
     if (ready) {
@@ -395,6 +405,8 @@ void drawNavigation(int &activePanel, LauncherState &state,
     if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
         action.type = LauncherActionType::Quit;
     }
+    ui::SpeakFocusedItem("Quit", nullptr,
+                         "Closes the launcher without starting the game.");
     measuredFooterHeight = measuredRegionHeight(footerTop, footerContentTop);
     ImGui::EndChild();
     ImGui::EndChild();
@@ -483,6 +495,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
         }
         quitMin = ImGui::GetItemRectMin();
         quitMax = ImGui::GetItemRectMax();
+        ui::SpeakFocusedItem("Quit", nullptr,
+                             "Closes the launcher without starting the game.");
     } else {
         ui::BrandWordmark();
         ImGui::SameLine();
@@ -495,6 +509,8 @@ void drawTopNavigation(int &activePanel, LauncherState &state,
                 "Quit", ImVec2(quitWidth, ui::kBtnSecondary().y))) {
             action.type = LauncherActionType::Quit;
         }
+        ui::SpeakFocusedItem("Quit", nullptr,
+                             "Closes the launcher without starting the game.");
 
         ui::BrandRule();
         drawTopPanelTabs(activePanel, state);
