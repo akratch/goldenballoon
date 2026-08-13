@@ -70,6 +70,14 @@ int Settings_collectStagedOverrides(const char **out, int cap);
 // True when at least one RESTART-scope setting differs from what is live.
 bool Settings_restartPending();
 
+// The player-facing label for what the NEXT launch will actually use for a
+// setting -- the staged value if the player has edited it, otherwise the
+// persisted one -- so the Play panel can summarize what pressing Play does
+// without the player opening Settings. Returns a stable string owned by the
+// settings module (option-table labels); never null. `key` is an MdkrVideoKey
+// widened to int so this header need not include the engine enum.
+const char *Settings_effectiveLabel(int videoKey);
+
 // Opens and scrolls the launcher Settings panel to Controller on its next
 // draw. Used by recovery routes; one-shot and process-local.
 void Settings_requestControllerSection();

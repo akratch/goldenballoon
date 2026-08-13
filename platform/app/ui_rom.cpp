@@ -42,6 +42,8 @@
 #include "file_dialog.h"
 #include "ui_common.h"
 #include "ui_phone_party.h"
+#include "ui_settings.h"
+#include "video_config.h"
 #include "party/native_party_host.h"
 
 #include "imgui.h"
@@ -585,6 +587,33 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
 
     const bool haveRom = !s.romPath.empty();
     const bool ready   = haveRom && s.romInfo.valid;
+
+    /* What pressing Play will actually do, named on the home screen so the
+     * player never has to open Settings to find out. Reads the EFFECTIVE
+     * values (staged edits if any, else persisted), so it updates live the
+     * moment Settings change them. Presentation mode and frame rate are the
+     * two choices that visibly change how the game looks in motion; both are
+     * restart-scope, so the card carries the same "next launch" language the
+     * settings rows use rather than implying a live change. */
+    if (ready && !g_changing && !s.romValidationPending) {
+        const char *mode = Settings_effectiveLabel(MDKR_VIDEO_MODE);
+        const char *rate = Settings_effectiveLabel(MDKR_VIDEO_FRAME_LIMIT);
+        ui::Gap(ui::kGapS);
+        if (ui::CardBegin("##willlaunch", AppTheme::surface(), 0.0f)) {
+            ui::TextSubtle("This launch");
+            ImGui::TextUnformatted(mode);
+            ui::SpeakFocusedItem("This launch", mode,
+                                 "The picture style the next launch will use. "
+                                 "Change it in Settings, Graphics.");
+            ImGui::SameLine();
+            ui::TextSubtle("  \xE2\x80\xA2  ");
+            ImGui::SameLine();
+            ImGui::TextUnformatted(rate);
+            ui::CardEnd();
+        }
+        ui::Gap(ui::kGapS);
+    }
+
     const AppUiRomPanelVisibility visibility = AppUi_romPanelVisibility(
         haveRom, ready, s.romValidationPending, g_changing);
 

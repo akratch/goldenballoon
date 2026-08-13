@@ -1953,6 +1953,15 @@ void Settings_requestControllerSection() {
     g_controllerSectionRequested = true;
 }
 
+const char *Settings_effectiveLabel(int videoKey) {
+    const MdkrVideoKey key = static_cast<MdkrVideoKey>(videoKey);
+    // Video.Mode is a preset label the player recognizes as the presentation
+    // style ("Restored"); the individual keys read their own option label.
+    const MdkrVideoValue *value = desired(key);
+    if (value == nullptr) return "";
+    return optionLabel(key, value->text);
+}
+
 int Settings_collectStagedOverrides(const char **out, int cap) {
     // Static storage: the caller (the launcher's boot config) holds these
     // pointers until mdkr64_engine_boot copies them, which happens on the same
