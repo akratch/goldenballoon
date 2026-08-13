@@ -236,6 +236,10 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   hard-object publication omission.
 - `check_camera_projection_fallback_runtime.py` injects a latch failure and allows
   restoration only for a freshly revalidated exact camera/projection pair.
+- `check_camera_probe_invalid_recovery.py` makes one exact static probe of one
+  tick unprovable through the `MDKR_TEST_CAMERA_EXACT_INVALID_TICK` seam and
+  proves the degradation is scoped: the tick keeps its telemetry mark yet still
+  publishes a proven, target-visible pose, and no other tick is touched.
 - `check_camera_obstruction_lifecycle_runtime.py` drives quit, race restart, and
   hub/race reloads; each level generation needs a reset witness and fresh tick-1
   solve. Its Adventure arm also proves an open/moving door is published safely.

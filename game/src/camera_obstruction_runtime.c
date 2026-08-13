@@ -345,6 +345,10 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t resolved_target_visible;
     uint8_t resolved_target_embedded;
     uint8_t query_source_degraded;
+    /* Tick-latched telemetry: some probe this tick was unprovable, whether or
+     * not the published outcome was affected. query_source_degraded above is
+     * scoped to the proof in progress; this latch is what the summary keeps. */
+    uint8_t probe_degraded_seen;
     uint8_t exact_guard_valid;
     uint8_t exact_shadow_invoked;
     uint8_t exact_shadow_degraded;
@@ -906,6 +910,7 @@ static MdkrCameraSweepStatus camera_obstruction_dynamic_sweep_adapter(
          * INVALID so no later sphere-clear path can seal or publish it. */
         if (observe != NULL) {
             observe->query_source_degraded = TRUE;
+            observe->probe_degraded_seen = TRUE;
         }
         return MDKR_CAMERA_SWEEP_INVALID;
     }
@@ -926,6 +931,33 @@ static MdkrCameraSweepStatus camera_obstruction_track_sweep(
     return status;
 }
 
+/*
+ * Degraded-probe recovery seam. MDKR_TEST_CAMERA_EXACT_INVALID_TICK=<tick>
+ * makes the FIRST exact static probe of that camera tick report INVALID, the
+ * exact shape a real unprovable track query has: the combined sweep propagates
+ * it, the two-phase layer stamps query_source_degraded, and the tick has to
+ * recover with every later candidate still provable. One probe, one tick;
+ * every other query this tick keeps its real answer. Inert when unset.
+ */
+static int camera_obstruction_test_exact_invalid_take(void) {
+    static uint64_t consumed_tick;
+    const char *value = getenv("MDKR_TEST_CAMERA_EXACT_INVALID_TICK");
+    char *end = NULL;
+    unsigned long long parsed;
+
+    if (value == NULL || value[0] == '\0') {
+        return FALSE;
+    }
+    parsed = strtoull(value, &end, 10);
+    if (end == value || *end != '\0' || parsed == 0U ||
+        parsed != sCameraObstructionRuntime.tick_serial ||
+        consumed_tick == sCameraObstructionRuntime.tick_serial) {
+        return FALSE;
+    }
+    consumed_tick = sCameraObstructionRuntime.tick_serial;
+    return TRUE;
+}
+
 static MdkrCameraSweepStatus camera_obstruction_track_rounded_sweep_adapter(
     const void *context,
     const MdkrCameraRoundedLensSweepInput *input,
@@ -934,6 +966,11 @@ static MdkrCameraSweepStatus camera_obstruction_track_rounded_sweep_adapter(
     const uint64_t started = camera_obstruction_perf_begin();
 
     (void)context;
+    if (camera_obstruction_test_exact_invalid_take()) {
+        memset(out_hit, 0, sizeof(*out_hit));
+        camera_obstruction_perf_add(MDKR_CAMERA_PERF_EXACT_STATIC_QUERY, started);
+        return MDKR_CAMERA_SWEEP_INVALID;
+    }
     status = mdkr_track_occlusion_rounded_lens_sweep(input, out_hit);
     camera_obstruction_perf_add(MDKR_CAMERA_PERF_EXACT_STATIC_QUERY, started);
     return status;
@@ -950,6 +987,7 @@ static MdkrCameraSweepStatus camera_obstruction_dynamic_rounded_sweep_adapter(
     camera_obstruction_perf_add(MDKR_CAMERA_PERF_EXACT_DYNAMIC_QUERY, started);
     if (status == MDKR_CAMERA_SWEEP_INVALID && context != NULL) {
         ((MdkrCameraObstructionObserveSlot *)context)->query_source_degraded = TRUE;
+        ((MdkrCameraObstructionObserveSlot *)context)->probe_degraded_seen = TRUE;
     } else if (status == MDKR_CAMERA_SWEEP_HIT && context != NULL) {
         ((MdkrCameraObstructionObserveSlot *)context)->exact_dynamic_source_hit = TRUE;
     }
@@ -1010,6 +1048,7 @@ static MdkrCameraSweepStatus camera_obstruction_lens_sweep(
         decision.outcome == MDKR_CAMERA_OBSTRUCTION_TWO_PHASE_EXACT_CLEAR;
     if (status == MDKR_CAMERA_SWEEP_INVALID || decision.degraded) {
         query->observe->query_source_degraded = TRUE;
+        query->observe->probe_degraded_seen = TRUE;
     } else {
         MdkrCameraObstructionLensQueryCacheEntry *entry =
             &query->cache[query->cache_next];
@@ -1124,6 +1163,7 @@ static void camera_obstruction_snapshot_authored_slots(void) {
         observe->resolved_target_visible = FALSE;
         observe->resolved_target_embedded = FALSE;
         observe->query_source_degraded = FALSE;
+        observe->probe_degraded_seen = FALSE;
         observe->exact_guard_valid = FALSE;
         observe->exact_shadow_invoked = FALSE;
         observe->exact_shadow_degraded = FALSE;
@@ -1626,8 +1666,11 @@ static void camera_obstruction_publish_final_pose(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
     const MdkrCameraFinalPose *pose) {
+    /* Rejection here is judged on the POSE's own proof. The tick-scoped
+     * degradation latch is telemetry, not a veto: a candidate whose seal
+     * passed on complete evidence publishes no matter what an unrelated
+     * earlier probe failed to prove. */
     if (observe == NULL || pose == NULL || !pose->validated ||
-        observe->query_source_degraded ||
         physical_slot < 0 ||
         physical_slot >= MDKR_CAMERA_OBSTRUCTION_RUNTIME_SLOT_COUNT) {
         if (observe != NULL) {
@@ -1817,12 +1860,33 @@ static int camera_obstruction_final_pose_stationary_clear(
     lens_query.exact = exact_query;
     lens_query.guard = &pose->guard;
     lens_query.observe = observe;
-        pose->validated = camera_obstruction_lens_stationary_query(
+    /*
+     * The degradation veto is scoped to THIS candidate's own proof. A probe
+     * that failed during some earlier phase of the tick -- an anchor refine,
+     * a corridor shadow, a previous candidate -- says nothing about whether
+     * THIS pose's stationary evidence is whole, and letting it veto every
+     * later candidate is what turned one unprovable probe into an eight-tick
+     * blackout with a stale penetrating camera on screen. So: fold whatever
+     * degradation the slot has accumulated into the tick telemetry latch,
+     * start this proof clean, and judge the candidate on its own sweeps. The
+     * combined sweeps still refuse to answer CLEAR through their own INVALID,
+     * so a candidate with an incomplete proof cannot validate -- the
+     * fail-closed property is per pose, exactly where it belongs. (Same
+     * snapshot idiom as the soft-blocker decline path.)
+     */
+    observe->probe_degraded_seen |= observe->query_source_degraded;
+    observe->query_source_degraded = FALSE;
+    pose->validated = camera_obstruction_lens_stationary_query(
                &lens_query, observe->guard, pose->rendered_eye, out_hit) ==
            MDKR_CAMERA_SWEEP_CLEAR && !observe->query_source_degraded;
     if (pose->validated) {
         camera_obstruction_validate_presentation_transition(
             observe, sphere_query, exact_query, pose);
+        /* An unprovable transition CUT the presentation -- a complete, safe
+         * response -- and must not un-publish a pose whose own stationary
+         * proof is whole. Keep the record, clear the veto. */
+        observe->probe_degraded_seen |= observe->query_source_degraded;
+        observe->query_source_degraded = FALSE;
     }
     return pose->validated;
 }
@@ -3223,6 +3287,19 @@ static void camera_obstruction_resolve_slot(
             }
             camera_obstruction_publish_final_pose(
                 observe, physical_slot, &final_pose);
+            /* Publication must never fail silently: if it rejected after a
+             * passing seal, this tick still owes the ladder a try. */
+            if (!observe->resolved_valid) {
+                if (camera_obstruction_publish_elevated_emergency(
+                        observe, physical_slot, &combined, &exact_combined,
+                        use_exact, desired)) {
+                    return;
+                }
+                observe->resolved_valid = camera_obstruction_publish_safe_fallback(
+                    observe, physical_slot, &combined, &exact_combined,
+                    use_exact, &boom_anchor);
+                return;
+            }
         }
         observe->was_obstructed =
             result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED ||
@@ -4128,6 +4205,7 @@ void camera_obstruction_tick(int update_rate_fields) {
     s32 resolved_penetrated = 0;
     s32 resolved_invalid = 0;
     s32 source_degraded = 0;
+    s32 probe_degraded = 0;
     s32 dynamic_corrected = 0;
     s32 resolved_target_hidden = 0;
     s32 resolved_target_embedded = 0;
@@ -4197,6 +4275,7 @@ void camera_obstruction_tick(int update_rate_fields) {
             observe->resolved_stationary_status != MDKR_CAMERA_SWEEP_CLEAR;
         resolved_invalid += !observe->resolved_valid;
         source_degraded += observe->query_source_degraded;
+        probe_degraded += observe->probe_degraded_seen;
         resolved_target_hidden += !observe->resolved_target_visible &&
             !observe->resolved_target_embedded;
         resolved_target_embedded += observe->resolved_target_embedded;
@@ -4248,6 +4327,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 "duplicates=%u "
                 "projection_mismatches=%u "
                 "resolved={corrected=%d penetrated=%d invalid=%d degraded=%d} "
+                "probe_degraded=%d "
                 "target_hidden=%d target_embedded=%d depenetrate_only=%d safety_only=%d emergency=%d "
                 "dynamic_corrected=%d "
                 "soft_blocker={seen=%d declined=%d} "
@@ -4273,6 +4353,7 @@ void camera_obstruction_tick(int update_rate_fields) {
                 sCameraObstructionRuntime.duplicate_solve_violations,
                 sCameraObstructionRuntime.projection_mismatch_violations,
                 corrected, resolved_penetrated, resolved_invalid, source_degraded,
+                probe_degraded,
                 resolved_target_hidden, resolved_target_embedded,
                 depenetrate_only, safety_only,
                 elevated_emergency,

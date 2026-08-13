@@ -392,6 +392,9 @@ CHECKS = (
           "Timber's Island hard-door publication and dynamic-blocker correction attribution"),
     Check("camera_projection_fallback_runtime", "check_camera_projection_fallback_runtime.py", "release",
           "injected projection-latch failure restores only a freshly revalidated exact pair"),
+    Check("camera_probe_invalid_recovery", "check_camera_probe_invalid_recovery.py", "release",
+          "one injected unprovable exact probe leaves its telemetry mark and "
+          "costs no tick its published, target-visible pose"),
     Check("camera_obstruction_lifecycle_runtime", "check_camera_obstruction_lifecycle_runtime.py", "release",
           "Modern camera state retirement and fresh safe solves across quit, restart, and hub/race reloads"),
     Check("camera_obstruction_performance_runtime", "check_camera_obstruction_performance_runtime.py", "release",
