@@ -139,15 +139,21 @@ void drawQr(const std::string &url) {
         const float actual = pixel * static_cast<float>(modules);
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         ImDrawList *draw = ImGui::GetWindowDrawList();
+        // The quiet zone and modules read from the theme's fixed QR pair rather
+        // than raw IM_COL32 literals: app_theme owns these two values precisely
+        // so a light-on-dark launcher cannot accidentally recolour a code a
+        // phone camera has to read.
+        const ImU32 light = ImGui::GetColorU32(AppTheme::qrLight());
+        const ImU32 dark = ImGui::GetColorU32(AppTheme::qrDark());
         draw->AddRectFilled(origin, ImVec2(origin.x + actual, origin.y + actual),
-                            IM_COL32_WHITE);
+                            light);
         for (int y = 0; y < qr.getSize(); y++) {
             for (int x = 0; x < qr.getSize(); x++) {
                 if (!qr.getModule(x, y)) continue;
                 const float left = origin.x + (x + quiet) * pixel;
                 const float top = origin.y + (y + quiet) * pixel;
                 draw->AddRectFilled(ImVec2(left, top),
-                    ImVec2(left + pixel, top + pixel), IM_COL32_BLACK);
+                    ImVec2(left + pixel, top + pixel), dark);
             }
         }
         ImGui::Dummy(ImVec2(actual, actual));
