@@ -831,7 +831,13 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         const char *value = std::getenv("MDKR_APP_PARTY_TRACE");
         return value != nullptr && value[0] == '1';
     }();
-    if (s.phoneParty != nullptr && (ready || partyTraceArmed) && !g_changing) {
+    /* A build with no compiled pairing origin cannot pair a phone, so it
+     * shows no Phone Party surface at all rather than a dead affordance.
+     * The trace lane still draws it (reporting origin=unset honestly) so the
+     * packaged-build witness can prove the origin was set in a real release. */
+    if (s.phoneParty != nullptr && !g_changing &&
+        (ready || partyTraceArmed) &&
+        (PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN) || partyTraceArmed)) {
         PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
     }
 }

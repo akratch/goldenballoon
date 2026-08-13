@@ -374,6 +374,10 @@ void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
 
 }  // namespace
 
+bool PhoneParty_availableInBuild(const char *serviceOrigin) {
+    return serviceOrigin != nullptr && serviceOrigin[0] != '\0';
+}
+
 void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
                              const char *serviceOrigin) {
     ui::Gap(ui::kGapL);

@@ -678,7 +678,10 @@ void drawOverlayMenu(float uiScale) {
         }
     }
 
-    if (g_phonePartyHost != nullptr) {
+    /* No compiled pairing origin means no Phone Party in this build; the
+     * in-game surface stays absent to match the launcher (see ui_rom.cpp). */
+    if (g_phonePartyHost != nullptr &&
+        PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN)) {
         PhoneParty_drawOverlay(*g_phonePartyHost, MDKR_PARTY_ORIGIN);
     }
 
