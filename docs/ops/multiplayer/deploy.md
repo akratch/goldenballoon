@@ -2,6 +2,36 @@
 
 Status: ready for a named production owner; no production deployment is claimed.
 
+**Owners start at [docs/multiplayer/DEPLOY_PHONE_PARTY.md](../../multiplayer/DEPLOY_PHONE_PARTY.md).**
+That page is the three-command path — `wrangler login`, `tools/deploy_party.sh`,
+`tools/verify_party_deploy.py` — and covers the one value to fill in, the two
+secrets, the custom domain, the compiled launcher origin and rollback. This
+page remains the authority for everything it does not automate: durable-data
+compatibility, Worker/object version skew, the staged preview exercises, the
+canary and promotion rules, and the reconciliation gates.
+
+The one-command path implements stages 1-3 and 14's rule review, and reports
+the same evidence:
+
+- `tools/deploy_party.sh` records the commit and refuses a dirty tree, requires
+  Node 22+ and the lockfile-pinned Wrangler, runs `npm ci && npm run check`,
+  generates `services/party/wrangler.production.jsonc` from the tracked config
+  by substituting the single `PARTY_DOMAIN`, runs the gates below, inspects the
+  `--dry-run` binding census, requires both secret names to exist, deploys, and
+  prints the verification command. `--dry-run` needs no account.
+- `tests/check_party_production_config.py` holds `env.production`: the
+  custom-domain route, `workers_dev`/`preview_urls`/observability off, the four
+  Durable Object bindings and v1/v2/v3 migrations restated identically to the
+  defaults, `/api/*` as the only `run_worker_first` prefix, and the controller
+  and party-host static routes. `--require-real-domain` makes a surviving
+  placeholder a hard deploy-time failure.
+- `tools/verify_party_deploy.py --origin https://…` performs the phone-free
+  post-deploy verification: headers, controller assets, room create, invite
+  redeem, the WSS offer/answer/ICE round-trip with service-stamped controller
+  identity, the fallback code, rotation invalidating the old link and code,
+  origin refusal, static burst survival and the dist/web build match.
+  `--self-test` runs all of it against a real `wrangler dev --local` Worker.
+
 ## Preconditions
 
 - A dedicated custom Party origin serves both static controller assets and API,

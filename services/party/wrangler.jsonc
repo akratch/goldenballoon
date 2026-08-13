@@ -29,5 +29,62 @@
     "MAX_ADMISSIONS_PER_DAY": "10000",
     "CONTROL_RESERVE_PER_DAY": "5000"
   },
-  "observability": { "enabled": false }
+  "observability": { "enabled": false },
+
+  // ---------------------------------------------------------------------
+  // Production environment.
+  //
+  // `party.example.invalid` is the ONE placeholder in this file and it is a
+  // deliberate fail-closed default: the reserved `.invalid` TLD can never
+  // resolve, `validPartyOrigin()` still accepts it as a canonical HTTPS
+  // origin, and every request would 403 on the origin check. Nothing here is
+  // deployable until it is replaced.
+  //
+  // Do NOT hand-edit it. The owner sets `PARTY_DOMAIN` once in
+  // services/party/ops/production.env (copied from production.env.example);
+  // tools/deploy_party.sh rewrites every occurrence of the placeholder host
+  // into the generated, untracked services/party/wrangler.production.jsonc
+  // and deploys that. One value, one place, no drift between the route and
+  // the origin var. tests/check_party_production_config.py fails closed if a
+  // placeholder survives into a config that is about to be deployed.
+  //
+  // Wrangler does not inherit `vars`, `durable_objects` or `migrations` into a
+  // named environment, so they are restated in full and the config gate
+  // asserts they stay identical to the defaults above.
+  "env": {
+    "production": {
+      "name": "golden-balloon-party",
+      "workers_dev": false,
+      "preview_urls": false,
+      "limits": { "cpu_ms": 10 },
+      "routes": [
+        { "pattern": "party.example.invalid", "custom_domain": true }
+      ],
+      "assets": {
+        "directory": "../../dist/web",
+        "html_handling": "auto-trailing-slash",
+        "not_found_handling": "404-page",
+        "run_worker_first": ["/api/*"]
+      },
+      "durable_objects": {
+        "bindings": [
+          { "name": "PARTY_ROOMS", "class_name": "PartyRoom" },
+          { "name": "PARTY_BUDGETS", "class_name": "PartyBudget" },
+          { "name": "PARTY_CODES", "class_name": "PartyCodeDirectory" },
+          { "name": "MATCH_ROOMS", "class_name": "MatchRoom" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["PartyRoom", "PartyBudget"] },
+        { "tag": "v2", "new_sqlite_classes": ["PartyCodeDirectory"] },
+        { "tag": "v3", "new_sqlite_classes": ["MatchRoom"] }
+      ],
+      "vars": {
+        "PARTY_ORIGIN": "https://party.example.invalid",
+        "MAX_ADMISSIONS_PER_DAY": "10000",
+        "CONTROL_RESERVE_PER_DAY": "5000"
+      },
+      "observability": { "enabled": false }
+    }
+  }
 }
