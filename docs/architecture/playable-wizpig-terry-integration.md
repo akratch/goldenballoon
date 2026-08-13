@@ -69,9 +69,13 @@ retention.
   the rocket shell on ground vehicles.
 - Terry uses a compact perched pose on kart/hover and his complete fly cycle on
   plane tracks.
-- Plane mode hides the complete donor plane only after the replacement schema
-  is proven. Allocation or schema failure draws the complete donor instead of
-  a partial composition.
+- Plane mode hides the donor plane WHOLE, so no batch index of it is consumed
+  and there is no carve a wrong geometry fingerprint could misapply. The plane
+  therefore asserts donor IDENTITY (`modelIds` really are `KREMPLANE_0..5`) and
+  companion health, but no per-LOD vertex/triangle/batch table -- unlike the
+  kart and hovercraft, whose driver-batch carve does require the full
+  fingerprint. Allocation, identity or companion failure draws the complete
+  donor instead of a partial composition.
 - Each composition keeps exactly one shadow. Presentation companions are
   excluded from authoritative racer transforms and simulation hashing.
 
@@ -129,7 +133,10 @@ Wizpig investigation remains in `docs/architecture/wizpig-playable-campaign.md`.
    exclusions in `objects.c` prevent zeroed racer tails from flattening models,
    corrupting LOD, or leaking temporary transforms.
 4. Never hide donor geometry before the companion and every resident donor LOD
-   pass their exact schema checks. Failure must show a complete donor.
+   pass their schema checks. Failure must show a complete donor. "Exact" means
+   the full geometry fingerprint wherever specific batch indices are carved out
+   (kart and hovercraft donors, and Wizpig's rocket-only rider batches); where
+   an object is hidden whole, identity alone is what has to hold.
 5. Do not mutate shared `ObjectModel`, animation, material, or model-index data.
 6. Terry's Pipsy stat-row lookup must not change his Krunch presentation donor.
 7. Wizpig/Terry performance multipliers apply only to positive, unboosted
@@ -138,6 +145,15 @@ Wizpig investigation remains in `docs/architecture/wizpig-playable-campaign.md`.
    `update_vehicle_particles()`. Do not clear authoritative emitter state.
 9. Preserve Taj's legacy trace witnesses alongside generic roster traces; the
    older Taj regression suite consumes both.
+9b. Presentation actors advance their animation CLOCK only. `obj_animate_tick()`
+   owns the deformation and the published `curVertData` for every animated
+   object; a module that also calls `obj_animate()` runs the deformation twice
+   against one frame, leaving both halves of the double buffer identical so
+   animated-vertex interpolation has nothing to blend. The `bonus_animation`
+   trace reports `distinct=` for exactly this.
+9c. Every `animationID` a module selects must be inside the model's
+   `numberOfAnimations`; `obj_clamp_model_animation()` silently substitutes a
+   different clip otherwise, so the bound belongs in the schema check.
 10. All presentation companions remain excluded from canonical simulation hash
     state and from retail save/ghost formats.
 
