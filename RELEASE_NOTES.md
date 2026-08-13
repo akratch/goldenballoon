@@ -26,14 +26,13 @@ write Time Trial records or ghosts, so your leaderboards stay yours.
 `CONTROL WIZPIG` and `CONTROL TERRY` in the Magic Codes menu switch each racer
 on or off once unlocked.
 
-## Phone Party (beta)
+## Phone Party
 
 Pair phones as extra controllers by scanning a QR code from the launcher —
 nothing to install. An approved phone keeps its seat if it reconnects, and a
 phone that drops out leaves its kart coasting in neutral instead of handing
 the controls to someone else. Once paired, direct controls keep working through
 a brief room-service interruption and reconnect in the same approved seat.
-We'd love reports from real living rooms while this is in beta.
 
 ## Magic Codes remember themselves
 

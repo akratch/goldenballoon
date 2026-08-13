@@ -84,7 +84,7 @@ save formats). Everything below 1.0.0 predates that commitment.
   own crafts — Wizpig's rocket on plane tracks, Terry's full flying pose — and
   have their own portraits, placards, and character-select poses. Their runs
   don't write Time Trial records or ghosts.
-- Phone Party (beta): pair phones as extra controllers by scanning a QR code
+- Phone Party: pair phones as extra controllers by scanning a QR code
   from the launcher — no app install. Approved phones keep their seat through
   reconnects, and a phone dropping out leaves its kart in neutral rather than
   handing it to someone else. Established direct controls keep working through
