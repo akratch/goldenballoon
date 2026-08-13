@@ -16,15 +16,17 @@ Before starting, all of these must already be true:
 
 - [ ] The Party service is deployed and `python3 tools/verify_party_deploy.py --origin https://<your-party-origin>` printed `PASS`.
 - [ ] The RC build was compiled with `-DMDKR_PARTY_ORIGIN=https://<your-party-origin>` — the **same** origin the verifier passed against. A build pointing at the placeholder `.invalid` origin cannot pair and must not be blessed.
+- [ ] **Confirm the surface is there at all.** A build compiled with no party origin deliberately shows *no* Phone Party surface — no launcher card, no in-game overlay entry. So "I can't find Phone Party" means the RC was built without an origin, not that the feature broke. Open the launcher's **Play** panel with a ROM loaded and confirm **Play Together on This Screen** is present before starting anything below.
 - [ ] The release workflow for this exact commit is green, including the party-host bring-up smoke and the binary-size gate on all three platforms.
 
 ---
 
 ## 1. Four-phone race
 
-**Do:** From a cold launcher, open Phone Party and pair four different phones by QR.
-Approve each into a distinct seat. Start a four-player standard race and run it to the
-results screen.
+**Do:** From a cold launcher with a ROM loaded, open **Play → Play Together on This
+Screen** and pair four different phones by QR. Approve each into a distinct seat. Start a
+four-player standard race and run it to the results screen. Mid-race, open the in-game
+overlay's compact Phone Party entry and confirm it lists the same four seats.
 
 **Expected observable:**
 - Four distinct seats are occupied, each phone's on-screen seat label matches the kart it
