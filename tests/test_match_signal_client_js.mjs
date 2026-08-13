@@ -126,6 +126,33 @@ rollbackSocket.message({protocolVersion: 1, type: "signal_welcome", endpointId: 
 assert.equal(rollbackClient.snapshot().phase, "failed",
   "late messages must not revive a failed client");
 
+// A relay that invents endpoint identities must not grow the append-only
+// generation high-water map without bound. The client fails closed at the cap
+// rather than evicting a mark, because evicting one reopens the generation
+// rollback the mark exists to refuse.
+const floodClient = createMatchSignalClient({roomId: "U".repeat(22), endpointId: "1",
+  credential: "F".repeat(43), pageOrigin: "https://party.test/",
+  WebSocketImpl: FakeSocket});
+const floodConnecting = floodClient.connect();
+const floodSocket = FakeSocket.instances.at(-1);
+floodSocket.open();
+floodSocket.message({protocolVersion: 1, type: "signal_welcome", endpointId: "1",
+  connectionGeneration: 1, peers: []});
+await floodConnecting;
+let admittedIdentities = 0;
+for (let index = 0; index < 500 && floodClient.snapshot().phase === "open"; index++) {
+  floodSocket.message({protocolVersion: 1, type: "peer_presence",
+    endpointId: String(1000 + index), connectionGeneration: 1, present: true});
+  if (floodClient.snapshot().phase === "open") admittedIdentities++;
+}
+assert.equal(floodClient.snapshot().phase, "failed",
+  "an unbounded identity flood must fail the signaling socket closed");
+assert.ok(admittedIdentities <= 64,
+  `generation tracking must stay bounded (admitted ${admittedIdentities})`);
+// The bound is a real ceiling, not an accidental early failure on message 1.
+assert.ok(admittedIdentities >= 60,
+  `a legal-sized room must not trip the bound (admitted ${admittedIdentities})`);
+
 class WrongProtocolSocket extends FakeSocket {
   constructor(url, protocols) {
     super(url, protocols);

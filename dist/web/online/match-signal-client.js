@@ -9,6 +9,10 @@ const SIGNAL_BYTES = 64 * 1024;
 const SDP_BYTES = 60 * 1024;
 const ICE_BYTES = 4 * 1024;
 const META_BYTES = 256;
+// One entry per distinct peer endpoint id seen for the lifetime of one socket.
+// A legal room contributes at most 3 (the welcome peer list is capped there);
+// the headroom covers honest rejoins under a new id.
+const MAX_TRACKED_PEER_GENERATIONS = 64;
 
 function u32(value, nonzero = false) {
   return Number.isInteger(value) && value >= (nonzero ? 1 : 0) && value <= U32_MAX;
@@ -160,7 +164,20 @@ export function createMatchSignalClient(options) {
   let settle = null;
   let credential = options.credential;
   const peerGenerations = new Map();
+  // High-water marks are deliberately never deleted: a departed peer's mark is
+  // what rejects a generation rollback if it returns. That makes the map
+  // append-only, so it needs an explicit bound. Evicting is not an option —
+  // dropping a mark reopens exactly the replay it exists to refuse — so the
+  // socket fails closed instead. A room holds at most 4 endpoints, so reaching
+  // this bound means the relay is inventing identities, not that a real room
+  // churned.
   const peerGenerationHighWater = new Map();
+  const rememberPeerGeneration = (endpointId, connectionGeneration) => {
+    if (!peerGenerationHighWater.has(endpointId) &&
+        peerGenerationHighWater.size >= MAX_TRACKED_PEER_GENERATIONS) return false;
+    peerGenerationHighWater.set(endpointId, connectionGeneration);
+    return true;
+  };
   const receivedSequences = new Map();
   const sentTargets = new Map();
 
@@ -228,8 +245,10 @@ export function createMatchSignalClient(options) {
       if (value.type === "signal_welcome") {
         for (const peerValue of value.peers) {
           peerGenerations.set(peerValue.endpointId, peerValue.connectionGeneration);
-          peerGenerationHighWater.set(peerValue.endpointId,
-            peerValue.connectionGeneration);
+          if (!rememberPeerGeneration(peerValue.endpointId,
+              peerValue.connectionGeneration)) {
+            fail("peer_generation_overflow"); return;
+          }
         }
         generation = value.connectionGeneration;
         phase = "open";
@@ -248,9 +267,11 @@ export function createMatchSignalClient(options) {
             fail("invalid_signal_message"); return;
           }
           if (value.present) {
+            if (!rememberPeerGeneration(value.endpointId,
+                value.connectionGeneration)) {
+              fail("peer_generation_overflow"); return;
+            }
             peerGenerations.set(value.endpointId, value.connectionGeneration);
-            peerGenerationHighWater.set(value.endpointId,
-              value.connectionGeneration);
             receivedSequences.delete(value.endpointId);
           } else {
             peerGenerations.delete(value.endpointId);
