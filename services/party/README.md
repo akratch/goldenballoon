@@ -113,7 +113,7 @@ See [protocol v1](../../docs/ref/party-protocol-v1.md), the
 still requires a named owner, provisioned origin/HMAC secret, quota alarms,
 verification and rollback evidence; a successful local dry-run is not a deploy.
 
-On an occupied workstation, validate only the non-executing type boundary with
-`npm run typecheck`. `npm test`, `npm run check`, and direct Vitest startup fail
-closed unless a human-confirmed isolated host supplies
-`MDKR_DEDICATED_TEST_DESKTOP=1`.
+`npm run typecheck` validates the non-executing type boundary; `npm test` and
+`npm run check` execute the suite. Automation windows render hidden or ordered
+behind the desktop by design (set `MDKR_TEST_VISIBLE_HEADLESS=1` to watch one),
+and the release gate is the complete suite wherever it runs.

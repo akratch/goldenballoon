@@ -144,8 +144,7 @@ launcher storage, or save UI:
 
 ```bash
 tools/web/build_web.sh
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
-  python3 tests/check_browser_save_ui.py \
+python3 tests/check_browser_save_ui.py \
   --engine-dir build-web --shell-dir dist/web
 ```
 

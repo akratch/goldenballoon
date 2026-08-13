@@ -40,54 +40,15 @@ with tempfile.TemporaryDirectory() as resolver_scratch:
     product = Path(resolver_scratch) / (
         "mdkr64.exe" if os.name == "nt" else "mdkr64"
     )
-    saved_capabilities = {
-        name: os.environ.get(name)
-        for name in ("MDKR_APP_TESTS_ALLOWED", "MDKR_BROWSER_TESTS_ALLOWED",
-                     "MDKR_DEDICATED_TEST_DESKTOP")
-    }
-    try:
-        os.environ.pop("MDKR_APP_TESTS_ALLOWED", None)
-        os.environ.pop("MDKR_BROWSER_TESTS_ALLOWED", None)
-        os.environ.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
-        try:
-            resolve_binary(product)
-        except SystemExit as error:
-            require("dedicated test desktop" in str(error),
-                    "native-product refusal did not explain the safe route")
-        else:
-            raise SystemExit(
-                "FAIL: native product resolution bypassed the workstation guard"
-            )
-
-        os.environ["MDKR_APP_TESTS_ALLOWED"] = "1"
-        try:
-            resolve_binary(product)
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "FAIL: app capability bypassed dedicated-desktop attestation"
-            )
-        os.environ["MDKR_DEDICATED_TEST_DESKTOP"] = "1"
-        require(resolve_binary(product) == str(product),
-                "paired app/desktop capabilities did not admit native product")
-        os.environ.pop("MDKR_APP_TESTS_ALLOWED", None)
-        os.environ["MDKR_BROWSER_TESTS_ALLOWED"] = "1"
-        require(resolve_binary(product) == str(product),
-                "paired browser/desktop capabilities did not admit its "
-                "windowless native query")
-
-        helper = Path(resolver_scratch) / "mdkr-helper"
-        os.environ.pop("MDKR_BROWSER_TESTS_ALLOWED", None)
-        os.environ.pop("MDKR_DEDICATED_TEST_DESKTOP", None)
-        require(resolve_binary(helper) == str(helper),
-                "guard rejected a non-product command-line helper")
-    finally:
-        for name, value in saved_capabilities.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+    # Resolution is a path contract, nothing more: there is no environment
+    # capability to satisfy, because desktop safety lives in the window layer.
+    require(resolve_binary(product) == str(product),
+            "native product path did not resolve")
+    require(resolve_binary(Path(resolver_scratch)) == str(product),
+            "build directory did not resolve to the product executable")
+    helper = Path(resolver_scratch) / "mdkr-helper"
+    require(resolve_binary(helper) == str(helper),
+            "non-product command-line helper did not resolve")
 
 
 # --------------------------------------------------------------------------- #

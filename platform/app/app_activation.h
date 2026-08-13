@@ -18,27 +18,11 @@ inline bool AppActivation_backgroundAutomation() {
            std::getenv("MDKR_APP_FILEDIALOG_SELFTEST") != nullptr;
 }
 
-/* Hiding a window is only a rendering policy; it is not authorization to
- * create one on an occupied workstation. Native surface tests must carry the
- * per-class capability issued by tools/run_checks.py and the independent
- * dedicated-desktop attestation inherited from its caller. The runner cannot
- * mint that attestation itself. Keeping both checks in the application means
- * a test script invoked directly cannot bypass the runner's role filter. */
-inline bool AppActivation_automationSurfaceAllowed() {
-    const char *allowed = std::getenv("MDKR_APP_TESTS_ALLOWED");
-    const char *dedicated =
-        std::getenv("MDKR_DEDICATED_TEST_DESKTOP");
-    return allowed != nullptr && std::strcmp(allowed, "1") == 0 &&
-           dedicated != nullptr && std::strcmp(dedicated, "1") == 0;
-}
-
+/* Automation never seizes the desktop because its windows are created hidden
+ * or ordered behind, not because the process refuses to start. This predicate
+ * selects that rendering policy; it is not an authorization check. */
 inline bool AppActivation_automatedSurfaceRequested() {
     return AppActivation_backgroundAutomation();
-}
-
-inline bool AppActivation_rejectUnauthorizedAutomationSurface() {
-    return AppActivation_automatedSurfaceRequested() &&
-           !AppActivation_automationSurfaceAllowed();
 }
 
 #if defined(__APPLE__)

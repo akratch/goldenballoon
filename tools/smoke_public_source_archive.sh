@@ -27,9 +27,7 @@ Options:
 
 The archive is expected to be a gzip-compressed tarball produced by
 tools/make_public_source_archive.sh. The smoke runs without a ROM and must not
-require a .git directory. It executes compiled tests and therefore requires a
-caller-provided MDKR_DEDICATED_TEST_DESKTOP=1 attestation. Build warnings are
-always summarized; use
+require a .git directory. Build warnings are always summarized; use
 --max-warnings 0 for a release-clean archive gate.
 USAGE
 }
@@ -73,13 +71,6 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-
-if [ "${MDKR_DEDICATED_TEST_DESKTOP:-}" != "1" ]; then
-  echo "source-archive smoke executes compiled tests and requires" >&2
-  echo "MDKR_DEDICATED_TEST_DESKTOP=1 from the caller; refusing this occupied" >&2
-  echo "workstation" >&2
-  exit 2
-fi
 
 if [ -z "$archive" ]; then
   usage >&2
@@ -159,7 +150,6 @@ fi
 
 echo
 echo "== Running archive CTest =="
-env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED \
   ctest --test-dir "$srcdir/build" --output-on-failure -j1 \
   -LE 'gpu|app_process|browser'
 

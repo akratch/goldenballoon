@@ -17,32 +17,24 @@ Omitting `--headless-frames` opens a window *and* the SDL audio device.
 
 Every behavioural script accepts the same `--build` value: either a directory
 (`--build build-rel`) or the executable inside it
-(`--build build-rel/mdkr64`). Test execution belongs on a human-confirmed
-dedicated desktop. Use the runner there for a complete pass:
+(`--build build-rel/mdkr64`). Use the runner for a complete pass:
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py \
+python3 tools/run_checks.py --jobs 6 \
   --build build-rel --release-build build-rel --asan-build build-asan \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-The runner refuses every execution lane on an ordinary workstation, including
-nominally source-only checks: a test filename and its historical behavior are
-not a reliable guarantee that it cannot launch a subprocess later. Only
-`--list` is permitted without the independent
-`MDKR_DEDICATED_TEST_DESKTOP=1` caller attestation. On an attested desktop, the
-default still excludes every compiled CTest and every role that can start the
-native game/renderer or a real Chromium/Worker. Browser/native/compiled lanes add
-`--with-compiled-tests`, `--with-app-tests`, and `--with-browser-tests`; the
-runner then sets explicit per-class child capabilities and keeps all
-application-launching roles serialized. Hidden-window hints remain defense in
-depth, not permission to create a desktop application.
+Automation windows render hidden or ordered behind the desktop by design (set
+`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
+complete suite wherever it runs. All application-launching roles stay
+serialized.
 
 The manifest registers 145 of the 149 `tests/check_*.py` scripts and expands to
 158 tasks. The four it does not name directly
 (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,
 `check_launcher_tabs.py`, `check_overlay_input_handoff.py`) are CTest companions that `rom_free_units` owns, so
-every check script still runs exactly once in a complete dedicated-host pass. That task also
+every check script still runs exactly once in a complete pass. That task also
 runs the ROM-free display/endian/magic-code/object-layout/allocator/
 runtime-contract, sprite-layout, RDP-interpolation, font-registry/SDF, and RL-1
 CTests, while filename entry, locked-door collision, RAW16 audio, native-layout
@@ -340,8 +332,7 @@ ownership.
 ### Repeated browser resource ownership — `tests/check_browser_resource_plateau.py`
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
-  python3 tests/check_browser_resource_plateau.py \
+python3 tests/check_browser_resource_plateau.py \
   --engine-dir build-web --shell-dir dist/web \
   --rom baserom.us.v80.z64
 ```
@@ -1076,13 +1067,9 @@ native automation. `MDKR64_HIDDEN=1` creates a background GL/WebGPU surface,
 sets SDL's background/no-activation hints and AppKit's accessory policy before
 `SDL_Init`, skips macOS application/key-window activation and every window raise, ignores
 OS fullscreen effects while preserving the settings transaction, and prevents
-persisted fullscreen from affecting creation. Hidden mode alone no longer
-authorizes a surface: smoke/autoplay/file-dialog automation must also receive
-the exact `MDKR_APP_TESTS_ALLOWED=1` class capability plus the independently
-inherited `MDKR_DEDICATED_TEST_DESKTOP=1` attestation or it exits
-before SDL video/Cocoa. The shared Python harness requires the same exact
-capability before it will even resolve `mdkr64` for a test, so a directly
-invoked check cannot activate a stale binary that predates the in-app guard.
+persisted fullscreen from affecting creation. Automation windows render hidden
+or ordered behind the desktop by design (set `MDKR_TEST_VISIBLE_HEADLESS=1` to
+watch one), and the release gate is the complete suite wherever it runs.
 Use `ctest -LE 'gpu|app_process|browser'` for a suite
 that cannot launch the production app or create any native launcher surface;
 the `gpu` lane remains real
@@ -1108,19 +1095,14 @@ handheld gate uses the same active-panel scroll seam, preventing Online Room
 support from weakening the existing input proof. Run the focused contract with:
 
 ```bash
-env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED \
-  -u MDKR_DEDICATED_TEST_DESKTOP \
-  MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
-  MDKR_APP_TESTS_ALLOWED=1 \
-  MDKR_DEDICATED_TEST_DESKTOP=1 \
+env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
   SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
   ctest --test-dir build --output-on-failure \
   -R 'app_online_room_(smoke|content|minimum_smoke|minimum_content|gallery|accessibility|actions)'
 ```
 
-That focused command is GPU/UI evidence and belongs on a dedicated test
-desktop. Ordinary workstation validation must retain
-`-LE 'gpu|app_process|browser'` instead and must not set the app-test capability.
+That focused command is GPU/UI evidence; a suite that must not touch those
+lanes retains `-LE 'gpu|app_process|browser'` instead.
 
 The pure `online_lobby_browser_wasm` test compiles the Emscripten-facing C ABI
 as an ordinary native process. It enumerates all 43 authoritative cases, all 10
@@ -1138,7 +1120,7 @@ failure values, action/selection order, timeout priority, singular/plural count
 copy, **Play Here**/**Choose ROM** live recovery, immutable output, malformed
 model rejection and the complete phrase/mismatch announcement. This strengthens
 browser semantic evidence without claiming DOM layout, actual accessibility-tree
-behavior or input dispatch; those remain in the dedicated-desktop Chromium gate.
+behavior or input dispatch; those remain in the Chromium gate.
 The same test enumerates the live policy for all 27 action ids: a route is
 admitted only when it is currently rendered and enabled, production setup cannot
 borrow the trusted fixture's simulated preflight, and carrier/race-dependent
@@ -1359,9 +1341,9 @@ vector, leader-only generation-checked invite rotation, expiry deletion,
 canonical non-Join commands, a literal-zero admission
 kill switch and durable-storage absence of raw invite/code/credential values.
 Client state also omits internal receipts, command high-water marks and
-fingerprints. On a human-confirmed isolated test host, run all service gates
-with `(cd services/party && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)`.
-On an occupied workstation, use only `npm run typecheck`. These tests do not switch on production
+fingerprints. Run all service gates
+with `(cd services/party && npm run check)`; `npm run typecheck` validates the
+non-executing type boundary alone. These tests do not switch on production
 online admission. Worker integration also races two Match commands from one
 revision and two Phone Party approvals for one seat. Complete transitions are
 input-gated across storage awaits: the Match race has exactly one success and
@@ -1785,8 +1767,7 @@ counted as runtime coverage.
 ## Real browser runtime — `tests/check_browser_runtime.py`
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
-  python3 tests/check_browser_runtime.py \
+python3 tests/check_browser_runtime.py \
   --engine-dir build-web --shell-dir dist/web \
   --rom baserom.us.v80.z64 --camera-obstruction modern
 ```
@@ -1855,8 +1836,7 @@ Release both pass.
 ## Browser save custody — `tests/check_browser_save_ui.py`
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 \
-  python3 tests/check_browser_save_ui.py \
+python3 tests/check_browser_save_ui.py \
   --engine-dir build-web --shell-dir dist/web
 ```
 

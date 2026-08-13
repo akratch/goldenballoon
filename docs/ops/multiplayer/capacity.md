@@ -163,7 +163,7 @@ During a private-beta canary, append each qualified day to the strict
 ## Local executable proof
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_party_capacity.py --shell-dir dist/web
+python3 tests/check_party_capacity.py --shell-dir dist/web
 python3 tests/test_party_usage_reconciliation.py
 ```
 

@@ -391,29 +391,22 @@ paths on Linux, and both are always present on every platform.
 
 ```
 # Never opens a native launcher window:
-env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED \
-  -u MDKR_DEDICATED_TEST_DESKTOP \
-  MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
   SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
   ctest --test-dir build --output-on-failure -j1 \
     -LE 'gpu|app_process|browser'
 
-# Native GPU/UI evidence, dedicated test desktop only:
+# Native GPU/UI evidence:
 cmake -S . -B build -DMDKR_ENABLE_GPU_TESTS=ON
 env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
-  MDKR_APP_TESTS_ALLOWED=1 \
-  MDKR_DEDICATED_TEST_DESKTOP=1 \
   SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
   ctest --test-dir build --output-on-failure --no-tests=error -j1 -L gpu
 ```
 
-Native screenshot/input tests set `MDKR64_HIDDEN=1`. That is only a visibility
-policy, never permission to create a surface. The final application boundary
-also requires both the exact `MDKR_APP_TESTS_ALLOWED=1` class capability and
-the caller-owned `MDKR_DEDICATED_TEST_DESKTOP=1` attestation; the runner and
-CMake configuration cannot mint the latter. Direct legacy smoke, autoplay and
-file-dialog scripts otherwise exit before SDL video or Cocoa. Once allowed,
-GL/WebGPU surfaces begin hidden,
+Native screenshot/input tests set `MDKR64_HIDDEN=1`. Automation windows render
+hidden or ordered behind the desktop by design (set
+`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
+complete suite wherever it runs. GL/WebGPU surfaces begin hidden,
 cannot inherit fullscreen, are ordered behind existing macOS windows without
 making the process active or the window key, and ignore OS fullscreen/raise
 effects while still exercising settings persistence. Automated runs therefore
@@ -449,7 +442,7 @@ and unchanged.
   the diagnostic GL launcher to continue under its bounded software pacer.
 
 Native GPU/window CTests are absent by default. Configure with
-`-DMDKR_ENABLE_GPU_TESTS=ON` only on a dedicated test desktop.
+`-DMDKR_ENABLE_GPU_TESTS=ON` to register them.
 `MDKR_SKIP_GPU_TESTS=1` remains a backwards-compatible emergency override for
 older automation, but is no longer required to make a normal build safe.
 Ordinary local CTest also excludes `app_process` and `browser` labels, runs

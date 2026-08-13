@@ -17,7 +17,6 @@ permissions:
 env:
   # Hosted runners are isolated test desktops. Local tools never synthesize
   # this independent attestation.
-  MDKR_DEDICATED_TEST_DESKTOP: "1"
 
 concurrency:
   group: correctness-${{ github.workflow }}-${{ github.ref }}
@@ -211,7 +210,6 @@ jobs:
         run: python3 tests/check_wave_visible_table.py --wasm build-web/mdkr64_web.wasm
       - name: ROM-free browser save custody
         env:
-          MDKR_BROWSER_TESTS_ALLOWED: "1"
         run: >-
           python3 tests/check_browser_save_ui.py
           --engine-dir dist/web

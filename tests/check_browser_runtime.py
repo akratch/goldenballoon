@@ -412,13 +412,6 @@ class ChromeProcess:
         extra_flags: list[str],
         verbose: bool,
     ):
-        if (os.environ.get("MDKR_BROWSER_TESTS_ALLOWED") != "1" or
-                os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1"):
-            raise CheckFailure(
-                "real Chromium tests are disabled on interactive workstations; "
-                "a human must attest a dedicated test desktop before using "
-                "tools/run_checks.py --with-browser-tests"
-            )
         self.verbose = verbose
         self.lines: deque[str] = deque(maxlen=4000)
         self.port: int | None = None

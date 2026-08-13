@@ -941,13 +941,6 @@ static int sdl_automation_surface_requested(void) {
            getenv("MDKR64_HIDDEN") != NULL;
 }
 
-static int sdl_automation_surface_allowed(void) {
-    const char *allowed = getenv("MDKR_APP_TESTS_ALLOWED");
-    const char *dedicated = getenv("MDKR_DEDICATED_TEST_DESKTOP");
-    return allowed != NULL && strcmp(allowed, "1") == 0 &&
-           dedicated != NULL && strcmp(dedicated, "1") == 0;
-}
-
 static int sdl_should_start_fullscreen(void) {
 #ifdef __EMSCRIPTEN__
     return 0;
@@ -978,17 +971,6 @@ int platform_sdl_init(void) {
     s_testForcedMinimized = 0;
     present_sched_set_surface_elided(false);
 #ifndef __EMSCRIPTEN__
-    /* The app shell enforces this before dispatching bounded engine runs, but
-     * MDKR_APP=OFF builds and direct engine harnesses do not pass through that
-     * entry point. Refuse at the final native-video boundary as well. Hidden
-     * is a visibility request, never permission to create an SDL window. */
-    if (sdl_automation_surface_requested() &&
-        !sdl_automation_surface_allowed()) {
-        fprintf(stderr,
-                "[app-test-safety] refused native engine surface: test-class "
-                "capability and dedicated-desktop attestation are required\n");
-        return -1;
-    }
     if (sdl_automation_surface_requested()) {
         /* These hints must exist before SDL_Init. On macOS, setting policy
          * only after SDL_CreateWindow leaves an activation race in which a

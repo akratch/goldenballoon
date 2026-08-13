@@ -28,15 +28,13 @@ Mark each as pass/fail and paste concise text logs for failures.
 
 - [ ] `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
 - [ ] `cmake --build build -j`
-- [ ] `MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py`
+- [ ] `python3 tools/run_checks.py`
 - [ ] `./build/mdkr64 --rom /path/to/baserom.us.v80.z64`
 
-Every test lane requires a dedicated test desktop, including nominally
-source-only checks. Compiled CTests, the playable app, browser automation and
-GPU-labelled tests also require their separate class opt-ins. Do not run any
-of them as part of validation on an occupied machine. On a dedicated desktop,
-the guarded ROM-free lane is `MDKR_DEDICATED_TEST_DESKTOP=1 python3
-tools/run_checks.py --only rom_free_units --with-compiled-tests`.
+Automation windows render hidden or ordered behind the desktop by design (set
+`MDKR_TEST_VISIBLE_HEADLESS=1` to watch one), and the release gate is the
+complete suite wherever it runs. The ROM-free lane on its own is
+`python3 tools/run_checks.py --only rom_free_units`.
 
 ### Notes
 Mention missing dependencies, documentation gaps, runtime issues, or anything

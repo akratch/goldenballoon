@@ -63,7 +63,7 @@ admitted until M2 is `GO` and M3 passes first-time usability.
 | 2 | LP-01 | IMPLEMENTED / EVIDENCE REFRESH | Browser Phone Party pairs by QR/code with no app and drives explicit split-screen seats | MP-00 | The browser host/controller paths now use actual receipt-relative invite TTLs, exact bounded HTTP/socket state, finite generation-guarded recovery, manual phone Retry, QR-to-`/controller/`+code fallback and server-targeted per-controller signaling. The service and client require one canonical same-origin HTTPS boundary (HTTP only on loopback). Private/public recovery copy is truthful. Duplicate-tab takeover explicitly neutralizes/closes the prior publisher before an ordinary exclusive Web Lock; rejection fails closed, while the no-Web-Locks fallback retains only a hashed expiring tab lease. The service rebuilds exact role-specific SDP/ICE/hello envelopes, injects phone identity from socket custody and exact-validates native host commands before reserve or mutation. Launcher-owned per-seat removal uses a named safe-default confirmation, cancel-without-mutation, contextual focus, exact lease release and a targeted terminal socket close without disturbing other phones. Authored Worker/browser fixtures cover origin refusal, tab custody, rotation generation, ambiguous signaling, QR failure, two-controller non-disclosure and removal isolation; dedicated execution plus four physical iOS/Android phones remain. |
 | 3 | LP-02 | DONE LOCAL / EVIDENCE REVIEW | Native launcher hosts the same browser controller without localhost, certificates or firewall prompts | LP-01 | Pinned static adapter, one-WSS bootstrap/reconnect, shared codec/router, QR/SAS vectors, launcher/overlay lifecycle, fail-neutral queues and release notices pass locally. A MinGW GCC 16.1 Release build and stock-Windows-DLL import audit also pass; executed Windows/macOS/Linux packages and a physical mixed-source race remain |
 | 4 | RB-01 | IN PROGRESS | Four endpoints deterministically race, recover within bounds and unwind safely beyond them | MP-00 | Track/vehicle/item/soak, four-endpoint and real Chromium/Wasm matrices plus memory/timing budgets pass; PAL/desktop-OS, physical-device and written `GO` evidence remain |
-| 5 | UX-01 | IMPLEMENTED / RENDER EVIDENCE REFRESH | Native Online Room covers every state/failure/action with accessible real input | MP-00 | Shared model and native projection compile with a bounded, announced phrase plus explicit **Words Match**/**Words Differ** actions; rerun the 43-case/27-action keyboard/gamepad/speech gallery on a dedicated desktop, then human SR/device review |
+| 5 | UX-01 | IMPLEMENTED / RENDER EVIDENCE REFRESH | Native Online Room covers every state/failure/action with accessible real input | MP-00 | Shared model and native projection compile with a bounded, announced phrase plus explicit **Words Match**/**Words Differ** actions; rerun the 43-case/27-action keyboard/gamepad/speech gallery on a execution, then human SR/device review |
 | 6 | UX-02 | IMPLEMENTED / EXECUTABLE + RENDER EVIDENCE REFRESH | Browser renders the same room model, not a second room state machine | UX-01 | Native browser-ABI conformance previously drove all 43 cases/10 kinds/18 failures/27 actions plus both phrase paths under normal/ASan; the shipped pure presenter covers every projection and live action. The ABI-v4 exact live-state boundary deep-copies the public MatchRoom envelope, rejects private/unknown/impossible or regressing/equivocating state, correlates the control tail with final lobby authority, holds identity stable and revokes stale invite generations. Valid older HTTP publications are no-ops; a delayed rotate response can restore only the exact in-flight expected/current generation secret while newer member state and local leader custody remain authoritative. Role links now cross only a same-origin fragment redirect: the launcher scrubs before configuration access, never uses web storage, drops authority immediately in disabled builds, caps enabled pre-ROM closure custody at ten minutes, and abandons redemption if either History API scrub fails. Invite secrets use a conservative receipt-relative deadline, leave memory/DOM before expiry rendering and expose leader-only **New Invitation** recovery without disturbing joined friends. Public state commits only after projection/presentation succeeds, while expired secrets are never rolled back. Accepted guest Leave is terminal after credential revocation and stale-revision recovery explicitly says the action was not applied. The exhaustive Node boundary gate and browser timer/publication/race expiry/scrub-failure arms are authored/syntax-valid, and focused C targets compile; run the dedicated executable/browser/rendered native correlation/phrase/invite AX/reflow batch. Start stays locally gated. |
 | 7 | UX-03 | IN PROGRESS / HUMAN EVIDENCE | Two new players complete invite, preflight, cancel and rematch without coaching | UX-02 | Two clean automated profiles pass real-Worker create/share/role-link join/outage/select/Ready/backtrack/leave with bounded timings and AX checks. Phone/host destructive leave has safe-default confirmation and cancel-before-mutation; semantic dynamic forms, contained modals and notch-safe handoff pass. Both analog surfaces provide visible-focus Arrow/WASD steering, bounded diagonals, spoken direction and fail-neutral lifecycle behavior. Uncoached human task study, physical assistive-device review, cancel/rematch observation and any resulting P0/P1 closure remain. |
 | 8 | SV-01 | DONE LOCAL | MatchRoom persists bounded control state and survives object eviction/restart | MP-00 | Full local lifecycle; every-phase restart, hibernated socket, alarm expiry, v3 package dry-run, purpose-HMACed and generation-rotated invites, idempotency and split-brain gates |
@@ -87,7 +87,7 @@ first makes the prior tab neutralize/close, then reconstructs it for one
 ordinary exclusive-lock navigation and immediate re-scrub. Lock errors refuse;
 the no-Web-Locks fallback stores only a hashed 15-second lease. The browser
 copy/share/reclaim/fallback-lease/scrub-denial arms are authored and await the
-dedicated desktop evidence refresh.
+evidence refresh.
 
 ## Current executable checkpoint
 
@@ -200,13 +200,13 @@ feature flag or service response. Promotion order is strict:
 Evidence commands:
 
 ```bash
-# Dedicated test desktop only: these commands launch real Chromium profiles.
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_room.py --shell-dir dist/web
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_activation.py --shell-dir dist/web
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_browser_online_match_room.py --shell-dir dist/web
-
-# Occupied workstation: do not invoke a runner or any file under tests/.
-# Use source inspection, syntax/parser/type checks and bounded compilation only.
+# These commands launch real Chromium profiles. Automation windows render
+# hidden or ordered behind the desktop by design (set
+# MDKR_TEST_VISIBLE_HEADLESS=1 to watch one), and the release gate is the
+# complete suite wherever it runs.
+python3 tests/check_browser_online_room.py --shell-dir dist/web
+python3 tests/check_browser_online_activation.py --shell-dir dist/web
+python3 tests/check_browser_online_match_room.py --shell-dir dist/web
 ```
 
 ## Slice template

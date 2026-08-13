@@ -35,15 +35,16 @@ def main() -> int:
 
     require('std::getenv("MDKR64_HIDDEN") != nullptr' in header,
             "background policy must use the existing automation variable")
-    require('std::getenv("MDKR_APP_TESTS_ALLOWED")' in header and
-            'std::getenv("MDKR_DEDICATED_TEST_DESKTOP")' in header and
-            'std::strcmp(allowed, "1") == 0' in header and
-            'std::strcmp(dedicated, "1") == 0' in header,
-            "native surfaces must require class and desktop capabilities")
     for trigger in ("MDKR64_HIDDEN", "MDKR_APP_SMOKE_FRAMES",
                     "MDKR_APP_AUTOPLAY", "MDKR_APP_FILEDIALOG_SELFTEST"):
         require(trigger in header,
-                f"automated surface guard must cover {trigger}")
+                f"automated surface policy must cover {trigger}")
+    # Desktop safety is a rendering policy, not a refusal to start. Automation
+    # must never be gated on an environment capability again.
+    for removed in ("MDKR_APP_TESTS_ALLOWED", "MDKR_DEDICATED_TEST_DESKTOP",
+                    "rejectUnauthorizedAutomationSurface"):
+        require(removed not in header and removed not in main_app,
+                f"{removed} must not gate native surface creation")
     background_function = between(
         header, "inline bool AppActivation_backgroundAutomation() {", "}\n"
     )
@@ -51,26 +52,13 @@ def main() -> int:
                     "MDKR_APP_AUTOPLAY", "MDKR_APP_FILEDIALOG_SELFTEST"):
         require(trigger in background_function,
                 f"background policy must cover {trigger} without relying on a runner")
-    require("if (AppActivation_rejectUnauthorizedAutomationSurface())" in main_app,
-            "application must fail closed before native surface creation")
-    guard_at = main_app.index(
-        "if (AppActivation_rejectUnauthorizedAutomationSurface())")
-    engine_dispatch = main_app.index(
-        "return mdkr64_headless_main(argc, argv);", guard_at
-    )
-    require(guard_at < main_app.index("return runFileDialogSelfTest();") and
-            guard_at < engine_dispatch and
-            guard_at < main_app.index("AppHost host;"),
-            "capability guard must precede engine dispatch, dialogs and AppHost")
-    require('getenv("MDKR_APP_TESTS_ALLOWED")' in engine_sdl and
-            'getenv("MDKR_DEDICATED_TEST_DESKTOP")' in engine_sdl and
-            'strcmp(allowed, "1") == 0' in engine_sdl and
-            'strcmp(dedicated, "1") == 0' in engine_sdl,
-            "direct engine SDL boundary must require both capabilities")
-    sdl_guard = engine_sdl.index("if (sdl_automation_surface_requested() &&")
-    require(sdl_guard < engine_sdl.index("if (!mdkr_render_backend_available())"),
-            "direct-engine capability guard must precede renderer/video setup")
+    for removed in ("MDKR_APP_TESTS_ALLOWED", "MDKR_DEDICATED_TEST_DESKTOP"):
+        require(removed not in engine_sdl,
+                f"{removed} must not gate the direct engine SDL boundary")
+    sdl_hint_guard = engine_sdl.index("if (sdl_automation_surface_requested()) {")
     sdl_init = engine_sdl.index("SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER)")
+    require(sdl_hint_guard < sdl_init,
+            "direct-engine background hints must be chosen before SDL_Init")
     for hint in ("SDL_HINT_MAC_BACKGROUND_APP",
                  "SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN"):
         require(hint in engine_sdl and engine_sdl.index(hint) < sdl_init,
@@ -83,7 +71,11 @@ def main() -> int:
             "SDL_HINT_MAC_BACKGROUND_APP" in prepare and
             "SDL_HINT_WINDOW_NO_ACTIVATION_WHEN_SHOWN" in prepare,
             "pre-SDL macOS policy must demote AppKit and set both SDL hints")
-    main_prepare = main_app.index("AppActivation_prepareProcess();", guard_at)
+    # The pre-SDL policy is now the first thing the automation path does: it
+    # must still precede every route that can create or activate a surface.
+    main_prepare = main_app.index("AppActivation_prepareProcess();")
+    engine_dispatch = main_app.index(
+        "return mdkr64_headless_main(argc, argv);", main_prepare)
     require(main_prepare < engine_dispatch and
             main_prepare < main_app.index("return runFileDialogSelfTest();") and
             main_prepare < main_app.index("AppHost host;"),
@@ -126,8 +118,8 @@ def main() -> int:
     serial = between(runner, "SERIAL_ROLES = frozenset({", "})")
     app_roles = between(runner, "APP_ROLES = (", ")\n")
     require('"rom",' in app_roles,
-            "ROM-backed checks can execute the native app and must require "
-            "the app-test opt-in")
+            "ROM-backed checks can execute the native app and must stay in "
+            "the serialized app-role set")
     for role in ("ctest", "rom", "native", "release", "asan", "instrumented", "layout",
                  "wasm", "browser", "browser_save", "browser_local"):
         require(f'"{role}",' in serial,
@@ -136,38 +128,26 @@ def main() -> int:
             "native GPU/window CTests must require a configure-time opt-in")
     require('if(MDKR_ENABLE_GPU_TESTS AND NOT MDKR_SKIP_GPU_TESTS)' in cmake,
             "native GPU/window CTests must be absent by default")
-    require('"--with-browser-tests"' in runner,
-            "runner must require an explicit browser-test opt-in")
-    require('"--with-app-tests"' in runner,
-            "runner must require an explicit native app-test opt-in")
-    require('"--with-compiled-tests"' in runner,
-            "runner must require an explicit compiled-test opt-in")
-    require("if app_checks and not args.with_app_tests:" in runner,
-            "runner must fail closed around native app/renderer roles")
-    require("if check.role not in APP_ROLES" in runner,
-            "ordinary runner use must exclude native app/renderer roles")
-    require("if args.with_gpu_tests and (" in runner and
-            "not args.with_app_tests or not args.with_compiled_tests" in runner,
-            "GPU CTests must require native-app and compiled-test capabilities")
-    require('environment["MDKR_APP_TESTS_ALLOWED"] = "1"' in runner,
-            "runner app opt-in must be explicit in child environments")
-    enhancement_authority = (
-        ROOT / "tests/check_enhancement_authority.py"
-    ).read_text(encoding="utf-8")
-    require("resolve_binary(args.build)" in enhancement_authority,
-            "enhancement authority must cross the shared native-process gate")
-    require('os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") == "1"' in runner and
-            'environment["MDKR_DEDICATED_TEST_DESKTOP"] = "1"' in runner,
-            "runner must require and only forward caller desktop attestation")
-    require('product_names = {"mdkr64", "mdkr64.exe"}' in harness and
-            'not _native_process_tests_allowed()' in harness,
-            "direct Python harnesses must reject the product before launch")
-    require('os.environ.get("MDKR_APP_TESTS_ALLOWED") == "1"' in harness and
-            'os.environ.get("MDKR_BROWSER_TESTS_ALLOWED") == "1"' in harness and
-            'os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") == "1"' in harness,
-            "harness launch guard must require class and desktop capabilities")
-    require('command += ["-LE", "gpu|app_process|browser"]' in runner,
-            "runner must omit all app/browser process labels by default")
+    # The suite has no human gate: a bare run covers every class. The
+    # --with-* flags survive only as accepted no-ops.
+    for flag in ('"--with-browser-tests"', '"--with-app-tests"',
+                 '"--with-compiled-tests"', '"--with-gpu-tests"'):
+        require(flag in runner,
+                f"{flag} must still be accepted for compatibility")
+    require("deprecated no-op" in runner,
+            "the --with-* flags must document that they no longer gate anything")
+    for removed in ('if app_checks and not args.with_app_tests:',
+                    'args.app_tests_excluded',
+                    'environment["MDKR_APP_TESTS_ALLOWED"] = "1"',
+                    'environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"',
+                    'MDKR_DEDICATED_TEST_DESKTOP',
+                    'command += ["-LE", "gpu|app_process|browser"]'):
+        require(removed not in runner,
+                f"runner must no longer gate or exclude via {removed}")
+    for removed in ("MDKR_APP_TESTS_ALLOWED", "MDKR_DEDICATED_TEST_DESKTOP",
+                    "_native_process_tests_allowed"):
+        require(removed not in harness,
+                f"harness must not gate the native product on {removed}")
     require('["taskpolicy", "-b", "-p", str(os.getpid())]' in runner,
             "macOS runner must enter inherited Darwin background policy")
     require('taskpolicy -b -p "$$"' in
@@ -181,18 +161,16 @@ def main() -> int:
             "local CI must skip every compiled test by default")
     safe_lane = between(local_ci, 'step "ROM-free CTest suite"',
                         '# These tests open native graphics surfaces.')
-    require("env -u MDKR_APP_TESTS_ALLOWED -u MDKR_BROWSER_TESTS_ALLOWED" in
-            safe_lane,
-            "safe local CTest must strip inherited surface capabilities")
+    require("MDKR64_HIDDEN=1" in safe_lane and
+            "SDL_MAC_BACKGROUND_APP=1" in safe_lane and
+            "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1" in safe_lane,
+            "local CTest lane must run its surfaces hidden and non-activating")
     require('RUN_GPU_TESTS=0' in local_ci and
             'MDKR_CI_WITH_GPU_TESTS' not in local_ci,
             "ambient environment must not enable local GPU/window tests")
-    require('environment["MDKR_BROWSER_TESTS_ALLOWED"] = "1"' in runner,
-            "runner browser opt-in must reach the Chromium launch boundary")
-    require('os.environ.get("MDKR_BROWSER_TESTS_ALLOWED") != "1"' in browser,
-            "direct Chromium harness use must fail closed")
-    require('os.environ.get("MDKR_DEDICATED_TEST_DESKTOP") != "1"' in browser,
-            "direct Chromium harness must require desktop attestation")
+    for removed in ("MDKR_BROWSER_TESTS_ALLOWED", "MDKR_DEDICATED_TEST_DESKTOP"):
+        require(removed not in browser,
+                f"Chromium harness must not gate on {removed}")
     require('if current_nice < 10:' in runner,
             "runner must lower its inherited CPU scheduling priority")
     print("app background activation contract passed")

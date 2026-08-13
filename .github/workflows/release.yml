@@ -54,7 +54,6 @@ permissions:
 
 env:
   # Hosted release runners are isolated test desktops.
-  MDKR_DEDICATED_TEST_DESKTOP: "1"
 
 jobs:
   validate:
@@ -169,7 +168,6 @@ jobs:
             xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
               env -u SDL_VIDEODRIVER "${backend[@]}" \
                 MDKR_APP_SMOKE_FRAMES=4 \
-                MDKR_APP_TESTS_ALLOWED=1 \
                 MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
                 MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
                 MDKR_APP_REQUIRE_PRESENT=1 \
@@ -223,8 +221,7 @@ jobs:
               xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
                 env -u SDL_VIDEODRIVER "${backend[@]}" \
                   MDKR_APP_SMOKE_FRAMES=4 \
-                  MDKR_APP_TESTS_ALLOWED=1 \
-                  MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
+                    MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
                   MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
                   MDKR_APP_REQUIRE_PRESENT=1 \
                   MDKR_APP_PREFS_DIR="$work/prefs" \

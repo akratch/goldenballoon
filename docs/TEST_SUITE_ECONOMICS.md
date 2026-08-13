@@ -16,8 +16,7 @@ not scale them — re-measure before quoting a new total.
 **Nothing here removes or weakens a gate.** No task was deprecated, merged, or
 subsetted in the pass that produced this document. Every verdict below is a
 *candidate* with a stated precondition. The release gate remains the complete
-run: `MDKR_DEDICATED_TEST_DESKTOP=1 python3 tools/run_checks.py
---with-compiled-tests --with-app-tests --with-browser-tests` on a dedicated test desktop, printing
+run: `python3 tools/run_checks.py --jobs 6`, printing
 `complete suite, N/N tasks` — currently `204/204`. Any other verdict is
 printed as `SUBSET n/204 tasks:` followed by the restriction that produced it,
 and a `SUBSET` line never counts as a release gate. See
@@ -791,9 +790,7 @@ A workable shape, using the measured numbers:
 | **release** | **no restriction flags** | **135m07s measured** | **`complete suite, 135/135 tasks`** |
 
 The selections and costs in this table are the 2026-08-05/06 measurement at
-135 tasks. Since then the runner also requires `MDKR_DEDICATED_TEST_DESKTOP=1`
-plus `--with-compiled-tests --with-app-tests --with-browser-tests` to reach the
-compiled, app and browser lanes at all, and the manifest is 204 tasks, so the
+135 tasks. Since then the manifest has grown to 204 tasks, so the
 release row prints `complete suite, 204/204 tasks` today. The tier *shapes*
 still hold; the counts and costs need re-measuring.
 

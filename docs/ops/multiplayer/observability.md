@@ -84,8 +84,8 @@ reproducible fixtures, never by creating a server-side person/room trail.
 ## Executable evidence
 
 ```bash
-(cd services/party && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_BROWSER_TESTS_ALLOWED=1 python3 tests/check_party_capacity.py --shell-dir dist/web
+(cd services/party && npm run check)
+python3 tests/check_party_capacity.py --shell-dir dist/web
 ```
 
 The unit contract rejects malformed operation labels/weights, proves the

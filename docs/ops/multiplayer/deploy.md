@@ -84,8 +84,8 @@ lifecycle change; this is why additive class migrations are isolated.
 
 1. Record commit, clean/dirty state, Node/Wrangler versions and current deployed
    version. Never deploy an unexplained dirty worktree.
-2. On an isolated test host, run
-   `(cd services/party && npm ci && MDKR_DEDICATED_TEST_DESKTOP=1 npm run check)`.
+2. Run
+   `(cd services/party && npm ci && npm run check)`.
 3. Run pinned Wrangler `deploy --dry-run`; archive bundle size and bindings.
    Only `PARTY_ROOMS`, `PARTY_BUDGETS`, `PARTY_CODES`, `MATCH_ROOMS` and
    documented vars/secrets are allowed. The static-assets manifest must point

@@ -311,9 +311,8 @@ store should simply stay inactive — but that is an inference, not an
 observation.
 
 ```bash
-MDKR_DEDICATED_TEST_DESKTOP=1 MDKR_AUDIO=0 \
-  python3 tools/run_checks.py --role browser,browser_save \
-  --with-browser-tests
+MDKR_AUDIO=0 \
+  python3 tools/run_checks.py --role browser,browser_save
 ```
 
 **The adopted-pacing gate has since been run with a display, and passes.**
