@@ -215,6 +215,19 @@ SERIAL_NAMES = frozenset({
     "presentation_matrix",   # presentation perf census cost gate
     "app_adopted_pacing",    # real windows + adopted realtime pacing
     "motion_quality_battery",  # replay-cost ceiling is a CPU-time measurement
+    # The nanosecond-budget family. Each asserts p50/p95/p99 wall-clock
+    # ceilings measured inside the engine; a pooled neighbour's cache and
+    # memory-bandwidth pressure inflates exactly the tails under test. The
+    # first pooled full-suite runs on a quiet 14-core machine failed every
+    # one of these at --jobs 6 AND at --jobs 3 (the camera gate by 3.2% at
+    # jobs 3 after 3x over at jobs 6 -- pure pool pressure). Measurements
+    # are only meaningful with the machine to themselves, which is exactly
+    # what this set exists to provide.
+    "camera_obstruction_performance_runtime",  # finalizer/observe/comfort p99
+    "rollback_track_matrix",     # per-level capture/restore/resim budgets
+    "rollback_item_matrix",      # per-weapon capture-restore budgets
+    "rollback_vehicle_matrix",   # per-level/vehicle timing histograms
+    "persistent_rollback_rematch",  # ASAN engine with internal 240s deadlines
 })
 
 # The strict verdict-bearing render/GPU-surface markers validate_manifest()
@@ -328,7 +341,11 @@ CHECKS = (
           "as the native binary, character for character, on every ROM present"),
     Check("rom_text_indices", "check_rom_text_indices.py", "rom",
           "no driven route resolves a GAME_TEXT index at or above 259, the "
-          "count the 1.0 revisions carry"),
+          "count the 1.0 revisions carry",
+          # Eleven-plus serial engine runs across every fixture group: the
+          # task was still making progress when the default budget killed it
+          # at both --jobs 6 and --jobs 3 on a quiet 14-core machine.
+          timeout=3600),
     Check("a11y_shell", "check_a11y_shell.py", "rom",
           "every focusable control in the launcher, settings and overlay speaks "
           "its name and value, enumerated from the schema rather than a list"),
@@ -345,7 +362,11 @@ CHECKS = (
     Check("enh_ai_difficulty", "check_enh_ai_difficulty.py", "rom",
           "opponent skill leaves the authored arm bit-identical to a build "
           "without the enhancement compiled in, and the harder arms measurably "
-          "beat it without wedging an opponent"),
+          "beat it without wedging an opponent",
+          # Configures and compiles its own -DMDKR_ENH_AI_DIFFICULTY_OMIT
+          # purity baseline before racing twelve-plus arms: the same shape
+          # the instrumented/layout roles get the building budget for.
+          timeout=BUILDING_TASK_TIMEOUT),
     Check("tool_freecam", "check_tool_freecam.py", "rom",
           "detaching and re-attaching the free camera leaves the authoritative "
           "state stream and the re-attached frame byte-identical"),
@@ -804,7 +825,13 @@ CHECKS = (
           "production Worker environment: custom-domain route matching "
           "PARTY_ORIGIN, /api-only worker routing, and a fail-closed "
           "placeholder host"),
-    Check("party_binary_surface", "check_party_binary_surface.py", "native",
+    # Role "source": the suite runs the validator's self-test arm, which
+    # builds its own synthetic fixtures and takes no artifact. The gate's
+    # positional-target arm belongs to the release lanes, which hand it a
+    # packaged executable; the native role's --build/--rom shape is neither,
+    # and killed the task with an argparse error the first time any full
+    # suite run reached it.
+    Check("party_binary_surface", "check_party_binary_surface.py", "source",
           "packaged-artifact Phone Party host/transport linkage and compiled "
           "service origin, plus the validator's own rejection paths",
           args=("--self-test",)),
