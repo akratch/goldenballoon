@@ -115,15 +115,27 @@ def main() -> int:
             "runner must stop Cocoa promoting hermetic MDKR-scrubbing children")
     require('"SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN": "1"' in runner,
             "runner must stop SDL_ShowWindow activating automation")
+    # --jobs serialization policy (updated with the runner's GPU-aware pooling
+    # fix). Desktop safety is enforced in the window layer — hidden surfaces,
+    # the background policy, and the lowered priority asserted above — not by
+    # serializing every engine role. So only the roles that share ONE build
+    # tree or bind a fixed local port stay serial; rom/native/release/asan
+    # pool, with just their render/GPU/measurement checks pulled out by name
+    # (GPU_SERIAL_NAMES/SERIAL_NAMES). APP_ROLES still names every app-executing
+    # role for the focus-policy reasoning below.
     serial = between(runner, "SERIAL_ROLES = frozenset({", "})")
     app_roles = between(runner, "APP_ROLES = (", ")\n")
     require('"rom",' in app_roles,
-            "ROM-backed checks can execute the native app and must stay in "
-            "the serialized app-role set")
-    for role in ("ctest", "rom", "native", "release", "asan", "instrumented", "layout",
+            "ROM-backed checks execute the native app and must stay named in "
+            "APP_ROLES for the focus-policy reasoning")
+    for role in ("ctest", "instrumented", "layout",
                  "wasm", "browser", "browser_save", "browser_local"):
         require(f'"{role}",' in serial,
-                f"workstation-intensive role {role} must be serialized")
+                f"build-tree/port-sharing role {role} must be serialized")
+    for role in ("rom", "native", "release", "asan"):
+        require(f'"{role}",' not in serial,
+                f"role {role} must not be serialized wholesale; only its "
+                "GPU/measurement checks serialize, by name")
     require('option(MDKR_ENABLE_GPU_TESTS' in cmake,
             "native GPU/window CTests must require a configure-time opt-in")
     require('if(MDKR_ENABLE_GPU_TESTS AND NOT MDKR_SKIP_GPU_TESTS)' in cmake,

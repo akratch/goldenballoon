@@ -19,6 +19,15 @@ export class PartyCodeDirectory extends DurableObject<Env> {
     const rejected = rejectUnsupportedInternalApi(request);
     if (rejected) return rejected;
     if (request.method !== "POST") return json({error: "method_not_allowed"}, 405);
+    /* Register and resolve are read-decide-write sequences; the await points
+     * must not let a second request observe and overwrite the same stored
+     * predecessor, or two rooms race for one code and the resolve rate limiter
+     * undercounts parallel guesses. Serialize like every sibling Durable Object
+     * (PartyRoom, MatchRoom, PartyBudget). */
+    return this.ctx.blockConcurrencyWhile(() => this.fetchSerialized(request));
+  }
+
+  private async fetchSerialized(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const body = await readJson<Record<string, unknown>>(request);
     const codeDigest = typeof body.codeDigest === "string" ? body.codeDigest : "";

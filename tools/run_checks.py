@@ -11,8 +11,10 @@ The suite has five invocation shapes:
 
 This runner owns those differences and fails if a new ``tests/check_*.py`` is
 not registered below, or if a ``tests/test_*.py`` has no CMake ``add_test()``
-to carry it into the ctest task. App-, renderer-, and browser-launching roles
-are always serialized, even under ``--jobs``.
+to carry it into the ctest task. Under ``--jobs`` the CPU-bound checks pool;
+the roles that share a build tree or a local port, the render/GPU checks, and
+the wall-clock measurement checks stay serial (see the SERIAL_ROLES /
+GPU_SERIAL_NAMES / SERIAL_NAMES model below).
 
 A bare ``python3 tools/run_checks.py`` runs the complete suite. There is no
 human gate on testing: automation windows render hidden or ordered behind the
@@ -67,56 +69,144 @@ BUILDING_TASK_TIMEOUT = 10800
 # Worker and therefore belong to the serialized web lane.
 BROWSER_ROLES = ("wasm", "browser", "browser_save", "browser_local")
 
-# These roles can execute the native game, create SDL/Cocoa surfaces, or build
-# and run instrumented game binaries. Hidden-window hints reduce disruption but
-# are not an authorization boundary: window-manager regressions can still
-# activate an app or move it into a fullscreen Space. Keep them out of ordinary
-# workstation validation unless a dedicated test desktop was explicitly chosen.
-# ``rom`` is intentionally in this set.  Its command shape only passes a ROM
-# path, but most scripts in that role resolve and execute the default native
-# game binary internally.  Treating the role as data-only let an ordinary
-# workstation run start dozens of Cocoa/SDL processes without the explicit
-# app-test opt-in.
+# The roles that build or execute the native game, a renderer, or an
+# instrumented binary. Hidden-window hints (MDKR64_HIDDEN, the SDL background
+# hints, the macOS accessory policy) keep these off the foreground, but they
+# still own CPU and — for the render-bearing checks below — a GPU surface.
+# ``instrumented``/``layout`` additionally compile a tree in place. This tuple
+# is the app-executing surface the --jobs classification reasons over.
 APP_ROLES = ("rom", "native", "release", "asan", "instrumented", "layout")
 
-# CTest inventories are broad and can regress: a new or incorrectly labelled
-# executable may initialize SDL/Cocoa even when the current inventory is
-# believed to be ROM- and renderer-free. After repeated focus theft on the
-# maintainer's occupied Mac, do not execute any compiled test by default. The
-# dedicated-desktop gate is intentionally independent from the label filter.
-COMPILED_TEST_ROLES = ("ctest",)
-
-# --jobs classification. Pure source work may share isolated scratch
-# directories. Anything that executes compiled code, starts the game, a
-# renderer, or a browser is
-# serialized even when its individual files are otherwise independent. Six
-# simultaneous "headless" native processes made macOS unusable and amplified
-# any focus-policy regression into six foreground windows. What CANNOT run
-# beside other tasks:
+# ---------------------------------------------------------------------------
+# --jobs serialization model.
 #
-#   * rom/native/release/asan — execute the game and can own CPU/GPU surfaces;
-#   * ctest — broad compiled inventory; run alone after the source pool drains;
-#   * instrumented/layout — build and execute instrumented game trees;
-#   * wasm/browser/browser_save/browser_local — the wasm build tree is one
-#     directory, and the browser gates bind local ports, spawn real Chromium
-#     profiles and sometimes run a local Worker;
-#   * SERIAL_NAMES — gates whose VERDICT is a wall-clock or host-load
-#     measurement (realtime pacing arms, adopted-window handoffs, replay-cost
-#     ceilings). Running them beside other work turns host contention into a
-#     false failure — the same effect docs/TEST_SUITE_ECONOMICS.md §1 measured
-#     between its loaded and quiet runs.
+# ``--jobs N`` pools CPU-bound tasks (each in its own save scratch) and keeps
+# three disjoint classes sequential. ``--jobs 1`` is byte-for-byte the
+# historical sequential runner.
+#
+#   1. SERIAL_ROLES — roles that share ONE build tree or bind fixed local
+#      ports, so two of them cannot run at once no matter what they assert:
+#      instrumented/layout are compiled in place, the wasm module is one
+#      directory, and every browser lane serves dist/web and binds a local
+#      port / spawns a Chromium profile / runs a local Worker. ``ctest`` is a
+#      single broad compiled inventory (some tests GPU-labelled); it runs alone
+#      after the pool drains rather than beside it. This set deliberately does
+#      NOT include rom/native/release/asan — those roles pool, and only their
+#      individual GPU/measurement checks are pulled out by name below. (An
+#      earlier revision serialized all four wholesale, which put 192/210 tasks
+#      back on the sequential path and erased the speedup.)
+#
+#   2. GPU_SERIAL_NAMES — rom/native/release/asan checks whose VERDICT reads
+#      rendered pixels, drives a GPU surface/adapter, or otherwise contends for
+#      the renderer. These flake under parallel GPU contention — the repo's
+#      hard-won "GPU gates need a quiet machine" — so they serialize even though
+#      their role pools. Every entry was classified by reading the check: it
+#      captures a framebuffer, compares pixels, or opens a WebGPU adapter whose
+#      census is the verdict. validate_manifest() re-derives the render-marker
+#      set from the scripts and FAILS if a pooled engine check grows a pixel or
+#      frame capture without being listed here — so a future render check
+#      cannot silently rejoin the pool and reintroduce a flake.
+#
+#   3. SERIAL_NAMES — checks whose verdict is a wall-clock or host-load
+#      measurement (realtime pacing arms, adopted-window handoffs, replay-cost
+#      ceilings). Host contention turns those into false failures — the same
+#      effect docs/TEST_SUITE_ECONOMICS.md §1 measured between its loaded and
+#      quiet runs.
+#
+# Everything else pools: the CPU-bound native/rom/release/asan checks (audio,
+# save, state-hash, input, rollback, numeric camera-geometry SIMHASH,
+# progression) and the pure ``source`` checks. Their verdicts are deterministic
+# functions of the ROM and inputs, independent of render timing, so a pooled
+# run reproduces the sequential verdict byte-for-byte (the equivalence the
+# economics doc requires before pooling an arm).
 SERIAL_ROLES = frozenset({
     "ctest",
-    "rom",
-    "native",
-    "release",
-    "asan",
     "instrumented",
     "layout",
     "wasm",
     "browser",
     "browser_save",
     "browser_local",
+})
+# rom/native/release/asan checks whose verdict is render/GPU-surface bound.
+# Curated from a read of each script (a captured framebuffer, a pixel A/B, or a
+# WebGPU material/adapter census). Kept in manifest order for reviewability;
+# validate_manifest() proves this set still covers every pixel/frame-capture
+# check in a pooled role. Measurement-sensitive render checks (pacing_quality,
+# presentation_matrix, app_adopted_pacing, motion_quality_battery) live in
+# SERIAL_NAMES instead — the union is what the scheduler serializes.
+GPU_SERIAL_NAMES = frozenset({
+    "overlay_pause_cutscene",
+    "enh_speedometer",
+    "enh_draw_distance",
+    "mod_texture_override",
+    "sprite_layout",
+    "rdp_interpolation",
+    "texture_edge_classification",
+    "font_sdf",
+    "font_outline",
+    "native_ui_resolution",
+    "mip_motion",
+    "rl1_vertex_colour_ab",
+    "remaster_lighting",
+    "world_fx_capture",
+    "world_fx_matrix",
+    "world_shadows",
+    "render_purity",
+    "camera_snapshot_coverage",
+    "arbitrary_presentation_rates",
+    "smoothing_stage_bisection",
+    "effect_shell_envelope",
+    "wave_midpoint_envelope",
+    "smooth_verdict",
+    "presentation_shadows",
+    "presentation_breadth",
+    "live_toggle_settings",
+    "live_toggle_settings_asan",
+    "weather_presentation_identity",
+    "viewport_route_isolation",
+    "shadow_stage_reset",
+    "shadow_plausibility",
+    "charselect_motion",
+    "tool_freecam",
+    "app_capture",
+    "renderer_backends",
+    "gpu_backpressure",
+    "resource_plateau",
+    "surface_suspension",
+    "final_shutdown",
+    "webgpu_content_census",
+    "widescreen_shadow",
+    "widescreen_shadow_asan",
+    "video_presets",
+    "widescreen_proportions",
+    "framed_world_views",
+    "shadow_visual_ab",
+    "intro_shrub_sprite",
+    "line_particle_orientation",
+    "race_drive",
+    "race_2p_split",
+    "race_2p_split_enhanced",
+    "race_multiplayer",
+    "challenge_modes",
+    "taj_challenges",
+    "bonus_character_select",
+    "bonus_results_portraits",
+    "taj_character_select",
+    "taj_character_select_webgpu",
+    "taj_character_select_ultrawide",
+    "taj_character_select_pal",
+    "taj_results_portrait",
+    "taj_hud_portrait",
+    "taj_playable",
+    "texture_lineswap",
+    "adventure_two",
+    "door_glyphs",
+    "adventure_hub",
+    "adventure_race_loop",
+    "determinism",
+    "rom_revision",
+    "online_process_convergence",
 })
 SERIAL_NAMES = frozenset({
     "pacing_quality",        # realtime arms assert displayed-interval tails
@@ -126,6 +216,26 @@ SERIAL_NAMES = frozenset({
     "app_adopted_pacing",    # real windows + adopted realtime pacing
     "motion_quality_battery",  # replay-cost ceiling is a CPU-time measurement
 })
+
+# The strict verdict-bearing render/GPU-surface markers validate_manifest()
+# scans for. A pooled rom/native/release/asan check that matches any of these
+# is reading pixels or driving a GPU surface and MUST be serialized (listed in
+# GPU_SERIAL_NAMES or SERIAL_NAMES). Deliberately strict: bare "webgpu" (a
+# backend-invariance hash runs on WebGPU yet stays deterministic) and "capture"
+# (audio capture) are NOT markers, or every audio/state check would be flagged.
+GPU_VERDICT_MARKERS = re.compile(
+    r"\.ppm|\bframebuffer\b|\bluminance\b|\bpixels?\b|read_rgba|capture_frame|"
+    r"save_ppm|draw_bounds|rgba8|CAPTURE_FRAME|\bswapchain\b|present_queue|"
+    r"\bfence\b|backpressure|device_lost|queue_completion|surface_suspension",
+    re.IGNORECASE,
+)
+
+
+def is_serial(check: "Check") -> bool:
+    """A task the pool must not run beside another (see the model above)."""
+    return (check.role in SERIAL_ROLES
+            or check.name in SERIAL_NAMES
+            or check.name in GPU_SERIAL_NAMES)
 
 # Distinct from any check's own exit status, so a wedged task cannot be
 # mistaken for a task that ran and reported.
@@ -800,6 +910,32 @@ def validate_manifest() -> None:
         source = (TESTS / check.script).read_text(encoding="utf-8")
         if any(marker in source for marker in intensive_markers):
             automation_role_leaks.append(f"{check.name} [{check.role}]")
+    # Fail-closed proof of the GPU classification: a rom/native/release/asan
+    # check that reads pixels or drives a GPU surface (GPU_VERDICT_MARKERS) must
+    # be serialized, or parallel GPU contention can flip its verdict. If such a
+    # check is still in the pool, the manifest is wrong — a new render check was
+    # added without listing it in GPU_SERIAL_NAMES/SERIAL_NAMES, or a serialized
+    # one was moved out. This is what keeps "default pool" safe for these roles.
+    gpu_verdict_leaks = []
+    for check in CHECKS:
+        # APP_ROLES is every app-executing role; instrumented/layout among them
+        # are already serial by role, so is_serial() below narrows the scan to
+        # the pooled engine roles (rom/native/release/asan).
+        if not check.script or check.role not in APP_ROLES:
+            continue
+        if is_serial(check):
+            continue
+        # Strip line comments before scanning: a check that merely *mentions*
+        # a pixel gate in prose (e.g. "lands before its pixel gate") is not
+        # reading pixels, and must not be forced serial for a word in a comment.
+        # Markers in code or string literals (a ".ppm" suffix, a frame regex)
+        # still count.
+        source = "\n".join(
+            line.split("#", 1)[0]
+            for line in (TESTS / check.script).read_text(
+                encoding="utf-8").splitlines())
+        if GPU_VERDICT_MARKERS.search(source):
+            gpu_verdict_leaks.append(f"{check.name} [{check.role}]")
     problems: list[str] = []
     if missing:
         problems.append("unregistered check scripts: " + ", ".join(missing))
@@ -816,6 +952,11 @@ def validate_manifest() -> None:
     if automation_role_leaks:
         problems.append("browser/Worker checks use a parallel-safe role: " +
                         ", ".join(automation_role_leaks))
+    if gpu_verdict_leaks:
+        problems.append(
+            "pooled checks read pixels / drive a GPU surface but are not "
+            "serialized (add to GPU_SERIAL_NAMES): " +
+            ", ".join(gpu_verdict_leaks))
     if problems:
         raise RuntimeError("; ".join(problems))
 
@@ -1029,6 +1170,47 @@ def command_for(
         cmd += ["--roms", str(roms)]
     cmd += list(check.args)
     return cmd
+
+
+# A pooled task can be a full game process, and an ASan game build resident set
+# runs well over a gigabyte. Sizing the pool purely by --jobs is what let a
+# loaded run get OOM-killed. Budget ~2 GiB per concurrent worker against total
+# physical RAM and never let the pool exceed what the host can hold.
+PER_JOB_MEMORY_BUDGET = 2 * 1024 * 1024 * 1024
+
+
+def total_physical_memory() -> int | None:
+    """Total RAM in bytes, or None when it cannot be determined portably."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+    if pages < 0 or page_size < 0:
+        return None
+    return pages * page_size
+
+
+def memory_capped_jobs(requested: int) -> tuple[int, str | None]:
+    """Clamp the requested worker count to what physical RAM can hold.
+
+    Returns the effective count and, when it was reduced, a human note. A
+    single worker is always allowed: the serial path must run even on a host
+    the budget would otherwise round down to zero.
+    """
+    if requested <= 1:
+        return max(1, requested), None
+    total = total_physical_memory()
+    if not total:
+        return requested, None
+    cap = max(1, total // PER_JOB_MEMORY_BUDGET)
+    if cap >= requested:
+        return requested, None
+    return cap, (
+        f"--jobs {requested} exceeds this host's memory budget "
+        f"({total // (1024 * 1024 * 1024)} GiB); capping the pool at {cap} "
+        f"worker(s) to avoid an OOM kill"
+    )
 
 
 def format_duration(seconds: float) -> str:
@@ -1249,8 +1431,9 @@ def main() -> int:
         help="run parallel-safe tasks with this many workers; tasks whose "
              "verdicts depend on wall-clock measurements, a quiet GPU, a "
              "shared build tree, or a fixed local port stay sequential "
-             "regardless (see SERIAL_ROLES/SERIAL_NAMES). --jobs 1 is "
-             "byte-for-byte today's sequential runner.")
+             "regardless (see SERIAL_ROLES/GPU_SERIAL_NAMES/SERIAL_NAMES). "
+             "The pool is additionally capped to what physical RAM can hold. "
+             "--jobs 1 is byte-for-byte today's sequential runner.")
     parser.add_argument("--list", action="store_true", help="list tasks and exit")
     args = parser.parse_args()
 
@@ -1477,7 +1660,9 @@ def main() -> int:
 
     results: list[tuple[Check, int, float]] = []
     suite_start = time.monotonic()
-    jobs = max(1, args.jobs)
+    jobs, memory_note = memory_capped_jobs(max(1, args.jobs))
+    if memory_note:
+        print(f"run_checks: {memory_note}", file=sys.stderr, flush=True)
     try:
         if jobs == 1:
             for index, check in enumerate(checks, 1):
@@ -1487,10 +1672,8 @@ def main() -> int:
                     break
         else:
             from concurrent.futures import ThreadPoolExecutor
-            pooled = [c for c in checks
-                      if c.role not in SERIAL_ROLES and c.name not in SERIAL_NAMES]
-            serial = [c for c in checks
-                      if c.role in SERIAL_ROLES or c.name in SERIAL_NAMES]
+            pooled = [c for c in checks if not is_serial(c)]
+            serial = [c for c in checks if is_serial(c)]
             log_scratch = tempfile.mkdtemp(prefix="mdkr64-run-checks-logs-")
             print(f"run_checks: --jobs {jobs}: {len(pooled)} pooled task(s), "
                   f"{len(serial)} sequential; task logs in {log_scratch}",
@@ -1520,8 +1703,15 @@ def main() -> int:
                     print(f"[{done}/{len(checks)}] {check.name}: {label} in "
                           f"{format_duration(elapsed)}", flush=True)
                     if returncode != 0:
-                        with open(log_path, "rb") as log:
-                            tail = log.read().decode(errors="replace").splitlines()
+                        # A harness fault (or a task that raised before opening
+                        # its log) may leave no file. Replay whatever exists;
+                        # never let a missing log crash the whole run.
+                        try:
+                            with open(log_path, "rb") as log:
+                                tail = log.read().decode(
+                                    errors="replace").splitlines()
+                        except OSError as read_error:
+                            tail = [f"(no captured log: {read_error})"]
                         for line in tail[-60:]:
                             print(f"    | {line}", flush=True)
                         if args.fail_fast:

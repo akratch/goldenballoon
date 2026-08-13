@@ -14,10 +14,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Hosted runners are isolated test desktops. Local tools never synthesize
-  # this independent attestation.
-
 concurrency:
   group: correctness-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

@@ -216,6 +216,48 @@ describe("Workers Free hibernation lifecycle", () => {
     controllerSocket.close(1000, "test_complete");
   }, 15_000);
 
+  it("evicts a controller's prior socket when the same identity reconnects",
+      async () => {
+    const created = await post("/api/party/create", {hostPublicKey});
+    expect(created.status).toBe(201);
+    const room = await created.json() as Record<string, string>;
+    const capability = new URL(room.controllerUrl!).hash.slice(1);
+    const redeemed = await post("/api/controller/redeem",
+      {capability, protocol: 1, name: "Phone", controllerPublicKey});
+    expect(redeemed.status).toBe(201);
+    const controller = await redeemed.json() as Record<string, string>;
+
+    const connect = async () => {
+      const res = await SELF.fetch(
+        `https://party.test/api/party/${room.roomId}/connect`, {headers: {origin,
+          upgrade: "websocket",
+          "sec-websocket-protocol":
+            `gb-control-v1, gb-controller.${controller.credential}`}});
+      expect(res.status).toBe(101);
+      return res.webSocket!;
+    };
+
+    const first = await connect();
+    const firstReady = nextMessage(first, "first controller state");
+    first.accept();
+    await firstReady;
+
+    // Reconnecting the same controller identity must close the predecessor so a
+    // stale hibernated peer cannot keep receiving relayed signaling.
+    const evicted = nextClose(first, "evicted controller");
+    const second = await connect();
+    const secondReady = nextMessage(second, "second controller state");
+    second.accept();
+    expect(await secondReady).toMatchObject({type: "controller_state"});
+
+    const close = await evicted;
+    expect(close.code).toBe(4000);
+    expect(close.reason).toBe("duplicate_controller");
+    await settle();
+    expect(await liveSocketCount(partyStub(room.roomId!))).toBe(1);
+    second.close(1000, "test_complete");
+  }, 15_000);
+
   it("announces signaling absence for a final close and never for a replacement",
       async () => {
     const {host, guest} = await matchPair();
@@ -354,6 +396,20 @@ describe("hibernation eligibility properties not observable in this harness", ()
       expect(text, name).not.toMatch(timer);
       expect(text, name).not.toMatch(outbound);
       expect(text, name).not.toMatch(listener);
+    }
+  });
+
+  it("serializes every Durable Object's read-decide-write behind blockConcurrencyWhile", () => {
+    const guard = /this\.ctx\.blockConcurrencyWhile\s*\(/;
+    // Positive control: the matcher must be able to fire and to fail.
+    expect("return this.ctx.blockConcurrencyWhile(() => this.run());").toMatch(guard);
+    expect("await this.ctx.storage.put(key, value);").not.toMatch(guard);
+    // Every DO in this service resolves a stored predecessor across an await
+    // before writing it back; without the guard a concurrent request races it
+    // (code collision, undercounted guess limiter). PartyCodeDirectory was once
+    // the lone omission — keep all four covered.
+    for (const [name, text] of durableObjectSources) {
+      expect(text, name).toMatch(guard);
     }
   });
 

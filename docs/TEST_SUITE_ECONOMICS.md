@@ -891,16 +891,46 @@ change to *how* a gate runs, not to *what* it asserts.
 The runner's sequential rule existed because every task shared one scratch
 save directory. `tools/run_checks.py --jobs N` removes that sharing (each
 pooled task gets its own `MDKR_SAVE_DIR`/`MDKR_TEST_SAVE_DIR` tempdir) and
-pools everything except `SERIAL_ROLES` (instrumented/layout compiles, the
-wasm build, the port-bound browser lane) and `SERIAL_NAMES` (gates whose
-verdict is a wall-clock or host-load measurement: realtime pacing, adopted
-handoffs, replay-cost ceilings). The serial tail runs alone after the pool
-drains, so its measurements see a quiet host. `--jobs 1` is byte-for-byte
-the historical sequential runner. This composes with #2–#4 above — those
-pool arms *within* a task, this pools *between* tasks; the win concentrates
-in the long middle of the manifest where neither role nor name forces
-serialization. Record measured before/after wall-clocks here after each
-release run.
+pools everything except three disjoint serial classes:
+
+- **`SERIAL_ROLES`** — roles that share one build tree or a fixed local port:
+  the instrumented/layout compiles, the wasm module, the port-bound browser
+  lanes, and the single broad `ctest` inventory.
+- **`GPU_SERIAL_NAMES`** — the native/rom/release/asan checks whose *verdict*
+  reads rendered pixels, drives a GPU surface, or opens a WebGPU adapter whose
+  census is the result. These flake under parallel GPU contention (§8 / "GPU
+  gates need a quiet machine"), so they serialize even though their *role*
+  pools. This is the load-bearing distinction: a native/rom/release/asan role
+  is a mix — `state_hash`, the `camera_*_runtime` SIMHASH gates, the audio,
+  save, input and rollback checks are deterministic functions of ROM+input and
+  pool safely, while `framed_world_views`, `world_shadows`, the `taj_*` pixel
+  gates and the presentation-visual checks do not. The set is curated from a
+  read of each script, and `validate_manifest()` re-derives the render-marker
+  set from the sources and **fails closed** if a pooled engine check ever grows
+  a pixel or frame capture without being listed serial — so a future render
+  gate cannot silently rejoin the pool and reintroduce a flake.
+- **`SERIAL_NAMES`** — gates whose verdict is a wall-clock or host-load
+  measurement (realtime pacing, adopted handoffs, replay-cost ceilings).
+
+The serial tail runs alone after the pool drains, so its measurements see a
+quiet host. `--jobs 1` is byte-for-byte the historical sequential runner. The
+pool is additionally capped to what physical RAM can hold (~2 GiB per worker):
+a pooled task can be a full game process and an ASan build's resident set runs
+past a gigabyte, and sizing the pool by `--jobs` alone is what let a loaded run
+get OOM-killed. This composes with #2–#4 above — those pool arms *within* a
+task, this pools *between* tasks; the win concentrates in the long middle of
+the manifest where neither role nor name forces serialization.
+
+**Classification (2026-08-13).** An earlier revision had folded all of
+`rom/native/release/asan` into `SERIAL_ROLES`, which put 192 of 210 tasks back
+on the sequential path and erased the speedup. Restoring the pool for the
+CPU-bound members leaves 105 pooled / 105 serial. **Equivalence evidence, same
+host, `build-rel`:** `math_rotpy`, `math_tables` (native) and
+`asset_swap_invariants` (rom) — all four roles the earlier revision had
+serialized — produced **byte-identical** output pooled (`--jobs 3`) versus
+serial (`--jobs 1`), down to each check's internal FNV hashes, per-angle
+divergence counts, and full 17-line arm body. Record measured before/after
+wall-clocks here after each release run.
 
 Two further items, recorded but not costed:
 

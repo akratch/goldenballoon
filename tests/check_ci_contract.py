@@ -526,13 +526,45 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         failures.append("run_checks does not lower child CPU priority")
     if '["taskpolicy", "-b", "-p", str(os.getpid())]' not in sources["run_checks"]:
         failures.append("run_checks does not enter macOS background scheduling policy")
-    for role in ("ctest", "rom", "native", "release", "asan", "instrumented", "layout",
+    # --jobs serialization policy. The workstation-safety guarantee is a
+    # window-layer property (hidden surfaces, background policy, lowered
+    # priority — all asserted elsewhere in this contract), NOT wholesale
+    # serialization of every engine role. So the contract now pins the precise
+    # policy: the roles that share ONE build tree or a fixed local port stay
+    # serial, and the CPU-bound rom/native/release/asan checks pool with only
+    # their render/GPU/measurement members pulled out by name. Pinning it both
+    # ways catches a regression to blanket serialization (which erases the
+    # speedup) AND an accidental parallelization of a GPU gate (which flakes).
+    serial_roles_block = sources["run_checks"].split(
+        "SERIAL_ROLES = frozenset({", 1)[1].split("})", 1)[0]
+    for role in ("ctest", "instrumented", "layout",
                  "wasm", "browser", "browser_save", "browser_local"):
-        if f'"{role}",' not in sources["run_checks"].split(
-                "SERIAL_ROLES = frozenset({", 1)[1].split("})", 1)[0]:
+        if f'"{role}",' not in serial_roles_block:
             failures.append(
-                f"run_checks must serialize workstation-intensive role {role}"
+                f"run_checks must serialize build-tree/port-sharing role {role}"
             )
+    for role in ("rom", "native", "release", "asan"):
+        if f'"{role}",' in serial_roles_block:
+            failures.append(
+                f"run_checks must NOT serialize role {role} wholesale; its "
+                "CPU-bound checks pool and only its GPU/measurement checks are "
+                "named in GPU_SERIAL_NAMES/SERIAL_NAMES"
+            )
+    # The GPU classification must exist and be fail-closed: a marker-scan
+    # backstop in validate_manifest keeps a pooled engine check that reads
+    # pixels or drives a GPU surface from silently rejoining the pool.
+    if "GPU_SERIAL_NAMES = frozenset({" not in sources["run_checks"]:
+        failures.append(
+            "run_checks must curate GPU_SERIAL_NAMES for render/GPU checks")
+    for representative in ('"framed_world_views"', '"world_shadows"',
+                           '"render_purity"', '"taj_character_select"'):
+        if representative not in sources["run_checks"]:
+            failures.append(
+                f"GPU_SERIAL_NAMES must serialize render gate {representative}")
+    if "GPU_VERDICT_MARKERS" not in sources["run_checks"]:
+        failures.append(
+            "run_checks must keep the fail-closed GPU-marker backstop that "
+            "proves no pooled engine check reads rendered pixels")
     for hint in ("SDL_MAC_BACKGROUND_APP", "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN"):
         if f'"{hint}": "1"' not in sources["run_checks"]:
             failures.append(f"run_checks omits SDL focus fail-safe {hint}=1")

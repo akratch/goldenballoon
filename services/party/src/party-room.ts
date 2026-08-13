@@ -139,6 +139,21 @@ function validNativeHostCommandShape(value: Record<string, unknown>): boolean {
     exactKeys(value, ["action", "type"]);
 }
 
+/* Defence in depth mirroring MatchRoom.validInitialize: /initialize is only
+ * reachable via the internal API, but re-validate the shape inside the DO so a
+ * caller-side bug cannot persist a corrupt room. A non-numeric `now` would make
+ * `expiresAt` NaN, and `Date.now() >= NaN` is always false, so the room would
+ * never be recognised as expired. */
+function validCreateRoomInput(value: CreateRoomInput): boolean {
+  const digest = /^[A-Za-z0-9_-]{43}$/;
+  return Number.isSafeInteger(value.now) && value.now > 0 &&
+    /^[A-Za-z0-9_-]{87}$/.test(value.hostPublicKey) &&
+    digest.test(value.inviteDigest) &&
+    digest.test(value.hostCredentialDigest) &&
+    digest.test(value.fallbackCodeDigest) &&
+    (value.roomId === undefined || /^[A-Za-z0-9_-]{22}$/.test(value.roomId));
+}
+
 function closePartySocket(socket: WebSocket, code: number, reason: string): void {
   try { socket.close(code, reason); }
   catch { /* A broken peer cannot abort state cleanup or another delivery. */ }
@@ -277,6 +292,7 @@ export class PartyRoom extends DurableObject<Env> {
       const existing = await this.room();
       if (existing) return json({error: "already_initialized"}, 409);
       const input = await readJson<CreateRoomInput>(request);
+      if (!validCreateRoomInput(input)) return json({error: "invalid_room"}, 400);
       const room: StoredRoom = {
         version: 2, ...(input.roomId ? {roomId: input.roomId} : {}),
         phase: "open", createdAt: input.now,
@@ -418,6 +434,19 @@ export class PartyRoom extends DurableObject<Env> {
       } catch {
         return json({error: "invalid_bootstrap"}, 400);
       }
+    }
+    // A controller reconnect (flaky network, forced reload, tab takeover) must
+    // not leave its prior socket registered. The signaling relay fans a
+    // `to: controllerId` message to every socket matching the id, so a stale
+    // hibernated peer would keep receiving live offers/ICE meant for the fresh
+    // session, and would hold a socket for the room's whole TTL. Evict the
+    // predecessor before accepting the new socket — mirroring MatchRoom.
+    // webSocketClose is a no-op, so this is pure socket cleanup with no state
+    // effect, and the new socket is not yet in the set so it cannot self-close.
+    // Host sockets are intentionally not evicted here: the native host's
+    // create-socket and its reconnect socket legitimately coexist.
+    if (attachment.role === "controller" && attachment.controllerId) {
+      this.closeControllerSockets(attachment.controllerId, "duplicate_controller");
     }
     const pair = new WebSocketPair();
     const client = pair[0];

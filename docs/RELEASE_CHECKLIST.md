@@ -134,13 +134,23 @@ python3 tools/run_checks.py --jobs 6 \
   --wasm build-web/mdkr64_web.wasm
 ```
 
-`--jobs` pools only source/static work. Compiled CTest and every role that can
-start the game, a renderer, an instrumented binary, or a browser are serialized
-after that pool drains. Wall-clock/host-load gates are serialized by name as well —
-see `SERIAL_ROLES`/`SERIAL_NAMES` in the runner. Each pooled task gets its own
-scratch save directory, so the historical "several checks share
-`save/eeprom.bin`" constraint no longer forces the whole manifest through one
-lane. A `--jobs` run is still the complete suite: the verdict line stays
+`--jobs` pools the CPU-bound work — the `source` checks and the native/rom/
+release/asan checks whose verdict is a deterministic function of the ROM and
+inputs (audio, save, state-hash, input, rollback, numeric camera geometry,
+progression). Three classes stay serial and run after the pool drains:
+build-tree- or port-sharing roles (`ctest`, the instrumented/layout compiles,
+the wasm module, and every browser lane — `SERIAL_ROLES`); the render/GPU
+checks whose verdict reads rendered pixels or drives a GPU surface, which flake
+under parallel GPU contention (`GPU_SERIAL_NAMES`); and the wall-clock/host-load
+measurement gates (`SERIAL_NAMES`). Those three sets in the runner are the
+authority. `validate_manifest()` fail-closes if a pooled engine check ever
+grows a pixel/frame capture without being listed as serial, so a new render
+gate cannot silently rejoin the pool. The pool is additionally capped to what
+physical RAM can hold (~2 GiB/worker) so a high `--jobs` cannot OOM the host.
+Each pooled task gets its own scratch save directory, so the historical
+"several checks share `save/eeprom.bin`" constraint no longer forces the whole
+manifest through one lane. A `--jobs` run is still the complete suite: the
+verdict line stays
 `complete suite, N/N tasks`. If any pooled task fails in a way that smells
 like host contention rather than a code defect, re-run that task alone
 (`--only <name>`) before treating it as a regression — the same discipline

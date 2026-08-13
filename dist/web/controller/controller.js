@@ -1049,8 +1049,8 @@
           if (controlStableTimer !== null) clearTimeout(controlStableTimer);
           controlStableTimer = null;
           if (event.code === 4000 &&
-              ["approval_rejected", "seat_reclaimed", "host_closed", "room_expired"]
-                .includes(event.reason)) {
+              ["approval_rejected", "seat_reclaimed", "host_closed", "room_expired",
+               "duplicate_controller"].includes(event.reason)) {
             controlGeneration++;
             clearControlTimers();
             showError(event.reason);
