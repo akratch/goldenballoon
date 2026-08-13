@@ -392,7 +392,7 @@ void drawNavigation(int &activePanel, LauncherState &state,
     drawPrimaryLauncherAction(
         state, ImVec2(-1, ui::kBtnPrimary().y));
 
-    if (ImGui::Button("Quit", ImVec2(-1, ui::kBtnSecondary().y))) {
+    if (ImGui::Button("Quit", ui::kBtnFullWidth())) {
         action.type = LauncherActionType::Quit;
     }
     measuredFooterHeight = measuredRegionHeight(footerTop, footerContentTop);
@@ -640,7 +640,7 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
                 ImGui::GetContentRegionAvail().x,
                 ImGui::GetStyle().ItemSpacing.x,
                 ui::kBtnSecondary().x, ui::kBtnSecondary().x,
-                140.0f * AppTheme::uiScale());
+                ui::kPairMinWidth());
             const ImVec2 first(actions.firstWidth, ui::kBtnSecondary().y);
             const ImVec2 second(actions.secondWidth, ui::kBtnSecondary().y);
             if (ImGui::Button("View Diagnostics", first)) {

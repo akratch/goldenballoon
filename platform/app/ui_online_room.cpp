@@ -431,14 +431,13 @@ void drawLeaveRaceConfirmation(LauncherState &state) {
         "The race keeps running for your friends. This display will stop the "
         "game and leave the private room.");
     ui::Gap(ui::kGapS);
-    if (ImGui::Button("Keep Racing", ImVec2(-1.0f, ui::kBtnSecondary().y))) {
+    if (ImGui::Button("Keep Racing", ui::kBtnFullWidth())) {
         g_online.leaveRaceConfirm = false;
     }
     ui::SpeakFocusedItem("Keep Racing", "Recommended",
                          "Closes this confirmation without changing the race.");
     ui::Gap(ui::kGapS);
-    if (ImGui::Button("Leave Race and Room",
-                      ImVec2(-1.0f, ui::kBtnSecondary().y))) {
+    if (ImGui::Button("Leave Race and Room", ui::kBtnFullWidth())) {
         handleAction(MDKR_ONLINE_VIEW_ACTION_LEAVE_RACE, state);
     }
     ui::SpeakFocusedItem(
@@ -521,8 +520,7 @@ void drawFakePanel(LauncherState &state) {
     if (model.kind == MDKR_ONLINE_VIEW_RACING) {
         ui::Gap(ui::kGapM);
         ImGui::BeginDisabled(!g_online.adapter.race_admission_enabled);
-        if (ImGui::Button("Finish Preview Race",
-                          ImVec2(-1.0f, ui::kBtnSecondary().y))) {
+        if (ImGui::Button("Finish Preview Race", ui::kBtnFullWidth())) {
             mdkr_online_fake_finish_race(
                 &g_online.adapter, g_online.adapter.revision);
         }

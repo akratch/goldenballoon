@@ -233,7 +233,7 @@ void drawDropZone(bool haveRom) {
     const ImVec4 accent = AppTheme::accent();
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(accent.x, accent.y, accent.z, 0.45f));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
-    ImGui::BeginChild("##dropzone", ImVec2(0, 86 * AppTheme::uiScale()), true);
+    ImGui::BeginChild("##dropzone", ImVec2(0, ui::kDropZoneHeight()), true);
     {
         ImGui::PushFont(AppTheme::fonts().title);
         ImGui::PushStyleColor(ImGuiCol_Text, accent);
@@ -800,7 +800,7 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
             ImGui::GetContentRegionAvail().x,
             ImGui::GetStyle().ItemSpacing.x,
             ui::kBtnSecondary().x, ui::kBtnSecondary().x,
-            140.0f * AppTheme::uiScale());
+            ui::kPairMinWidth());
         const ImVec2 cancelSize(actions.firstWidth, ui::kBtnSecondary().y);
         const ImVec2 forgetSize(actions.secondWidth, ui::kBtnSecondary().y);
         if (ImGui::Button("Cancel", cancelSize)) {
