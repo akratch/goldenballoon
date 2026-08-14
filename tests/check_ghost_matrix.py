@@ -283,6 +283,14 @@ def run_child(binary: str, rom: str, script: str, save_dir: str, level: int,
     env["MDKR_SIMULATION_CADENCE"] = arm.cadence
     env["MDKR_SYNTH_FIELDS"] = arm.synth_fields
     env["MDKR_AUTOPILOT"] = "1"      # drive with DKR's own AI
+    # The autopilot inherits the AI's stuck-recovery cooldown deadlock
+    # (racer.c unk215; see mdkr_autopilot_unstick). 19:hovercraft wedges
+    # deterministically at checkpoint 26 on both pre- and post-campaign
+    # trees -- pre-campaign only escaped by cadence luck on the retry arm.
+    # Unscoped opt-in, same as check_race_multiplayer: any cell of a
+    # twenty-track matrix may wedge, and this gate's subject is ghosts,
+    # not wedge geography.
+    env["MDKR_AUTOPILOT_UNSTICK"] = "1"
     env["MDKR_TRACE"] = "1"          # emit [PACE] and [TTGHOST]
     env["MDKR_LOAD_TRACK"] = f"{level}:{vehicle}"
     save_env(env, save_dir)

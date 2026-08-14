@@ -1141,9 +1141,16 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
 #define MDKR_UNSTICK_EPSILON 1.0f
 #define MDKR_UNSTICK_FRAMES 120
 #define MDKR_UNSTICK_PLAYERS 4
+#define MDKR_UNSTICK_RACERS 8
+/* A wedged kart may still BOB: the 19:hovercraft pin oscillates more than ten
+ * units vertically in place, defeating any stillness test that includes y and
+ * every velocity gate in the game's own detector. A genuine fall, by
+ * contrast, descends far beyond this band inside one window. */
+#define MDKR_UNSTICK_Y_BAND 30.0f
 
 typedef struct MdkrAutopilotUnstickState {
     f32 anchorX;
+    f32 anchorY;
     f32 anchorZ;
     s32 immobile;
     s32 initialized;
@@ -1179,6 +1186,39 @@ typedef struct MdkrAutopilotUnstickState {
  * and a new wedge site elsewhere then fails to be rescued instead of being
  * silently absorbed.
  */
+/*
+ * Fire the exact recovery racer_AI_pathing_inputs() would have fired had its
+ * detector been able to see the kart. The detector's re-arm gate requires
+ * velocity > -1.0 AND groundedWheels (racer.c): a hovercraft pinned against
+ * scenery BOBS -- ten-plus units of vertical oscillation, wheels never
+ * grounded -- so both conditions hold false forever and the kart stands at
+ * checkpoint 26 for the rest of the race with its cooldown at zero. The
+ * values and the AI-line rotation below are the detector's own arm block,
+ * verbatim; challenge arenas keep their different node semantics and are
+ * left alone. Deterministic: a function of authoritative state only.
+ */
+static void mdkr_unstick_force_recovery(Object *obj, Object_Racer *racer,
+                                        const char *who, s32 label) {
+    if (racer->unk214 != 0) {
+        return;              /* already reversing: let it run */
+    }
+    if (level_type() & RACETYPE_CHALLENGE) {
+        return;
+    }
+    if (mdkr_trace_enabled()) {
+        mdkr_trace("%s: racer=%d wedged at (%.1f, %.1f, %.1f) checkpoint=%d "
+                   "cooldown=%d -> forced reverse-out @frame~%d",
+                   who, (int) label,
+                   obj->trans.x_position, obj->trans.y_position,
+                   obj->trans.z_position, (int) racer->courseCheckpoint,
+                   (int) racer->unk215, g_frameCounter);
+    }
+    racer->unk213 = 0;
+    racer->unk214 = 60;
+    racer->unk215 = 120;
+    racer->unk1CA = (racer->unk1CA + 1) & 3;
+}
+
 void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     static s32 sUnstickOn = -1;
     static s32 sUnstickLevel = -1;
@@ -1188,6 +1228,7 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     s32 levelId;
     s32 playerIndex;
     f32 dx;
+    f32 dy;
     f32 dz;
 
     if (sUnstickOn < 0) {
@@ -1212,6 +1253,7 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     state = &sState[playerIndex];
     if (!state->initialized) {
         state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
         state->anchorZ = obj->trans.z_position;
         state->immobile = 0;
         state->initialized = TRUE;
@@ -1235,30 +1277,39 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
     if ((sUnstickLevel >= 0 && levelId != sUnstickLevel) ||
         mdkr_adv_slot_for(levelId) >= 0 || racer->courseCheckpoint <= 0) {
         state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
         state->anchorZ = obj->trans.z_position;
         state->immobile = 0;
         return;
     }
 
-    /* The countdown, a finished racer, an airborne kart and a kart whose input
-     * the game has taken away (results screen, dialogue, cutscene) are all
-     * legitimate reasons to be going nowhere -- and in every one of them the
-     * game's own recovery is still free to run, so there is no deadlock to
-     * break. Measured: without the gRacerInputBlocked guard the hook fires
-     * harmlessly but pointlessly 38 more times while the kart is parked on the
-     * post-race results screen. */
-    if (gRaceStartTimer != 0 || racer->raceFinished || !racer->groundedWheels ||
-        gRacerInputBlocked) {
+    /* The countdown, a finished racer and a kart whose input the game has
+     * taken away (results screen, dialogue, cutscene) are all legitimate
+     * reasons to be going nowhere -- and in every one of them the game's own
+     * recovery is still free to run, so there is no deadlock to break.
+     * Airborne karts are handled by the three-axis stillness test below
+     * rather than a groundedWheels gate: a falling kart moves in y, and a
+     * hovercraft's wheels are NEVER grounded, so the wheel gate silently
+     * excluded that whole vehicle class (the 19:hovercraft wedge sat at
+     * checkpoint 26 for 11,000+ frames with this hook enabled and inert).
+     * Measured: without the gRacerInputBlocked guard the hook fires
+     * harmlessly but pointlessly 38 more times while the kart is parked on
+     * the post-race results screen. */
+    if (gRaceStartTimer != 0 || racer->raceFinished || gRacerInputBlocked) {
         state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
         state->anchorZ = obj->trans.z_position;
         state->immobile = 0;
         return;
     }
 
     dx = obj->trans.x_position - state->anchorX;
+    dy = obj->trans.y_position - state->anchorY;
     dz = obj->trans.z_position - state->anchorZ;
-    if (((dx * dx) + (dz * dz)) >= (MDKR_UNSTICK_EPSILON * MDKR_UNSTICK_EPSILON)) {
+    if (((dx * dx) + (dz * dz)) >= (MDKR_UNSTICK_EPSILON * MDKR_UNSTICK_EPSILON) ||
+        dy > MDKR_UNSTICK_Y_BAND || dy < -MDKR_UNSTICK_Y_BAND) {
         state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
         state->anchorZ = obj->trans.z_position;
         state->immobile = 0;
         return;
@@ -1269,17 +1320,82 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
         return;
     }
     state->immobile = 0;
-    if (racer->unk215 != 0) {
-        if (mdkr_trace_enabled()) {
-            mdkr_trace("autopilotunstick: player=%d level=%d wedged at (%.1f, %.1f, %.1f) checkpoint=%d "
-                       "cooldown=%d -> 0 @frame~%d",
-                       (int) playerIndex + 1, (int) levelId,
-                       obj->trans.x_position, obj->trans.y_position,
-                       obj->trans.z_position, (int) racer->courseCheckpoint,
-                       (int) racer->unk215, g_frameCounter);
-        }
-        racer->unk215 = 0;
+    mdkr_unstick_force_recovery(obj, racer, "autopilotunstick", playerIndex + 1);
+}
+
+/*
+ * The PRODUCTION half of the same deadlock, for genuine CPU opponents.
+ *
+ * racer_AI_pathing_inputs()'s recovery cooldown (unk215) decays only while
+ * the kart is driving forward at speed, so an opponent that comes to rest
+ * against on-track scenery with the cooldown armed can never re-arm its own
+ * reverse-out: it stands still for the rest of the race, in front of the
+ * player. tests/check_ai_unstick_opponents.py measured 23 natural episodes
+ * across 32 seeded races and every one cleared -- but every clearing ran
+ * through DKR's out-of-bounds respawn, which an ON-TRACK wedge never
+ * triggers. The 19:hovercraft ghost fixture then produced exactly that
+ * on-track wedge deterministically (11,000+ frames motionless at checkpoint
+ * 26, both trees, both cadences on the current one), closing the
+ * docs/open-items/gameplay.md classification question: this is a
+ * player-visible defect, not a harness inconvenience.
+ *
+ * Same provable-immobility criterion as the autopilot hook above -- moved
+ * less than MDKR_UNSTICK_EPSILON in all three axes across
+ * MDKR_UNSTICK_FRAMES of update-rate, demonstrably mid-race (checkpoint >
+ * 0), unfinished, with the clock running and input not blocked -- and the
+ * same minimal
+ * action: zero the cooldown and let the game's own recovery do the driving.
+ * Deterministic (a function of authoritative state only), so replay and
+ * rollback see one behaviour. Always on for CPU racers: an opponent parked
+ * for two laps is a defect on every configuration, and the measured natural
+ * episodes (peak transient stall 229 update units, airborne) cannot trip a
+ * grounded 120-unit stillness rule.
+ */
+void mdkr_cpu_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
+    static MdkrAutopilotUnstickState sCpuState[MDKR_UNSTICK_RACERS];
+    MdkrAutopilotUnstickState *state;
+    s32 racerIndex;
+    f32 dx;
+    f32 dy;
+    f32 dz;
+
+    racerIndex = racer->racerIndex;
+    if (racerIndex < 0 || racerIndex >= MDKR_UNSTICK_RACERS) {
+        return;
     }
+    state = &sCpuState[racerIndex];
+    if (!state->initialized) {
+        state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
+        state->initialized = TRUE;
+    }
+    if (racer->courseCheckpoint <= 0 || gRaceStartTimer != 0 ||
+        racer->raceFinished || gRacerInputBlocked) {
+        state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
+        return;
+    }
+    dx = obj->trans.x_position - state->anchorX;
+    dy = obj->trans.y_position - state->anchorY;
+    dz = obj->trans.z_position - state->anchorZ;
+    if (((dx * dx) + (dz * dz)) >= (MDKR_UNSTICK_EPSILON * MDKR_UNSTICK_EPSILON) ||
+        dy > MDKR_UNSTICK_Y_BAND || dy < -MDKR_UNSTICK_Y_BAND) {
+        state->anchorX = obj->trans.x_position;
+        state->anchorY = obj->trans.y_position;
+        state->anchorZ = obj->trans.z_position;
+        state->immobile = 0;
+        return;
+    }
+    state->immobile += updateRate;
+    if (state->immobile < MDKR_UNSTICK_FRAMES) {
+        return;
+    }
+    state->immobile = 0;
+    mdkr_unstick_force_recovery(obj, racer, "cpuunstick", racerIndex);
 }
 
 /* ------------------------------------------- trophy rankings test boundary */

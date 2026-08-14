@@ -4789,6 +4789,13 @@ void update_player_racer(Object *obj, s32 updateRate) {
          * is the one every genuine CPU racer takes. See
          * tests/check_ai_unstick_opponents.py. */
         if (!networkAiTakeover) ai_stuck_trace(obj, tempRacer, updateRate);
+        /* And the production repair for the deadlock that witness documents:
+         * an opponent provably motionless mid-race with a hot recovery
+         * cooldown gets the cooldown zeroed so DKR's own reverse-out can run.
+         * On-track wedges have no other exit -- the out-of-bounds respawn
+         * that cleared every naturally-measured episode never fires there.
+         * See mdkr_cpu_unstick() for the criterion and the evidence. */
+        if (!networkAiTakeover) mdkr_cpu_unstick(obj, tempRacer, updateRate);
 #endif
     } else {
 #ifdef NATIVE_PORT

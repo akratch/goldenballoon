@@ -5,6 +5,7 @@
 
 void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate);
 void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate);
+void mdkr_cpu_unstick(Object *obj, Object_Racer *racer, s32 updateRate);
 void mdkr_adventure_force_verdict(Object *humanObj, Object **racers,
                                   s32 numRacers);
 void mdkr_trophy_control_order(Settings *settings, s32 round, s32 racerCount);
