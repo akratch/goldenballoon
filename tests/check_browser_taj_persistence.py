@@ -228,11 +228,10 @@ def run(args: argparse.Namespace) -> None:
                 f"expected {RELOAD_SCRIPT_ENTRIES}",
             )
             # The extensible-roster work (playable Wizpig and Terry) replaced
-            # the taj_roster trace with mod_roster; this save has only Taj
-            # unlocked, so the two later bonus racers stay disabled.
-            wait_console(cdp, "mod_roster: base=10 count=13 taj=10 wizpig=11 "
-                              "terry=12 taj_enabled=1 wizpig_enabled=0 "
-                              "terry_enabled=0",
+            # the taj_roster trace with mod_roster. Measured on this fixture's
+            # fresh save: only Taj is present and enabled; the locked bonus
+            # racers are absent from the roster entirely (wizpig/terry -1).
+            wait_console(cdp, "mod_roster: base=8 count=9 taj=8 wizpig=-1 terry=-1 taj_enabled=1 wizpig_enabled=0 terry_enabled=0 drumstick=0 tt=0",
                          args.timeout, start)
             reload_console = cdp.console[start:]
             require(not any("magic_code_submit: accepted=1" in line
