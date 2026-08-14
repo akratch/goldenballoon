@@ -260,12 +260,20 @@ const delayedRotateSecret = boundary.ingest(delayedRotateWire,
   advancedWithoutSecret.state, null, compatibility, origin, now, 2);
 assert.equal(delayedRotateSecret.obsolete, true);
 assert.equal(delayedRotateSecret.state, null);
-// Tied publication: not newer, so it installs nothing. Nothing was held here,
-// so custody stays empty rather than picking up the delayed response's secret.
-assert.equal(delayedRotateSecret.invite, null,
-  "a delayed response that ties on every ordering pair installs no secret");
-// The refusal above is about differing content under tied counters, not about
-// delay itself: re-delivering the identical held secret stays idempotent.
+// The awaited rotate response: expectedInviteResponseGeneration is passed
+// ONLY by the in-flight rotate merge (everything else passes 0, refused
+// above), and it can only equal the room's CURRENT generation, so this wire
+// is the response the caller is awaiting -- the one valid copy of a secret
+// whose public counters it lost the HTTP/WebSocket race to. Refusing it
+// destroyed the fresh secret and stranded the leader on the expiry recovery
+// panel (measured: match_room's raced-rotation arm). Older generations stay
+// refused below; leadership-changed priors stay refused by the prior-state
+// leader guard.
+assert.ok(delayedRotateSecret.invite,
+  "the awaited rotate response restores the current generation's secret");
+assert.equal(delayedRotateSecret.invite.fallbackCode, "654321");
+assert.equal(delayedRotateSecret.invite.inviteGeneration, 2);
+// Re-delivering the identical held secret stays idempotent.
 const tiedIdenticalRedelivery = boundary.ingest(createWire(),
   created.state, created.invite, compatibility, origin, now, 1);
 assert.equal(tiedIdenticalRedelivery.obsolete, false);
