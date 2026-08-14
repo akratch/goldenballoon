@@ -198,6 +198,10 @@ CAMERA_OBSTRUCTION_RE = re.compile(
     r"(?:comfort=\w+ )?"
     r"duplicates=(\d+) projection_mismatches=(\d+) "
     r"resolved=\{corrected=(\d+) penetrated=(\d+) invalid=(\d+) degraded=(\d+)\} "
+    # probe_degraded landed between resolved={} and target_hidden with the
+    # scoped degradation-veto work; optional so the regex still reads the
+    # summary of an engine that predates it.
+    r"(?:probe_degraded=\d+ )?"
     r"target_hidden=(\d+) target_embedded=(\d+) depenetrate_only=(\d+) "
     r"(?:safety_only=\d+ )?"
     r"emergency=(\d+)"
