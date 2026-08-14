@@ -274,6 +274,12 @@ def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
             MDKR_TRACE="1",
             MDKR_AUTOPILOT="1",
             MDKR_DRIVE_ROUTE=DRIVE_ROUTE,
+            # Closed-loop post-race selection (menu.c POSTRACE_STAGE_OPTIONS).
+            # Row 1 is RETURNTOLOBBY on both verdicts (row 0 = try again,
+            # row 2 = quit adventure entirely, measured).  Without this, the
+            # return-to-lobby leg rode on open-loop tap timing and the loss
+            # arm measured BOTH outcomes across two trees.
+            MDKR_TEST_POSTRACE_OPTION="1",
         )
         if verdict == "win":
             env["MDKR_ADVENTURE_WIN"] = "1"

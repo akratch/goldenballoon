@@ -13512,6 +13512,48 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
                                (int) tracedHasGhost);
                 }
             }
+            /*
+             * Closed-loop option selection for fixtures.
+             * MDKR_TEST_POSTRACE_OPTION=<row> moves the highlight to <row>
+             * and confirms on the following frame, driven from the menu's
+             * own live state -- never from a frame number. The
+             * [TTGHOST] trace above already tells fixtures WHERE the options
+             * are; this is the matching hand on the stick. The open-loop
+             * alternative, blind DOWN/A taps on a fixed grid, selects
+             * whichever row the timing lottery lands on: the adventure loss
+             * arm measured BOTH outcomes across two trees. If the chosen
+             * row opens the quit confirm sub-dialog, the second value in
+             * MDKR_TEST_POSTRACE_OPTION=<row>:<sub> is steered the same
+             * way. Inert unless set, clamped, this stage only.
+             */
+            {
+                extern char *getenv(const char *);
+                const char *wantSpec = getenv("MDKR_TEST_POSTRACE_OPTION");
+                if (wantSpec != NULL && wantSpec[0] >= '0' &&
+                    wantSpec[0] <= '9' && gResultOptionCount > 0) {
+                    s32 want = wantSpec[0] - '0';
+                    if (want >= gResultOptionCount) {
+                        want = gResultOptionCount - 1;
+                    }
+                    if (gMenuSubOption == 1 || gMenuSubOption == 2) {
+                        /* Quit confirm sub-dialog: row 1 = yes, row 2 = no
+                         * (selecting QUIT opens it on 2).  Default to yes --
+                         * a fixture that steered to QUIT wants to leave, and
+                         * steering to "no" just reopens the options list. */
+                        s32 wantSub = (wantSpec[1] == ':' &&
+                                       (wantSpec[2] == '1' || wantSpec[2] == '2'))
+                                          ? wantSpec[2] - '0'
+                                          : 1;
+                        gMenuSubOption = wantSub;
+                        buttonsPressed = A_BUTTON;
+                    } else if (gMenuOption != want) {
+                        gMenuOption = want;
+                        buttonsPressed = 0;
+                    } else {
+                        buttonsPressed = A_BUTTON;
+                    }
+                }
+            }
 #endif
             if (gTracksSaveGhost) {
                 gTracksSaveGhost++;

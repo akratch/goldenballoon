@@ -529,6 +529,14 @@ static s32 sAdvStepIdx[MDKR_ADV_MAX_LEVELS];
 static s32 sAdvLevel = -2;
 static s32 sAdvPrevSlot = -1;
 static f32 sAdvBestDist = 1.0e30f;
+static s32 sAdvProgressSeen = 0; /* closed any distance since the level loaded */
+static f32 sAdvExitDist = 1.0e30f; /* live distance to the active EXIT step's door */
+
+/* "The kart was at the door it was steering at" for exit retirement, in world
+ * units.  Measured: a kart swallowed by the door it is driving into is within
+ * ~150 units of the exit object; the post-race respawn that fell into the
+ * ADJACENT race door was 2667+ units from its own step's target. */
+#define MDKR_ADV_EXIT_NEAR 300.0f
 static s32 sAdvStall = 0;
 static s32 sAdvReverse = 0;
 static s32 sAdvHalt = 0; /* update-rate units the active H<frames> step has held */
@@ -864,19 +872,40 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
          * the race on the way in and back to Timber's Island on the way out. */
         if (sAdvPrevSlot >= 0 && sAdvStepIdx[sAdvPrevSlot] < sAdvLevels[sAdvPrevSlot].count &&
             sAdvLevels[sAdvPrevSlot].step[sAdvStepIdx[sAdvPrevSlot]].kind == MDKR_ADV_EXIT) {
-            if (mdkr_trace_enabled()) {
-                mdkr_trace("drive: level=%d step %d: exit to %d TAKEN (now in level %d) @frame~%d",
+            /* Only an exit the kart actually went through retires the step:
+             * either the loaded course IS the step's destination, or the kart
+             * was standing at its own door when the level changed (the boss
+             * door interposes a cutscene course -- E38 loads courseId 57
+             * first -- so destination alone cannot decide).  A level change
+             * with the kart nowhere near its door (fell into an adjacent
+             * door, post-race warp) leaves the step armed so it steers again
+             * on the next visit -- retiring blind here once produced the
+             * self-refuting "exit to 0 TAKEN (now in level 5)" and wedged
+             * the route. */
+            if (sAdvLevels[sAdvPrevSlot].step[sAdvStepIdx[sAdvPrevSlot]].id == levelId ||
+                sAdvExitDist <= MDKR_ADV_EXIT_NEAR) {
+                if (mdkr_trace_enabled()) {
+                    mdkr_trace("drive: level=%d step %d: exit to %d TAKEN (now in level %d) @frame~%d",
+                               (int) sAdvLevels[sAdvPrevSlot].levelId, (int) sAdvStepIdx[sAdvPrevSlot],
+                               (int) sAdvLevels[sAdvPrevSlot].step[sAdvStepIdx[sAdvPrevSlot]].id, (int) levelId,
+                               g_frameCounter);
+                }
+                sAdvStepIdx[sAdvPrevSlot]++;
+            } else if (mdkr_trace_enabled()) {
+                mdkr_trace("drive: level=%d step %d: exit to %d MISFIRED (now in level %d, door %.0f units away) "
+                           "-- step stays armed @frame~%d",
                            (int) sAdvLevels[sAdvPrevSlot].levelId, (int) sAdvStepIdx[sAdvPrevSlot],
                            (int) sAdvLevels[sAdvPrevSlot].step[sAdvStepIdx[sAdvPrevSlot]].id, (int) levelId,
-                           g_frameCounter);
+                           sAdvExitDist, g_frameCounter);
             }
-            sAdvStepIdx[sAdvPrevSlot]++;
         }
         sAdvLevel = levelId;
         sAdvPrevSlot = mdkr_adv_slot_for(levelId);
         sAdvBestDist = 1.0e30f;
+        sAdvExitDist = 1.0e30f;
         sAdvStall = 0;
         sAdvReverse = 0;
+        sAdvProgressSeen = 0;
         sAdvBossRouteAnnounced = 0;
         if (sAdvObjdump && mdkr_trace_enabled()) {
             mdkr_adv_dump_level(levelId);
@@ -1095,10 +1124,36 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     dz = tz - obj->trans.z_position;
     dist = sqrtf((dx * dx) + (dz * dz));
 
-    /* Stall detection, purely frame-count driven so it stays deterministic. */
-    if (dist < sAdvBestDist - 1.0f) {
+    if (st->kind == MDKR_ADV_EXIT) {
+        /* Feeds exit retirement above: was the kart at its own door when the
+         * level changed?  Holds its last value through the exit fade (the
+         * door object is freed before the load, so this tick stops running). */
+        sAdvExitDist = dist;
+    }
+
+    /* Stall detection, purely frame-count driven so it stays deterministic.
+     * Two situations are legitimate zero-progress and must not run the clock:
+     *
+     *  - The game is refusing input (gRacerInputBlocked: dialogue, results) --
+     *    the same guard the unstick hooks use.
+     *  - A level-entry cinematic still owns the kart and it has never yet
+     *    closed any distance this visit.  The post-race return pan
+     *    (cutscene 100) holds the kart aloft in the race-door alcove for
+     *    ~95 frames with the stick honored but inert; counting those frames
+     *    tripped the stall exactly at landing and the recovery reverse
+     *    backed the kart the 92 units into the door it respawned at,
+     *    re-entering the race.  cutscene_id() stays at the load's id for
+     *    the whole visit, so it is gated behind first-progress: once the
+     *    kart closes 1 unit the clock arms and mid-route stalls are caught
+     *    exactly as before.  Measured with the reverse suppressed: the held
+     *    kart lands, drives out, and takes the island exit cleanly. */
+    if (gRacerInputBlocked || (!sAdvProgressSeen && cutscene_id() != 0)) {
         sAdvBestDist = dist;
         sAdvStall = 0;
+    } else if (dist < sAdvBestDist - 1.0f) {
+        sAdvBestDist = dist;
+        sAdvStall = 0;
+        sAdvProgressSeen = 1;
     } else {
         sAdvStall += updateRate;
     }
@@ -1123,10 +1178,10 @@ void mdkr_adventure_drive(Object *obj, Object_Racer *racer, s32 updateRate) {
     if (sAdvVerbose && mdkr_trace_enabled() && (g_frameCounter % 30) == 0) {
         f32 dy = (target != NULL) ? (target->trans.y_position - obj->trans.y_position) : 0.0f;
         mdkr_trace("drive: level=%d step=%d kind=%d id=%d target=(%.0f, %.0f) pos=(%.0f, %.0f, %.0f) dist=%.1f "
-                   "dy=%.1f stick=%d rev=%d vel=%.1f blk=%d",
+                   "dy=%.1f stick=%d rev=%d vel=%.1f blk=%d cs=%d",
                    (int) levelId, (int) sAdvStepIdx[slot], (int) st->kind, (int) st->id, tx, tz, obj->trans.x_position,
                    obj->trans.y_position, obj->trans.z_position, dist, dy, (int) gCurrentStickX, (int) sAdvReverse,
-                   racer->velocity, (int) textbox_visible());
+                   racer->velocity, (int) textbox_visible(), (int) cutscene_id());
     }
 }
 
