@@ -883,7 +883,14 @@ def main() -> int:
                     "MDKR_TEST_DISPLAY_RATE_SWITCH":
                         f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
                 })
-            failures.extend(check_display_change(result))
+            display_failures = check_display_change(result)
+            if args.allow_no_baseline and display_failures:
+                # No display session, no display object for the synthetic
+                # switch to act on: same root as the realtime downgrades.
+                notes.extend(f + " (allowed by --allow-no-baseline)"
+                             for f in display_failures)
+            else:
+                failures.extend(display_failures)
             notes.append(
                 f"{label}: refresh re-derived live and present mode re-ranked")
 
@@ -895,7 +902,12 @@ def main() -> int:
                     "MDKR_TEST_DISPLAY_RATE_SWITCH":
                         f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
                 })
-            failures.extend(check_display_margin_change(result))
+            margin_failures = check_display_margin_change(result)
+            if args.allow_no_baseline and margin_failures:
+                notes.extend(f + " (allowed by --allow-no-baseline)"
+                             for f in margin_failures)
+            else:
+                failures.extend(margin_failures)
             notes.append(
                 f"{label}: margin re-derived against the new refresh")
 

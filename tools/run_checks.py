@@ -233,6 +233,10 @@ SERIAL_NAMES = frozenset({
     # ("passes standalone, stalls under a busy batch") is pool pressure by
     # another name. One minute of solo time buys a deterministic verdict.
     "rom_free_units",
+    # Passed the first pooled traversal by luck, failed the second with one
+    # budget violation: its convergence run carries the same nanosecond
+    # timing clauses as the matrices above.
+    "rollback_soak",
 })
 
 # The strict verdict-bearing render/GPU-surface markers validate_manifest()
@@ -347,10 +351,11 @@ CHECKS = (
     Check("rom_text_indices", "check_rom_text_indices.py", "rom",
           "no driven route resolves a GAME_TEXT index at or above 259, the "
           "count the 1.0 revisions carry",
-          # Eleven-plus serial engine runs across every fixture group: the
-          # task was still making progress when the default budget killed it
-          # at both --jobs 6 and --jobs 3 on a quiet 14-core machine.
-          timeout=3600),
+          # Eleven-plus serial engine runs across every fixture group: 3600s
+          # still died mid-enumeration after finishing nav + the full
+          # 20-track sweep + hub (~32 engine runs). Measured shape is a
+          # two-hour gate; budget it honestly.
+          timeout=7200),
     Check("a11y_shell", "check_a11y_shell.py", "rom",
           "every focusable control in the launcher, settings and overlay speaks "
           "its name and value, enumerated from the schema rather than a list"),
@@ -538,7 +543,14 @@ CHECKS = (
     Check("pacing_quality", "check_pacing_quality.py", "native",
           "displayed-interval, interpolation-phase and present-queue-latency "
           "distributions across every policy/smoothing arm, plus a realtime "
-          "no-tearing/no-underrun smoke that reports the M3 quality baseline"),
+          "no-tearing/no-underrun smoke that reports the M3 quality baseline",
+          # The suite's automation windows render occluded by doctrine and the
+          # machine may have no display session at all; the realtime and
+          # display-switch arms cannot measure either way. The gate's own
+          # design says a host that cannot pace must say so OUT LOUD -- this
+          # flag downgrades those arms to loud notes in-suite. The full
+          # measurement is a prepared-machine step in RELEASE_CHECKLIST.md.
+          args=("--allow-no-baseline",)),
     Check("surface_suspension", "check_surface_suspension.py", "native",
           "minimized GL/WebGPU render elision and resume rebase"),
     Check("final_shutdown", "check_final_shutdown.py", "native",

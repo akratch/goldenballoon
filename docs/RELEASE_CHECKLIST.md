@@ -243,6 +243,24 @@ Do not add `--expect-fail 9`: the historical level-9 failure no longer reproduce
 and both math arms complete that track. Keeping the stale exception would allow a
 new regression on exactly that track to pass the release gate.
 
+## 3a. Realtime pacing measurement — prepared machine, human present
+
+The suite runs `pacing_quality` with `--allow-no-baseline`: its automation
+windows render occluded by doctrine, and an occluded (or session-less) window
+cannot measure displayed intervals — macOS throttles its presents. The
+realtime arms therefore downgrade to loud notes in-suite, and the measurement
+this section owns has to happen once per release on a machine that can
+actually present:
+
+1. Log in, unlock, leave the desktop clear (nothing covering the window that
+   opens), and keep hands off for the run.
+2. ```bash
+   MDKR_TEST_VISIBLE_HEADLESS=1 python3 tests/check_pacing_quality.py \
+     --build build-rel --rom baserom.us.v80.z64
+   ```
+3. Require the full PASS — no `--allow-no-baseline`, no downgraded notes.
+   This is the only coverage the alpha-grid projection has anywhere.
+
 ## 3b. Independent real-ROM gameplay oracle
 
 The in-process deterministic suite proves that presentation choices do not alter

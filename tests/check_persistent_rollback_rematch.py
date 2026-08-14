@@ -46,7 +46,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
-    parser.add_argument("--timeout", type=int, default=240)
+    # 240s was calibrated for a Release engine; the suite hands this gate the
+    # AddressSanitizer build, whose 2,800-tick rounds run past four minutes on
+    # a 14-core machine even serial. Budget the sanitizer tax honestly.
+    parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
