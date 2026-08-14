@@ -213,7 +213,18 @@
         const task = liveConfig.request(path,
           {body: structuredClone(body), credential});
         const value = await Promise.race([task, timeout]);
-        if (value?.error) throw Object.assign(new Error(value.error), {code: value.error});
+        // An accepted command response spreads the reducer's MatchStep,
+        // whose MatchError on success is the literal "ok" (protocol.ts) —
+        // a verdict field, not a failure marker. The HTTP path below is
+        // status-driven and already accepts such bodies; this adapter path
+        // treated them as failures, so against a faithful fixture every
+        // accepted command threw, retried once, and painted the
+        // service-unavailable scene. Ordinary lobby commands were repainted
+        // by the next state push; leave/close have no push for this
+        // endpoint and stuck on "Could Not Reach the Room".
+        if (value?.error && value.error !== "ok") {
+          throw Object.assign(new Error(value.error), {code: value.error});
+        }
         return value;
       } finally { clearTimeout(timer); }
     }

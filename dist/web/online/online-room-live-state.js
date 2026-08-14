@@ -415,17 +415,31 @@
         // Public state remains on the newer publication, and an older
         // publication may not install invite bytes either: only a strictly
         // newer publication may change custody. A delayed rotate response can
-        // therefore preserve custody the launcher already holds, but it can
-        // never introduce a secret — that path is indistinguishable from a
-        // replayed rotate response. `invite === priorInvite` is exactly the
-        // "held, unchanged" case; anything freshly built from this wire is
-        // refused. Secrets for older generations remain destroyed.
-        // Ruled fail-closed during landing review, 2026-08-13.
-        const currentGenerationInvite = carriesInvite && invite &&
-          invite === priorInvite && priorState &&
+        // therefore preserve custody the launcher already holds, but an
+        // UNSOLICITED wire can never introduce a secret — that path is
+        // indistinguishable from a replayed rotate response.
+        // `invite === priorInvite` is the "held, unchanged" case.
+        //
+        // The one wire that IS distinguishable from a replay: the response
+        // the caller is awaiting right now. Only the in-flight rotate merge
+        // passes expectedInviteResponseGeneration (subscriptions pass 0),
+        // so a wire whose current-generation invite matches it is our own
+        // response that lost the HTTP/WebSocket race to the rotation's
+        // membership push — the only valid copy of the already-current
+        // generation's secret, and mergeLiveState's obsolete-with-invite
+        // branch exists to project exactly this. Refusing it destroyed the
+        // fresh secret and stranded the leader on the expiry recovery panel
+        // (measured: match_room's raced-rotation arm). A true replay cannot
+        // match: after the await resolves, every later delivery passes 0.
+        // Secrets for older generations remain destroyed.
+        // Ruled fail-closed at landing review 2026-08-13; scoped to admit
+        // the awaited response after the raced-rotation measurement.
+        const currentGenerationInvite = carriesInvite && invite && priorState &&
           state.inviteGeneration === priorState.inviteGeneration &&
           priorState.lobby.phase === "lobby" &&
-          priorState.lobby.leaderEndpointId === priorState.endpointId
+          priorState.lobby.leaderEndpointId === priorState.endpointId &&
+          (invite === priorInvite ||
+           expectedInviteResponseGeneration === state.inviteGeneration)
           ? invite : null;
         return Object.freeze({obsolete: true, state: null,
           invite: currentGenerationInvite});
