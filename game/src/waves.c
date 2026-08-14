@@ -1001,6 +1001,19 @@ s32 waves_block_hq(LevelModelSegment *block) {
     while (indexNum < gNumberOfLevelSegments && block != gWaveModel[indexNum].block) {
         indexNum++;
     };
+#ifdef NATIVE_PORT
+    /* A block that never registered with wavegen exits the search at
+     * gNumberOfLevelSegments, and the unguarded read below then indexes
+     * gWaveModel one past the end -- on the N64 a harmless stray read, on
+     * LP64 a segfault (measured twice, identical stacks: the online lobby
+     * scene renders water segments the wave registry does not carry, the
+     * same population the smooth-verdict census reports as unowned wave
+     * draws). An unregistered block has no high-quality wavegen to draw:
+     * the flat plane is the authored answer, so fail closed to it. */
+    if (indexNum >= gNumberOfLevelSegments) {
+        return FALSE;
+    }
+#endif
     if (D_800E30D4[gWaveModel[indexNum].unkC]) {
         result = TRUE;
         gWaveBlockIDs[gVisibleWaveTiles++] = indexNum;
