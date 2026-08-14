@@ -179,6 +179,7 @@ typedef struct GfxPresentationPacketStats {
      * the build that shipped in v1.0.1-v1.0.3. */
     uint64_t owner_tick_checks;
     uint64_t owner_tick_mismatches;
+    uint64_t owner_tick_suppressed;
     uint64_t effect_registrations;
     uint64_t effect_hits;
     uint64_t effect_overrides;
@@ -438,6 +439,7 @@ void gfx_presentation_packet_note_effect_override(void);
  * and the equality is structural after the anchoring fix -- the counter exists
  * so a future regression is caught by a gate rather than by a player. */
 void gfx_presentation_packet_note_owner_tick(bool agreed);
+void gfx_presentation_packet_note_owner_tick_suppressed(void);
 void gfx_presentation_packet_note_endpoint_semantic(
     const void *expected, const void *actual, size_t size);
 

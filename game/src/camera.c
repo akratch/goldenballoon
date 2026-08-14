@@ -545,19 +545,35 @@ void mdkr_camera_replay_mvp(
  * 708 of 708 violations on the shield path that shipped in v1.0.1-v1.0.3
  * (docs/evidence/smoothing-artifact-repro-2026-08.md §2.3).
  */
-static void mdkr_camera_replay_tick_agreement(
+static bool mdkr_camera_replay_tick_agreement(
     const GfxPresentationMatrixOwner *owner) {
     u64 authoredTick = 0u;
+    bool agreed;
 
     /* A recipe with no stamp predates the capture path or came from a build
      * lifetime this snapshot pair cannot name; either way there is no claim to
-     * check, and counting it as agreement would be inventing evidence. */
+     * check, and counting it as agreement would be inventing evidence. The
+     * caller applies the residual for an unverifiable stamp, which is the
+     * pre-instrumentation behaviour. */
     if (owner == NULL || owner->capture_tick == 0u ||
         !presentation_snapshot_authored_endpoint_tick(&authoredTick)) {
-        return;
+        return true;
     }
-    gfx_presentation_packet_note_owner_tick(
-        owner->capture_tick == authoredTick);
+    agreed = owner->capture_tick == authoredTick;
+    if (!agreed) {
+        /* The retained list outlived its snapshot pair -- the sim advanced
+         * while the list was not rebuilt -- so no same-tick capture exists to
+         * cancel the residual against. The caller SUPPRESSES the residual for
+         * this recipe: the target pose is exact and only the render-only
+         * adjustments (tumble, bob, model scale) are lost for one frame,
+         * instead of a whole tick of owner travel being added to every alpha.
+         * Counted as suppression, not violation: the T-against-T rule was
+         * enforced, not broken. */
+        gfx_presentation_packet_note_owner_tick_suppressed();
+        return false;
+    }
+    gfx_presentation_packet_note_owner_tick(true);
+    return true;
 }
 
 bool mdkr_camera_replay_object_world(
@@ -583,33 +599,42 @@ bool mdkr_camera_replay_object_world(
         !target.interpolated) {
         return false;
     }
-    mdkr_camera_replay_tick_agreement(owner);
-
-    memset(&transform, 0, sizeof(transform));
-    transform.x_position =
-        target.position[0] +
-        (owner->source_position[0] - authored.position[0]);
-    transform.y_position =
-        target.position[1] +
-        (owner->source_position[1] - authored.position[1]);
-    transform.z_position =
-        target.position[2] +
-        (owner->source_position[2] - authored.position[2]);
-    transform.rotation.y_rotation = (s16)(
-        target.rotation_y +
-        (s16)(owner->source_rotation[0] - authored.rotation_y));
-    transform.rotation.x_rotation = (s16)(
-        target.rotation_x +
-        (s16)(owner->source_rotation[1] - authored.rotation_x));
-    transform.rotation.z_rotation = (s16)(
-        target.rotation_z +
-        (s16)(owner->source_rotation[2] - authored.rotation_z));
-    if (authored.scale != 0.0f) {
-        transform.scale =
-            target.scale * (owner->source_scale / authored.scale);
+    if (mdkr_camera_replay_tick_agreement(owner)) {
+        memset(&transform, 0, sizeof(transform));
+        transform.x_position =
+            target.position[0] +
+            (owner->source_position[0] - authored.position[0]);
+        transform.y_position =
+            target.position[1] +
+            (owner->source_position[1] - authored.position[1]);
+        transform.z_position =
+            target.position[2] +
+            (owner->source_position[2] - authored.position[2]);
+        transform.rotation.y_rotation = (s16)(
+            target.rotation_y +
+            (s16)(owner->source_rotation[0] - authored.rotation_y));
+        transform.rotation.x_rotation = (s16)(
+            target.rotation_x +
+            (s16)(owner->source_rotation[1] - authored.rotation_x));
+        transform.rotation.z_rotation = (s16)(
+            target.rotation_z +
+            (s16)(owner->source_rotation[2] - authored.rotation_z));
+        if (authored.scale != 0.0f) {
+            transform.scale =
+                target.scale * (owner->source_scale / authored.scale);
+        } else {
+            transform.scale = target.scale +
+                              (owner->source_scale - authored.scale);
+        }
     } else {
-        transform.scale = target.scale +
-                          (owner->source_scale - authored.scale);
+        memset(&transform, 0, sizeof(transform));
+        transform.x_position = target.position[0];
+        transform.y_position = target.position[1];
+        transform.z_position = target.position[2];
+        transform.rotation.y_rotation = (s16) target.rotation_y;
+        transform.rotation.x_rotation = (s16) target.rotation_x;
+        transform.rotation.z_rotation = (s16) target.rotation_z;
+        transform.scale = target.scale;
     }
 
     mtxf_from_transform(&rootLocal, &transform);
@@ -701,30 +726,39 @@ static bool mdkr_camera_replay_object_transform(
         !target.interpolated) {
         return false;
     }
-    mdkr_camera_replay_tick_agreement(owner);
     memset(out, 0, sizeof(*out));
-    out->x_position =
-        target.position[0] +
-        (owner->source_position[0] - authored.position[0]);
-    out->y_position =
-        target.position[1] +
-        (owner->source_position[1] - authored.position[1]);
-    out->z_position =
-        target.position[2] +
-        (owner->source_position[2] - authored.position[2]);
-    out->rotation.y_rotation = (s16)(
-        target.rotation_y +
-        (s16)(owner->source_rotation[0] - authored.rotation_y));
-    out->rotation.x_rotation = (s16)(
-        target.rotation_x +
-        (s16)(owner->source_rotation[1] - authored.rotation_x));
-    out->rotation.z_rotation = (s16)(
-        target.rotation_z +
-        (s16)(owner->source_rotation[2] - authored.rotation_z));
-    if (authored.scale != 0.0f) {
-        out->scale = target.scale * (owner->source_scale / authored.scale);
+    if (mdkr_camera_replay_tick_agreement(owner)) {
+        out->x_position =
+            target.position[0] +
+            (owner->source_position[0] - authored.position[0]);
+        out->y_position =
+            target.position[1] +
+            (owner->source_position[1] - authored.position[1]);
+        out->z_position =
+            target.position[2] +
+            (owner->source_position[2] - authored.position[2]);
+        out->rotation.y_rotation = (s16)(
+            target.rotation_y +
+            (s16)(owner->source_rotation[0] - authored.rotation_y));
+        out->rotation.x_rotation = (s16)(
+            target.rotation_x +
+            (s16)(owner->source_rotation[1] - authored.rotation_x));
+        out->rotation.z_rotation = (s16)(
+            target.rotation_z +
+            (s16)(owner->source_rotation[2] - authored.rotation_z));
+        if (authored.scale != 0.0f) {
+            out->scale = target.scale * (owner->source_scale / authored.scale);
+        } else {
+            out->scale = target.scale + (owner->source_scale - authored.scale);
+        }
     } else {
-        out->scale = target.scale + (owner->source_scale - authored.scale);
+        out->x_position = target.position[0];
+        out->y_position = target.position[1];
+        out->z_position = target.position[2];
+        out->rotation.y_rotation = (s16) target.rotation_y;
+        out->rotation.x_rotation = (s16) target.rotation_x;
+        out->rotation.z_rotation = (s16) target.rotation_z;
+        out->scale = target.scale;
     }
     return true;
 }

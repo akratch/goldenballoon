@@ -1106,6 +1106,15 @@ void gfx_presentation_packet_note_owner_tick(bool agreed) {
     }
 }
 
+/* The retained list outlived its snapshot pair and the replay declined to
+ * resolve a residual across ticks. An enforcement event, not a violation:
+ * counted separately so scheduling drift stays visible while the mismatch
+ * counter keeps meaning what the gate asserts on. */
+void gfx_presentation_packet_note_owner_tick_suppressed(void) {
+    s_stats.owner_tick_checks++;
+    s_stats.owner_tick_suppressed++;
+}
+
 void gfx_presentation_packet_note_endpoint_semantic(
     const void *expected, const void *actual, size_t size) {
     if (expected == NULL || actual == NULL || size == 0u) {
