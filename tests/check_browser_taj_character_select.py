@@ -565,7 +565,12 @@ def run(args: argparse.Namespace) -> None:
             )
             wait_console(
                 cdp,
-                lambda line: "taj_roster: base=8 taj=8 enabled=1" in line,
+                # The extensible-roster work (playable Wizpig and Terry)
+                # replaced the taj_roster trace with mod_roster; this save
+                # has only Taj unlocked.
+                lambda line: ("mod_roster: base=10 count=13 taj=10 wizpig=11 "
+                              "terry=12 taj_enabled=1 wizpig_enabled=0 "
+                              "terry_enabled=0") in line,
                 "persisted Taj roster",
                 args.timeout,
                 reload_console_start,

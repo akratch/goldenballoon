@@ -145,6 +145,10 @@ FIXTURE = r"""
     loseLeadershipNextRotate=true;
   };
   globalThis.__liveAdvanceInviteClock=()=>{ fixtureNow=inviteExpiresAt; };
+  globalThis.__liveGuestLeave=()=>{
+    lobby.members=lobby.members.filter(item=>item.endpointId!==guest);
+    lobby.seats=lobby.seats.filter(item=>item.endpointId!==guest);
+    lobby.revision++; publish(); };
   globalThis.__liveCorrupt=()=>callback?.({...snapshot(),lobby:{...structuredClone(lobby),receipts:[]}});
   globalThis.__liveHostClose=()=>{ lobby.phase='closed'; lobby.revision++;
     closedReason='host_closed'; publish(); };
@@ -263,6 +267,16 @@ def run(args: argparse.Namespace) -> None:
                         "invite replacement control missing")
                 wait_value(cdp, "document.querySelector('.online-room-code')?.textContent",
                            lambda value: value == "654 321", "rotated room invite", args.timeout)
+                # The raced rotation deliberately left the guest in the room,
+                # and the lobby view model gives "Friends Joined" priority
+                # over every invite status once member_count >= 2 -- the
+                # solo expiry statuses below are unreachable until the guest
+                # leaves. As written this arm was unsatisfiable: the status
+                # wait could never flip to "Invitation Expired".
+                cdp.evaluate("__liveGuestLeave()")
+                wait_value(cdp, "document.getElementById('online-room-model-status').textContent",
+                           lambda value: value == "Invite Ready",
+                           "solo room restored after raced-rotation guest", args.timeout)
                 cdp.evaluate("__liveExpireInvite()")
                 expired = wait_value(cdp, """(() => ({
                   status:document.getElementById('online-room-model-status').textContent,
@@ -364,8 +378,39 @@ def run(args: argparse.Namespace) -> None:
                            lambda value: value == "Choose Your Racers",
                            "state restored after subscription setup failure",
                            args.timeout)
+                # Invitation rotation is a lobby-phase operation: once the
+                # room advances to SELECTING ("Choose Your Racers") the view
+                # model never offers the replacement control (action 3), so
+                # as previously sequenced this arm was unsatisfiable. Leave
+                # through the room's own control (the public configure() API
+                # refuses fixture configs -- trustedFixture is boot-only, so
+                # a disable()/configure() rebuild can never come back), reset
+                # the fixture to a fresh solo room, create it, let a friend
+                # join, and race the rotation there.
+                click_action(cdp, 24)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Play Online",
+                           "left the selecting room before the leadership arm",
+                           args.timeout)
+                cdp.evaluate("__liveResetSolo()")
+                click_action(cdp, 1)
+                wait_value(cdp, "document.getElementById('online-room-title').textContent",
+                           lambda value: value == "Private Room",
+                           "fresh lobby before leadership-loss rotation", args.timeout)
+                cdp.evaluate("__livePeerJoin()")
+                wait_value(cdp, "document.getElementById('online-room-model-status').textContent",
+                           lambda value: value == "Friends Joined",
+                           "peer joined leadership-arm lobby", args.timeout)
                 cdp.evaluate("__liveLoseLeadershipNextRotate()")
+                # Rotation is the invite panel's own "Replace Invitation"
+                # button; strip action 3 with a READY invite only (re)shows
+                # the panel, which is why priming the fixture and clicking 3
+                # here never rotated anything.
                 click_action(cdp, 3)
+                require(cdp.evaluate("""(() => { const b=[...document.querySelectorAll('button')]
+                  .find(item=>item.textContent==='Replace Invitation'); if (!b) return false;
+                  b.click(); return true; })()"""),
+                        "leadership-arm invite replacement control missing")
                 leadership_loss = wait_value(cdp, """(() => ({
                   connection:Boolean(document.querySelector('[data-online-action="5"]')),
                   replacement:Boolean(document.querySelector('[data-online-action="3"]')),
@@ -396,13 +441,11 @@ def run(args: argparse.Namespace) -> None:
                            "offline terminal return home", args.timeout)
                 require(cdp.evaluate("__liveRequests.length") == terminal_request_count,
                         "terminal Return Home made a doomed network request")
-                cdp.evaluate("MDKROnlineRoom.disable()")
+                # Already home with the boot-time fixture still configured;
+                # only the fixture's room state needs resetting. disable()
+                # would be a one-way door: the public configure() API refuses
+                # fixture configs (trustedFixture is boot-only).
                 cdp.evaluate("__liveResetSolo()")
-                require(cdp.evaluate(
-                    "MDKROnlineRoom.configure(__mdkrOnlineRoomLiveConfig)",
-                    await_promise=True) is True,
-                    "could not reset the live fixture for solo host close")
-                cdp.evaluate("MDKROnlineRoom.open()")
                 click_action(cdp, 1)
                 wait_value(cdp, "document.getElementById('online-room-title').textContent",
                            lambda value: value == "Private Room",

@@ -58,12 +58,14 @@ STATE_TEXT = (
 )
 
 
-def wait_console(cdp: CDPClient, needle: str, timeout: float,
+def wait_console(cdp: CDPClient, needle, timeout: float,
                  start: int = 0) -> str:
+    """Wait for a console line: `needle` is a substring or a predicate."""
+    matches = needle if callable(needle) else (lambda line: needle in line)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for line in cdp.console[start:]:
-            if needle in line:
+            if matches(line):
                 return line
         time.sleep(0.08)
     raise CheckFailure(
@@ -162,8 +164,16 @@ def run(args: argparse.Namespace) -> None:
             require(hooked is True, "could not install real Taj persist rejection")
 
             wait_console(cdp, "magic_code_submit: accepted=1 id=-2", args.timeout)
-            wait_console(cdp, "[TAJ] global unlock state could not be committed",
-                         args.timeout)
+            # The Wizpig/Terry extensible-roster work renamed the [TAJ]
+            # markers to [ROSTER] and split the rejection wording into two
+            # variants ("was not persisted" / "could not be committed").
+            # The contract under test is the same either way: the rejected
+            # commit is surfaced and the session stays alive.
+            wait_console(
+                cdp,
+                lambda line: "[ROSTER] unlock state" in line and
+                "session remains active" in line,
+                args.timeout)
             memfs_state = sidecar_text(cdp)
             require(memfs_state == STATE_TEXT,
                     "failed Taj unlock did not retain its exact MEMFS sidecar: "
@@ -217,7 +227,12 @@ def run(args: argparse.Namespace) -> None:
                 f"reload route lost input entries: {loaded.strip()!r}, "
                 f"expected {RELOAD_SCRIPT_ENTRIES}",
             )
-            wait_console(cdp, "taj_roster: base=8 taj=8 enabled=1",
+            # The extensible-roster work (playable Wizpig and Terry) replaced
+            # the taj_roster trace with mod_roster; this save has only Taj
+            # unlocked, so the two later bonus racers stay disabled.
+            wait_console(cdp, "mod_roster: base=10 count=13 taj=10 wizpig=11 "
+                              "terry=12 taj_enabled=1 wizpig_enabled=0 "
+                              "terry_enabled=0",
                          args.timeout, start)
             reload_console = cdp.console[start:]
             require(not any("magic_code_submit: accepted=1" in line

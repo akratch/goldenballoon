@@ -207,6 +207,25 @@ def run(args: argparse.Namespace) -> None:
             host = connect_browser(host_chrome)
             guest = connect_browser(guest_chrome)
 
+            # The shipped online-control-config.js is fail-closed
+            # (enabled:false) until the multiplayer GO, and the invite entry
+            # landing runs AT PAGE LOAD: a boot without the enabled policy
+            # DESTROYS the parked invite capability ("This invitation was
+            # removed from this browser") before any post-load override can
+            # run, stranding the guest at Play Online with zero requests.
+            # This check exercises the GO configuration, so pin the enabled
+            # policy in a boot script -- as an accessor the served config
+            # file's own assignment cannot downgrade (its strict-mode write
+            # goes through the no-op setter without throwing).
+            for cdp in (host, guest):
+                cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": (
+                    "(() => { const v = Object.freeze({enabled:true,"
+                    "serviceOrigin:location.origin});"
+                    "Object.defineProperty(globalThis,"
+                    "'__mdkrOnlineControlReleasePolicy',"
+                    "{configurable:false, get:() => v, set:() => {}}); })();"
+                )})
+
             host.call("Page.navigate", {"url": origin + "/"})
             guest.call("Page.navigate", {"url": origin + "/"})
             for label, cdp in (("host", host), ("guest", guest)):
@@ -304,58 +323,92 @@ def run(args: argparse.Namespace) -> None:
                        lambda value: value > sockets_before,
                        "state socket reconnection", args.timeout)
 
+            # The shipped presenter hard-locks check_setup for every
+            # non-fixture config (online-room-presenter.js routes it to
+            # "setup_locked") until rollback qualification is approved --
+            # the human release gate. Against the real service the
+            # two-person journey can go no further today, so pre-GO this
+            # check proves the LOCK: the click surfaces the calm lock
+            # message, advances nothing, and sends no service command.
+            # --post-go runs the full selection/ready journey unchanged
+            # once the product flips at GO.
             click_action(host, 4)
-            click_action(guest, 4)
-            select_racer(host, character=0, track=5)
-            select_racer(guest, character=1, track=3)
-            ready_at = time.monotonic()
-            click_action(host, 9)
-            wait_value(host, "document.getElementById('online-room-model-status').textContent",
-                       lambda value: value == "Waiting for Friends",
-                       "host waiting state", args.timeout)
-            click_action(guest, 9)
-            for label, cdp in (("host", host), ("guest", guest)):
-                state = wait_value(cdp, """(() => ({
-                  status:document.getElementById('online-room-model-status').textContent,
-                  admission:MDKROnlineRoom.current()?.admission,
-                  actions:[...document.querySelectorAll('[data-online-action]')]
-                    .map(button=>Number(button.dataset.onlineAction))
-                }))()""", lambda value: isinstance(value, dict) and
-                    value.get("status") == "Everyone Ready",
-                    f"{label} everyone-ready state", args.timeout)
-                require(state["admission"] is False and 11 not in state["actions"],
-                        f"{label} exposed race admission before GO: {state}")
-            ready_seconds = time.monotonic() - ready_at
-            require(ready_seconds < 10,
-                    f"two-profile Ready convergence took {ready_seconds:.2f}s")
-
-            # Backtracking from Ready is explicit, observable by the friend,
-            # and can return to the durable achievement.
-            click_action(guest, 10)
-            wait_value(host, "document.getElementById('online-room-model-status').textContent",
-                       lambda value: value == "Waiting for Friends",
-                       "Ready backtrack publication", args.timeout)
-            guest.evaluate("""[...document.querySelectorAll('#online-room-auxiliary button')]
-              .find(button=>button.textContent==='Save Selection').click()""")
-            wait_value(guest, """(() => ({
-              action:MDKROnlineRoom.current()?.controls[0]?.action,
-              enabled:!document.querySelector('[data-online-action="9"]')?.disabled,
-              saving:document.getElementById('online-room-auxiliary').textContent
-                .includes('Saving Selection')
+            locked = wait_value(host, """(() => ({
+              aux:document.getElementById('online-room-auxiliary').textContent,
+              action:MDKROnlineRoom.current()?.controls[0]?.action
             }))()""", lambda value: isinstance(value, dict) and
-                value.get("action") == 9 and value.get("enabled") is True and
-                value.get("saving") is False,
-                "selection backtrack recovery", args.timeout)
-            click_action(guest, 9)
-            wait_value(host, "document.getElementById('online-room-model-status').textContent",
-                       lambda value: value == "Everyone Ready",
-                       "Ready reconvergence", args.timeout)
+                "Online Racing Is Still Locked" in (value.get("aux") or ""),
+                "pre-GO setup lock message", args.timeout)
+            require(locked["action"] == 4,
+                    f"pre-GO lock advanced the room: {locked}")
+            lock_commands = [item for item in host.evaluate("__uxRequests.slice()")
+                             if item["path"].endswith("/command")]
+            require(lock_commands == [],
+                    f"pre-GO Check Setup sent a service command: {lock_commands}")
+            for label, cdp in (("host", host), ("guest", guest)):
+                visible = cdp.evaluate(
+                    """[...document.querySelectorAll('[data-online-action]')]
+                      .map(button=>Number(button.dataset.onlineAction))""")
+                require(11 not in visible,
+                        f"{label} exposed Start Race before GO: {visible}")
+            if not args.post_go:
+                ready_seconds = 0.0
+                print("  pre-GO: setup lock held (no advance, no command); "
+                      "run --post-go after rollback qualification approval "
+                      "for the selection/ready journey")
+            if args.post_go:
+                click_action(host, 4)
+                click_action(guest, 4)
+                select_racer(host, character=0, track=5)
+                select_racer(guest, character=1, track=3)
+                ready_at = time.monotonic()
+                click_action(host, 9)
+                wait_value(host, "document.getElementById('online-room-model-status').textContent",
+                           lambda value: value == "Waiting for Friends",
+                           "host waiting state", args.timeout)
+                click_action(guest, 9)
+                for label, cdp in (("host", host), ("guest", guest)):
+                    state = wait_value(cdp, """(() => ({
+                      status:document.getElementById('online-room-model-status').textContent,
+                      admission:MDKROnlineRoom.current()?.admission,
+                      actions:[...document.querySelectorAll('[data-online-action]')]
+                        .map(button=>Number(button.dataset.onlineAction))
+                    }))()""", lambda value: isinstance(value, dict) and
+                        value.get("status") == "Everyone Ready",
+                        f"{label} everyone-ready state", args.timeout)
+                    require(state["admission"] is False and 11 not in state["actions"],
+                            f"{label} exposed race admission before GO: {state}")
+                ready_seconds = time.monotonic() - ready_at
+                require(ready_seconds < 10,
+                        f"two-profile Ready convergence took {ready_seconds:.2f}s")
 
-            ax = guest.call("Accessibility.getFullAXTree").get("nodes", [])
-            names = {node.get("name", {}).get("value", "") for node in ax}
-            folded = {name.casefold() for name in names}
-            require("change selection" in folded and "leave room" in folded,
-                    f"guest Ready actions are not accessible: {sorted(names)}")
+                # Backtracking from Ready is explicit, observable by the friend,
+                # and can return to the durable achievement.
+                click_action(guest, 10)
+                wait_value(host, "document.getElementById('online-room-model-status').textContent",
+                           lambda value: value == "Waiting for Friends",
+                           "Ready backtrack publication", args.timeout)
+                guest.evaluate("""[...document.querySelectorAll('#online-room-auxiliary button')]
+                  .find(button=>button.textContent==='Save Selection').click()""")
+                wait_value(guest, """(() => ({
+                  action:MDKROnlineRoom.current()?.controls[0]?.action,
+                  enabled:!document.querySelector('[data-online-action="9"]')?.disabled,
+                  saving:document.getElementById('online-room-auxiliary').textContent
+                    .includes('Saving Selection')
+                }))()""", lambda value: isinstance(value, dict) and
+                    value.get("action") == 9 and value.get("enabled") is True and
+                    value.get("saving") is False,
+                    "selection backtrack recovery", args.timeout)
+                click_action(guest, 9)
+                wait_value(host, "document.getElementById('online-room-model-status').textContent",
+                           lambda value: value == "Everyone Ready",
+                           "Ready reconvergence", args.timeout)
+
+                ax = guest.call("Accessibility.getFullAXTree").get("nodes", [])
+                names = {node.get("name", {}).get("value", "") for node in ax}
+                folded = {name.casefold() for name in names}
+                require("change selection" in folded and "leave room" in folded,
+                        f"guest Ready actions are not accessible: {sorted(names)}")
 
             click_action(guest, 24)
             wait_value(host, "MDKROnlineRoom.current()?.members",
@@ -370,9 +423,12 @@ def run(args: argparse.Namespace) -> None:
             require(not any("mdkr64_web.wasm" in request.get("url", "")
                             for request in host.network + guest.network),
                     "two-person room control loaded the game engine")
+            journey = (f"Ready {ready_seconds:.2f}s; role recovery, outage, "
+                       "backtrack, AX and leave" if args.post_go else
+                       "pre-GO setup lock held; role recovery, outage and leave")
             print("check_browser_online_two_person: PASS — two clean profiles + "
-                  f"real Worker create {create_seconds:.2f}s, join {join_seconds:.2f}s, "
-                  f"Ready {ready_seconds:.2f}s; role recovery, outage, backtrack, AX and leave")
+                  f"real Worker create {create_seconds:.2f}s, "
+                  f"join {join_seconds:.2f}s, {journey}")
         except Exception as error:
             log.flush()
             details = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
@@ -402,6 +458,11 @@ def main() -> int:
     parser.add_argument("--chrome")
     parser.add_argument("--chrome-flag", action="append", default=[])
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--post-go", action="store_true",
+        help="run the selection/ready journey; requires the product's "
+             "rollback-qualification GO (pre-GO the presenter locks setup "
+             "and this check proves the lock instead)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
     try:
