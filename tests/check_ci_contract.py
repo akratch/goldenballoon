@@ -590,20 +590,29 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
     for hint in ("SDL_MAC_BACKGROUND_APP", "SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN"):
         if f'"{hint}": "1"' not in sources["run_checks"]:
             failures.append(f"run_checks omits SDL focus fail-safe {hint}=1")
-        if sources["ci_local"].count(f"{hint}=1") != 2:
-            failures.append(f"both local CTest lanes must set {hint}=1")
-    if sources["ci_local"].count("MDKR64_HIDDEN=1 MDKR_AUDIO=0") != 2:
+        if sources["ci_local"].count(f"{hint}=1") != 3:
+            failures.append(
+                f"all three local CTest lanes (yielded, foreground audio, "
+                f"GPU) must set {hint}=1")
+    if sources["ci_local"].count("MDKR64_HIDDEN=1 MDKR_AUDIO=0") != 3:
         failures.append(
-            "both local CTest lanes must force background, silent automation"
+            "all three local CTest lanes must force background, silent "
+            "automation"
         )
     if ("RUN_GPU_TESTS=0" not in sources["ci_local"] or
             "MDKR_CI_WITH_GPU_TESTS" in sources["ci_local"]):
         failures.append("local CI must reject an ambient GPU opt-in")
     if ("-LE 'gpu|app_process|browser'" not in sources["ci_local"] or
-        'taskpolicy -b -p "$$"' not in sources["ci_local"]):
+            'taskpolicy -b "$@"' not in sources["ci_local"]):
         failures.append(
-            "local CTest must exclude app/browser processes and use macOS "
-            "background policy by default"
+            "local CTest must exclude app/browser processes and launch its "
+            "bulk steps under macOS background policy"
+        )
+    if '-p "$$"' in sources["ci_local"]:
+        failures.append(
+            "local CI must not demote itself: run_checks' foreground "
+            "measurement children and the audio sink contract inherit the "
+            "band and cannot undo it"
         )
     if ('ENVIRONMENT "MDKR_APP_DUMP_SCHEMA=1;MDKR64_HIDDEN=1;MDKR_AUDIO=0"'
             not in sources["cmake"]):

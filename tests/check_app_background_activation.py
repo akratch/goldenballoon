@@ -160,12 +160,28 @@ def main() -> int:
                     "_native_process_tests_allowed"):
         require(removed not in harness,
                 f"harness must not gate the native product on {removed}")
-    require('["taskpolicy", "-b", "-p", str(os.getpid())]' in runner,
-            "macOS runner must enter inherited Darwin background policy")
-    require('taskpolicy -b -p "$$"' in
-            (ROOT / "tools/ci/ci_local.sh").read_text(encoding="utf-8"),
-            "local CI must enter inherited Darwin background policy")
+    # The yield-to-desktop guarantee is per-child, never self-applied: an
+    # inherited nice/Darwin-background band cannot be given back, and on
+    # Apple Silicon it confines every wall-clock verdict to the efficiency
+    # cores (measured on an idle M4 Max: rollback p99 2x over ceiling,
+    # audio sink drains, browser step timeouts). Pinned both directions.
+    require('return ["taskpolicy", "-b"]' in runner,
+            "runner must launch bulk children under Darwin background policy")
+    require('check.name in SERIAL_NAMES or check.role in FOREGROUND_ROLES'
+            in runner,
+            "runner must exempt wall-clock and browser checks from the band")
+    require('str(os.getpid())' not in runner and 'current_nice' not in runner,
+            "runner must not demote itself; children inherit and cannot undo it")
     local_ci = (ROOT / "tools/ci/ci_local.sh").read_text(encoding="utf-8")
+    require('taskpolicy -b "$@"' in local_ci,
+            "local CI must launch bulk steps under Darwin background policy")
+    require('-p "$$"' not in local_ci,
+            "local CI must not demote itself; run_checks and the audio "
+            "contract inherit and cannot undo it")
+    require("-E '^audio_sink_contract$'" in local_ci and
+            "-R '^audio_sink_contract$'" in local_ci,
+            "local CI must run the audio sink contract foreground, outside "
+            "the yielded CTest lane")
     require('RUN_COMPILED_TESTS=0' in local_ci and
             '--with-compiled-tests' in local_ci and
             'if [ -f "$BUILD_DIR/CMakeCache.txt" ] && [ "$RUN_COMPILED_TESTS" -eq 1 ]; then'
@@ -183,8 +199,8 @@ def main() -> int:
     for removed in ("MDKR_BROWSER_TESTS_ALLOWED", "MDKR_DEDICATED_TEST_DESKTOP"):
         require(removed not in browser,
                 f"Chromium harness must not gate on {removed}")
-    require('if current_nice < 10:' in runner,
-            "runner must lower its inherited CPU scheduling priority")
+    require('return ["nice", "-n", "10"]' in runner,
+            "runner must lower bulk child CPU priority on non-Darwin POSIX")
     print("app background activation contract passed")
     return 0
 

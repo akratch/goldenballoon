@@ -33,17 +33,23 @@
 # this script's own control flow.
 set -euo pipefail
 
-# Yield CPU scheduling priority to the interactive desktop. Children inherit
-# this niceness, including configure, compiler, CTest and an opted-in ROM lane.
-if command -v renice >/dev/null 2>&1; then
-  renice 15 -p "$$" >/dev/null 2>&1 || true
-fi
-# On macOS, background policy also constrains inherited I/O and scheduler
-# pressure. This keeps compilers and CTest responsive to the user's foreground
-# applications even if a dependency creates more worker threads internally.
-if [ "$(uname -s)" = "Darwin" ] && command -v taskpolicy >/dev/null 2>&1; then
-  taskpolicy -b -p "$$" >/dev/null 2>&1 || true
-fi
+# Bulk work yields to the interactive desktop by being LAUNCHED at background
+# priority (yield_run below); the script itself keeps the invoking shell's
+# priority. It used to demote its own pid (renice 15 plus the Darwin band),
+# which every child inherited and none could give back -- including
+# tools/run_checks.py, whose wall-clock measurement checks must run
+# foreground, and the audio sink contract, whose drain accounting is
+# wall-clock against a real device. On Apple Silicon the inherited Darwin
+# background band confines all of it to the efficiency cores.
+yield_run() {
+  if [ "$(uname -s)" = "Darwin" ] && command -v taskpolicy >/dev/null 2>&1; then
+    taskpolicy -b "$@"
+  elif command -v nice >/dev/null 2>&1; then
+    nice -n 10 "$@"
+  else
+    "$@"
+  fi
+}
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -114,30 +120,42 @@ step "Public documentation links" python3 tools/check_markdown_links.py --repo-r
 if [ "$DO_BUILD" -eq 1 ]; then
   # GPU/window tests are absent from ordinary CTest inventories. Register them
   # only when the caller made the dedicated-desktop opt-in explicit.
-  step "CMake configure" cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+  step "CMake configure" yield_run cmake -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
     -DMDKR_ENABLE_GPU_TESTS="$RUN_GPU_TESTS"
   build_one() {
     set -o pipefail
-    cmake --build "$BUILD_DIR" --parallel "$JOBS" 2>&1 | tee "$BUILD_DIR/mdkr64-build.log"
+    yield_run cmake --build "$BUILD_DIR" --parallel "$JOBS" 2>&1 | tee "$BUILD_DIR/mdkr64-build.log"
   }
   step "Build native port" build_one
 fi
 
 # --- ROM-free test suite ---
 if [ -f "$BUILD_DIR/CMakeCache.txt" ] && [ "$RUN_COMPILED_TESTS" -eq 1 ]; then
+  # audio_sink_contract is excluded from the yielded lane and rerun foreground
+  # below: its drain/stall accounting is wall-clock against a real device, and
+  # the background band's efficiency-core confinement drains it (measured:
+  # fails banded, passes foreground in under a second).
   step "ROM-free CTest suite" \
-    env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+    yield_run env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
       SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
       CTEST_PARALLEL_LEVEL=1 OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
       VECLIB_MAXIMUM_THREADS=1 \
       ctest --test-dir "$BUILD_DIR" --output-on-failure -j1 \
-        -LE 'gpu|app_process|browser'
+        -LE 'gpu|app_process|browser' -E '^audio_sink_contract$'
+
+  step "Audio sink contract (foreground: wall-clock verdict)" \
+    env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+      SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
+      CTEST_PARALLEL_LEVEL=1 OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
+      VECLIB_MAXIMUM_THREADS=1 \
+      ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
+        -j1 -R '^audio_sink_contract$'
 
   # These tests open native graphics surfaces. They stay hidden/non-key by
   # contract, which is what keeps them off the desktop.
   if [ "$RUN_GPU_TESTS" -eq 1 ]; then
     step "GPU-labelled CTest lane (explicit --with-gpu-tests)" \
-      env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
+      yield_run env MDKR64_HIDDEN=1 MDKR_AUDIO=0 \
         SDL_MAC_BACKGROUND_APP=1 SDL_WINDOW_NO_ACTIVATION_WHEN_SHOWN=1 \
         CTEST_PARALLEL_LEVEL=1 OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
         VECLIB_MAXIMUM_THREADS=1 \
