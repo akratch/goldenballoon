@@ -740,7 +740,7 @@ PIN_GROUPS: dict[str, PinGroup] = {
             Pin("desktop_release", "Windows extracted package startup",
                 must_contain='executable="$package_root/GoldenBalloon/GoldenBalloon.exe"'),
             Pin("desktop_release", "Windows automatic-publication policy",
-                must_contain="Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached."),
+                must_contain="Validated Windows archive preserved as a workflow artifact; publication remains manual, and only this exact accepted archive may be attached."),
             Pin("desktop_release", "canonical Linux provenance input",
                 must_contain="dist/Golden-Balloon-*-linux-x86_64.*"),
             Pin("desktop_release", "canonical Linux workflow artifact",
@@ -1498,15 +1498,15 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "Windows automatic-publication policy",
                 "desktop_release",
-                "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached.",
+                "Validated Windows archive preserved as a workflow artifact; publication remains manual, and only this exact accepted archive may be attached.",
                 "Windows artifact ready.",
                 count=1,
             ),
             Control(
-                "Windows forbidden upload",
+                "Windows upload before provenance",
                 "desktop_release",
-                "      - name: Confirm automatic Windows publication is disabled",
-                '      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08\n      - name: Confirm automatic Windows publication is disabled',
+                "      - name: Stamp provenance (bind the validated zip to this commit)",
+                '      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4\n        with:\n          name: premature\n      - name: Stamp provenance (bind the validated zip to this commit)',
                 count=1,
             ),
             Control(

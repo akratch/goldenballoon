@@ -860,10 +860,25 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
             "the extracted AppRun, stamps, then uploads in that order"
         )
     windows_job = workflow.split("\n  windows:", 1)[-1]
-    if "uses: actions/upload-artifact@" in active_shell_source(windows_job):
+    # No hosted Windows runner content-validates the WebGPU/GL launchers, so
+    # PUBLICATION stays a human decision made on real hardware. What the lane
+    # must do is preserve the exact bytes it qualified, in this order, so the
+    # human accepts the validated archive rather than a local rebuild -- the
+    # withdrawn v1.2.1 zip is what the rebuild path costs.
+    windows_order = (
+        "Package portable .zip",
+        "Verify extracted package startup from an unrelated directory",
+        "Stamp provenance (bind the validated zip to this commit)",
+        "Verify provenance of every artifact before upload",
+        "uses: actions/upload-artifact@",
+        "Confirm Windows publication remains manual",
+    )
+    windows_indexes = [windows_job.find(marker) for marker in windows_order]
+    if any(index < 0 for index in windows_indexes) or             windows_indexes != sorted(windows_indexes):
         failures.append(
-            "Windows publication must remain held until a stable GPU runner "
-            "content-validates built and extracted WebGPU/GL launchers"
+            "Windows release no longer packages, verifies the extraction, "
+            "stamps, verifies provenance, uploads the validated archive, then "
+            "confirms publication remains manual, in that order"
         )
     if re.search(r"\bcp\b[^\n]*\.dll\b", windows_packager, re.IGNORECASE):
         failures.append("Windows packager copies a DLL into the portable package")

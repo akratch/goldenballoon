@@ -626,6 +626,38 @@ jobs:
             | tee "$RUNNER_TEMP/party-bringup-package.txt"
           grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
             "$RUNNER_TEMP/party-bringup-package.txt"
-      - name: Confirm automatic Windows publication is disabled
+      # The doctrine stays: Windows PUBLICATION is a human decision made after
+      # real-hardware testing, never an automatic side effect. What changes is
+      # WHICH bytes that human accepts. Discarding the validated zip forced the
+      # owner to rebuild locally, so the archive that shipped was never the
+      # archive this lane qualified -- the withdrawn v1.2.1 zip is what that
+      # gap costs. Stamp and preserve the qualified bytes as a WORKFLOW
+      # artifact (not a release attachment); manual acceptance then attaches
+      # exactly what was validated, provenance sidecar and all.
+      - name: Stamp provenance (bind the validated zip to this commit)
         run: |
-          echo "Hosted Windows artifact not uploaded automatically; only a manually accepted exact archive may be attached."
+          ./tools/release/stamp_provenance.sh \
+            "dist/Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64.zip" \
+            "${{ needs.validate.outputs.version }}"
+      - name: Verify provenance of every artifact before upload
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          ./tools/release/verify_provenance.sh \
+            --dist dist \
+            --version "$RELEASE_VERSION" \
+            --commit "$GITHUB_SHA" \
+            --require platform=windows \
+            --out-checksums "$RUNNER_TEMP/windows-SHA256SUMS.txt" \
+            --out-manifest "$RUNNER_TEMP/windows-manifest.json"
+          cat "$RUNNER_TEMP/windows-SHA256SUMS.txt"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: Golden-Balloon-${{ needs.validate.outputs.version }}-windows-x64
+          path: |
+            dist/Golden-Balloon-*-windows-x64.zip
+            dist/Golden-Balloon-*-windows-x64.zip.provenance.json
+          if-no-files-found: error
+      - name: Confirm Windows publication remains manual
+        run: |
+          echo "Validated Windows archive preserved as a workflow artifact; publication remains manual, and only this exact accepted archive may be attached."
