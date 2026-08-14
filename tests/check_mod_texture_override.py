@@ -55,14 +55,18 @@ Nothing ROM-derived is written into the repository: every run has its own
 throwaway working directory, which is also where `mods/` and the dumped corpus
 live.
 
-The pack overrides EVERY digest the corpus run found, with one 4x4 magenta PNG
-this file encodes itself. Overriding everything rather than one hand-picked
-texture is what lets the frames below be compared as whole-image hashes: the
-question "did any pack pixel survive" then has a yes/no answer at every frame,
-instead of depending on whether one chosen texture happened to be on screen.
-The size mismatch is deliberate too -- UVs are normalised against the uploaded
-size, so a 4x4 override standing in for a 64x32 ROM tile is the same code path
-a real pack takes at a higher resolution.
+The pack overrides EVERY digest the corpus run found, with one 256x256
+quadrant PNG this file encodes itself: a magenta top-left quarter on green.
+Overriding everything rather than one hand-picked texture is what lets the
+frames below be compared as whole-image hashes: the question "did any pack
+pixel survive" then has a yes/no answer at every frame, instead of depending
+on whether one chosen texture happened to be on screen. The size and the two
+colours are both deliberate. The replacement is LARGER than every logical
+tile the route binds, which is the direction real upscale packs take and the
+direction where broken addressing shows a corner instead of wrapping (issue
+#34); and a two-colour image is what makes addressing witnessable at all --
+this gate's earlier solid-magenta form could not tell "the whole image" from
+"any corner of it", which is exactly how the defect shipped past it.
 
 The live arm's schedule, and why the frames are where they are
 --------------------------------------------------------------
@@ -173,7 +177,16 @@ TICK_ON = 320
 
 PACK_INI = b"[pack]\nname=Texture Test\npriority=100\n"
 PACK_RGBA = (255, 0, 255, 255)     # magenta: nothing the ROM draws looks like it
-PACK_SIZE = 4
+PACK_RGBA_ALT = (0, 255, 0, 255)   # green: the other three quadrants
+# Larger than any logical tile the route binds. The direction matters: a
+# replacement SMALLER than the tile makes broken addressing overshoot and
+# wrap -- which still splashes pack pixels everywhere and is invisible to a
+# solid-colour image. Issue #34's real packs are LARGER than the tile, where
+# broken addressing samples only the image's top-left corner. A 256x256
+# quadrant (magenta corner, green elsewhere) makes the two outcomes
+# unmistakable: correct logical addressing shows every tile the whole
+# quadrant, green-dominant three to one; corner addressing shows magenta.
+PACK_SIZE = 256
 
 BAD_MARKERS = ("[FATAL]", "[CRASH]", "AddressSanitizer",
                "UndefinedBehaviorSanitizer", "runtime error:")
@@ -191,18 +204,27 @@ def require(condition: bool, message: str) -> None:
 # ==========================================================================
 # the pack this check authors for itself
 # ==========================================================================
-def solid_png(rgba: tuple[int, int, int, int], size: int) -> bytes:
-    """A solid RGBA8 PNG, encoded here from the standard library alone.
+def quadrant_png(size: int) -> bytes:
+    """An RGBA8 PNG, magenta top-left quarter on green, standard library only.
 
-    No ROM bytes reach this function. The override pixels are a constant this
+    No ROM bytes reach this function. The override pixels are constants this
     file names, which is the only reason "the frame is showing the pack" can be
     distinguished from "the frame is showing something else that also changed".
+    Two colours rather than one because a solid image cannot witness texture
+    ADDRESSING: every sub-window of solid magenta is solid magenta, which is
+    exactly how the corner-sampling defect behind issue #34 stayed invisible
+    to this gate's earlier form.
     """
     def chunk(tag: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + tag + data +
                 struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
 
-    raw = b"".join(b"\x00" + bytes(rgba) * size for _ in range(size))
+    half = size // 2
+    corner = bytes(PACK_RGBA)
+    field = bytes(PACK_RGBA_ALT)
+    top = b"\x00" + corner * half + field * (size - half)
+    bottom = b"\x00" + field * size
+    raw = top * half + bottom * (size - half)
     return (b"\x89PNG\r\n\x1a\n"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 9))
@@ -214,7 +236,7 @@ def install_pack(run_dir: Path, digests: list[str]) -> None:
     textures = run_dir / "mods" / "TexturePack" / "textures"
     textures.mkdir(parents=True)
     (run_dir / "mods" / "TexturePack" / "pack.ini").write_bytes(PACK_INI)
-    blob = solid_png(PACK_RGBA, PACK_SIZE)
+    blob = quadrant_png(PACK_SIZE)
     for digest in digests:
         (textures / f"{digest}.png").write_bytes(blob)
 
@@ -222,6 +244,39 @@ def install_pack(run_dir: Path, digests: list[str]) -> None:
 # ==========================================================================
 # capture
 # ==========================================================================
+def classify_pack_pixels(ppm: bytes) -> tuple[int, int]:
+    """(magenta-family, green-family) pixel counts in a binary P6 frame.
+
+    Magenta-family: red and blue each clearly above green. Green-family:
+    green clearly above red plus blue. The margins keep ROM-authored greys,
+    fades and text out of both families; only the pack's own two colours,
+    however the combiner scaled them, land in either.
+    """
+    fields: list[bytes] = []
+    offset = 0
+    while len(fields) < 4:
+        while offset < len(ppm) and ppm[offset:offset + 1].isspace():
+            offset += 1
+        if ppm[offset:offset + 1] == b"#":
+            while offset < len(ppm) and ppm[offset] != 0x0A:
+                offset += 1
+            continue
+        start = offset
+        while offset < len(ppm) and not ppm[offset:offset + 1].isspace():
+            offset += 1
+        fields.append(ppm[start:offset])
+    require(fields[0] == b"P6", "frame dump is not binary P6")
+    offset += 1
+    magenta = green = 0
+    for index in range(offset, len(ppm) - 2, 3):
+        r, g, b = ppm[index], ppm[index + 1], ppm[index + 2]
+        if g > 64 and g > (r + b):
+            green += 1
+        elif r > 64 and b > 64 and r > 2 * g and b > 2 * g:
+            magenta += 1
+    return magenta, green
+
+
 class Arm:
     def __init__(self, label: str, packed: bool, toggles: str = "",
                  corpus: bool = False):
@@ -230,6 +285,11 @@ class Arm:
         self.toggles = toggles
         self.corpus = corpus
         self.frames: dict[int, str] = {}
+        # frame -> (magenta-family, green-family) pixel counts; packed arms
+        # only. Classified by hue relation rather than exact value because the
+        # combiner multiplies texels by shade/prim colour: scaling preserves
+        # which channels dominate, exact values it does not.
+        self.pack_pixels: dict[int, tuple[int, int]] = {}
         self.rows: list[str] = []
         self.mods: list[str] = []
         self.applied: list[tuple[str, str, int]] = []
@@ -304,7 +364,10 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
         path = frame_dir / f"frame_{frame:04d}.ppm"
         require(path.is_file(),
                 f"{arm.label}: the route never dumped frame {frame}")
-        arm.frames[frame] = hashlib.sha256(path.read_bytes()).hexdigest()
+        blob = path.read_bytes()
+        arm.frames[frame] = hashlib.sha256(blob).hexdigest()
+        if arm.packed:
+            arm.pack_pixels[frame] = classify_pack_pixels(blob)
 
     if arm.corpus:
         digests.extend(sorted(entry.stem
@@ -396,7 +459,30 @@ def main() -> int:
     print(f"   ok  frame {FRAME_PACK_BACK} == the pack run again; the registry "
           "survived the switch being off")
 
-    print("5. presentation only: no authoritative state moved")
+    print("5. the WHOLE override image is addressed, not one corner of it")
+    # The quadrant is three parts green to one part magenta, and the
+    # replacement is larger than every logical tile the route binds. Correct
+    # logical addressing therefore shows green-dominant pack pixels at every
+    # packed frame; the issue-#34 defect -- normalising authored texel
+    # coordinates by the replacement's own size -- samples only the image's
+    # magenta corner and cannot produce a green majority.
+    for arm, frames in ((pack, SAMPLED),
+                        (live, (FRAME_PACK_ON, FRAME_PACK_BACK))):
+        for frame in frames:
+            magenta, green_count = arm.pack_pixels[frame]
+            require(magenta + green_count >= 100,
+                    f"{arm.label} frame {frame}: only {magenta + green_count} "
+                    "pack-family pixels on screen; the sampled route no longer "
+                    "shows enough overridden texture to judge addressing")
+            require(green_count > magenta,
+                    f"{arm.label} frame {frame}: magenta corner dominates "
+                    f"({magenta} magenta vs {green_count} green): the override "
+                    "is being addressed by its own physical size, not the "
+                    "tile's logical size (issue #34)")
+    print("   ok  green-dominant pack pixels at every packed frame; the "
+          "replacement's full image is being addressed")
+
+    print("6. presentation only: no authoritative state moved")
     require(len(baseline.rows) == FRAMES,
             f"expected {FRAMES} [SIMHASH] rows, got {len(baseline.rows)} - the "
             "v3 stream is not being emitted")

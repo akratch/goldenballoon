@@ -2113,6 +2113,34 @@ static uint32_t dkr_tile_source_line_bytes(uint8_t td, uint32_t source_size_byte
     return line_bytes;
 }
 
+/*
+ * The tile's LOGICAL dimensions: the size the authored S10.5 texel
+ * coordinates address, before any upload decides a physical size. One home
+ * for the derivation, because two things must never disagree about it: the
+ * ROM upload below (whose out_w/out_h feed texcoord normalisation) and the
+ * pack-override bind (whose replacement may be any physical size at all, and
+ * still has to be addressed as this logical tile -- issue #34's 4x pack drew
+ * only its own top corner because the override published its physical size
+ * here). Same doctrine as the derived font atlas: physical dimensions belong
+ * to the GPU image; texel coordinates address the logical grid.
+ */
+static bool dkr_tile_logical_dims(uint8_t td, uint32_t source_size_bytes,
+                                  uint32_t *out_w, uint32_t *out_h) {
+    const uint32_t line_bytes =
+        dkr_tile_source_line_bytes(td, source_size_bytes);
+    uint32_t width  = rdp.tile[td].width;
+    uint32_t height = rdp.tile[td].height;
+    uint8_t siz = rdp.tile[td].siz;
+    if (width == 0)  width  = texels_per_row(line_bytes, siz);
+    if (height == 0 && line_bytes) height = source_size_bytes / line_bytes;
+    if (width == 0 || height == 0) return false;
+    if (width > 1024) width = 1024;
+    if (height > 1024) height = 1024;
+    *out_w = width;
+    *out_h = height;
+    return true;
+}
+
 static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
                                     uint32_t *out_w, uint32_t *out_h,
                                     DkrFontDerivation *out_derived) {
@@ -2128,13 +2156,11 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
     const uint32_t line_bytes =
         dkr_tile_source_line_bytes(td, source_size_bytes);
 
-    uint32_t width  = rdp.tile[td].width;
-    uint32_t height = rdp.tile[td].height;
-    if (width == 0)  width  = texels_per_row(line_bytes, siz);
-    if (height == 0 && line_bytes) height = source_size_bytes / line_bytes;
-    if (width == 0 || height == 0) return false;
-    if (width > 1024) width = 1024;
-    if (height > 1024) height = 1024;
+    uint32_t width;
+    uint32_t height;
+    if (!dkr_tile_logical_dims(td, source_size_bytes, &width, &height)) {
+        return false;
+    }
 
     /* Never sample past the arena: clamp rows to the bytes actually available
      * from `src` (a mis-decoded tile size or an edge pointer could otherwise run
@@ -2683,10 +2709,20 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                                                  over.height)
                       : dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived);
         if (over_used) {
-            /* UVs are normalised against the uploaded size, so a pack texture
-             * at a different resolution addresses the same logical tile. */
-            uw = (uint32_t) over.width;
-            uh = (uint32_t) over.height;
+            /* The GPU image is the replacement's physical size; the cached
+             * dimensions the texcoords are normalised against must stay the
+             * tile's LOGICAL size. DKR's S10.5 coordinates are absolute texels
+             * of the authored tile: dividing them by the replacement's own
+             * dimensions showed a 4x pack only its top corner and shrank every
+             * wrap period by the scale factor (issue #34). Same rule the
+             * derived font atlas already follows -- its comment in
+             * dkr_upload_tile_texture is the doctrine this branch violated.
+             * A replacement is the unpadded authored picture at any scale, so
+             * [0, logical) maps to the whole image, whatever its resolution. */
+            if (!dkr_tile_logical_dims(td, source_size_bytes, &uw, &uh)) {
+                uw = (uint32_t) over.width;
+                uh = (uint32_t) over.height;
+            }
         }
         if (!uploaded) {
             /*
