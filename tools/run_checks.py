@@ -19,8 +19,9 @@ GPU_SERIAL_NAMES / SERIAL_NAMES model below).
 A bare ``python3 tools/run_checks.py`` runs the complete suite. There is no
 human gate on testing: automation windows render hidden or ordered behind the
 desktop by design (set ``MDKR_TEST_VISIBLE_HEADLESS=1`` to watch one), so a run
-never seizes focus from interactive work, and the runner lowers its own CPU
-priority before starting children. ``--with-app-tests``,
+never seizes focus from interactive work, and bulk children are launched at
+background scheduling priority (wall-clock measurement checks and the browser
+lanes run foreground, one at a time -- see yield_wrapper). ``--with-app-tests``,
 ``--with-compiled-tests``, ``--with-browser-tests`` and ``--with-gpu-tests``
 are accepted but ignored: those classes now run by default.
 """
@@ -1144,6 +1145,42 @@ def selected_checks(pattern_values: list[str] | None) -> list[Check]:
     return selected
 
 
+# Roles whose tasks must run at the invoking shell's scheduling priority.
+# These are the browser lanes: their verdicts carry frames-per-second floors,
+# hitch budgets and per-step readiness deadlines measured against a real
+# Chromium, and every one of them is already serialized by SERIAL_ROLES, so
+# exempting them keeps at most ONE foreground child running at a time.
+FOREGROUND_ROLES = frozenset({"browser", "browser_save", "browser_local"})
+
+
+def yield_wrapper(check: Check) -> list[str]:
+    """Launcher prefix that makes a bulk task yield to interactive work.
+
+    The suite's workstation-safety guarantee is that a run never fights the
+    person at the desk.  It used to be implemented by the RUNNER lowering its
+    own priority (nice 10 + `taskpolicy -b` on itself), which every child
+    inherited.  On Apple Silicon the Darwin background band confines a
+    process to the EFFICIENCY cores and throttles its I/O -- measured on an
+    idle M4 Max, that doubled the rollback matrices' p99s (1.51ms against an
+    840us ceiling), drained the audio sink contract, and timed browser steps
+    out at varying points across otherwise-identical runs.  Nice cannot be
+    given back by a child, so the demotion has to happen per-child, not on
+    the runner.
+
+    So the model is inverted: the runner keeps the invoking shell's
+    priority, bulk children are LAUNCHED into the background band, and the
+    wall-clock measurement set (SERIAL_NAMES, plus the browser roles) runs
+    foreground.  The exempted tasks are exactly the serialized ones, so the
+    foreground cost is bounded at one child at a time."""
+    if check.name in SERIAL_NAMES or check.role in FOREGROUND_ROLES:
+        return []
+    if sys.platform == "darwin":
+        return ["taskpolicy", "-b"]
+    if os.name == "posix":
+        return ["nice", "-n", "10"]
+    return []
+
+
 def command_for(
     check: Check,
     native: Path,
@@ -1155,14 +1192,14 @@ def command_for(
     no_rebuild_instrumented: bool,
 ) -> list[str]:
     if check.role == "ctest":
-        command = [
+        command = yield_wrapper(check) + [
             "ctest",
             "--test-dir",
             str(native.parent),
             "--output-on-failure",
         ]
         return command
-    cmd = [sys.executable, str(TESTS / check.script)]
+    cmd = yield_wrapper(check) + [sys.executable, str(TESTS / check.script)]
     if check.role in {"source", "browser_local"}:
         pass
     elif check.role == "rom":
@@ -1540,31 +1577,13 @@ def main() -> int:
     # no human attestation step — the only human gate in this project is
     # blessing a release candidate.
 
-    # The runner and every descendant should yield to interactive work. Nice is
-    # inherited by subprocesses on POSIX and can only reduce our priority, so a
-    # repository test cannot promote itself above the invoking shell.
-    if os.name == "posix":
-        try:
-            current_nice = os.nice(0)
-            if current_nice < 10:
-                os.nice(10 - current_nice)
-        except OSError as exc:
-            print(f"run_checks: warning: could not lower CPU priority: {exc}",
-                  file=sys.stderr)
-    if sys.platform == "darwin":
-        # macOS's Darwin-background policy also throttles inherited disk I/O
-        # and scheduler pressure. This is stronger than niceness alone and is
-        # inherited by every compiler, CTest, Node and service-test child.
-        try:
-            subprocess.run(
-                ["taskpolicy", "-b", "-p", str(os.getpid())],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except OSError as exc:
-            print(f"run_checks: warning: could not enter background policy: {exc}",
-                  file=sys.stderr)
+    # Bulk tasks yield to interactive work by being LAUNCHED into the
+    # background band (see yield_wrapper): the runner itself keeps the
+    # invoking shell's priority.  It used to demote itself with nice 10 +
+    # `taskpolicy -b`, which every child inherited and no child could give
+    # back -- on Apple Silicon the background band pins work to the
+    # efficiency cores, which invalidated every wall-clock verdict in
+    # SERIAL_NAMES and the browser lane on an otherwise idle M4 Max.
 
     try:
         validate_manifest()

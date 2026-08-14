@@ -522,10 +522,32 @@ def validate_gpu_test_routing(sources: dict[str, str]) -> list[str]:
         'if [ -f "$BUILD_DIR/CMakeCache.txt" ] && [ "$RUN_COMPILED_TESTS" -eq 1 ]; then'
             not in sources["ci_local"]):
         failures.append("local CI does not default to zero compiled-test execution")
-    if 'if current_nice < 10:' not in sources["run_checks"]:
-        failures.append("run_checks does not lower child CPU priority")
-    if '["taskpolicy", "-b", "-p", str(os.getpid())]' not in sources["run_checks"]:
-        failures.append("run_checks does not enter macOS background scheduling policy")
+    # Child scheduling priority. The yield-to-interactive-work guarantee is
+    # implemented per-child (yield_wrapper), NOT by the runner demoting
+    # itself: a runner-level nice/taskpolicy -b is inherited by every child
+    # and cannot be given back, and on Apple Silicon the Darwin background
+    # band confines work to the efficiency cores -- measured on an idle
+    # M4 Max it doubled the rollback matrices' p99s and timed browser steps
+    # out nondeterministically. Pinned both ways: bulk children must be
+    # demoted, and the wall-clock measurement set must NOT be.
+    if 'return ["taskpolicy", "-b"]' not in sources["run_checks"]:
+        failures.append(
+            "run_checks does not launch bulk children under the macOS "
+            "background scheduling policy")
+    if 'return ["nice", "-n", "10"]' not in sources["run_checks"]:
+        failures.append(
+            "run_checks does not lower bulk child CPU priority on POSIX")
+    if ('check.name in SERIAL_NAMES or check.role in FOREGROUND_ROLES'
+            not in sources["run_checks"]):
+        failures.append(
+            "run_checks does not exempt wall-clock measurement checks and "
+            "browser lanes from the background band")
+    if ('current_nice' in sources["run_checks"] or
+            'str(os.getpid())' in sources["run_checks"]):
+        failures.append(
+            "run_checks must not demote the runner itself: a self-applied "
+            "nice/taskpolicy is inherited by measurement children and "
+            "cannot be undone")
     # --jobs serialization policy. The workstation-safety guarantee is a
     # window-layer property (hidden surfaces, background policy, lowered
     # priority — all asserted elsewhere in this contract), NOT wholesale
