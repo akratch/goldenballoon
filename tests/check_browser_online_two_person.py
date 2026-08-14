@@ -414,9 +414,17 @@ def run(args: argparse.Namespace) -> None:
             wait_value(host, "MDKROnlineRoom.current()?.members",
                        lambda value: value == 1, "guest leave publication", args.timeout)
             click_action(host, 24)
-            require(not host.failures and not guest.failures,
+            # ERR_ABORTED is Chromium's code for a request cancelled by
+            # navigation, not a network error: the /room/ entry page's
+            # synchronous location.replace (secret custody demands it run
+            # before anything else) legitimately aborts that page's own
+            # in-flight subresources. Real failures use ERR_FAILED /
+            # ERR_CONNECTION_* and still fail this sweep.
+            network_failures = [item for item in host.failures + guest.failures
+                                if "net::ERR_ABORTED" not in item]
+            require(not network_failures,
                     "browser network/CDP failures: " +
-                    "; ".join(host.failures + guest.failures))
+                    "; ".join(network_failures))
             require(not fatal_lines(host) and not fatal_lines(guest),
                     "two-person browser console error: " +
                     "; ".join(fatal_lines(host) + fatal_lines(guest)))
