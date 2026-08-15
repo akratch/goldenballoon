@@ -11,6 +11,6 @@ Planned ledgers are `session.md`, `phone-party.md`, `rollback.md` and
 [status](../../multiplayer/STATUS.md) must not show the achievement as done.
 
 The current independent-review packet is the
-[overnight red-team handoff](online-red-team-handoff-2026-08-12.md), updated
+[overnight red-team review](online-red-team-review-2026-08-12.md), updated
 2026-08-13. It separates historical passes from the unexecuted live-state and
 Phone Party deltas and lists only dedicated-desktop behavioral commands.

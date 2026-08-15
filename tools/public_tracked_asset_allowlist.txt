@@ -2,6 +2,7 @@
 # The release guard rejects any new binary or dist/ path until it is reviewed
 # and added here. Keep this list sorted.
 brand/appicon-source.png
+dist/web/_headers
 dist/web/assets/apple-touch-icon.png
 dist/web/assets/favicon-32.png
 dist/web/assets/favicon.png
@@ -9,12 +10,33 @@ dist/web/assets/hero.jpg
 dist/web/assets/icon-512.png
 dist/web/assets/icon-maskable-512.png
 dist/web/assets/og.jpg
+dist/web/controller/controller.css
+dist/web/controller/controller.js
+dist/web/controller/index.html
 dist/web/index.html
+dist/web/input/touch-surface.css
+dist/web/input/touch-surface.js
 dist/web/manifest.webmanifest
 dist/web/mdkr-save-ui.js
 dist/web/mdkr64-shell.js
+dist/web/online/match-peer-crypto.js
+dist/web/online/match-preflight.js
+dist/web/online/match-signal-client.js
+dist/web/online/online-control-config.js
+dist/web/online/online-room-live-state.js
+dist/web/online/online-room-presenter.js
+dist/web/online/online-room.css
+dist/web/online/online-room.js
+dist/web/party/party-host.css
+dist/web/party/party-host.js
+dist/web/party/party-protocol.js
+dist/web/party/party-sas.js
+dist/web/party/qrcodegen.js
 dist/web/rom-check.html
 dist/web/rom-id.js
+dist/web/room/index.html
+dist/web/room/room-entry.css
+dist/web/room/room-entry.js
 dist/web/style.css
 dist/web/sw.js
 windows/mdkr64.ico
