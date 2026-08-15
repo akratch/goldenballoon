@@ -75,10 +75,13 @@ BACKENDS = (
 
 
 def clean_environment(**updates: str) -> dict[str, str]:
+    foreground = os.environ.get("MDKR_TEST_FOREGROUND_AUTOMATION")
     env = {
         key: value for key, value in os.environ.items()
         if not key.startswith(("MDKR", "GE007_"))
     }
+    if foreground is not None:
+        env["MDKR_TEST_FOREGROUND_AUTOMATION"] = foreground
     env.update(updates)
     return env
 

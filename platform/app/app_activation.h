@@ -12,6 +12,10 @@
  * automation trigger as background work: relying on MDKR64_HIDDEN alone left
  * a direct smoke/autoplay invocation able to create a foreground window. */
 inline bool AppActivation_backgroundAutomation() {
+    /* Explicit operator opt-in for qualification on an otherwise idle desktop.
+     * The normal suite never sets this, so unattended automation retains the
+     * non-activating accessory/order-behind policy below. */
+    if (std::getenv("MDKR_TEST_FOREGROUND_AUTOMATION") != nullptr) return false;
     return std::getenv("MDKR64_HIDDEN") != nullptr ||
            std::getenv("MDKR_APP_SMOKE_FRAMES") != nullptr ||
            std::getenv("MDKR_APP_AUTOPLAY") != nullptr ||

@@ -196,7 +196,11 @@ DISPLAYED_P99_MAX_US = 40_000
 # it. The tick is far enough in that the surface is definitely configured.
 DISPLAY_SWITCH_POLICY = "100"
 DISPLAY_SWITCH_CAP_HZ = 100
-DISPLAY_SWITCH_TO_HZ = 120
+# Try 120 first so the common 60 Hz qualification host still exercises the
+# original crossing. A ProMotion panel may already report 120; retrying at 60
+# keeps the synthetic event non-vacuous instead of asking 120 Hz to change to
+# itself and then blaming the runtime for correctly emitting no event.
+DISPLAY_SWITCH_RATES = (120, 60)
 DISPLAY_SWITCH_TICK = 60
 DISPLAY_SWITCH_TICKS = 140
 # MDKR_PRESENT_DISPLAY_MARGIN_HZ (platform/pacing_policy.h), duplicated as a
@@ -616,6 +620,11 @@ def check_alpha_quantum_strict(result: Run) -> list[str]:
         return [f"{label}: no [ALPHA-QUANTUM] line — the flush-window trace "
                 "did not fire"]
     failures: list[str] = []
+    if fields.get("timing") not in {"fixed", "variable"}:
+        failures.append(
+            f"{label}: strict quantum classifier reported "
+            f"timing={fields.get('timing')!r}, expected a settled fixed or "
+            "variable interval classification")
     if fields.get("mode") != "grid":
         failures.append(
             f"{label}: MDKR_PRESENT_QUANTUM_STRICT=1 but [ALPHA-QUANTUM] "
@@ -688,8 +697,11 @@ def check_realtime_quality(result: Run) -> list[str]:
     alpha = result.hist["alpha-delta"]
     failures: list[str] = []
 
+    quantum = alpha_quantum_row(result.output)
+    timing = quantum.get("timing")
     variance = alpha.get("var", -1)
-    if variance < 0 or variance > ALPHA_VAR_MAX_PPM2:
+    if variance < 0 or (timing == "fixed" and
+                        variance > ALPHA_VAR_MAX_PPM2):
         failures.append(
             f"{label}: interpolation-phase variance {variance}ppm^2 exceeds "
             f"{ALPHA_VAR_MAX_PPM2}ppm^2 — displayed frames are not evenly "
@@ -705,7 +717,7 @@ def check_realtime_quality(result: Run) -> list[str]:
     return failures
 
 
-def check_display_change(result: Run) -> list[str]:
+def check_display_change(result: Run, switch_to_hz: int) -> list[str]:
     """The refresh was re-derived live and the present mode re-ranked.
 
     The `[PRESENT-MODE]` row is emitted at every surface configuration, so a
@@ -734,16 +746,16 @@ def check_display_change(result: Run) -> list[str]:
     # The rate the run BOOTED at is whatever this machine's display reports, so
     # it is read rather than asserted; only the rate it moved TO is ours.
     booted = field(changes[0], "oldHz")
-    if field(changes[0], "newHz") != str(DISPLAY_SWITCH_TO_HZ):
+    if field(changes[0], "newHz") != str(switch_to_hz):
         failures.append(
             f"{label}: display-change row did not report the forced "
-            f"{DISPLAY_SWITCH_TO_HZ}Hz rate: {changes[0].strip()}")
+            f"{switch_to_hz}Hz rate: {changes[0].strip()}")
 
     rates = [field(row, "displayHz") for row in modes]
-    if str(DISPLAY_SWITCH_TO_HZ) not in rates:
+    if str(switch_to_hz) not in rates:
         failures.append(
             f"{label}: no [PRESENT-MODE] row was re-emitted at "
-            f"displayHz={DISPLAY_SWITCH_TO_HZ} (saw {rates}) — the surface was "
+            f"displayHz={switch_to_hz} (saw {rates}) — the surface was "
             "not reconfigured, so the present mode is still ranked against the "
             "monitor the window left")
 
@@ -754,17 +766,19 @@ def check_display_change(result: Run) -> list[str]:
     # nothing -- but only where the boot rate is actually below the cap, which
     # is a property of the machine and not of the change under test.
     requested = [field(row, "requested") for row in modes]
-    if booted.isdigit() and int(booted) < DISPLAY_SWITCH_CAP_HZ:
+    if (booted.isdigit() and
+            (int(booted) < DISPLAY_SWITCH_CAP_HZ) !=
+            (switch_to_hz < DISPLAY_SWITCH_CAP_HZ)):
         if len(set(requested)) < 2:
             failures.append(
                 f"{label}: the present-mode REQUEST did not change across a "
-                f"{booted}Hz -> {DISPLAY_SWITCH_TO_HZ}Hz change that straddles "
+                f"{booted}Hz -> {switch_to_hz}Hz change that straddles "
                 f"the {DISPLAY_SWITCH_CAP_HZ}Hz cap (saw {requested}) — the "
                 "ranking is still being made against the old refresh")
     return failures
 
 
-def check_display_margin_change(result: Run) -> list[str]:
+def check_display_margin_change(result: Run, switch_to_hz: int) -> list[str]:
     """display-margin re-derives its cadence when the display changes.
 
     This is the whole of what makes the setting honest. `display` follows the
@@ -797,13 +811,41 @@ def check_display_margin_change(result: Run) -> list[str]:
         failures.append(
             f"{label}: the display change was handled under "
             f"policy={fields.get('policy')}, not display-margin")
-    expected = max(DISPLAY_SWITCH_TO_HZ - DISPLAY_MARGIN_HZ, 30)
+    expected = max(switch_to_hz - DISPLAY_MARGIN_HZ, 30)
     if fields.get("resolvedRate") != str(expected):
         failures.append(
             f"{label}: resolvedRate={fields.get('resolvedRate')} after a move "
-            f"to a {DISPLAY_SWITCH_TO_HZ}Hz display, expected {expected} — the "
+            f"to a {switch_to_hz}Hz display, expected {expected} — the "
             "margin was not re-derived from the new refresh")
     return failures
+
+
+def run_display_switch_arm(
+    binary: Path,
+    rom: Path,
+    root: Path,
+    label: str,
+    policy: str,
+    timeout: int,
+    verbose: bool,
+) -> tuple[Run, int]:
+    """Run a synthetic display change whose destination differs from boot."""
+    result: Run | None = None
+    selected = DISPLAY_SWITCH_RATES[-1]
+    for attempt, rate in enumerate(DISPLAY_SWITCH_RATES):
+        selected = rate
+        arm_label = label if attempt == 0 else f"{label}-to-{rate}hz"
+        result = run_arm(
+            binary, rom, root, arm_label, policy, "interpolate",
+            DISPLAY_SWITCH_TICKS, timeout, verbose,
+            extra_env={
+                "MDKR_TEST_DISPLAY_RATE_SWITCH":
+                    f"{rate}@{DISPLAY_SWITCH_TICK}",
+            })
+        if "[PRESENT-DISPLAY] event=display-changed" in result.output:
+            break
+    assert result is not None
+    return result, selected
 
 
 def baseline_note(result: Run) -> str:
@@ -876,14 +918,10 @@ def main() -> int:
             # Deterministic and cheap, so it runs regardless of --skip-realtime:
             # nothing in it is a wall-clock measurement.
             label = "synth-display-change"
-            result = run_arm(
-                binary, rom, root, label, DISPLAY_SWITCH_POLICY, "interpolate",
-                DISPLAY_SWITCH_TICKS, args.timeout, args.verbose,
-                extra_env={
-                    "MDKR_TEST_DISPLAY_RATE_SWITCH":
-                        f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
-                })
-            display_failures = check_display_change(result)
+            result, switch_to_hz = run_display_switch_arm(
+                binary, rom, root, label, DISPLAY_SWITCH_POLICY,
+                args.timeout, args.verbose)
+            display_failures = check_display_change(result, switch_to_hz)
             if args.allow_no_baseline and display_failures:
                 # No display session, no display object for the synthetic
                 # switch to act on: same root as the realtime downgrades.
@@ -892,24 +930,22 @@ def main() -> int:
             else:
                 failures.extend(display_failures)
             notes.append(
-                f"{label}: refresh re-derived live and present mode re-ranked")
+                f"{label}: refresh re-derived at {switch_to_hz}Hz and present "
+                "mode re-ranked")
 
             label = "synth-display-margin-change"
-            result = run_arm(
-                binary, rom, root, label, "display-margin", "interpolate",
-                DISPLAY_SWITCH_TICKS, args.timeout, args.verbose,
-                extra_env={
-                    "MDKR_TEST_DISPLAY_RATE_SWITCH":
-                        f"{DISPLAY_SWITCH_TO_HZ}@{DISPLAY_SWITCH_TICK}",
-                })
-            margin_failures = check_display_margin_change(result)
+            result, switch_to_hz = run_display_switch_arm(
+                binary, rom, root, label, "display-margin",
+                args.timeout, args.verbose)
+            margin_failures = check_display_margin_change(
+                result, switch_to_hz)
             if args.allow_no_baseline and margin_failures:
                 notes.extend(f + " (allowed by --allow-no-baseline)"
                              for f in margin_failures)
             else:
                 failures.extend(margin_failures)
             notes.append(
-                f"{label}: margin re-derived against the new refresh")
+                f"{label}: margin re-derived against {switch_to_hz}Hz")
 
             if args.skip_realtime:
                 notes.append("realtime arm skipped by --skip-realtime")
@@ -930,12 +966,13 @@ def main() -> int:
                         binary, rom, root, label, "display", "interpolate",
                         REALTIME_TICKS, args.timeout, args.verbose,
                         realtime=True,
-                        # Task 5: the grid-phase assertions below are only
-                        # meaningful on a fixed present interval; strict mode
-                        # pins that regime, forcing today's always-grid
-                        # behavior back on regardless of measured variance so
-                        # this arm keeps measuring exactly what it always did
-                        # -- on a fixed panel or an adaptive one (see the
+                        # Task 5: strict mode forces the legacy always-grid
+                        # projection back on, but it cannot make an adaptive
+                        # panel's physical intervals fixed. The classifier row
+                        # distinguishes those cases: numeric phase variance is
+                        # bounded only for timing=fixed, while this arm still
+                        # proves the strict override engages on either kind of
+                        # panel (see the
                         # module docstring's "TASK 5 MADE AN ASSUMPTION HERE
                         # EXPLICIT" section).
                         extra_env={"MDKR_PRESENT_QUANTUM_STRICT": "1"})

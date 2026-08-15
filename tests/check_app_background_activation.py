@@ -35,6 +35,10 @@ def main() -> int:
 
     require('std::getenv("MDKR64_HIDDEN") != nullptr' in header,
             "background policy must use the existing automation variable")
+    require(
+        'std::getenv("MDKR_TEST_FOREGROUND_AUTOMATION") != nullptr' in header,
+        "operator-approved qualification must have an explicit foreground seam",
+    )
     for trigger in ("MDKR64_HIDDEN", "MDKR_APP_SMOKE_FRAMES",
                     "MDKR_APP_AUTOPLAY", "MDKR_APP_FILEDIALOG_SELFTEST"):
         require(trigger in header,
@@ -47,6 +51,11 @@ def main() -> int:
                 f"{removed} must not gate native surface creation")
     background_function = between(
         header, "inline bool AppActivation_backgroundAutomation() {", "}\n"
+    )
+    require(
+        background_function.index("MDKR_TEST_FOREGROUND_AUTOMATION") <
+        background_function.index("MDKR64_HIDDEN"),
+        "the explicit foreground seam must override every automation trigger",
     )
     for trigger in ("MDKR64_HIDDEN", "MDKR_APP_SMOKE_FRAMES",
                     "MDKR_APP_AUTOPLAY", "MDKR_APP_FILEDIALOG_SELFTEST"):
