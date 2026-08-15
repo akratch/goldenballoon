@@ -291,11 +291,13 @@ Not `PRES-001` failures, but the properties any future change must preserve:
    phase of one surface, already paired by
    `gfx_dkr_note_paired_triangle_buffers`, and keying it would declare every
    tick a topology change. `MDKR_TEST_WAVE_TOPOLOGY_FLIP=1` does exactly that
-   as a negative control, because an ordinary route produces hundreds of key
-   comparisons and no disagreements — measured 282 checks / 0 mismatches on
-   Jungle Falls — and a guard whose refusal is never taken cannot be told from
-   one that has stopped running. Gates: `check_smooth_verdict.py` (structural,
-   both arms) and `check_wave_midpoint_envelope.py` (pixel, on Whale Bay —
+   as a negative control. A continuously rebuilt Jungle Falls route measured
+   282 checks / 0 mismatches; drawless catch-up can legitimately retain an
+   older list across a grid-LOD boundary, in which case a bounded mismatch and
+   snap is the safe result. The negative control still distinguishes that from
+   a dead guard by forcing every wave pair to refuse and the class all-snap.
+   Gates: `check_smooth_verdict.py` (structural, both arms) and
+   `check_wave_midpoint_envelope.py` (pixel, on Whale Bay —
    an entire Jungle Falls race produced zero presents at which wave
    interpolation moved a pixel).
 

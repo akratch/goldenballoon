@@ -1375,6 +1375,29 @@ void mdkr_autopilot_unstick(Object *obj, Object_Racer *racer, s32 updateRate) {
         return;
     }
     state->immobile = 0;
+    if (racer->groundedWheels) {
+        /* A grounded kart can still enter DKR's authored recovery block. Only
+         * its hot cooldown prevents that block from re-arming, so release the
+         * cooldown and let the original 60-unit detector choose when and how
+         * to reverse. Forcing the block here rotated the AI line too early on
+         * Ancient Lake and left split-screen player 2 crawling through the
+         * corner. Hovercraft never satisfy groundedWheels, so they still need
+         * the direct arm below. */
+        if (racer->unk215 != 0) {
+            if (mdkr_trace_enabled()) {
+                mdkr_trace("autopilotunstick: player=%d level=%d wedged at "
+                           "(%.1f, %.1f, %.1f) checkpoint=%d cooldown=%d "
+                           "-> 0 @frame~%d",
+                           (int) playerIndex + 1, (int) levelId,
+                           obj->trans.x_position, obj->trans.y_position,
+                           obj->trans.z_position,
+                           (int) racer->courseCheckpoint,
+                           (int) racer->unk215, g_frameCounter);
+            }
+            racer->unk215 = 0;
+        }
+        return;
+    }
     mdkr_unstick_force_recovery(obj, racer, "autopilotunstick", playerIndex + 1);
 }
 

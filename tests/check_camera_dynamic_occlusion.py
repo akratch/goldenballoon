@@ -224,7 +224,8 @@ def main() -> int:
         "MDKR_CAMERA_OBJECT_OCCLUSION_MAX_RETAINED_CHUNKS - chunks_retained",
         "MDKR_CAMERA_OBJECT_OCCLUSION_MAX_QUERY_TRIANGLES - chunk_triangles",
         "mdkr_camera_object_occlusion_sweep_model_profiled(",
-        "instance->temporal_proxy",
+        "instance->temporal_proxy &&",
+        "MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE",
         "&instance->temporal_bounds",
     ):
         failures += require(sweep, needle)

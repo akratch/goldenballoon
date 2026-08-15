@@ -54,21 +54,20 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
 PAN_DEMOTE_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 TRACK = "29"                # Jungle Falls: waterfall scroll + ping-pong water
-# Interpolated-replay OPPORTUNITY count is not perfectly reproducible run to
-# run even headless (host scheduling noise reaches present_sched's
-# stale-vs-interpolated decision) -- WATER_WAVE's 129+ paired-triangle
-# batches confirm every run regardless, but the ordinary waterfall scroller
-# needs enough opportunities for at least one to land near it. 12,000 frames
-# produced a WORLD_SCROLL row in most trials and none in one; 20,000 produced
-# one in every trial measured (n=3) with margin (blend+snap already >= 14).
-FRAMES = 20000
+# Terminate on authoritative ticks, not host presentation calls. The old 20,000
+# frame budget completed after a host-speed-dependent number of simulation
+# ticks, so Darwin background scheduling changed the topology census on the
+# identical binary. 10,000 fixed ticks retain the old budget's intended 2:1
+# 60 Hz presentation / 30 Hz authority window and reliably reach the ordinary
+# waterfall scroller as well as the wave surface.
+TICKS = 10000
 # The pan-demote arm uses the presentation matrix's measured UV-scroll window:
 # Jungle Falls' waterfall has one confirmed scroll site per authored tick from
 # tick 3000 through 3230. It then token-gates a 45 degree presentation-yaw
 # input, so the production 22.5 degree threshold and the class filter are
 # exercised deterministically instead of waiting for a real hard pan and a
 # confirmed scroller replay to coincide by chance.
-PAN_DEMOTE_FRAMES = 3230 * 2
+PAN_DEMOTE_TICKS = 3230
 PAN_DEMOTE_FORCED_YAW_DEG = "45.0"
 # The shipped production constant (MDKR_PAN_DEMOTE_YAW_DEG_PER_TICK in
 # gfx_pc_dkr.c), duplicated here ONLY as the value this gate expects
@@ -87,14 +86,14 @@ ROW_RE = re.compile(
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
 PAN_FORCED_YAW_RE = re.compile(r"\[PAN-DEMOTE-TEST\] forced_yaw=([0-9.]+)")
 # Task 7's topology-key pair comparison, from [PRESENT-PACKET]. The CHECK
-# count is what makes "zero mismatches" mean anything: wave tiles change grid
-# variant only when the camera crosses a distance boundary, so an ordinary
-# route legitimately produces no mismatches at all -- measured 282 checks / 0
-# mismatches on this fixture -- and only a positive check count separates that
-# from a guard that stopped running.
+# count is what makes the guard observable. A continuously rebuilt route
+# produces 282 checks / 0 mismatches, while skipped draws can retain an older
+# list across a real grid-LOD boundary and correctly produce a bounded number
+# of TOPOLOGY_MISMATCH snaps. The forced-flip arm below remains the proof that
+# an incompatible pair cannot blend at all.
 TOPOLOGY_RE = re.compile(r"topocheck=(\d+) topomismatch=(\d+)")
 # Task 5: VRR-honest alpha quantization. This fixture drives synthetic
-# (non-realtime) pacing via --headless-frames, which
+# (non-realtime) pacing via --headless-ticks, which
 # platform_present_display_quantum_units() declines to quantize onto a grid
 # unconditionally (platform_sdl_min.c:4083-4102, the very first branch) --
 # long before the new variance check ever runs. So this gate only proves the
@@ -123,11 +122,14 @@ def environment(save_dir: Path, pan_demote: bool,
         MDKR_TRACE="1",
         MDKR_AUTOPILOT="1",
         MDKR_LOAD_TRACK=TRACK,
-        # Smoothing armed the same way a player reaches it: a present policy
+        # Smoothing is armed the same way a player reaches it: a present policy
         # above the tick rate plus the public Motion smoothing = Interpolated
-        # setting. This is not MDKR_SYNTH_FIELDS -- --headless-frames already
-        # drives one deterministic host field opportunity per call, so the
-        # whole route is exactly reproducible without any synthetic pacer.
+        # setting. Pin one host field per headless frame as well. Without this,
+        # the real clock decides how many authored ticks fit inside 20,000 fast
+        # host calls: the same binary measured 282 topology checks standalone
+        # and 41,248 in Darwin's background band, turning scheduling priority
+        # into a different wave-ownership verdict.
+        MDKR_SYNTH_FIELDS="1",
         MDKR_PRESENT_RATE="60",
         MDKR_PRESENT_SMOOTHING="interpolate",
         MDKR_PRESENT_SCHED_TRACE="1",
@@ -156,7 +158,7 @@ def environment(save_dir: Path, pan_demote: bool,
 
 
 def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
-        pan_demote: bool, frames: int,
+        pan_demote: bool, ticks: int,
         topology_flip: bool = False,
         authorize_forced_yaw: bool = True) -> str:
     import subprocess
@@ -165,7 +167,7 @@ def run(binary: Path, rom: Path, work: Path, timeout: int, verbose: bool,
     save_dir.mkdir(parents=True)
     command = [
         str(binary),
-        "--headless-frames", str(frames),
+        "--headless-ticks", str(ticks),
         "--input-script", str(PAN_DEMOTE_SCRIPT if pan_demote else SCRIPT),
         "--rom", str(rom),
     ]
@@ -502,9 +504,9 @@ def main() -> int:
 
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr_smooth_verdict_") as temp:
-            frames = PAN_DEMOTE_FRAMES if args.pan_demote else FRAMES
+            ticks = PAN_DEMOTE_TICKS if args.pan_demote else TICKS
             output = run(binary, rom, Path(temp), args.timeout, args.verbose,
-                         args.pan_demote, frames,
+                         args.pan_demote, ticks,
                          args.topology_negative_control)
     except (OSError, RuntimeError) as exc:
         print(f"check_smooth_verdict: FAIL — {exc}", file=sys.stderr)
@@ -541,16 +543,30 @@ def main() -> int:
                     "makes every authored pair a topology change, so a "
                     "guard that compares keys at all cannot agree even "
                     "once. A constant topology key reads exactly like this")
-        elif topo_mismatches != 0:
-            failures.append(
-                f"topomismatch={topo_mismatches} of {topo_checks} checks — "
-                "this fixture's wave tiles were measured never to change "
-                "grid variant across a replayed pair. A nonzero count means "
-                "either the route changed or the key is keying something "
-                "that alternates (the vertex flip is the trap)")
+        else:
+            wave = rows.get("WATER_WAVE")
+            if topo_mismatches > topo_checks:
+                failures.append(
+                    f"topomismatch={topo_mismatches} exceeds "
+                    f"topocheck={topo_checks}")
+            if wave is not None:
+                wave_snap = wave[1]
+                wave_topology_mismatches = wave[5]
+                if wave_topology_mismatches > wave_snap:
+                    failures.append(
+                        f"class=WATER_WAVE: topomismatch="
+                        f"{wave_topology_mismatches} exceeds snap="
+                        f"{wave_snap} — an incompatible pair was not "
+                        "accounted as a refusal")
+                if (topo_mismatches == 0) != (
+                        wave_topology_mismatches == 0):
+                    failures.append(
+                        f"topology census disagrees: packet mismatches="
+                        f"{topo_mismatches}, WATER_WAVE mismatches="
+                        f"{wave_topology_mismatches}")
 
     # Task 5: the [ALPHA-QUANTUM] line must fire at the same flush window as
-    # [SMOOTH-VERDICT], and this fixture's synthetic (--headless-frames)
+    # [SMOOTH-VERDICT], and this fixture's synthetic (--headless-ticks)
     # pacing must report the harness's known-today value: mode=free, units=0
     # (see ALPHA_QUANTUM_RE's comment above for why this is not yet a witness
     # for the variance threshold itself).
@@ -569,7 +585,7 @@ def main() -> int:
 
     # Under the topology negative control the subject is the wave guard, and
     # WORLD_SCROLL is an unrelated class whose ROW is itself statistically
-    # flaky at this frame budget (see FRAMES' note above). Requiring it here
+    # flaky at this tick budget (see TICKS' note above). Requiring it here
     # would import that flake into an assertion it has nothing to do with; the
     # default arm still requires all three.
     required = (tuple(c for c in REQUIRED_CLASSES if c != "WORLD_SCROLL")
@@ -681,7 +697,7 @@ def main() -> int:
                     prefix="mdkr_smooth_verdict_bare_pan_") as bare_temp:
                 bare_output = run(
                     binary, rom, Path(bare_temp), args.timeout, args.verbose,
-                    True, PAN_DEMOTE_FRAMES, authorize_forced_yaw=False,
+                    True, PAN_DEMOTE_TICKS, authorize_forced_yaw=False,
                 )
         except (OSError, RuntimeError) as exc:
             failures.append(f"bare-token forced-yaw control: {exc}")

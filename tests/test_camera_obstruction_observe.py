@@ -126,6 +126,7 @@ def main() -> int:
         "status == MDKR_CAMERA_TARGET_VISIBILITY_EMBEDDED;",
         "target_status == MDKR_CAMERA_TARGET_VISIBILITY_INVALID",
         "camera_obstruction_publish_elevated_emergency",
+        "MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE",
         "MDKR_CAMERA_EXACT_SHADOW",
         "camera_obstruction_build_exact_guard",
         "cam_lens_pose_from_camera_snapshot",

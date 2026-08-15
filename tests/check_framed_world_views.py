@@ -1095,10 +1095,11 @@ def main() -> int:
         help="directory holding the region releases; the PAL arm is not "
              "optional and this gate fails rather than skipping it",
     )
-    parser.add_argument("--timeout", type=int, default=300)
-    # Only the 72 ordinary arms are pooled. Each still owns its own 300s
-    # timeout, so the bound has to keep an arm from starving: four concurrent
-    # engine processes on this corpus finish well inside it.
+    parser.add_argument("--timeout", type=int, default=600)
+    # Only the 72 ordinary arms are pooled. The post-race captures sit at
+    # frames 12,740..12,810, whose paced floor is about 380s on the release
+    # qualification host; 600 keeps the bound loose enough to detect a wedge
+    # without timing out a healthy four-arm batch.
     parser.add_argument("--jobs", type=int, default=4,
                         help="ordinary arms to run concurrently (1 = sequential)")
     parser.add_argument("--interpolated-only", action="store_true")

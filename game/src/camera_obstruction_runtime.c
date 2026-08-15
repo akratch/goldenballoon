@@ -1432,7 +1432,13 @@ static MdkrCameraSweepStatus camera_obstruction_lens_stationary_query(
         .guard = sphere_guard,
         .start_eye = eye,
         .desired_eye = eye,
-        .mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK,
+        /* A stationary endpoint is rendered at this fixed pose. Moving-door
+         * temporal bounds still govern every corridor and presentation sweep,
+         * but they must not turn the whole swept interval into occupied space
+         * for an endpoint that can cut to the door's current mesh. This is the
+         * exact-lens counterpart of camera_obstruction_stationary_query(). */
+        .mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK |
+            MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE,
     };
     return camera_obstruction_lens_sweep(query, &input, out_hit);
 }
@@ -2018,7 +2024,10 @@ static int camera_obstruction_target_visible(
     MdkrCameraVec3 eye) {
     const MdkrCameraTargetVisibilityStatus status =
         mdkr_camera_target_visibility_query(
-            query, target, eye, MDKR_CAMERA_OBSTRUCTION_HARD_MASK, NULL);
+            query, target, eye,
+            MDKR_CAMERA_OBSTRUCTION_HARD_MASK |
+                MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE,
+            NULL);
 
     /* Solver candidates cannot satisfy a line-of-sight constraint whose focus
      * point remains embedded. Camera safety stays enforceable; final telemetry
@@ -2285,7 +2294,8 @@ static void camera_obstruction_validate_resolved(
         const MdkrCameraTargetVisibilityStatus target_status =
             mdkr_camera_target_visibility_query(
                 &query, observe->intent.target, eye,
-                MDKR_CAMERA_OBSTRUCTION_HARD_MASK,
+                MDKR_CAMERA_OBSTRUCTION_HARD_MASK |
+                    MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE,
                 &observe->target_visibility_hit);
 
         observe->resolved_target_visible =

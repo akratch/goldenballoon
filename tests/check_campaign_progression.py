@@ -1554,7 +1554,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--timeout", type=int, default=600)
+    # Seam A runs 22,000 enhanced-cadence frames. On the qualification Mac its
+    # measured pacing floor is about 611 seconds even in isolation, so 600 was
+    # an impossible deadline rather than a wedge detector.
+    parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument(
         "--quick", action="store_true",
         help="seam A plus one seam B world and its control; skips the rest",

@@ -83,7 +83,9 @@ ORACLE_RE = re.compile(
     r"cp=(-?\d+) next=-?\d+ lap=(-?\d+) countlap=-?\d+ "
     r"fin=(-?\d+) fpos=(-?\d+) ridx=-?\d+ pidx=(-?\d+)"
 )
-UNSTICK_RE = re.compile(r"autopilotunstick: player=(\d+) level=(\d+) ")
+UNSTICK_RE = re.compile(
+    r"autopilotunstick: (?:player=(\d+) level=(\d+)|racer=(\d+)) "
+)
 
 
 @dataclass(frozen=True)
@@ -405,10 +407,10 @@ def run_case(
             command, capture_output=True, text=True, env=env)
     output = process.stdout + process.stderr
     recovered_players = {
-        int(match.group(1))
+        int(match.group(1) or match.group(3))
         for line in output.splitlines()
         if (match := UNSTICK_RE.search(line))
-        and int(match.group(2)) == ANCIENT_LAKE
+        and (match.group(2) is None or int(match.group(2)) == ANCIENT_LAKE)
     }
 
     if process.returncode != 0:

@@ -215,11 +215,11 @@ _Static_assert(sizeof(WaveVisibleTable) == WAVE_VISIBLE_SLOTS * sizeof(unk8012A5
  * registry entries to reproduce a number the residual already reproduces.
  *
  * BOUNDED BY THE VISIBILITY TABLE. One slot per entry the 26-slot table can
- * hold, claimed and retired at TICK time from that table rather than at the
- * draw: registration issues a fresh generation, and reissuing one every frame
- * would mark the tile discontinuous forever and interpolate nothing. A tile
- * that becomes visible between two ticks simply draws unowned for one frame,
- * which is what it did for every frame before this existed.
+ * hold, normally claimed and retired at TICK time: registration issues a fresh
+ * generation, and reissuing one every frame would leave the tile permanently
+ * discontinuous. If drawless catch-up moves the camera far enough to reveal a
+ * new tile, waves_owner_transform() claims it at the draw boundary and lets the
+ * fresh generation snap once instead of emitting ownerless geometry.
  */
 #define WAVE_OWNER_SLOTS WAVE_VISIBLE_SLOTS
 static ObjectTransform sWaveOwnerTransforms[WAVE_OWNER_SLOTS];
@@ -301,14 +301,13 @@ static void waves_owner_retire_all(void) {
  * Reads the 26-slot visibility table the previous render filled and makes the
  * slot set match it: a tile that is still visible keeps its slot and its
  * generation, a tile that has gone unregisters, and a newly visible tile
- * claims a free slot -- and registers on the FIRST tick at which a draw has
- * already put a real pose in that slot, which is the tick after the claim.
+ * claims a free slot.
  * Registration is a lifecycle event here for the same reason a rain splash's
  * is at its spawn rather than at its draw (weather.c) -- it issues a fresh
  * generation, and issuing one per frame would leave every tile permanently
- * discontinuous. The one-tick delay is the fail-closed direction: the tile
- * draws unowned for its first frame, exactly as every wave tile did before
- * this existed.
+ * discontinuous. waves_owner_transform() closes the catch-up case where the
+ * camera reveals a tile after several drawless ticks; ordinary lifetimes are
+ * still established here and retain their generation.
  *
  * Read-only with respect to authoritative state: it reads block IDs and level
  * model origins and writes only presentation-side storage.
@@ -368,20 +367,55 @@ static void waves_owner_tick(void) {
 }
 
 /*
- * The registered slot a tile is drawn through, or NULL when it has none --
- * a tile that became visible since the last tick, or one the slot budget
- * could not hold. Those keep the old stack local and draw exactly as every
- * wave tile did before this existed.
+ * The registered slot a tile is drawn through. Ordinarily waves_owner_tick()
+ * already owns it. After drawless catch-up, however, this render's camera can
+ * reveal a tile that was absent from the previous draw's visibility table.
+ * Claim it here before the matrix is emitted: the fresh generation makes the
+ * first snapshot pair discontinuous (and therefore a safe snap), while an
+ * unowned matrix would have no way to recompose or explain the refusal.
+ *
+ * At the 26-slot ceiling, recycle only a tenant absent from THIS render's
+ * complete gWaveBlockIDs list. A retained display list carrying the old
+ * generation then fails closed against the new lifetime; two current tiles
+ * are never allowed to share an identity.
  */
 static ObjectTransform *waves_owner_transform(s32 blockID) {
+    s32 free_slot = -1;
+    s32 replace_slot = -1;
     s32 slot;
+    s32 i;
 
     for (slot = 0; slot < WAVE_OWNER_SLOTS; slot++) {
         if (sWaveOwnerBlock[slot] == blockID && sWaveOwnerLive[slot]) {
             return &sWaveOwnerTransforms[slot];
         }
+        if (free_slot < 0 && sWaveOwnerBlock[slot] == -1) {
+            free_slot = slot;
+        }
+        if (replace_slot < 0 && sWaveOwnerBlock[slot] != -1) {
+            s32 visible = FALSE;
+            for (i = 0; i < gVisibleWaveTiles; i++) {
+                if (gWaveBlockIDs[i] == sWaveOwnerBlock[slot]) {
+                    visible = TRUE;
+                    break;
+                }
+            }
+            if (!visible) {
+                replace_slot = slot;
+            }
+        }
     }
-    return NULL;
+    slot = free_slot >= 0 ? free_slot : replace_slot;
+    if (slot < 0) {
+        return NULL;
+    }
+    waves_owner_retire_slot(slot);
+    waves_owner_pose(blockID, &sWaveOwnerTransforms[slot]);
+    sWaveOwnerBlock[slot] = (s16) blockID;
+    sWaveOwnerLive[slot] =
+        presentation_snapshot_register_external_transform(
+            &sWaveOwnerTransforms[slot]);
+    return sWaveOwnerLive[slot] ? &sWaveOwnerTransforms[slot] : NULL;
 }
 
 /*

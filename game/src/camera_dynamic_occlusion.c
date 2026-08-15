@@ -1278,7 +1278,9 @@ MdkrCameraSweepStatus mdkr_camera_dynamic_occlusion_rounded_lens_sweep_detailed(
                 chunk_triangles, 1);
             return MDKR_CAMERA_SWEEP_INVALID;
         }
-        if (instance->temporal_proxy) {
+        if (instance->temporal_proxy &&
+            !(input->mask &
+              MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE)) {
             const MdkrCameraSweepInput proxy_input =
                 mdkr_camera_dynamic_rounded_lens_proxy_input(
                     input, outward_radius);

@@ -216,6 +216,15 @@ SERIAL_NAMES = frozenset({
     "presentation_matrix",   # presentation perf census cost gate
     "app_adopted_pacing",    # real windows + adopted realtime pacing
     "motion_quality_battery",  # replay-cost ceiling is a CPU-time measurement
+    # These long routes intentionally use the host-paced field clock. Darwin's
+    # background band does more than slow them down: it changes how many
+    # authored ticks land inside a headless-frame budget. The qualification
+    # survey reproduced impossible internal timeouts on the identical binary.
+    # Keep the routes alone and at the invoking shell's priority so their frame
+    # budgets retain the semantics their checks assert.
+    "campaign_progression",
+    "ghost_matrix",
+    "framed_world_views",
     # The nanosecond-budget family. Each asserts p50/p95/p99 wall-clock
     # ceilings measured inside the engine; a pooled neighbour's cache and
     # memory-bandwidth pressure inflates exactly the tails under test. The
@@ -727,7 +736,10 @@ CHECKS = (
     Check("ghost_matrix", "check_ghost_matrix.py", "native",
           "Time Trial ghost recorded, saved, and reloaded by a fresh process "
           "over all forty-seven legal track/vehicle pairs",
-          timeout=2400),
+          # The 47-pair driver was still making progress when its old 40-minute
+          # ceiling fired on the qualification host. This is a wedge bound, not
+          # a runtime target; individual children retain their own 420s guard.
+          timeout=3600),
     Check("boost_magnitude", "check_boost_magnitude.py", "native",
           "zip-pad boost per-frame speed trace, racer-count independence, and "
           "perturbed-boost-constant positive controls"),
@@ -751,7 +763,10 @@ CHECKS = (
           "rematches chained on their own saves to four Wizpig amulet pieces, "
           "with a first-encounter control; the four-piece Wizpig 1 unlock and "
           "race against a three-piece control; Wizpig 2 setting the true-ending "
-          "credits bit"),
+          "credits bit",
+          # The internal 22,000-frame seam alone has a paced floor above ten
+          # minutes; the complete multi-seam chain is a measured 24-minute gate.
+          timeout=3600),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),
     Check("collision_headroom", "check_collision_headroom.py", "native",

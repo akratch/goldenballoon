@@ -640,7 +640,11 @@ production coverage:
   ownership (blend at least once, zero NO_OWNER); and, via
   `--topology-negative-control`, that the topology-key guard is actually
   reached (a positive check count) and actually refuses a forced-mismatched
-  pair. `--pan-demote` and `--sky-midpoint` are optional token-gated arms
+  pair. The default arm terminates on authoritative ticks and permits bounded
+  topology-mismatch snaps: skipped draws can retain an older list across a real
+  grid-LOD boundary, and snapping is the guard's required answer. Every such
+  mismatch must be accounted inside WATER_WAVE's snap count. `--pan-demote`
+  and `--sky-midpoint` are optional token-gated arms
   for the pan-rate demotion clause and the skydome midpoint-sensitivity
   witness, respectively; neither runs by default.
   The pan-demotion arm uses the presentation matrix's Jungle Falls window and
