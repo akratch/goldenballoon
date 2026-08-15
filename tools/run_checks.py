@@ -216,12 +216,11 @@ SERIAL_NAMES = frozenset({
     "presentation_matrix",   # presentation perf census cost gate
     "app_adopted_pacing",    # real windows + adopted realtime pacing
     "motion_quality_battery",  # replay-cost ceiling is a CPU-time measurement
-    # These long routes intentionally use the host-paced field clock. Darwin's
-    # background band does more than slow them down: it changes how many
-    # authored ticks land inside a headless-frame budget. The qualification
-    # survey reproduced impossible internal timeouts on the identical binary.
-    # Keep the routes alone and at the invoking shell's priority so their frame
-    # budgets retain the semantics their checks assert.
+    # These long routes are scheduling-sensitive. Campaign progression is a
+    # CPU-heavy synthetic traversal that exceeded its process timeout after
+    # Darwin background-band demotion; the ghost and framed-view arms also use
+    # host-paced bounds. Keep them alone and at the invoking shell's priority so
+    # their frame and wall-clock budgets retain the semantics they assert.
     "campaign_progression",
     "ghost_matrix",
     "framed_world_views",
@@ -764,8 +763,9 @@ CHECKS = (
           "with a first-encounter control; the four-piece Wizpig 1 unlock and "
           "race against a three-piece control; Wizpig 2 setting the true-ending "
           "credits bit",
-          # The internal 22,000-frame seam alone has a paced floor above ten
-          # minutes; the complete multi-seam chain is a measured 24-minute gate.
+          # The complete chain launches many long synthetic-frame processes.
+          # The loose outer bound detects a wedge without reintroducing the
+          # background-scheduling timeout that motivated serialization.
           timeout=3600),
     Check("collision_gridmask", "check_collision_gridmask.py", "native",
           "collision candidate filter and boss flow"),

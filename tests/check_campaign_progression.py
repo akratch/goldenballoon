@@ -197,10 +197,12 @@ BOSS_EXIT_RADIUS = 248.0
 # The one intermediate waypoint the driven approach needs, and the whole of the
 # empirical work behind seam B's driven arm. See run_seam_b's `driven` branch.
 LOBBY_APPROACH = (-300.0, 700.0)
-# MDKR_DRIVE_WPR's default, i.e. the radius the drive hook itself retires a
-# waypoint at; the follower has to agree with the driver or it would report a
-# waypoint unreached that the driver had already moved past.
-DRIVE_WAYPOINT_RADIUS = 220.0
+# The campaign runs two authored ticks per headless frame. At the drive hook's
+# 220-unit default, the kart retires the hub waypoints early enough to cut the
+# terrain-facing corners between them. The tighter radius keeps it on the
+# already measured hub polyline; the follower has to use the same value or it
+# could report an approach complete before the driver advances.
+DRIVE_WAYPOINT_RADIUS = 120.0
 # Measured: lobby entered at frame ~2947, approach waypoint reached at ~3021,
 # the exit taken at ~3124. 1,500 frames per leg is twenty times the measured
 # cost and still an order of magnitude below the frame budget, so a route that
@@ -219,9 +221,15 @@ HUB_BALLOON_FLAGS = (1 << 10) | (1 << 14)
 # Tricky 1. `<< 5` is the same scene's eight-balloon sibling (game/src/game.c:766).
 CUTSCENE_BOSS_DOOR = lambda world: (8 << (world - 1)) | (0x100 << (world - 1))  # noqa: E731
 
-# The canonical Timber's Island -> Dino Domain lobby drive, shared with
-# check_first_boss_progression; the trailing step is per-arm.
-HUB_TO_DINO = "0:200,500:-1004,946:-1858,1099:B10:-3381,1946:-3948,2180:E12"
+# The canonical Timber's Island -> Dino Domain lobby drive. These intermediate
+# points are the measured 1,000-unit hub-tour polyline from
+# check_adventure_hub; they keep the original-cadence campaign from cutting
+# across the terrain while turning toward the door. The trailing step is
+# per-arm.
+HUB_TO_DINO = (
+    "0:200,500:-550,830:-1530,1032:-1858,1350:B10:-2248,1385"
+    ":-3157,1820:-3948,2180:E12"
+)
 
 LEVEL_RE = re.compile(
     r"level_load: levelId=(?P<level>\d+) numPlayers=(?P<players>-?\d+) "
@@ -622,6 +630,7 @@ def invoke(
             MDKR_SIMULATION_CADENCE="original",
             MDKR_SYNTH_FIELDS="2",
             MDKR_TRACE="1",
+            MDKR_DRIVE_WPR=str(int(DRIVE_WAYPOINT_RADIUS)),
             MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
             MDKR64_HIDDEN="1",
         )
@@ -1554,9 +1563,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    # Seam A runs 22,000 enhanced-cadence frames. On the qualification Mac its
-    # measured pacing floor is about 611 seconds even in isolation, so 600 was
-    # an impossible deadline rather than a wedge detector.
+    # Seam A runs 22,000 synthetic frames. Darwin background-band demotion made
+    # an earlier suite arm exceed 600 seconds even though the same process takes
+    # under a minute in the foreground; the scheduler now serializes this gate,
+    # while this bound retains room for a heavily loaded qualification host.
     parser.add_argument("--timeout", type=int, default=900)
     parser.add_argument(
         "--quick", action="store_true",
