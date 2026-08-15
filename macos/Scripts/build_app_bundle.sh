@@ -415,10 +415,20 @@ fi
 
 if [[ "${RUN_CMAKE}" == true ]]; then
     info "Configuring mdkr64..."
+    PATH_MAP_FLAGS="-ffile-prefix-map=${PROJECT_ROOT}=mdkr64"
+    PATH_MAP_FLAGS+=" -fmacro-prefix-map=${PROJECT_ROOT}=mdkr64"
+    PATH_MAP_FLAGS+=" -fdebug-prefix-map=${PROJECT_ROOT}=mdkr64"
+    PATH_MAP_FLAGS+=" -ffile-prefix-map=${BUILD_DIR}=mdkr64-build"
+    PATH_MAP_FLAGS+=" -fmacro-prefix-map=${BUILD_DIR}=mdkr64-build"
+    PATH_MAP_FLAGS+=" -fdebug-prefix-map=${BUILD_DIR}=mdkr64-build"
     cmake -S "${PROJECT_ROOT}" -B "${BUILD_DIR}" \
         -DCMAKE_OSX_ARCHITECTURES="${CMAKE_ARCH}" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="${DEPLOYMENT_TARGET}" \
         -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+        "-DCMAKE_C_FLAGS=${PATH_MAP_FLAGS}" \
+        "-DCMAKE_CXX_FLAGS=${PATH_MAP_FLAGS}" \
+        "-DCMAKE_OBJC_FLAGS=${PATH_MAP_FLAGS}" \
+        "-DCMAKE_OBJCXX_FLAGS=${PATH_MAP_FLAGS}" \
         -DMDKR_VERSION="${APP_VERSION}" \
         -DMDKR_BUILD_STAMP="${BUILD_STAMP}" \
         -DMDKR_PARTY_ORIGIN="${PARTY_ORIGIN}" \
