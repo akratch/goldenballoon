@@ -308,7 +308,7 @@ case "${ARCH}" in
     *) die "--arch must be native, arm64, or x86_64" ;;
 esac
 
-for tool in cmake pkg-config plutil ditto iconutil python3 sips codesign xattr otool shasum /usr/libexec/PlistBuddy; do
+for tool in cmake pkg-config plutil ditto iconutil python3 sips codesign xattr otool shasum strings /usr/libexec/PlistBuddy; do
     if ! command -v "$tool" &>/dev/null; then
         die "Required tool '${tool}' not found."
     fi
@@ -600,6 +600,11 @@ if otool -l "${ENGINE_PATH}" | awk '
 fi
 if grep -aFq "${PROJECT_ROOT}" "${ENGINE_PATH}" ||
         grep -aFq "${BUILD_DIR}" "${ENGINE_PATH}"; then
+    # Hosted failures must identify the retained record without requiring an
+    # interactive runner. Limit output so a corrupt binary cannot flood logs.
+    strings -a "${ENGINE_PATH}" \
+        | grep -F -e "${PROJECT_ROOT}" -e "${BUILD_DIR}" \
+        | head -n 20 >&2 || true
     die "Final app executable contains an absolute source/build path."
 fi
 if [[ -n "${SDL2_DYLIB}" ]]; then
