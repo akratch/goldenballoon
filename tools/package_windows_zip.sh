@@ -50,7 +50,10 @@ verify_windows_archive() {
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
     GoldenBalloon/gamecontrollerdb.txt | LC_ALL=C sort)"
-  actual="$(unzip -Z1 "$archive" | LC_ALL=C sort)"
+  # MSYS2 unzip may emit CRLF for archive entries even though the Bash-built
+  # expected manifest uses LF. Normalize only the listing transport; carriage
+  # returns are not valid in any accepted manifest entry.
+  actual="$(unzip -Z1 "$archive" | tr -d '\r' | LC_ALL=C sort)"
   if [[ "$actual" != "$expected" ]]; then
     echo "ERROR: Windows archive payload differs from the exact release manifest." >&2
     diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
