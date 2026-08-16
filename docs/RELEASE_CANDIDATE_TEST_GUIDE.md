@@ -185,8 +185,9 @@ uploaded only after `release.yml` renders and content-checks them under Xvfb
 with Mesa's lavapipe/llvmpipe software stack, both as built and as extracted
 through `AppRun` — no hosted Linux job has ever touched a physical GPU. The
 Windows zip is built, import-checked, extracted, and launched from an unrelated
-directory, but `release.yml` never uploads it; it may be attached only after
-this pass succeeds on Windows hardware.
+directory. `release.yml` preserves those exact bytes as a workflow artifact but
+never attaches them to the public release automatically; they may be attached
+only after this pass succeeds on Windows hardware.
 
 ### macOS Apple silicon
 
