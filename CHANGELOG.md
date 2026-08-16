@@ -1,27 +1,5 @@
 # Changelog
 
-- Windows players whose account name uses non-English characters can now keep
-  their settings: drop a file named `portable.txt` next to the game and it saves
-  your options, saves, and add-ons right beside the game instead of in your
-  Windows user folder (#33). Even without that file, if the game can't write to
-  your user folder it now saves next to the game and tells you so, rather than
-  losing your settings.
-- Hardened Phone Party origin and tab custody: the Worker now refuses a
-  noncanonical or non-HTTPS production `PARTY_ORIGIN` before any exception or
-  Durable Object work; browser host/controller routes enforce the same-origin
-  HTTPS boundary with loopback-only HTTP. Controller recovery now distinguishes
-  private from public share/copy text and falls back to copy after share-sheet
-  failure. Duplicate-tab takeover explicitly neutralizes and closes the prior
-  publisher before ordinary Web Lock acquisition, fails closed on lock errors,
-  and supplies a raw-secret-free broadcast/15-second hashed lease for browsers
-  without Web Locks. Phone and launcher host lifecycle cleanup now prevents
-  pagehide, freeze or BFCache restoration from reviving a bearer invitation,
-  direct publisher, stale QR or held remote input; connected resume clears old
-  edge history and publishes fresh neutral before re-arming controls. Host
-  create/rotate requests are page-bound and generation-checked so late
-  completion cannot repopulate erased invite custody; phone redemption is
-  likewise aborted and lifecycle-checked before credential-derived UI appears.
-
 Release history for Golden Balloon. The detailed test inventory is in
 [tests/README.md](tests/README.md); deferred work and known gaps are tracked in
 [docs/open-items/](docs/open-items/README.md).
@@ -30,7 +8,12 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [1.3.0] — 2026-08-12
+## [1.3.0] — 2026-08-16
+
+Phone Party and Online Room foundations described below are compiled and tested
+but are not player-visible in 1.3.0. Their buttons and production network paths
+remain disabled until a deployed origin passes service and physical-device
+acceptance. All local features and fixes in this section are included.
 
 ### Added
 
@@ -90,16 +73,26 @@ save formats). Everything below 1.0.0 predates that commitment.
   own crafts — Wizpig's rocket on plane tracks, Terry's full flying pose — and
   have their own portraits, placards, and character-select poses. Their runs
   don't write Time Trial records or ghosts.
-- Phone Party: pair phones as extra controllers by scanning a QR code
-  from the launcher — no app install. Approved phones keep their seat through
-  reconnects, and a phone dropping out leaves its kart in neutral rather than
-  handing it to someone else. Established direct controls keep working through
-  a room-service interruption and reconnect inside the same approved seat.
+- Phone Party's deferred foundation now supports QR pairing, stable approved
+  seats, neutral disconnects, and direct-control recovery. It is intentionally
+  unavailable in 1.3.0 until the required service origin is deployed and
+  qualified.
 - Magic Codes now keep their unlocked and active state between launches. Codes
   that alter save progression, grant one-time rewards, show credits, or can
   lock the game are deliberately not restored.
 
 ### Fixed
+
+- Windows players whose account name uses non-English characters can now keep
+  their settings: drop a file named `portable.txt` next to the game and it saves
+  options, saves, and add-ons beside the game (#33). Without that file, an
+  unwritable user folder falls back there and reports the choice instead of
+  losing settings.
+- Hardened the deferred Phone Party origin and tab custody. Production now
+  rejects noncanonical or non-HTTPS origins before service work, browser routes
+  enforce the secure same-origin boundary, and duplicate tabs, lifecycle
+  transitions, late requests, and failed sharing cannot revive or disclose
+  expired invitation or controller authority.
 
 - Delayed MatchRoom HTTP responses no longer turn a newer WebSocket publication
   into a false outage or roll member state back. A rotate response may recover

@@ -156,15 +156,15 @@
               <button id="play" class="btn btn-primary" type="button" disabled>
                 <span>▶ Play here</span>
               </button>
-              <button id="online-room-open" class="btn btn-ghost" type="button">
+              <button id="online-room-open" class="btn btn-ghost" type="button" hidden>
                 Online room
               </button>
               <button id="add-phone-controllers" class="btn btn-ghost" type="button"
-                      disabled>Add phone controllers</button>
+                      disabled hidden>Add phone controllers</button>
               <button id="forget" class="btn btn-ghost" type="button" hidden>Forget stored ROM</button>
             </div>
             <p class="fine">Play here supports solo, ordinary split-screen,
-              mixed gamepads and up to four browser-based phone controllers.</p>
+              keyboard, touch controls and mixed gamepads.</p>
 
             <p class="fine">
               Other revisions (US 1.0, EU 1.0, Japan) are recognised and named back to
@@ -542,7 +542,7 @@
   <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
   <p id="stage-status" role="status" aria-live="assertive" hidden></p>
   <div id="fps" class="fps" hidden aria-hidden="true"></div>
-  <button id="party-stage-button" class="party-stage-button" type="button"
+  <button id="party-stage-button" class="party-stage-button" type="button" hidden
           aria-label="Manage local controllers">
     <span aria-hidden="true">⌁</span><span>Controllers</span>
     <strong id="party-stage-count" aria-hidden="true">1</strong>
@@ -615,11 +615,11 @@
 <script src="rom-id.js"></script>
 <script src="mdkr-save-ui.js"></script>
 <script src="input/touch-surface.js"></script>
+<script src="online/online-control-config.js"></script>
 <script src="party/party-protocol.js"></script>
 <script src="party/party-sas.js"></script>
 <script src="party/qrcodegen.js"></script>
 <script src="party/party-host.js"></script>
-<script src="online/online-control-config.js"></script>
 <script src="online/online-room-live-state.js"></script>
 <script src="online/online-room-presenter.js"></script>
 <script src="online/online-room.js"></script>

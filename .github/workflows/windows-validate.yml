@@ -215,6 +215,8 @@ jobs:
       # quoting rule it depends on is asserted by the app_lifecycle CTest
       # above, which runs on this real Windows kernel.
       - name: Package and verify extracted startup (not published)
+        env:
+          PARTY_ORIGIN: ${{ vars.MDKR_PARTY_ORIGIN }}
         run: |
           set -euo pipefail
           ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version dev
@@ -231,13 +233,14 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
-          # Phone Party evidence for the packaged .exe. GPU-free by
-          # construction, so it belongs in this lane. It proves the packaged
-          # binary links the party host and the native WSS/WebRTC transport,
-          # and re-runs the host pairing-surface smoke stamped with the version
-          # the packaged launcher itself reported. It does not prove an
-          # on-screen QR code or a live bootstrap listener.
-          python3 tests/check_party_binary_surface.py "$executable"
+          # Partyful builds prove that the packaged .exe carries the configured
+          # cloud surface. An empty origin is a deliberate partyless mirror.
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$executable" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
           # This lane does not pass -DMDKR_VERSION, so the bound version is
           # whatever the packaged launcher reports, not a workflow input.
           built_version="${expected_version#mdkr64 }"

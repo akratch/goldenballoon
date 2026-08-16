@@ -183,6 +183,7 @@ jobs:
       - name: Phone Party bring-up smoke and packaged version stamp
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+          PARTY_ORIGIN: ${{ steps.party.outputs.party_origin }}
         run: |
           set -euo pipefail
           app="dist/mdkr64.app"
@@ -192,7 +193,12 @@ jobs:
           test "$plist_version" = "$RELEASE_VERSION"
           bundle_version="$("$executable" --version | tr -d '\r')"
           test "$bundle_version" = "mdkr64 $RELEASE_VERSION"
-          python3 tests/check_party_binary_surface.py "$app"
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$app" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
           cmake --build build-macos-release \
             --target mdkr_native_party_bringup_test \
                      mdkr_native_party_host_test \

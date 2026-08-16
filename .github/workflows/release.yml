@@ -214,6 +214,7 @@ jobs:
       - name: Phone Party bring-up smoke and linked-transport check (built tree)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           set -euo pipefail
           built_version="$(./build/mdkr64 --version | tr -d '\r')"
@@ -225,7 +226,12 @@ jobs:
             | tee "$RUNNER_TEMP/party-bringup-built.txt"
           grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
             "$RUNNER_TEMP/party-bringup-built.txt"
-          python3 tests/check_party_binary_surface.py build/mdkr64
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py build/mdkr64 \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
       - name: Qualify built AppHost pixels (lavapipe WebGPU + llvmpipe OpenGL)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -363,7 +369,12 @@ jobs:
           # read back out of the packaged launcher itself.
           package_version="$(cd "$unrelated" && "$app_run" --version | tr -d '\r')"
           test "$package_version" = "mdkr64 $RELEASE_VERSION"
-          python3 tests/check_party_binary_surface.py "$binary"
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$binary" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
           MDKR_PARTY_BRINGUP_VERSION="${package_version#mdkr64 }" \
             "$GITHUB_WORKSPACE/build/mdkr_native_party_bringup_test" \
             | tee "$RUNNER_TEMP/party-bringup-package.txt"
@@ -580,6 +591,7 @@ jobs:
       - name: Phone Party bring-up smoke and linked-transport check
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           set -euo pipefail
           built_version="$(./build/mdkr64.exe --version | tr -d '\r')"
@@ -589,7 +601,12 @@ jobs:
             | tee "$RUNNER_TEMP/party-bringup-built.txt"
           grep -qE "^\[party-bringup\] version=${RELEASE_VERSION} .* ok=1\$" \
             "$RUNNER_TEMP/party-bringup-built.txt"
-          python3 tests/check_party_binary_surface.py build/mdkr64.exe
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py build/mdkr64.exe \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
       - name: Smoke-launch ROM-free early-exit surfaces
         env:
           SDL_VIDEODRIVER: dummy
@@ -604,6 +621,7 @@ jobs:
       - name: Verify extracted package startup from an unrelated directory
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           set -euo pipefail
           package_root="$RUNNER_TEMP/windows-package"
@@ -619,8 +637,14 @@ jobs:
             "$executable" --help > help.txt
             grep -q '^Usage: ' help.txt
           )
-          # The packaged .exe, not the build tree, must carry the party host.
-          python3 tests/check_party_binary_surface.py "$executable"
+          # Partyful builds must prove that the packaged .exe carries the
+          # configured cloud surface. Partyless builds deliberately omit it.
+          if [[ -n "${PARTY_ORIGIN:-}" ]]; then
+            python3 tests/check_party_binary_surface.py "$executable" \
+              --expect-origin "$PARTY_ORIGIN"
+          else
+            echo "Partyless build: packaged Phone Party surface assertion is intentionally absent."
+          fi
           MDKR_PARTY_BRINGUP_VERSION="$RELEASE_VERSION" \
             ./build/mdkr_native_party_bringup_test.exe \
             | tee "$RUNNER_TEMP/party-bringup-package.txt"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed if a release lane can ship an artifact without Phone Party.
+"""Fail closed unless every release lane makes an explicit Phone Party choice.
 
 `MDKR_PARTY_ORIGIN` is a CMake cache variable compiled INTO the launcher
 (CMakeLists.txt). It is a property of the artifact, not of the machine that
@@ -209,6 +209,22 @@ def check_workflow(name: str, text: str) -> list[str]:
 def check(sources: dict[str, str]) -> list[str]:
     failures: list[str] = []
     for name, text in sorted(sources.items()):
+        binary_surface_calls = text.count(
+            "python3 tests/check_party_binary_surface.py")
+        if binary_surface_calls:
+            origin_expectations = text.count('--expect-origin "$PARTY_ORIGIN"')
+            origin_conditions = text.count(
+                'if [[ -n "${PARTY_ORIGIN:-}" ]]; then')
+            if origin_expectations != binary_surface_calls:
+                failures.append(
+                    f"{name}: {binary_surface_calls} packaged Phone Party "
+                    "surface assertions exist but not all require the exact "
+                    "resolved origin")
+            if origin_conditions < binary_surface_calls:
+                failures.append(
+                    f"{name}: packaged Phone Party surface assertions are not "
+                    "all conditional on a nonempty origin; this contradicts "
+                    "the deliberate partyless release path")
         # Comment lines are prose about a lane, not the lane: a workflow that
         # explains why it does NOT upload must not read as one that does.
         live = "\n".join(line for line in text.splitlines()
@@ -257,6 +273,9 @@ MUTATIONS = (
      "macos-release.yml", '--party-origin "$PARTY_ORIGIN" \\\n', ""),
     ("macos-release.yml loses the guard entirely",
      "macos-release.yml", "vars.MDKR_ALLOW_PARTYLESS_RELEASE", "vars.UNUSED"),
+    ("release.yml binary surface assertion stops honoring partyless builds",
+     "release.yml", 'if [[ -n "${PARTY_ORIGIN:-}" ]]; then',
+     'if [[ -z "${PARTY_ORIGIN:-}" ]]; then'),
     ("a validation-only lane starts uploading its package",
      "windows-validate.yml",
      "      - name: Import-table guard (self-contained on stock Windows)\n",
@@ -292,13 +311,13 @@ def main() -> int:
     if "--self-test" in sys.argv[1:]:
         failures += self_test(sources)
     if failures:
-        print("FAIL: release lanes do not guarantee a compiled Phone Party "
-              "origin")
+        print("FAIL: release lanes do not make a consistent Phone Party "
+              "origin decision")
         for failure in failures:
             print(f"  - {failure}")
         return 1
-    print("PASS: every release lane gates on and compiles in a Phone Party "
-          "origin (%s)" % ", ".join(sorted(LANES)))
+    print("PASS: every release lane gates and consistently threads its "
+          "Phone Party origin decision (%s)" % ", ".join(sorted(LANES)))
     return 0
 
 

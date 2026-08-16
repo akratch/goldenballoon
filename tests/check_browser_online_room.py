@@ -42,7 +42,8 @@ def run(args: argparse.Namespace) -> None:
             cdp = CDPClient(page_websocket(chrome.wait_port()))
             for domain in ("Page", "Runtime", "Log", "Inspector", "Accessibility"):
                 cdp.call(f"{domain}.enable")
-            cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
+            test_surface_source = """
+              globalThis.__mdkrOnlineRoomSurfaceTest = true;
               globalThis.__mdkrPartyHostTestConfig = {
                 initialRoomState:{type:'room_state',transitionId:1,controllers:[]},
                 async request(path) {
@@ -55,7 +56,7 @@ def run(args: argparse.Namespace) -> None:
                   return {ok:true};
                 }
               };
-            """})
+            """
             cdp.call("Emulation.setDeviceMetricsOverride", {
                 "width": 320, "height": 568, "deviceScaleFactor": 2,
                 "mobile": True,
@@ -63,6 +64,30 @@ def run(args: argparse.Namespace) -> None:
             cdp.call("Page.navigate", {"url": server.origin + "/"})
             wait_value(cdp, "Boolean(globalThis.MDKROnlineRoom)", bool,
                        "browser Online Room API", args.timeout)
+            production_gate = cdp.evaluate("""(() => {
+              MDKRPartyHost.setRomReady(true);
+              MDKRPartyHost.open();
+              MDKROnlineRoom.open();
+              return {
+                onlineHidden:document.getElementById('online-room-open').hidden,
+                phoneHidden:document.getElementById('add-phone-controllers').hidden,
+                stageHidden:document.getElementById('party-stage-button').hidden,
+                phoneDisabled:document.getElementById('add-phone-controllers').disabled,
+                onlineOpen:document.getElementById('online-room-dialog').open,
+                partyOpen:document.getElementById('party-dialog').open
+              };
+            })()""")
+            require(production_gate == {
+                "onlineHidden": True, "phoneHidden": True,
+                "stageHidden": True, "phoneDisabled": True,
+                "onlineOpen": False, "partyOpen": False,
+            }, f"cloud-dependent production surfaces were reachable: {production_gate}")
+
+            cdp.call("Page.addScriptToEvaluateOnNewDocument",
+                     {"source": test_surface_source})
+            cdp.call("Page.navigate", {"url": server.origin + "/"})
+            wait_value(cdp, "Boolean(globalThis.MDKROnlineRoom)", bool,
+                       "test-gated browser Online Room API", args.timeout)
             cdp.evaluate("""(() => {
               globalThis.__onlineNetworkCalls=[];
               const originalFetch=globalThis.fetch.bind(globalThis);

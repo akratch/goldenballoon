@@ -3,6 +3,12 @@
 Use this guide only with artifacts built from the same clean candidate commit.
 Do not publish, retag, or substitute a rebuilt file after testing begins.
 
+This is the complete player-facing walkthrough for changes since 1.2.0. It
+includes the fixes prepared for the withdrawn 1.2.1 candidate. Phone Party and
+Online Room are not part of 1.3.0: this candidate must show neither entry point
+and must not attempt either service API. Keyboard, touch, gamepads, and local
+split-screen remain available.
+
 Use a legally owned US 1.1 or European 1.1 ROM. Share text logs and hashes in a
 bug report, not ROMs or ROM-derived captures.
 
@@ -89,7 +95,34 @@ Use WebGPU with Restored presentation unless a step says otherwise.
 9. Return Motion smoothing to Off and Frame Limit to Original. Confirm the
    authored presentation remains stable.
 
-## 4. Taj
+## 4. Wizpig, Terry, and persistent Magic Codes
+
+Use a disposable save for code tests, then repeat the earned-unlock paths on a
+normal save where practical.
+
+1. Beat Wizpig for the second time. Wizpig must join the character picker. On a
+   separate disposable save, enter `WIZPIGPOWER` and confirm the same unlock.
+2. Beat the Dino Domain rematch. Terry must join the picker. On a separate
+   disposable save, enter `TERRYFLY` and confirm the same unlock.
+3. Select Wizpig on a car, hovercraft, and plane track. He must have his own
+   portrait, name, placard, voice/identity, and character-select entrance; on a
+   plane track he must ride his rocket. Attacks, items, collisions, boosts,
+   finish order, and results must behave normally.
+4. Repeat with Terry. His full flying pose and wings must render correctly with
+   no missing model, collapsed animation, wrong portrait, or oversized shadow.
+5. Test both racers in two-player local character selection and gameplay. Each
+   controller must retain its own slot, vehicle, input, HUD identity, and result.
+6. Finish a Time Trial with each bonus racer. Neither run may overwrite a retail
+   character's canonical record or ghost.
+7. In Magic Codes, toggle `CONTROL WIZPIG` and `CONTROL TERRY` after unlocking
+   them. Restart and confirm the unlocks persist and each active toggle returns.
+8. Enable ordinary reversible codes, restart, and confirm they return. Verify
+   progression-changing, one-shot reward, credits, and deliberate lockout codes
+   do not automatically reactivate.
+9. Import, export, and erase saves. The shown unlocks and active reversible
+   codes must match the selected save operation after every restart.
+
+## 5. Taj regression pass
 
 Test once on a fresh save and once on an existing save.
 
@@ -108,7 +141,13 @@ Test once on a fresh save and once on an existing save.
 6. Relaunch and confirm the unlock persists. Exercise save import and erase;
    the unlock state shown by the UI must match the documented operation.
 
-## 5. Browser custody and mobile controls
+## 6. Browser custody, local controls, and cloud gating
+
+Before importing a ROM, confirm there is no **Add phone controllers**, Phone
+Party, or Online Room control. Calling either deferred launcher API from the
+console must not open a dialog or make a service request. An old `/room/#...`
+link may show a fail-closed explanation, but it must not redeem or retain the
+invitation.
 
 1. Import a ROM, reload, and confirm the browser restores it locally. In
    developer tools, no request may contain a ROM filename or bytes.
@@ -134,7 +173,7 @@ Test once on a fresh save and once on an existing save.
    launcher must return, announce a usable error, and move focus to that visible
    recovery message rather than leaving it on the hidden canvas.
 
-## 6. Platform packaging
+## 7. Platform packaging
 
 Know what the hosted workflows already proved for each artifact, so this pass
 covers the rest rather than repeating it. `macos-release.yml` runs the packaged
@@ -174,6 +213,13 @@ app cold at least five times and watch the full logo/title/character-select
 sequence; audio must not begin behind video and then catch up while waiting at
 character select. The package must not require a bundled DLL.
 
+Repeat settings persistence with a Windows account whose user-folder path has
+non-ASCII characters. Then create an empty `portable.txt` beside
+`GoldenBalloon.exe`, change the ROM path and at least three settings, restart,
+and confirm the data stays beside the game. Finally make the normal user data
+folder unwritable without `portable.txt`; the launcher must report its fallback,
+save beside the game, and restore those settings on the next launch.
+
 ### Linux x86-64
 
 Test both the AppImage and extracted tarball on a physical GPU. Check WebGPU and
@@ -182,7 +228,7 @@ drag/drop or an absolute typed path. Record the distribution, display server,
 GPU/driver, controller, and audio device; Linux remains best effort until this
 physical breadth exists.
 
-## 7. Campaign breadth and report
+## 8. Campaign breadth and report
 
 On at least one desktop candidate, play a clean save from start through credits,
 including silver-coin races, later boss rematches, both Wizpig races, trophy

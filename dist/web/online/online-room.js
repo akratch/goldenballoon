@@ -51,8 +51,15 @@
   const testConfig = globalThis.__mdkrOnlineRoomTestConfig &&
     typeof globalThis.__mdkrOnlineRoomTestConfig === "object"
     ? globalThis.__mdkrOnlineRoomTestConfig : null;
+  const loopbackHost = ["127.0.0.1", "::1", "localhost"].includes(location.hostname);
+  const surfaceTest = loopbackHost &&
+    globalThis.__mdkrOnlineRoomSurfaceTest === true;
+  const releaseSurface =
+    globalThis.__mdkrOnlineControlReleasePolicy?.enabled === true;
+  const surfaceEnabled = releaseSurface || surfaceTest;
+  trigger.hidden = !surfaceEnabled;
   const liveFixtureAllowed = testConfig?.liveFixture === true &&
-    ["127.0.0.1", "::1", "localhost"].includes(location.hostname);
+    loopbackHost;
   const initialLiveConfig = liveFixtureAllowed &&
     globalThis.__mdkrOnlineRoomLiveConfig &&
     typeof globalThis.__mdkrOnlineRoomLiveConfig === "object" &&
@@ -1426,11 +1433,13 @@
     testConfig ? ensureModel() : Promise.resolve(false);
 
   function open() {
+    if (!surfaceEnabled && !entryFragment.attempted) return false;
     returnFocus = document.activeElement instanceof HTMLElement
       ? document.activeElement : trigger;
     syncLocalRecovery();
     dialog.showModal();
     requestAnimationFrame(() => title.focus({preventScroll: true}));
+    return true;
   }
 
   trigger.addEventListener("click", open);

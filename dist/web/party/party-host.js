@@ -5,6 +5,9 @@
   const testConfig = globalThis.__mdkrPartyHostTestConfig &&
     typeof globalThis.__mdkrPartyHostTestConfig === "object"
     ? globalThis.__mdkrPartyHostTestConfig : null;
+  const releaseEnabled =
+    globalThis.__mdkrOnlineControlReleasePolicy?.phonePartyEnabled === true;
+  const surfaceEnabled = releaseEnabled || testConfig !== null;
   const testState = testConfig
     ? {requests: [], requestDetails: [], rooms: [], announcements: [], lifecycle: [],
       peerCreations: 0, iceRestarts: 0, channelFailures: 0,
@@ -16,6 +19,8 @@
   const removeDialog = $("party-remove-dialog");
   const trigger = $("add-phone-controllers");
   const stageTrigger = $("party-stage-button");
+  trigger.hidden = !surfaceEnabled;
+  if (stageTrigger) stageTrigger.hidden = !surfaceEnabled;
   let romReady = false;
   let room = null;
   let socket = null;
@@ -1303,7 +1308,7 @@
 
   function setRomReady(ready) {
     romReady = Boolean(ready);
-    trigger.disabled = !romReady;
+    trigger.disabled = !surfaceEnabled || !romReady;
     refreshSources();
   }
 
@@ -1318,6 +1323,7 @@
   }
 
   function openSheet(fromStage) {
+    if (!surfaceEnabled) return;
     if (dialogClosing) {
       /* `close` is queued after dialog.open becomes false. Reopening inside
        * that gap would let the stale close event tear down the new room. */

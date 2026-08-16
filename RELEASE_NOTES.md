@@ -1,6 +1,6 @@
 # Golden Balloon 1.3.0
 
-*Released 2026-08-12.*
+*Released 2026-08-16.*
 
 This release replaces the withdrawn 1.2.1. If you downloaded 1.2.1 for
 Windows, please update: that build could not save any launcher setting.
@@ -26,13 +26,13 @@ write Time Trial records or ghosts, so your leaderboards stay yours.
 `CONTROL WIZPIG` and `CONTROL TERRY` in the Magic Codes menu switch each racer
 on or off once unlocked.
 
-## Phone Party
+## Local multiplayer in this release
 
-Pair phones as extra controllers by scanning a QR code from the launcher —
-nothing to install. An approved phone keeps its seat if it reconnects, and a
-phone that drops out leaves its kart coasting in neutral instead of handing
-the controls to someone else. Once paired, direct controls keep working through
-a brief room-service interruption and reconnect in the same approved seat.
+Keyboard, touch controls, gamepads, and local split-screen all work without an
+online service. Phone Party and Online Room are not available in 1.3.0: their
+buttons and network paths are disabled until the service has a deployed,
+qualified origin. No Cloudflare account or other cloud setup is needed to use
+anything included in this release.
 
 ## Magic Codes remember themselves
 
@@ -46,6 +46,11 @@ lock the game deliberately do not restore themselves.
 write its settings file at all — ROM path, preferences, and ROM removal were
 all lost on restart. Saving now works regardless of how the executable was
 built, and the fix is guarded on every platform we ship. *(#32)*
+
+**Windows: non-English user folders and portable installs now save reliably.**
+Put `portable.txt` beside `GoldenBalloon.exe` to keep options, saves, and add-ons
+beside the game. Without it, an unwritable user folder now falls back to the
+portable location and reports that choice instead of losing settings. *(#33)*
 
 **Missing music and silver-coin chimes.** On some tracks the busiest musical
 passages dropped notes, and the silver-coin pickup jingle could cut off after
