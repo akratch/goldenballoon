@@ -629,8 +629,15 @@ jobs:
           package_root="$runner_temp/windows-package"
           unrelated="$runner_temp/unrelated-launch-cwd"
           mkdir -p "$package_root" "$unrelated"
-          unzip -q "dist/Golden-Balloon-$RELEASE_VERSION-windows-x64.zip" \
-            -d "$package_root"
+          python3 - \
+            "dist/Golden-Balloon-$RELEASE_VERSION-windows-x64.zip" \
+            "$package_root" <<'PY'
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(sys.argv[1], "r") as archive:
+              archive.extractall(sys.argv[2])
+          PY
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
           test "$(sha256sum build/mdkr64.exe | awk '{print $1}')" = \
             "$(sha256sum "$executable" | awk '{print $1}')"
