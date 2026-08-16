@@ -613,10 +613,12 @@ jobs:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: |
-          ./build/mdkr64.exe --help > help.txt
-          grep -q '^Usage: ' help.txt
-          ./build/mdkr64.exe --video-list > video.txt
-          grep -qE '^\[video\] mode=' video.txt
+          help_file="$(mktemp)"
+          video_file="$(mktemp)"
+          ./build/mdkr64.exe --help > "$help_file"
+          grep -q '^Usage: ' "$help_file"
+          ./build/mdkr64.exe --video-list > "$video_file"
+          grep -qE '^\[video\] mode=' "$video_file"
       - name: Package portable .zip (GoldenBalloon.exe (static SDL2, no DLLs))
         run: ./tools/package_windows_zip.sh --binary build/mdkr64.exe --version "${{ needs.validate.outputs.version }}"
       - name: Verify extracted package startup from an unrelated directory
