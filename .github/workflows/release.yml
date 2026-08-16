@@ -484,9 +484,10 @@ jobs:
   windows:
     # No automatic publishing by design. A windows-latest VM is useful for ABI, import,
     # packaging, and native execution checks, but is not a stable GPU
-    # qualification environment. Do not add upload-artifact to this job until
-    # the built and extracted launchers both pass content-validated WebGPU and
-    # explicit-GL captures on a qualified runner.
+    # qualification environment. Preserve the validated zip as a workflow
+    # artifact, but do not add automatic release attachment until the built and
+    # extracted launchers pass content-validated WebGPU and explicit-GL captures
+    # on a qualified runner.
     name: Windows portable validation (automatic publishing disabled)
     needs: validate
     runs-on: windows-latest
@@ -517,9 +518,9 @@ jobs:
       - name: Build the app (Release)
         env:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
-          # Same gated value as the Linux lane. This zip is not published
-          # automatically, but a maintainer may hand-attach the exact archive
-          # after real-hardware acceptance, so it must be built partyful too.
+          # Same gated value as the Linux lane. A maintainer may hand-attach the
+          # exact archive after real-hardware acceptance, so it must carry the
+          # same deliberate partyful or partyless decision as every other build.
           PARTY_ORIGIN: ${{ needs.validate.outputs.party_origin }}
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
