@@ -205,7 +205,6 @@ jobs:
       - name: Linked wasm layout
         run: python3 tests/check_wave_visible_table.py --wasm build-web/mdkr64_web.wasm
       - name: ROM-free browser save custody
-        env:
         run: >-
           python3 tests/check_browser_save_ui.py
           --engine-dir dist/web
