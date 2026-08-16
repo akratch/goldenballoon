@@ -581,10 +581,12 @@ for rpath in ${ABSOLUTE_RPATHS[@]+"${ABSOLUTE_RPATHS[@]}"}; do
         || die "Failed to remove absolute build rpath: ${rpath}"
 done
 
-# Release copies do not ship compiler path records. Keep the unmodified build
-# output (and its symbols) in BUILD_DIR for local debugging; normalize only the
-# app payload that users receive.
-strip -S "${ENGINE_PATH}" || die "Failed to strip compiler debug records."
+# Release copies do not ship compiler path records or non-exported local
+# symbols. Some vendored C++ objects encode source paths in local lambda symbol
+# names even when their debug records are absent. Keep the unmodified build
+# output (and its symbols) in BUILD_DIR for debugging; normalize only the app
+# payload that users receive.
+strip -S -x "${ENGINE_PATH}" || die "Failed to strip compiler and local symbols."
 
 if otool -l "${ENGINE_PATH}" | awk '
         $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1; next }

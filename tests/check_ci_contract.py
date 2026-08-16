@@ -691,7 +691,7 @@ def validate_macos_packaging(sources: dict[str, str]) -> list[str]:
     ordered = [
         builder.find("install_name_tool -change"),
         builder.find("install_name_tool -delete_rpath"),
-        builder.find('strip -S "${ENGINE_PATH}"'),
+        builder.find('strip -S -x "${ENGINE_PATH}"'),
         builder.find(
             "Final app executable still contains an absolute runtime search path."
         ),

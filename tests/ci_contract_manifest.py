@@ -461,8 +461,8 @@ PIN_GROUPS: dict[str, PinGroup] = {
                 must_contain='install_name_tool -delete_rpath "${rpath}" "${ENGINE_PATH}"'),
             Pin("builder", "builder selects only absolute runtime search paths",
                 must_contain='[[ "${rpath}" == /* ]] && ABSOLUTE_RPATHS+=("${rpath}")'),
-            Pin("builder", "builder strips final payload debug records",
-                must_contain='strip -S "${ENGINE_PATH}"'),
+            Pin("builder", "builder strips final payload debug and local symbols",
+                must_contain='strip -S -x "${ENGINE_PATH}"'),
             Pin("builder", "builder rechecks final runtime search paths",
                 must_contain="Final app executable still contains an absolute runtime search path."),
             Pin("builder", "builder rechecks final SDL2 build path",
@@ -2068,7 +2068,7 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
                 "true",
                 count=1,
             ),
-            Control("final payload strip", "builder", 'strip -S "${ENGINE_PATH}"', "true", count=1),
+            Control("final payload strip", "builder", 'strip -S -x "${ENGINE_PATH}"', "true", count=1),
             Control(
                 "post-normalization rpath scan",
                 "builder",
@@ -2086,10 +2086,10 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "normalization order",
                 "builder",
-                'strip -S "${ENGINE_PATH}" || die "Failed to strip compiler debug records."',
+                'strip -S -x "${ENGINE_PATH}" || die "Failed to strip compiler and local symbols."',
                 "true # strip moved below signing",
                 count=1,
-                then=(('codesign --force --sign - "${OUTPUT_APP}"', 'codesign --force --sign - "${OUTPUT_APP}"\nstrip -S "${ENGINE_PATH}" || die "Failed to strip compiler debug records."', 1),),
+                then=(('codesign --force --sign - "${OUTPUT_APP}"', 'codesign --force --sign - "${OUTPUT_APP}"\nstrip -S -x "${ENGINE_PATH}" || die "Failed to strip compiler and local symbols."', 1),),
             ),
             Control(
                 "safe output validation",
