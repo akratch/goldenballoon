@@ -4,7 +4,8 @@
 # prebuilt binaries that this Mac can't build natively. Linux's AppImage and
 # tarball are publishable because this workflow launches their real AppHost
 # through both renderers and validates captured pixels. The Windows portable
-# zip is built and inspected, but deliberately not uploaded: windows-latest
+# zip is built and inspected, then preserved as a workflow artifact but never
+# attached to a public release automatically: windows-latest
 # does not guarantee a qualifying D3D12/Vulkan adapter or GL 3.3 context, so a
 # real launcher gate there would be flaky and a headless CLI smoke would be a
 # false substitute. Automatic Windows publication is disabled; a maintainer
@@ -51,9 +52,6 @@ on:
 
 permissions:
   contents: read
-
-env:
-  # Hosted release runners are isolated test desktops.
 
 jobs:
   validate:
