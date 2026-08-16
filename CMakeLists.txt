@@ -769,6 +769,8 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform
                     ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
                     ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_native_party_sas_test SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
                 target_compile_features(mdkr_native_party_sas_test PRIVATE cxx_std_17)
                 target_link_libraries(mdkr_native_party_sas_test PRIVATE
                     LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
@@ -828,6 +830,8 @@ if(NOT EMSCRIPTEN)
             target_include_directories(mdkr64_app PRIVATE
                 ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
                 ${MDKR_PARTY_GENERATED_INCLUDE})
+            target_include_directories(mdkr64_app SYSTEM PRIVATE
+                ${mdkr_libdatachannel_SOURCE_DIR}/include)
             target_link_libraries(mdkr64_app PRIVATE
                 LibDataChannel::LibDataChannel MbedTLS::MbedTLS)
         endif()

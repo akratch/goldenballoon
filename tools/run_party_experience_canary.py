@@ -132,6 +132,9 @@ def phone_attempt(origin: str, chrome_path: str, profiles: Path,
     phone_process, phone = browser(chrome_path, profiles / "phone", flags, verbose)
     room: dict[str, Any] = {}
     try:
+        host.call("Page.addScriptToEvaluateOnNewDocument", {"source": """
+          globalThis.__mdkrPartyHostSurfaceTest=true;
+        """})
         host.call("Page.navigate", {"url": origin + "/"})
         wait_value(host, "Boolean(globalThis.MDKRPartyHost) && "
                    "document.readyState==='complete'", bool,

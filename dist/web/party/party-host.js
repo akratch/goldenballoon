@@ -5,9 +5,12 @@
   const testConfig = globalThis.__mdkrPartyHostTestConfig &&
     typeof globalThis.__mdkrPartyHostTestConfig === "object"
     ? globalThis.__mdkrPartyHostTestConfig : null;
+  const loopbackHost = ["127.0.0.1", "::1", "localhost"].includes(location.hostname);
+  const surfaceTest = loopbackHost &&
+    globalThis.__mdkrPartyHostSurfaceTest === true;
   const releaseEnabled =
     globalThis.__mdkrOnlineControlReleasePolicy?.phonePartyEnabled === true;
-  const surfaceEnabled = releaseEnabled || testConfig !== null;
+  const surfaceEnabled = releaseEnabled || surfaceTest || testConfig !== null;
   const testState = testConfig
     ? {requests: [], requestDetails: [], rooms: [], announcements: [], lifecycle: [],
       peerCreations: 0, iceRestarts: 0, channelFailures: 0,
