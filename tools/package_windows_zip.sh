@@ -78,8 +78,8 @@ if [[ "$self_test" == true ]]; then
   mkdir -p "$test_root/GoldenBalloon"
   : >"$test_root/GoldenBalloon/GoldenBalloon.exe"
   : >"$test_root/GoldenBalloon/LICENSE"
-  cp third_party/native_phone_party/NOTICE.txt \
-    "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
+  tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
+    > "$test_root/GoldenBalloon/NativePhoneParty-NOTICES.txt"
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
@@ -112,8 +112,10 @@ mkdir -p "$stage"
 cp "$binary" "$stage/GoldenBalloon.exe"
 
 cp LICENSE README.md "$stage/"
-cp third_party/native_phone_party/NOTICE.txt \
-  "$stage/NativePhoneParty-NOTICES.txt"
+# A Windows Git checkout may materialize tracked text with CRLF. Canonicalize
+# the distributed notice to the reviewed LF byte sequence pinned above.
+tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
+  > "$stage/NativePhoneParty-NOTICES.txt"
 # Community controller-mapping DB (MC.2), next to the exe where SDL_GetBasePath()
 # resolves it at controller init.
 cp lib/sdl_gamecontrollerdb/gamecontrollerdb.txt "$stage/"
