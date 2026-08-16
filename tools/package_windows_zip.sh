@@ -64,8 +64,20 @@ verify_windows_archive() {
     return 1
   fi
   local notice_hash
-  notice_hash="$(unzip -p "$archive" \
-    GoldenBalloon/NativePhoneParty-NOTICES.txt | sha256sum | awk '{print $1}')"
+  command -v python3 >/dev/null 2>&1 || {
+    echo "ERROR: python3 is required to verify raw Windows archive bytes." >&2
+    return 1
+  }
+  notice_hash="$(python3 - "$archive" <<'PY'
+import hashlib
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "r") as archive:
+    payload = archive.read("GoldenBalloon/NativePhoneParty-NOTICES.txt")
+print(hashlib.sha256(payload).hexdigest())
+PY
+)"
   if [[ "$notice_hash" != "$PHONE_PARTY_NOTICE_SHA256" ]]; then
     echo "ERROR: Windows archive carries an unreviewed native Phone Party notice." >&2
     return 1
