@@ -182,6 +182,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           cmake --build build -j
       - name: ROM-free unit tests (GPU tests routed separately)
@@ -244,6 +245,7 @@ jobs:
 
           qualify_launcher() {
             local label="$1" renderer="$2" executable="$3"
+            local panel="${4:-Settings}" expected_panel="${5:-Settings}"
             local work="$RUNNER_TEMP/launcher-built/$label"
             mkdir -p "$work/prefs" "$work/saves"
             local -a backend=(-u MDKR_RENDERER)
@@ -252,7 +254,8 @@ jobs:
               env -u SDL_VIDEODRIVER "${backend[@]}" \
                 MDKR_APP_SMOKE_FRAMES=4 \
                 MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
-                MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
+                MDKR_ONLINE_ROOM_PREVIEW=1 \
+                MDKR_APP_PANEL="$panel" MDKR_APP_UI_TRACE=1 \
                 MDKR_APP_REQUIRE_PRESENT=1 \
                 MDKR_APP_PREFS_DIR="$work/prefs" \
                 MDKR_VIDEO_CONFIG_PATH="$work/video.ini" \
@@ -265,11 +268,14 @@ jobs:
             else
               grep -Fq '[app] host: OpenGL' "$work/launcher.log"
             fi
+            grep -Fq "[app-ui] active-panel=$expected_panel" "$work/launcher.log"
             python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test
           }
 
           qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
           qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
+          qualify_launcher deferred-preview "" "$GITHUB_WORKSPACE/build/mdkr64" \
+            "Online Room" Play
 
           # Phone Party surface witness (direct, not a proxy). The party
           # section lives on the launcher's Play panel, so this run opens that
@@ -278,10 +284,9 @@ jobs:
           # surface has committed draws -- a frame that skipped the surface
           # cannot report it (platform/app/ui_phone_party.cpp).
           #
-          # A build with no compiled origin shows no Phone Party surface at all
-          # (PhoneParty_availableInBuild); only the trace lane still draws it,
-          # reporting origin=unset. So a NONEMPTY origin in this line is direct
-          # evidence that a real player of this artifact gets the surface.
+          # A build with no compiled origin must keep the surface absent even
+          # when the trace variable is set. A nonempty origin instead requires
+          # exactly one trace from inside the real draw.
           #
           # PROVEN here: the shipped launcher's party surface really drew, it
           # reports the origin THIS artifact was compiled with, and the native
@@ -297,7 +302,6 @@ jobs:
           # be reported by a launcher that never rendered the surface.
           qualify_party_surface() {
             local label="$1" executable="$2" launch_cwd="$3"
-            local expected_origin="${PARTY_ORIGIN:-unset}"
             local party="$RUNNER_TEMP/launcher-party/$label"
             mkdir -p "$party/prefs" "$party/saves"
             (
@@ -313,12 +317,20 @@ jobs:
             ) 2>&1 | tee "$party/launcher.log"
             local count line expected_prefix
             count="$(grep -cE '^\[app\] party: ' "$party/launcher.log" || true)"
+            if [[ -z "${PARTY_ORIGIN:-}" ]]; then
+              if [[ "$count" != "0" ]]; then
+                echo "$label: partyless artifact exposed a Phone Party trace/surface" >&2
+                exit 1
+              fi
+              echo "$label: partyless launcher surface is absent"
+              return 0
+            fi
             if [[ "$count" != "1" ]]; then
               echo "$label: expected exactly one [app] party: line, got $count" >&2
               exit 1
             fi
             line="$(grep -E '^\[app\] party: ' "$party/launcher.log")"
-            expected_prefix="[app] party: origin=$expected_origin transport=available "
+            expected_prefix="[app] party: origin=$PARTY_ORIGIN transport=available "
             if [[ "$line" != "$expected_prefix"* ]]; then
               echo "$label: party trace mismatch -- this artifact does not" >&2
               echo "report the origin it was supposed to be built with." >&2
@@ -381,6 +393,7 @@ jobs:
 
           qualify_package() {
             local label="$1" renderer="$2"
+            local panel="${3:-Settings}" expected_panel="${4:-Settings}"
             local work="$RUNNER_TEMP/launcher-package/$label"
             mkdir -p "$work/prefs" "$work/saves"
             local -a backend=(-u MDKR_RENDERER)
@@ -390,8 +403,9 @@ jobs:
               xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
                 env -u SDL_VIDEODRIVER "${backend[@]}" \
                   MDKR_APP_SMOKE_FRAMES=4 \
-                    MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
-                  MDKR_APP_PANEL=Settings MDKR_APP_UI_TRACE=1 \
+                  MDKR_APP_SMOKE_SHOT="$work/launcher.bmp" \
+                  MDKR_ONLINE_ROOM_PREVIEW=1 \
+                  MDKR_APP_PANEL="$panel" MDKR_APP_UI_TRACE=1 \
                   MDKR_APP_REQUIRE_PRESENT=1 \
                   MDKR_APP_PREFS_DIR="$work/prefs" \
                   MDKR_VIDEO_CONFIG_PATH="$work/video.ini" \
@@ -405,25 +419,22 @@ jobs:
             else
               grep -Fq '[app] host: OpenGL' "$work/launcher.log"
             fi
+            grep -Fq "[app-ui] active-panel=$expected_panel" "$work/launcher.log"
             python3 tests/check_app_capture.py "$work/launcher.bmp" --self-test
           }
 
           qualify_package webgpu ""
           qualify_package gl gl
+          qualify_package deferred-preview "" "Online Room" Play
 
           # Phone Party surface witness for the artifact players actually get.
-          # Same seam and same honest limits as the built-tree step above: the
-          # party section is on the Play panel, MDKR_APP_PARTY_TRACE=1 makes it
-          # draw without a ROM and emits one line from inside the draw. An
-          # origin-less build hides the surface from players entirely, so a
-          # nonempty origin here is evidence the packaged launcher really
-          # offers it. Phase is `closed` and invite/qr/code are 0 in an offline
-          # lane; asserting otherwise would be an assertion that cannot hold.
+          # Same seam and same honest limits as the built-tree step above. A
+          # partyless package must emit no trace even when asked; a partyful
+          # package must draw once and report its exact compiled origin.
           # Pixels and presents belong to the four qualification runs above;
           # this run exists only for the trace, which is emitted from inside
           # the draw and so cannot come from a launcher that never rendered.
           party_work="$RUNNER_TEMP/launcher-party-package"
-          expected_origin="${PARTY_ORIGIN:-unset}"
           mkdir -p "$party_work/prefs" "$party_work/saves"
           (
             cd "$unrelated"
@@ -437,24 +448,28 @@ jobs:
                 "$app_run"
           ) 2>&1 | tee "$party_work/launcher.log"
           party_count="$(grep -cE '^\[app\] party: ' "$party_work/launcher.log" || true)"
-          if [[ "$party_count" != "1" ]]; then
-            echo "package: expected exactly one [app] party: line, got $party_count" >&2
-            exit 1
+          if [[ -z "${PARTY_ORIGIN:-}" ]]; then
+            if [[ "$party_count" != "0" ]]; then
+              echo "package: partyless artifact exposed a Phone Party trace/surface" >&2
+              exit 1
+            fi
+            echo "package: partyless launcher surface is absent"
+          else
+            if [[ "$party_count" != "1" ]]; then
+              echo "package: expected exactly one [app] party: line, got $party_count" >&2
+              exit 1
+            fi
+            party_line="$(grep -E '^\[app\] party: ' "$party_work/launcher.log")"
+            party_expected="[app] party: origin=$PARTY_ORIGIN transport=available "
+            if [[ "$party_line" != "$party_expected"* ]]; then
+              echo "package: party trace mismatch -- the packaged artifact does" >&2
+              echo "not report the origin it was supposed to be built with." >&2
+              echo "  expected prefix: $party_expected" >&2
+              echo "  actual line    : $party_line" >&2
+              exit 1
+            fi
+            echo "package: party surface drew, $party_line"
           fi
-          party_line="$(grep -E '^\[app\] party: ' "$party_work/launcher.log")"
-          party_expected="[app] party: origin=$expected_origin transport=available "
-          if [[ "$party_line" != "$party_expected"* ]]; then
-            echo "package: party trace mismatch -- the packaged artifact does" >&2
-            echo "not report the origin it was supposed to be built with." >&2
-            echo "  expected prefix: $party_expected" >&2
-            echo "  actual line    : $party_line" >&2
-            exit 1
-          fi
-          if [[ -n "${PARTY_ORIGIN:-}" && "$party_line" == *"origin=unset"* ]]; then
-            echo "package: artifact reports origin=unset but this release was built for ${PARTY_ORIGIN}" >&2
-            exit 1
-          fi
-          echo "package: party surface drew, $party_line"
       - name: Stamp provenance (bind assets to this commit)
         run: |
           for f in dist/Golden-Balloon-*-linux-x86_64.*; do
@@ -527,6 +542,7 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
           # The full ROM-free suite runs in the cross-platform correctness
           # matrix. This Windows lane builds the product plus the native

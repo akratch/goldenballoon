@@ -26,8 +26,10 @@
 <link rel="preload" as="image" href="assets/hero.jpg" fetchpriority="high">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="input/touch-surface.css">
+<!-- LOCAL_ONLY_CLOUD_START: styles -->
 <link rel="stylesheet" href="party/party-host.css">
 <link rel="stylesheet" href="online/online-room.css">
+<!-- LOCAL_ONLY_CLOUD_END: styles -->
 </head>
 <body>
 <a class="skip-link" href="#gate">Skip to launcher</a>
@@ -156,11 +158,13 @@
               <button id="play" class="btn btn-primary" type="button" disabled>
                 <span>▶ Play here</span>
               </button>
+              <!-- LOCAL_ONLY_CLOUD_START: launcher-actions -->
               <button id="online-room-open" class="btn btn-ghost" type="button" hidden>
                 Online room
               </button>
               <button id="add-phone-controllers" class="btn btn-ghost" type="button"
                       disabled hidden>Add phone controllers</button>
+              <!-- LOCAL_ONLY_CLOUD_END: launcher-actions -->
               <button id="forget" class="btn btn-ghost" type="button" hidden>Forget stored ROM</button>
             </div>
             <p class="fine">Play here supports solo, ordinary split-screen,
@@ -353,6 +357,7 @@
   <div id="save-dialog-actions" class="actions"></div>
 </dialog>
 
+<!-- LOCAL_ONLY_CLOUD_START: dialogs -->
 <dialog id="online-room-dialog" class="online-room-dialog"
         aria-labelledby="online-room-title">
   <header class="online-room-heading">
@@ -521,6 +526,7 @@
     </button>
   </div>
 </dialog>
+<!-- LOCAL_ONLY_CLOUD_END: dialogs -->
 
 <dialog id="forget-rom-dialog" class="confirm-dialog"
         aria-labelledby="forget-rom-title">
@@ -542,11 +548,13 @@
   <canvas id="canvas" width="640" height="480" tabindex="-1"></canvas>
   <p id="stage-status" role="status" aria-live="assertive" hidden></p>
   <div id="fps" class="fps" hidden aria-hidden="true"></div>
+  <!-- LOCAL_ONLY_CLOUD_START: stage-control -->
   <button id="party-stage-button" class="party-stage-button" type="button" hidden
           aria-label="Manage local controllers">
     <span aria-hidden="true">⌁</span><span>Controllers</span>
     <strong id="party-stage-count" aria-hidden="true">1</strong>
   </button>
+  <!-- LOCAL_ONLY_CLOUD_END: stage-control -->
   <button id="touch-toggle" class="touch-toggle" type="button" hidden
           aria-label="Hide touch controls" aria-pressed="true">
     <span aria-hidden="true">◉</span><span class="touch-toggle-label">Controls</span>
@@ -615,6 +623,7 @@
 <script src="rom-id.js"></script>
 <script src="mdkr-save-ui.js"></script>
 <script src="input/touch-surface.js"></script>
+<!-- LOCAL_ONLY_CLOUD_START: scripts -->
 <script src="online/online-control-config.js"></script>
 <script src="party/party-protocol.js"></script>
 <script src="party/party-sas.js"></script>
@@ -623,6 +632,7 @@
 <script src="online/online-room-live-state.js"></script>
 <script src="online/online-room-presenter.js"></script>
 <script src="online/online-room.js"></script>
+<!-- LOCAL_ONLY_CLOUD_END: scripts -->
 <script src="mdkr64-shell.js"></script>
 </body>
 </html>

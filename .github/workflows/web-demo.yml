@@ -86,15 +86,30 @@ jobs:
           fi
           echo "no ROM tracked in git"
 
-      # Same stamping the demo-repo publisher applies, from the same script.
-      # An unstamped Pages deploy is a page a sticky cache can pin against a
-      # freshly deployed engine -- exactly the mixed-build failure the ?v=
-      # stamp exists to make impossible.
-      - name: Stamp published shell (cache-bust + build version)
-        run: tools/web/stamp_publish.sh --dir dist/web --stamp "${GITHUB_SHA::7}"
+      # Test the complete deferred implementation above, then publish a separate
+      # local-only payload. The release copy contains no cloud controls, role
+      # pages, scripts, precache entries or online-only wasm; future work stays
+      # testable in dist/web without becoming discoverable in this release.
+      - name: Prepare stamped local-only publication
+        run: |
+          set -euo pipefail
+          rm -rf publish-web-full publish-web
+          cp -a dist/web publish-web-full
+          tools/web/stamp_publish.sh \
+            --dir publish-web-full --stamp "${GITHUB_SHA::7}"
+          python3 tools/web/prepare_local_only_release.py \
+            --source publish-web-full --out publish-web
+          tools/check_no_rom.sh publish-web
+
+      - name: Rendered local-only release surface
+        run: >-
+          python3 tests/check_browser_local_only_release.py
+          --shell-dir publish-web
+          --chrome google-chrome
+          --timeout 90
 
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
-        with: { path: dist/web }
+        with: { path: publish-web }
 
   deploy:
     needs: build

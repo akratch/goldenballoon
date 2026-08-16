@@ -68,6 +68,7 @@ const PRECACHE = [
   "style.css?v=" + BUILD,
   "input/touch-surface.css?v=" + BUILD,
   "input/touch-surface.js?v=" + BUILD,
+  // LOCAL_ONLY_CLOUD_START: precache
   "party/party-host.css?v=" + BUILD,
   "party/party-host.js?v=" + BUILD,
   "party/party-protocol.js?v=" + BUILD,
@@ -84,6 +85,7 @@ const PRECACHE = [
   "controller/index.html?v=" + BUILD,
   "controller/controller.css?v=" + BUILD,
   "controller/controller.js?v=" + BUILD,
+  // LOCAL_ONLY_CLOUD_END: precache
   "manifest.webmanifest?v=" + BUILD,
   "mdkr64-shell.js?v=" + BUILD,
   "mdkr-save-ui.js?v=" + BUILD,

@@ -29,10 +29,10 @@ on or off once unlocked.
 ## Local multiplayer in this release
 
 Keyboard, touch controls, gamepads, and local split-screen all work without an
-online service. Phone Party and Online Room are not available in 1.3.0: their
-buttons and network paths are disabled until the service has a deployed,
-qualified origin. No Cloudflare account or other cloud setup is needed to use
-anything included in this release.
+online service. Phone Party and Online Room are not included in 1.3.0: the
+release has no buttons, browser role pages, or production network paths for
+them. No Cloudflare account or other cloud setup is needed to use anything
+included in this release.
 
 ## Magic Codes remember themselves
 
@@ -48,8 +48,9 @@ all lost on restart. Saving now works regardless of how the executable was
 built, and the fix is guarded on every platform we ship. *(#32)*
 
 **Windows: non-English user folders and portable installs now save reliably.**
-Put `portable.txt` beside `GoldenBalloon.exe` to keep options, saves, and add-ons
-beside the game. Without it, an unwritable user folder now falls back to the
+Non-English account and folder paths work normally. Put `portable.txt` beside
+`GoldenBalloon.exe` only when you deliberately want options, saves, and add-ons
+beside the game. Without it, an unwritable user folder falls back to the
 portable location and reports that choice instead of losing settings. *(#33)*
 
 **Missing music and silver-coin chimes.** On some tracks the busiest musical
@@ -68,6 +69,9 @@ use takes over.
 
 **Small screens: the "Forget Remembered ROM" dialog is readable again** instead
 of collapsing into a tall, one-word-per-line column on handhelds.
+
+**Compact launcher controls stay inside the window.** The typed ROM path and
+**Use This Path** action now stack when they cannot fit on one row.
 
 ## Smoother in-between frames
 

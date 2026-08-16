@@ -267,7 +267,11 @@ void drawAcquisition(LauncherState &s) {
                        ? "Or paste the full path to your ROM:"
                        : "Drag the file onto this window, or paste its full path:");
     if (g_pathInput.capacity() < 256u) g_pathInput.reserve(256u);
-    ImGui::SetNextItemWidth(ui::kControlWidth(1.6f));
+    const float rowWidth = ImGui::GetContentRegionAvail().x;
+    const float pathWidth = ui::kControlWidth(1.6f);
+    const bool stackAction = rowWidth < pathWidth +
+        ImGui::GetStyle().ItemSpacing.x + ui::kBtnSecondary().x;
+    ImGui::SetNextItemWidth(pathWidth);
     const bool entered = ImGui::InputTextWithHint(
         "##rompath", "/path/to/your/game.z64", g_pathInput.data(),
         g_pathInput.capacity() + 1u,
@@ -275,8 +279,6 @@ void drawAcquisition(LauncherState &s) {
             ImGuiInputTextFlags_CallbackResize |
             ImGuiInputTextFlags_CallbackCharFilter,
         resizePathInput, &g_pathInput);
-    const bool stackAction = ImGui::GetContentRegionAvail().x <
-                             ui::kBtnSecondary().x + ImGui::GetStyle().ItemSpacing.x;
     if (!stackAction) ImGui::SameLine();
     const bool pressed = ImGui::Button("Use This Path", ui::kBtnSecondary());
     if (entered || pressed) {
@@ -860,17 +862,16 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
      * release lane is asset-free, so without this the packaged-build party
      * qualification could never execute one line of party UI and its gate
      * would pass on nothing. Trace-only surface; still non-interactive CI. */
-    static const bool partyTraceArmed = [] {
+    static const bool partyTraceRequested = [] {
         const char *value = std::getenv("MDKR_APP_PARTY_TRACE");
         return value != nullptr && value[0] == '1';
     }();
-    /* A build with no compiled pairing origin cannot pair a phone, so it
-     * shows no Phone Party surface at all rather than a dead affordance.
-     * The trace lane still draws it (reporting origin=unset honestly) so the
-     * packaged-build witness can prove the origin was set in a real release. */
+    const bool partyAvailable = PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN);
+    /* A trace may relax only the ROM-ready gate. It cannot manufacture the
+     * feature in an origin-less release: setting a test environment variable
+     * on a packaged binary must still leave the player-facing surface absent. */
     if (s.phoneParty != nullptr && !g_changing &&
-        (ready || partyTraceArmed) &&
-        (PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN) || partyTraceArmed)) {
+        partyAvailable && (ready || partyTraceRequested)) {
         PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
     }
 }

@@ -80,6 +80,7 @@ jobs:
         run: |
           python3 tests/check_ci_contract.py
           python3 tests/check_release_ready_web_provenance.py
+          python3 tests/check_release_local_only_surface.py
           python3 tests/check_address_domains.py
           python3 tests/check_webgpu_fault_matrix.py
           python3 tests/test_public_surface.py
@@ -211,5 +212,17 @@ jobs:
           --shell-dir dist/web
           --chrome google-chrome
           --timeout 90
+      - name: Local-only publication boundary
+        run: |
+          set -euo pipefail
+          rm -rf publish-web-full publish-web
+          cp -a dist/web publish-web-full
+          tools/web/stamp_publish.sh \
+            --dir publish-web-full --stamp "${GITHUB_SHA::7}"
+          python3 tools/web/prepare_local_only_release.py \
+            --source publish-web-full --out publish-web
+          python3 tests/check_browser_local_only_release.py \
+            --shell-dir publish-web --chrome google-chrome --timeout 90
+          tools/check_no_rom.sh publish-web
       - name: Shipped-artifact ROM guard
         run: tools/check_no_rom.sh dist/web

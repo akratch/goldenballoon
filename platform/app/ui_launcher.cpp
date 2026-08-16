@@ -49,8 +49,9 @@ static_assert(kPanelCount == kLauncherPanelCount,
  * Online races are not part of this release, and the room is already
  * fail-closed (no I/O, Start unreachable). This hides the SURFACE as well, so a
  * shipped launcher offers exactly what the release offers rather than a room
- * for a mode the build does not have. MDKR_ONLINE_ROOM_PREVIEW=1 shows the
- * panel for the online-room gates and for development.
+ * for a mode the build does not have. A development build configured with
+ * MDKR_ENABLE_ONLINE_ROOM_PREVIEW=ON may use MDKR_ONLINE_ROOM_PREVIEW=1 for
+ * the online-room gates; release builds compile that route out.
  *
  * The panel keeps its INDEX either way, so the smoke-contract arrays and panel
  * routing stay stable and check_launcher_tabs' MDKR_APP_SMOKE_NAV_TARGET=1
@@ -59,11 +60,15 @@ static_assert(kPanelCount == kLauncherPanelCount,
 static bool panelVisible(int index) {
     if (index < 0 || index >= kPanelCount) return false;
     if (std::strcmp(kPanels[index].label, "Online Room") != 0) return true;
+#if MDKR_ENABLE_ONLINE_ROOM_PREVIEW
     static const bool preview = [] {
         const char *value = std::getenv("MDKR_ONLINE_ROOM_PREVIEW");
         return value != nullptr && value[0] == '1';
     }();
     return preview;
+#else
+    return false;
+#endif
 }
 
 ImVec2 g_smokeTopTabMin[kPanelCount];
@@ -870,6 +875,10 @@ LauncherAction Launcher::draw(AppHost &host) {
     if (!panelEnvChecked_) {
         panelEnvChecked_ = true;
         selectPanelFromEnvironment(active_);
+        if (std::getenv("MDKR_APP_UI_TRACE") != nullptr) {
+            std::fprintf(stderr, "[app-ui] active-panel=%s\n",
+                         kPanels[active_].label);
+        }
     }
 
     // A file dropped on the window always means "use this ROM", whichever panel

@@ -8,6 +8,13 @@ include(CTest)
 option(MDKR_BUILD_FUZZERS "Build coverage-guided save-format fuzzers" OFF)
 option(MDKR_ENABLE_GPU_TESTS
     "Register native GPU/window tests (dedicated test desktop only)" OFF)
+set(MDKR_ONLINE_ROOM_PREVIEW_DEFAULT OFF)
+if(MDKR_ENABLE_GPU_TESTS)
+    set(MDKR_ONLINE_ROOM_PREVIEW_DEFAULT ON)
+endif()
+option(MDKR_ENABLE_ONLINE_ROOM_PREVIEW
+    "Compile the deferred native Online Room preview (development tests only)"
+    ${MDKR_ONLINE_ROOM_PREVIEW_DEFAULT})
 
 # The launcher smoke tests share one physical graphics device and their isolated
 # files do not make concurrent GPU context creation safe.  Apply one named CTest
@@ -858,6 +865,7 @@ if(NOT EMSCRIPTEN)
         target_compile_definitions(mdkr64_app PRIVATE
             MDKR_APP
             GL_SILENCE_DEPRECATION
+            MDKR_ENABLE_ONLINE_ROOM_PREVIEW=$<BOOL:${MDKR_ENABLE_ONLINE_ROOM_PREVIEW}>
             MDKR_APP_VERSION_STR="${MDKR_VERSION}"
             MDKR_APP_BUILD_STAMP="${MDKR_BUILD_STAMP}"
             MDKR_PARTY_ORIGIN="${MDKR_PARTY_COMPILED_ORIGIN}")

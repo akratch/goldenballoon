@@ -5,9 +5,9 @@ Do not publish, retag, or substitute a rebuilt file after testing begins.
 
 This is the complete player-facing walkthrough for changes since 1.2.0. It
 includes the fixes prepared for the withdrawn 1.2.1 candidate. Phone Party and
-Online Room are not part of 1.3.0: this candidate must show neither entry point
-and must not attempt either service API. Keyboard, touch, gamepads, and local
-split-screen remain available.
+Online Room are not part of 1.3.0: this candidate must show neither entry point,
+ship no browser role route, and attempt no service API. Keyboard, touch,
+gamepads, and local split-screen remain available.
 
 Use a legally owned US 1.1 or European 1.1 ROM. Share text logs and hashes in a
 bug report, not ROMs or ROM-derived captures.
@@ -35,7 +35,9 @@ web build.
 2. Select both supported revisions if available. European 1.1 must offer
    English, German, and French; US 1.1 must offer English and French.
 3. Resize down to 640×480 and test UI scaling. The layout must remain usable,
-   and dragging the scale slider must not flash or flicker.
+   and dragging the scale slider must not flash or flicker. With no remembered
+   ROM, the path field and full **Use This Path** button must stack inside the
+   window rather than clip at the right edge.
 4. On a Windows touchscreen or handheld such as ROG Ally, use 1.25× scale or
    larger. Tap every navigation mode, a combo choice, a checkbox, and the
    primary action. Swipe Settings from non-interactive text and confirm it
@@ -141,13 +143,12 @@ Test once on a fresh save and once on an existing save.
 6. Relaunch and confirm the unlock persists. Exercise save import and erase;
    the unlock state shown by the UI must match the documented operation.
 
-## 6. Browser custody, local controls, and cloud gating
+## 6. Browser custody and the local-only boundary
 
 Before importing a ROM, confirm there is no **Add phone controllers**, Phone
-Party, or Online Room control. Calling either deferred launcher API from the
-console must not open a dialog or make a service request. An old `/room/#...`
-link may show a fail-closed explanation, but it must not redeem or retain the
-invitation.
+Party, or Online Room control. The corresponding browser launcher APIs must be
+absent. Old `/room/` and `/controller/` links must return the site's ordinary
+not-found response, without redeeming or retaining an invitation.
 
 1. Import a ROM, reload, and confirm the browser restores it locally. In
    developer tools, no request may contain a ROM filename or bytes.

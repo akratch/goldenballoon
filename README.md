@@ -34,12 +34,11 @@ First-launch notes:
   ([Apple's guide](https://support.apple.com/102445)).
 - **Windows**: the app is not code-signed. If SmartScreen warns, choose
   **More info → Run anyway**.
-- **Windows, non-English account names**: if your Windows username contains
-  non-English characters and settings will not save, create an empty file named
-  `portable.txt` next to `GoldenBalloon.exe`. The game then keeps your settings,
-  saves, and add-ons in the game's own folder instead of your Windows user
-  folder. If that folder is ever unwritable, the game falls back to saving next
-  to itself automatically and tells you it did.
+- **Windows portable data**: non-English account and folder names work normally.
+  To deliberately keep settings, saves, and add-ons beside
+  `GoldenBalloon.exe`, create an empty `portable.txt` next to it. Without that
+  file, an unwritable user-data folder falls back beside the game and reports
+  the location instead of losing settings.
 
 ## Features
 
@@ -56,7 +55,13 @@ First-launch notes:
 - **An optional camera that stays out of walls**, with a reduced-motion
   option. Off by default — the authored camera is the default everywhere.
 - **Local multiplayer** for 2–4 players, per-controller binding, split-screen.
-- **Playable Taj**, an unlockable extra racer with his own tuning.
+- **Three extra racers.** Taj, Wizpig, and Terry are playable with their own
+  identities and vehicles. Beat Wizpig a second time or enter `WIZPIGPOWER`;
+  beat the Dino Domain rematch or enter `TERRYFLY`. Bonus-racer runs cannot
+  replace the retail Time Trial records or ghosts.
+- **Magic Codes remember safe choices.** Unlocked, reversible codes return
+  after restart; progression-changing, one-shot, credits, and deliberate
+  lockout codes never reactivate automatically.
 - **PAL done right**: the European ROM keeps its exact timing and pitch, with
   smooth presentation available on 60 Hz displays. German is available in the
   language menu on every ROM revision.

@@ -432,6 +432,7 @@ if [[ "${RUN_CMAKE}" == true ]]; then
         -DMDKR_VERSION="${APP_VERSION}" \
         -DMDKR_BUILD_STAMP="${BUILD_STAMP}" \
         -DMDKR_PARTY_ORIGIN="${PARTY_ORIGIN}" \
+        -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
         -DMDKR_WEBGPU_BACKEND=ON \
         || die "CMake configuration failed."
 
@@ -450,6 +451,8 @@ CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"
 [[ -f "${CMAKE_CACHE}" ]] || die "Missing CMake cache: ${CMAKE_CACHE}"
 grep -Eq '^MDKR_WEBGPU_BACKEND:BOOL=ON$' "${CMAKE_CACHE}" ||
     die "Build cache does not enable the required WebGPU backend."
+grep -Eq '^MDKR_ENABLE_ONLINE_ROOM_PREVIEW:BOOL=OFF$' "${CMAKE_CACHE}" ||
+    die "Build cache unexpectedly includes the deferred Online Room preview."
 grep -Fqx "MDKR_VERSION:STRING=${APP_VERSION}" "${CMAKE_CACHE}" ||
     die "Build cache version does not match ${APP_VERSION}."
 grep -Fqx "MDKR_BUILD_STAMP:STRING=${BUILD_STAMP}" "${CMAKE_CACHE}" ||

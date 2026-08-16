@@ -12,8 +12,9 @@
 //
 // Panel 0 is Play: the home, which carries the ROM onboarding as a STATE
 // rather than as a separate destination named after a file format. Online Room
-// is drawn only under MDKR_ONLINE_ROOM_PREVIEW=1 (see panelVisible in
-// ui_launcher.cpp) so a shipped build offers exactly what the release offers;
+// is compiled for development only with MDKR_ENABLE_ONLINE_ROOM_PREVIEW=ON and
+// then drawn under MDKR_ONLINE_ROOM_PREVIEW=1 (see panelVisible in
+// ui_launcher.cpp), so a shipped build offers exactly what the release offers;
 // its INDEX is unconditional either way, because the constants below are a
 // public smoke contract.
 #ifndef MDKR64_UI_LAUNCHER_H

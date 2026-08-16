@@ -10,10 +10,11 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [1.3.0] — 2026-08-16
 
-Phone Party and Online Room foundations described below are compiled and tested
-but are not player-visible in 1.3.0. Their buttons and production network paths
-remain disabled until a deployed origin passes service and physical-device
-acceptance. All local features and fixes in this section are included.
+Phone Party and Online Room foundations described below remain in source and
+their development test lanes, but are not part of the player-facing 1.3.0
+artifacts. The release contains no cloud controls or public browser role routes;
+those features wait for a deployed origin and physical-device acceptance. All
+local features and fixes in this section are included.
 
 ### Added
 
@@ -83,11 +84,11 @@ acceptance. All local features and fixes in this section are included.
 
 ### Fixed
 
-- Windows players whose account name uses non-English characters can now keep
-  their settings: drop a file named `portable.txt` next to the game and it saves
-  options, saves, and add-ons beside the game (#33). Without that file, an
-  unwritable user folder falls back there and reports the choice instead of
-  losing settings.
+- Windows account and folder names containing non-English characters now save
+  normally. An optional `portable.txt` beside the game deliberately keeps
+  options, saves, and add-ons there; without it, an unwritable user folder
+  falls back beside the game and reports the choice instead of losing settings
+  (#33).
 - Hardened the deferred Phone Party origin and tab custody. Production now
   rejects noncanonical or non-HTTPS origins before service work, browser routes
   enforce the secure same-origin boundary, and duplicate tabs, lifecycle
@@ -646,6 +647,9 @@ cadence Original.
   five body-font lines. The gold Play button keeps its lower edge at 800x600,
   because the compact header is derived from live metrics instead of a
   hardcoded 196 px.
+- The typed ROM-path field and **Use This Path** action now measure the row
+  before drawing and stack at compact widths instead of clipping the action at
+  the right window edge.
 - A staging or engine-start failure during **Restart & Apply** now surfaces its
   cause. The window-mode result distinguishes unavailable, invalid, and
   superseded, and Settings reports each accurately.

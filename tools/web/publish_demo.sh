@@ -106,13 +106,32 @@ for forbidden in game platform baserom.us.v80.z64; do
     fi
 done
 
+# ---- prepare the exact local-only payload -----------------------------------
+# Keep the complete deferred implementation in dist/web for its test suite, but
+# never copy its cloud routes or UI into a player-facing release. Work in a
+# temporary sibling pair so stamping does not modify the tracked shell.
+PUBLISH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/golden-balloon-publish.XXXXXX")"
+trap 'rm -rf "$PUBLISH_TMP"' EXIT
+mkdir "$PUBLISH_TMP/full"
+cp -R dist/web/. "$PUBLISH_TMP/full/"
+tools/web/stamp_publish.sh --dir "$PUBLISH_TMP/full" --stamp "$SRC_SHORT"
+prepare_args=(
+    --source "$PUBLISH_TMP/full"
+    --out "$PUBLISH_TMP/local-only"
+)
+if [[ "$ALLOW_DIRTY" -eq 1 ]]; then
+    prepare_args+=(--allow-dirty)
+fi
+python3 tools/web/prepare_local_only_release.py "${prepare_args[@]}"
+tools/check_no_rom.sh "$PUBLISH_TMP/local-only"
+
 # ---- sync the payload -------------------------------------------------------
 # Wholesale replace, so a file deleted here disappears there too. Only ever the
-# built site; never source.
-echo ">> syncing dist/web -> $DEMO_ROOT"
+# built local-only site; never source or deferred cloud routes.
+echo ">> syncing local-only browser payload -> $DEMO_ROOT"
 rm -rf "$DEMO_ROOT/dist_web_tmp"
 mkdir -p "$DEMO_ROOT/dist_web_tmp"
-cp -R dist/web/. "$DEMO_ROOT/dist_web_tmp/"
+cp -R "$PUBLISH_TMP/local-only/." "$DEMO_ROOT/dist_web_tmp/"
 
 # The site lives at the demo repo ROOT so Pages serves it without a subpath.
 #
@@ -129,11 +148,6 @@ touch "$DEMO_ROOT/.nojekyll"   # Pages must not run Jekyll over the wasm/js payl
 
 # The demo README carries the live URL; keep the source LICENSE authoritative.
 cp LICENSE "$DEMO_ROOT/LICENSE"
-
-# ---- cache-bust the published shell assets ----------------------------------
-# One implementation, shared with the Actions publish path, so the two cannot
-# stamp differently (or one of them not at all). See tools/web/stamp_publish.sh.
-tools/web/stamp_publish.sh --dir "$DEMO_ROOT" --stamp "$SRC_SHORT"
 
 # ---- provenance in the demo repo -------------------------------------------
 ( cd "$DEMO_ROOT"
@@ -168,3 +182,5 @@ fi
 
 echo
 echo "published source $SRC_SHORT -> $DEMO_ROOT"
+rm -rf "$PUBLISH_TMP"
+trap - EXIT
