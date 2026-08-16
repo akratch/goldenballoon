@@ -177,9 +177,10 @@ jobs:
       # that (platform/app/ui_phone_party.cpp) needs a real AppHost launch, and
       # this lane never starts one -- there is no xvfb equivalent here and the
       # hosted macOS runner's window/GPU behaviour is not qualified. What
-      # guarantees this bundle is not partyless is the origin gate at the top
-      # of this job plus the --party-origin threaded into the build above; the
-      # drawn-surface witness runs on the Linux lane, on the same origin.
+      # The origin gate at the top of this job records whether this bundle is
+      # deliberately partyful or partyless, and --party-origin threads that
+      # decision into the build. The drawn-surface witness runs on the Linux
+      # lane with the same resolved origin.
       - name: Phone Party bring-up smoke and packaged version stamp
         env:
           RELEASE_VERSION: ${{ inputs.version }}
