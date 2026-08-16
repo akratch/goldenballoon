@@ -632,6 +632,12 @@ jobs:
           unzip -q "dist/Golden-Balloon-$RELEASE_VERSION-windows-x64.zip" \
             -d "$package_root"
           executable="$package_root/GoldenBalloon/GoldenBalloon.exe"
+          test "$(sha256sum build/mdkr64.exe | awk '{print $1}')" = \
+            "$(sha256sum "$executable" | awk '{print $1}')"
+          # Info-ZIP on MSYS does not preserve an executable mode from a ZIP
+          # created on Windows. Restore it only for this Bash launch check;
+          # Explorer uses the PE extension and does not depend on POSIX mode.
+          chmod +x "$executable"
           (
             cd "$unrelated"
             version_output="$("$executable" --version | tr -d '\r')"
