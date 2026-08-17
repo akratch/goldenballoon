@@ -521,6 +521,11 @@ const PresentationSnapshot *presentation_snapshot_previous(void);
 /* Return the current snapshot tick only when the published pair is exactly
  * authored_task_tick -> authored_task_tick+1. Retained packet interpolation
  * must target this tick; otherwise replay holds the task's current bytes. */
+/* F9 capture probe injection (platform_capture_active); NULL disables the
+ * [CAPTURE-POSE] rows. Injected rather than linked so unit tests can build
+ * this module standalone. */
+void presentation_snapshot_set_capture_probe(int (*active)(void));
+
 bool presentation_snapshot_replay_target_tick(
     uint64_t authored_task_tick, uint64_t *target_tick);
 /* The authored tick a resolve at numerator 0 returns the pose of -- i.e. the

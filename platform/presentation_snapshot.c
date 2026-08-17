@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h> /* sqrt — F9 capture pose-distance rows only */
 
 /* ---- seam --------------------------------------------------------------- */
 
@@ -1143,6 +1144,14 @@ typedef struct UvScrollAuthoredSpan {
     bool ambiguous;
 } UvScrollAuthoredSpan;
 
+/* F9 capture probe: injected by the platform layer so this file stays
+ * link-independent of it (unit tests build it standalone). NULL = off. */
+static int (*s_capture_probe)(void);
+
+void presentation_snapshot_set_capture_probe(int (*active)(void)) {
+    s_capture_probe = active;
+}
+
 static UvScrollAuthoredSpan
     s_uv_authored[PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS];
 static size_t s_uv_authored_count;
@@ -1566,6 +1575,29 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
         return true;
     }
 
+    /* F9 capture: name every pair whose endpoints are far apart while the
+     * player is bracketing a visible defect. A blend across tens of world
+     * units in one tick is either very fast authored motion or exactly the
+     * cross-object mispair being hunted; the row carries both endpoints so
+     * the dumped frame with the same number can be matched to the object. */
+    if (s_capture_probe != NULL && s_capture_probe()) {
+        const float moved2 =
+            distance_squared(before->position, entry->position);
+        if (moved2 > 100.0f * 100.0f) {
+            extern int g_frameCounter;
+            fprintf(stderr,
+                    "[CAPTURE-POSE] frame=%d obj=%p gen=%llu "
+                    "from=(%.0f,%.0f,%.0f) to=(%.0f,%.0f,%.0f) dist=%.0f "
+                    "anim=%d model=%d\n",
+                    g_frameCounter, entry->address,
+                    (unsigned long long)entry->generation,
+                    before->position[0], before->position[1],
+                    before->position[2], entry->position[0],
+                    entry->position[1], entry->position[2],
+                    (float)sqrt((double)moved2), (int)entry->animation_id,
+                    (int)entry->model_index);
+        }
+    }
     presentation_lerp3(before->position, entry->position, numerator,
                        denominator, out->position);
     out->scale =

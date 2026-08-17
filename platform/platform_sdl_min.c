@@ -1289,6 +1289,28 @@ void platform_sdl_sync_drawable_size(void) {
  * on write. No external deps. */
 static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
+/* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
+ * long as the player holds the defect on screen. See the keydown handler. */
+static int s_captureActive;
+
+int platform_capture_active(void) {
+    return s_captureActive;
+}
+
+void platform_capture_toggle(void) {
+    /* Late-bound each toggle: cheap, and guarantees the probe is wired by
+     * the first moment it can matter regardless of init order. */
+    presentation_snapshot_set_capture_probe(platform_capture_active);
+    if (!g_dumpFramesDir) {
+        fprintf(stderr,
+                "[CAPTURE] F9 pressed but no --dump-frames directory was "
+                "given at launch; logs only\n");
+    }
+    s_captureActive = !s_captureActive;
+    fprintf(stderr, "[CAPTURE-%s] frame=%d\n",
+            s_captureActive ? "START" : "STOP", g_frameCounter);
+    fflush(stderr);
+}
 
 static void platform_frame_dump_filter_init(void) {
     if (s_dumpFrom != -2) return;
@@ -1301,6 +1323,7 @@ static void platform_frame_dump_filter_init(void) {
 
 int platform_frame_dump_due(void) {
     if (!g_dumpFramesDir) return 0;
+    if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
     if (s_dumpFrom >= 0 && g_frameCounter < s_dumpFrom) return 0;
     if (s_dumpEvery > 1) {
@@ -1315,6 +1338,7 @@ int platform_frame_dump_prepare_due(void) {
     int distance;
 
     if (!g_dumpFramesDir) return 0;
+    if (s_captureActive) return 1;
     platform_frame_dump_filter_init();
     if (s_dumpFrom >= 0 && g_frameCounter < s_dumpFrom) {
         distance = s_dumpFrom - g_frameCounter;
@@ -2981,6 +3005,18 @@ static void input_dispatch_events(uint64_t target_tick) {
                      */
                     if (!e.key.repeat && e.key.keysym.sym == SDLK_TAB) {
                         platform_content_packs_toggle();
+                    }
+                    /*
+                     * F9: presentation-defect capture toggle. While active,
+                     * every present is dumped (platform_frame_dump_due) and
+                     * the replay layers emit per-frame [CAPTURE*] rows, so a
+                     * player can bracket a visible artifact in a few seconds
+                     * of exact frames + synchronized logs instead of hours of
+                     * blind sampling. Inert unless --dump-frames named a
+                     * directory at launch.
+                     */
+                    if (!e.key.repeat && e.key.keysym.sym == SDLK_F9) {
+                        platform_capture_toggle();
                     }
 #ifndef MDKR_APP
                     if (e.key.keysym.sym == SDLK_ESCAPE && g_headlessFrames < 0)
