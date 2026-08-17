@@ -677,6 +677,21 @@ def check_alpha_quantum_honest(result: Run) -> list[str]:
         return [f"{label}: [ALPHA-QUANTUM] classifier evidence is not "
                 f"parseable: samples={samples_raw!r} "
                 f"transitions={transitions_raw!r}"]
+    disciplined = "[PRESENT-DISCIPLINE] active=1" in result.output
+    if disciplined:
+        # Closed-loop native pacing supersedes the classifier's testimony:
+        # the deadline grid is disciplined onto real surface retirement, so
+        # the projection is honest by construction and the phase is
+        # slot-projected. The classifier still publishes its own state for
+        # diagnostics, but it no longer decides the mode here.
+        if mode != "slot":
+            return [
+                f"{label}: [PRESENT-DISCIPLINE] active=1 requires the "
+                f"slot-projected phase (mode=slot) but [ALPHA-QUANTUM] "
+                f"reported mode={mode}"]
+        if units == "0":
+            return [f"{label}: [ALPHA-QUANTUM] mode=slot but units=0"]
+        return []
     expected_mode = "free" if timing == "variable" else "grid"
     if mode != expected_mode:
         return [
@@ -689,6 +704,54 @@ def check_alpha_quantum_honest(result: Run) -> list[str]:
     if mode == "grid" and units == "0":
         return [f"{label}: [ALPHA-QUANTUM] mode=grid but units=0"]
     return []
+
+
+def check_slot_quality(result: Run) -> list[str]:
+    """Motion-uniformity bounds for the closed-loop (slot-projected) arm.
+
+    Expressed relative to the run's own gridppm so they hold on any display
+    rate: the ideal alpha step IS one grid quantum, every frame. The pre-fix
+    free-mode measurement on the M3 ProMotion machine was p95 = 1.54 grid
+    (385,024ppm on a 250,000ppm grid) with 15 stalls and full-tick jumps in
+    30 s; the slot projector's residual events are the tick/display beat
+    (one soft repeat) and genuinely missed slots (counted anchors).
+    """
+    label = result.label
+    if "[PRESENT-DISCIPLINE] active=1" not in result.output:
+        return []
+    alpha = result.hist["alpha-delta"]
+    grid = alpha.get("gridppm", 0)
+    failures: list[str] = []
+    if grid <= 0:
+        return [f"{label}: disciplined run reported gridppm={grid}; the "
+                "slot projection publishes its quantum"]
+    displayed = alpha.get("displayed", 0)
+    p95 = alpha.get("p95", -1)
+    peak = alpha.get("max", -1)
+    stalls = alpha.get("stalls", -1)
+    anchors = result.summary.get("slotanchors", -1)
+    binwidth = alpha.get("binwidth", 0)
+    if p95 < 0 or p95 > grid * 3 // 2 + binwidth:
+        failures.append(
+            f"{label}: alpha-delta p95={p95}ppm exceeds 1.5x the "
+            f"{grid}ppm slot quantum — steps are not uniform")
+    if peak < 0 or peak > grid * 5 // 2 + binwidth:
+        failures.append(
+            f"{label}: alpha-delta max={peak}ppm exceeds 2.5x the "
+            f"{grid}ppm slot quantum — a frame jumped more than one "
+            "missed slot's worth")
+    stall_budget = max(2, displayed // 500)
+    if stalls < 0 or stalls > stall_budget:
+        failures.append(
+            f"{label}: {stalls} stalled frames exceed the beat budget "
+            f"{stall_budget} — motion is freezing more often than the "
+            "tick/display beat can explain")
+    anchor_budget = max(2, displayed // 500)
+    if anchors < 0 or anchors > anchor_budget:
+        failures.append(
+            f"{label}: {anchors} slot re-anchors exceed {anchor_budget} — "
+            "the pacer is missing display slots")
+    return failures
 
 
 def check_realtime_quality(result: Run) -> list[str]:
@@ -720,7 +783,11 @@ def check_realtime_quality(result: Run) -> list[str]:
             "arriving late enough to be seen")
     replay_skips = result.pressure.get("replaySkips", -1)
     interpolated = result.summary.get("interp", -1)
-    replay_attempts = replay_skips + interpolated
+    # `interp` counts only replays that DREW; a walk that refused lands in
+    # `stale`. Both were offered to admission, so both belong in the census
+    # denominator or the shed fraction overstates the defect.
+    stale = max(result.summary.get("stale", 0), 0)
+    replay_attempts = replay_skips + interpolated + stale
     if (replay_skips < 0 or interpolated < 0 or replay_attempts <= 0):
         failures.append(
             f"{label}: missing replay admission census "
@@ -731,6 +798,14 @@ def check_realtime_quality(result: Run) -> list[str]:
             f"interpolation replays, above "
             f"{REPLAY_SKIP_MAX_FRACTION:.0%} — optional frames are not being "
             "offered on an evenly paced display clock")
+    unavailable = result.pressure.get("unavailable", -1)
+    presented = result.pressure.get("presented", -1)
+    if presented > 0 and unavailable != 0:
+        failures.append(
+            f"{label}: the surface refused {unavailable} drawables in a "
+            "session that presented — the pacer is overrunning real "
+            "retirement (each refusal is a rendered frame the player never "
+            "saw, displayed as a repeat)")
     failures.extend(check_vblank_projection(result))
     failures.extend(check_alpha_quantum_strict(result))
     return failures
@@ -1090,6 +1165,7 @@ def main() -> int:
                     honest_failures = check_alpha_quantum_honest(
                         honest_result)
                     failures.extend(honest_failures)
+                    failures.extend(check_slot_quality(honest_result))
                     notes.append(
                         f"{label}: {alpha_quantum_row(honest_result.output)}")
                     break
