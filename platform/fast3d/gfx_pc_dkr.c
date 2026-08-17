@@ -405,6 +405,19 @@ static uint64_t dkr_replay_walks = 0;
  * is what check_render_purity.py's arm E asserts by comparing pixels.
  */
 #define DKR_RECOMPOSE_TOLERANCE_LSB 4096
+/*
+ * Universal per-tick vertex-displacement ceiling for deformation pairs, in
+ * model-space s16 units. A pair that passes every structural guard (owner,
+ * generation, viewport, ordinal, count, stride) can still bind two
+ * different meshes — spawn-churn ordinal shifts and re-purposed buffer
+ * slots are the observed shapes — and lerping those paints a screen-sized
+ * sliver shard for one tick. Authored per-tick deformation is orders of
+ * magnitude below this (the hub wave field peaks near 2.2k units over a
+ * whole swell); two unrelated meshes disagree by the model's extent.
+ * Owners with a known legitimate wrap set their own tighter
+ * max_vertex_delta and are unaffected.
+ */
+#define DKR_DEFORMATION_SANITY_DELTA 4096
 
 bool gfx_dkr_replay_pass_active(void) { return dkr_replay_pass; }
 
@@ -5828,14 +5841,28 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
         gfx_presentation_packet_lookup_deformation(
             owner, viewport, ordinal, target_tick,
             (uint32_t)count, (uint32_t)sizeof(*retained), &deformation);
-    if (interpolate && owner->max_vertex_delta > 0.0f) {
+    if (interpolate) {
         /*
          * The slot is the same; is the THING in it the same? A wrapping snow
          * flake reappears on the far face of the volume without changing slot,
          * batch count or stride, so every structural check above passes and
          * only the magnitude of the move says it is not one movement.
+         *
+         * Owners that know their own wrap magnitude set max_vertex_delta;
+         * everyone else gets the defense-in-depth ceiling below. It exists
+         * because a pair that survives every structural guard can still be
+         * two different meshes (an ordinal shift across spawn churn, a
+         * buffer slot re-purposed between ticks), and lerping those paints
+         * a screen-sized sliver shard for one tick — measured live on the
+         * 2026-08-17 hub playtest as waterfalls "disappearing", the rainbow
+         * distorting, and translucent shards flashing mid-air. No authored
+         * per-tick deformation moves a vertex anywhere near this bound
+         * (wave amplitude peaks ~2.2k over many ticks); two unrelated
+         * meshes disagree by the model's whole extent.
          */
-        const float limit = owner->max_vertex_delta;
+        const float limit = owner->max_vertex_delta > 0.0f
+            ? owner->max_vertex_delta
+            : (float)DKR_DEFORMATION_SANITY_DELTA;
         for (int index = 0; index < count; index++) {
             Vertex before;
             Vertex after;
