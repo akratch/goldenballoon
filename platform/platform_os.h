@@ -193,6 +193,14 @@ int platform_present_slot_alpha_active(void);
  * deadline-discipline loop; a no-op outside discipline mode.
  */
 void platform_present_note_acquire(uint64_t block_ns, int unavailable);
+/*
+ * Sleep the remainder of the endpoint lead so the authored endpoint present
+ * leaves on its display slot (see the ENDPOINT LEAD comment in
+ * platform_vi_present_pace_units). Call immediately before presenting the
+ * tick's own image; a no-op when no lead was armed or outside discipline
+ * mode.
+ */
+void platform_present_endpoint_gate(void);
 
 /*
  * The trimmed squared coefficient of variation used by the present-interval

@@ -628,6 +628,17 @@ uint64_t present_sched_ticks(void) {
     return host_frame_driver_clock_ticks(&s_driver);
 }
 
+uint64_t present_sched_units_to_tick(void) {
+    uint64_t num = 0;
+    uint64_t den = 1;
+    present_sched_lazy_init();
+    if (present_sched_pending_ticks() != 0u) {
+        return 0u;
+    }
+    host_frame_driver_alpha(&s_driver, &num, &den);
+    return num < den ? den - num : 0u;
+}
+
 void present_sched_trace_entry(unsigned fields, unsigned due,
                                int frame_counter) {
     uint64_t num = 0;

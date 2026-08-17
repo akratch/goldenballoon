@@ -76,6 +76,14 @@ void present_sched_note_game_update(unsigned ticket_width,
 
 /* Interpolation alpha as sim_sched's exact rational (spec §7). */
 void present_sched_alpha(uint64_t *numerator, uint64_t *denominator);
+/*
+ * Accumulator distance to the next authoritative tick, in the same units the
+ * alpha rationals use (one field == 1e9). Zero when a tick is already due or
+ * pending. Read-only: pacing uses it to predict which host opportunity will
+ * carry the tick so the authored endpoint can be computed early and
+ * presented on its own display slot (the endpoint lead).
+ */
+uint64_t present_sched_units_to_tick(void);
 
 /* Total authoritative ticks the clock has made due since process start. */
 uint64_t present_sched_ticks(void);

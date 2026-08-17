@@ -4047,6 +4047,29 @@ static uint64_t s_disciplineUnavailable;
 static uint64_t s_disciplineLeads;
 static uint64_t s_disciplineLeadMissTotalNs;
 static uint64_t s_disciplineLeadMissMaxNs;
+/* The display slot the led endpoint should present on (0 = no lead armed). */
+static uint64_t s_disciplineEndpointSlotNs;
+
+/* MDKR_PRESENT_ENDPOINT_LEAD_US: how early the tick-carrying wake runs so
+ * the authored endpoint can be computed and still presented on its slot.
+ * 0 disables the lead. Cached like every other one-shot env read here. */
+static uint64_t discipline_endpoint_lead_ns(void) {
+    static int64_t cached = -1;
+    if (cached < 0) {
+        const char *value = getenv("MDKR_PRESENT_ENDPOINT_LEAD_US");
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            unsigned long parsed = strtoul(value, &end, 10);
+            cached = (end != NULL && *end == '\0' &&
+                      parsed <= 8000ul)
+                         ? (int64_t)parsed * 1000
+                         : 3000000;
+        } else {
+            cached = 3000000; /* 3 ms default */
+        }
+    }
+    return (uint64_t)cached;
+}
 
 static void discipline_note(uint64_t block_ns, int unavailable) {
     uint64_t bin = block_ns / DISCIPLINE_BLOCK_BIN_NS;
@@ -4082,6 +4105,7 @@ static uint64_t discipline_block_percentile_us(unsigned permille) {
 
 static void discipline_reset(void) {
     s_presentDiscipline = false;
+    s_disciplineEndpointSlotNs = 0u;
     memset(s_disciplineBlockHist, 0, sizeof(s_disciplineBlockHist));
     s_disciplineBlockSamples = 0u;
     s_disciplineBlockMaxNs = 0u;
@@ -4353,6 +4377,38 @@ int platform_present_slot_alpha_active(void) {
            !present_pace_quantum_strict_forced();
 #else
     return 0;
+#endif
+}
+
+void platform_present_endpoint_gate(void) {
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+    uint64_t slot_ns;
+    uint64_t now;
+    if (s_disciplineEndpointSlotNs == 0u || !s_presentDiscipline) {
+        s_disciplineEndpointSlotNs = 0u;
+        return;
+    }
+    slot_ns = s_disciplineEndpointSlotNs;
+    s_disciplineEndpointSlotNs = 0u;
+    now = pace_host_ns();
+    s_disciplineLeads++;
+    if (now < slot_ns) {
+        /* The tick fit inside the lead: sleep the remainder so the endpoint
+         * present leaves ON its slot. The sleep is charged to the
+         * accumulator by the NEXT pace call's elapsed measurement, so sim
+         * time is untouched. */
+        (void)pace_sleep_until(slot_ns);
+        return;
+    }
+    /* Tick compute overran the lead; present immediately and record by how
+     * much, so telemetry can size the lead against reality. */
+    {
+        const uint64_t miss = now - slot_ns;
+        s_disciplineLeadMissTotalNs += miss;
+        if (miss > s_disciplineLeadMissMaxNs) {
+            s_disciplineLeadMissMaxNs = miss;
+        }
+    }
 #endif
 }
 
@@ -4854,6 +4910,38 @@ uint64_t platform_vi_present_pace_units(void) {
         if (deadline && clock != NULL) {
             target = mdkr_present_deadline_target(clock, now);
         }
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+        /*
+         * ENDPOINT LEAD. When the wake this call is pacing will make the
+         * authoritative tick due, the frame that follows is the authored
+         * endpoint -- and it leaves tickCompute (1-3 ms) after the wake,
+         * off its display slot. A fixed-refresh FIFO re-times that on the
+         * vblank; a VRR panel shows the ripple. So wake that one
+         * opportunity early by the lead, compute the tick in the margin,
+         * and platform_present_endpoint_gate() sleeps the remainder so the
+         * endpoint present leaves ON the slot. The lead is applied only
+         * when the tick is still due at the earlier wake (the accumulator
+         * check below), so the sim clock is never distorted; a boundary
+         * tick that fails the check simply goes out unled, as before.
+         */
+        s_disciplineEndpointSlotNs = 0u;
+        if (deadline && clock == &s_presentDeadline && s_presentDiscipline) {
+            const uint64_t lead_ns = discipline_endpoint_lead_ns();
+            if (lead_ns != 0u && target > now) {
+                const uint64_t lead_units =
+                    lead_ns * (uint64_t)s_fieldHz;
+                const uint64_t quantum =
+                    platform_present_display_quantum_units();
+                const uint64_t to_tick = present_sched_units_to_tick();
+                if (quantum != 0u && to_tick != 0u &&
+                    to_tick + lead_units <= quantum &&
+                    target > now + lead_ns) {
+                    s_disciplineEndpointSlotNs = target;
+                    target -= lead_ns;
+                }
+            }
+        }
+#endif
 #ifdef __EMSCRIPTEN__
         /* Browser presentation is at most one opportunity per rAF. Numeric
          * caps skip rAF opportunities until their absolute deadline; display
