@@ -249,6 +249,36 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
                                      uint64_t tick_units,
                                      uint64_t quantum_units);
 
+/*
+ * Slot-projected interpolation phase for a disciplined display cadence.
+ *
+ * Under a closed-loop FIFO pacer, one displayed frame IS one display slot,
+ * so the drawn phase should advance by exactly one quantum per replay —
+ * reading it off the wake clock instead bakes scheduler jitter into every
+ * motion step (the measured p95 was 0.385 tick against an ideal constant
+ * 0.25 at 120 Hz). This projector predicts last + quantum and keeps the
+ * prediction whenever the measured phase agrees within SNAP; a larger
+ * disagreement (a genuinely missed slot) re-anchors onto the measured grid
+ * point and is counted. A prediction that would touch the tick boundary
+ * clamps to tick_units - 1: the tick/display beat's extra slot becomes one
+ * soft repeat of (nearly) the incoming endpoint image rather than a
+ * mid-tick stutter.
+ */
+#define MDKR_PRESENT_SLOT_SNAP_NUM 6u
+#define MDKR_PRESENT_SLOT_SNAP_DEN 10u
+
+typedef struct MdkrPresentSlotState {
+    uint64_t last_units; /* last drawn phase, accumulator units */
+    uint64_t last_tick;  /* census tick that phase belonged to */
+    uint64_t snaps;      /* predicted-step frames (telemetry) */
+    uint64_t anchors;    /* re-anchor events (telemetry) */
+} MdkrPresentSlotState;
+
+uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
+                                 uint64_t measured_units,
+                                 uint64_t tick_units,
+                                 uint64_t quantum_units);
+
 int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
                                unsigned rate);
 uint64_t mdkr_present_deadline_target(MdkrPresentDeadlineClock *clock,

@@ -177,6 +177,23 @@ unsigned platform_present_display_rate(void);
  * handler); the latched POLICY is not.
  */
 uint64_t platform_present_display_quantum_units(void);
+/*
+ * Nonzero when the native display pacer is CLOSED-LOOP: a realtime
+ * FrameLimit=display run on native WebGPU whose deadline grid is disciplined
+ * by surface-acquire feedback (platform_present_note_acquire). Under that
+ * regime one displayed frame is one display slot, so present_sched projects
+ * the interpolation phase by slot prediction (mdkr_present_slot_phase)
+ * instead of reading the wake clock. Zero everywhere else, which is what
+ * keeps synthetic, browser, GL and margin runs bit-for-bit as they were.
+ */
+int platform_present_slot_alpha_active(void);
+/*
+ * One presented frame's acquire observation from the render backend:
+ * how long the surface acquire blocked before this present, and whether it
+ * failed outright (queue overrun; the image was dropped). Feeds the
+ * deadline-discipline loop; a no-op outside discipline mode.
+ */
+void platform_present_note_acquire(uint64_t block_ns, int unavailable);
 
 /*
  * The trimmed squared coefficient of variation used by the present-interval

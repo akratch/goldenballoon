@@ -299,6 +299,57 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
     return quantized;
 }
 
+uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
+                                 uint64_t measured_units,
+                                 uint64_t tick_units,
+                                 uint64_t quantum_units) {
+    uint64_t predicted;
+    uint64_t drawn;
+    uint64_t diff;
+    uint64_t snap;
+
+    if (state == NULL || quantum_units == 0u || tick_units == 0u ||
+        quantum_units >= tick_units) {
+        return measured_units;
+    }
+    if (state->last_tick != tick) {
+        state->last_tick = tick;
+        state->last_units = 0u;
+    }
+    predicted = state->last_units + quantum_units;
+    if (predicted >= tick_units) {
+        /* The tick/display beat produced an extra slot. Repeat just below
+         * the boundary — content-identical to the incoming endpoint — and
+         * do NOT fall through to the anchor comparison. */
+        drawn = tick_units - 1u;
+        state->snaps++;
+    } else {
+        diff = measured_units > predicted ? measured_units - predicted
+                                          : predicted - measured_units;
+        snap = (quantum_units / MDKR_PRESENT_SLOT_SNAP_DEN) *
+               MDKR_PRESENT_SLOT_SNAP_NUM;
+        if (diff <= snap) {
+            drawn = predicted;
+            state->snaps++;
+        } else {
+            drawn = mdkr_present_quantize_phase(measured_units, tick_units,
+                                                quantum_units);
+            if (drawn < quantum_units) {
+                drawn = quantum_units;
+            }
+            if (drawn > tick_units - 1u) {
+                drawn = tick_units - 1u;
+            }
+            state->anchors++;
+        }
+    }
+    if (drawn < state->last_units) {
+        drawn = state->last_units; /* census counts the repeat as a stall */
+    }
+    state->last_units = drawn;
+    return drawn;
+}
+
 static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
                                      uint64_t index) {
     uint64_t whole_seconds;

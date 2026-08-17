@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static int s_failures;
 
@@ -419,6 +420,88 @@ int main(void) {
         expect("feedback before first target leaves origin unset",
                clock.origin_ns == 0u &&
                    mdkr_present_deadline_slew_total(&clock) == 0u);
+    }
+
+    /* Slot-projected alpha: the drawn phase steps by exactly one display
+     * quantum per replay regardless of wake jitter; a genuinely missed slot
+     * re-anchors; a beat-event extra slot repeats just below the boundary. */
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t prev = 0u;
+        uint64_t measured;
+        uint64_t drawn;
+        long long jitter[3];
+        int i;
+        int uniform = 1;
+        jitter[0] = 23000000;
+        jitter[1] = -31000000;
+        jitter[2] = 8000000;
+        memset(&slot_state, 0, sizeof(slot_state));
+        for (i = 1; i <= 3; i++) {
+            measured = (uint64_t)((long long)(q * (uint64_t)i) +
+                                  jitter[i - 1]);
+            drawn = mdkr_present_slot_phase(&slot_state, 7u, measured, den,
+                                            q);
+            if (drawn != prev + q) {
+                uniform = 0;
+            }
+            prev = drawn;
+        }
+        expect("slot phase steps exactly one quantum under wake jitter",
+               uniform == 1);
+        expect("slot phase counted three snaps and no anchors",
+               slot_state.snaps == 3u && slot_state.anchors == 0u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 8u, q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 8u, 3u * q, den, q);
+        expect("a missed slot re-anchors to the measured grid point",
+               drawn == 3u * q);
+        expect("the re-anchor was counted", slot_state.anchors == 1u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 9u, q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 9u, 2u * q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 9u, 3u * q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 9u,
+                                        3u * q + q / 3u, den, q);
+        expect("a beat-event fifth slot clamps just below the boundary",
+               drawn == den - 1u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 10u, q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 11u,
+                                        q + UINT64_C(40000000), den, q);
+        expect("a new tick restarts the sequence at one quantum",
+               drawn == q);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        memset(&slot_state, 0, sizeof(slot_state));
+        expect("a zero quantum passes the measured phase through",
+               mdkr_present_slot_phase(&slot_state, 12u, UINT64_C(777), den,
+                                       0u) == UINT64_C(777));
+        expect("a quantum at or above the tick passes measured through",
+               mdkr_present_slot_phase(&slot_state, 12u, UINT64_C(777), den,
+                                       den) == UINT64_C(777));
     }
 
     expect("initialize NTSC original clock",

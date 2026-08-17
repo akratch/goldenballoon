@@ -545,6 +545,10 @@ void present_sched_note_stale(void) {
  */
 static uint64_t s_alpha_grid_tick;
 static uint64_t s_alpha_grid_last;
+/* Slot-projected phase state for the disciplined native display pacer
+ * (platform_present_slot_alpha_active). Subsumes the quantize+bump pair
+ * above whenever it is active: prediction owns monotonicity AND spacing. */
+static MdkrPresentSlotState s_slot_state;
 /* Logging only: the most recent quantum this choke point actually read, for
  * present_sched_trace_summary()'s [ALPHA-QUANTUM] row to report the value the
  * run used rather than re-querying platform_present_display_quantum_units()
@@ -561,6 +565,19 @@ static uint64_t present_sched_alpha_projected(uint64_t num, uint64_t den,
 
     s_alpha_last_quantum = quantum;
 
+    if (quantum != 0u && platform_present_slot_alpha_active()) {
+        /* Closed-loop display pacing: one displayed frame is one slot, so
+         * the drawn phase advances by prediction, not by the wake clock.
+         * A diagnostic reader must not consume the sequence. */
+        if (advance) {
+            return mdkr_present_slot_phase(&s_slot_state, ticks, num, den,
+                                           quantum);
+        }
+        {
+            MdkrPresentSlotState peek = s_slot_state;
+            return mdkr_present_slot_phase(&peek, ticks, num, den, quantum);
+        }
+    }
     if (ticks != s_alpha_grid_tick) {
         s_alpha_grid_tick = ticks;
         s_alpha_grid_last = 0u;
@@ -1486,7 +1503,13 @@ void present_sched_trace_summary(void) {
             "timing=%s samples=%u transitions=%llu\n",
             (unsigned long long)s_alpha_last_quantum,
             (unsigned long long)platform_present_quantum_variance_ppm(),
-            s_alpha_last_quantum != 0u ? "grid" : "free",
+            /* `slot` is the closed-loop grid: prediction-spaced phases on a
+             * feedback-disciplined cadence. It outranks the classifier-gated
+             * `grid`/`free` distinction, which only governs the legacy
+             * projection path. */
+            (s_slot_state.snaps + s_slot_state.anchors) != 0u
+                ? "slot"
+                : (s_alpha_last_quantum != 0u ? "grid" : "free"),
             platform_present_quantum_timing_name(),
             platform_present_quantum_sample_count(),
             (unsigned long long)platform_present_quantum_transition_count());
@@ -1503,7 +1526,8 @@ void present_sched_trace_summary(void) {
             "effectiveupdates=%llu effectivediverged=%llu "
             "effectivemin=%u effectivemax=%u "
             "presentkind=%d presentrate=%u requestedkind=%d "
-            "requestedrate=%u bootstrap=%u effectivebootstrap=%u\n",
+            "requestedrate=%u bootstrap=%u effectivebootstrap=%u "
+            "slotsnaps=%llu slotanchors=%llu\n",
             (unsigned long long)s_entries,
             (unsigned long long)host_frame_driver_clock_ticks(&s_driver),
             g_frameCounter,
@@ -1537,7 +1561,9 @@ void present_sched_trace_summary(void) {
             present_sched_present_rate(),
             (int)present_sched_present_requested_kind(),
             present_sched_present_requested_rate(), s_bootstrap_update,
-            s_bootstrap_effective);
+            s_bootstrap_effective,
+            (unsigned long long)s_slot_state.snaps,
+            (unsigned long long)s_slot_state.anchors);
     fflush(stderr);
 }
 
@@ -1587,6 +1613,7 @@ void present_sched_engine_session_begin(void) {
     s_alpha_grid_tick = 0u;
     s_alpha_grid_last = 0u;
     s_alpha_last_quantum = 0u;
+    memset(&s_slot_state, 0, sizeof(s_slot_state));
     s_perf = -1;
     memset(s_perf_ns, 0, sizeof(s_perf_ns));
     memset(s_perf_hits, 0, sizeof(s_perf_hits));
