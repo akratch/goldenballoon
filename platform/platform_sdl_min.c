@@ -4182,8 +4182,8 @@ static void platform_present_discipline_trace_shutdown(void) {
     fprintf(stderr,
             "[PRESENT-DISCIPLINE] active=%d samples=%llu blockp50us=%llu "
             "blockp95us=%llu blockmaxus=%llu unavailable=%llu "
-            "slewtotalus=%llu periodns=%llu leads=%llu leadmissmeanus=%llu "
-            "leadmissmaxus=%llu\n",
+            "slewtotalus=%llu periodns=%llu expiries=%u leads=%llu "
+            "leadmissmeanus=%llu leadmissmaxus=%llu\n",
             s_presentDiscipline ? 1 : 0,
             (unsigned long long)s_disciplineBlockSamples,
             (unsigned long long)discipline_block_percentile_us(500u),
@@ -4195,6 +4195,7 @@ static void platform_present_discipline_trace_shutdown(void) {
                 1000u),
             (unsigned long long)mdkr_present_deadline_period_ns(
                 &s_presentDeadline),
+            s_presentDeadline.rerate_expiries,
             (unsigned long long)s_disciplineLeads,
             (unsigned long long)(s_disciplineLeads != 0u
                                      ? s_disciplineLeadMissTotalNs /

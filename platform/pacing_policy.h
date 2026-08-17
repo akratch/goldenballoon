@@ -131,6 +131,25 @@ typedef enum MdkrPresentSync {
 #define MDKR_PRESENT_DISCIPLINE_SNAP_PPM        UINT64_C(600)
 #define MDKR_PRESENT_DISCIPLINE_RERATE_CONFIRM  8u
 #define MDKR_PRESENT_DISCIPLINE_EMA_SHIFT       3u
+/*
+ * Staleness discriminator for a rate override. An override is
+ * self-fulfilling — releasing at 106 Hz measures 106 Hz forever — and a
+ * healthy matched override lives in a limit cycle whose blocks arrive only
+ * every few dozen frames, so neither "no blocks lately" nor a hard reset
+ * works (measured: hard reset thrashed 3,506 overrun drops per gate run;
+ * frame-counting decay wobbled the period at ~1 Hz). What does separate
+ * the two: the phase controller pulls the release CREEP nanoseconds
+ * earlier on every blockless frame. Against a display slower-or-equal to
+ * the override, that pull is punished by a block within one limit cycle.
+ * Against a faster panel it is NEVER punished. Accumulate the unpunished
+ * pull; when it exceeds two full periods — the release has swept a whole
+ * two-frame window earlier without the display once pushing back — the
+ * panel is provably faster, and the override decays half of its gap
+ * toward the nominal grid (stale case measured live 2026-08-17: 106.4 Hz
+ * stuck under a ~117 Hz panel = a 13 Hz strobe on every camera pan).
+ */
+#define MDKR_PRESENT_DISCIPLINE_CREDIT_PERIODS  2u
+#define MDKR_PRESENT_DISCIPLINE_PUNISH_NS       UINT64_C(500000)
 
 typedef struct MdkrPresentDeadlineClock {
     uint64_t origin_ns;
@@ -143,6 +162,8 @@ typedef struct MdkrPresentDeadlineClock {
     uint64_t last_bound_ns;      /* completion time of last bound frame */
     uint64_t slew_total_ns;      /* cumulative |origin adjustment| */
     unsigned rerate_streak;
+    uint64_t early_credit_ns;    /* unpunished creep since the last block */
+    unsigned rerate_expiries;    /* override decay steps (staleness) */
 } MdkrPresentDeadlineClock;
 
 typedef struct MdkrPacingClock {
