@@ -84,6 +84,15 @@ void present_sched_alpha(uint64_t *numerator, uint64_t *denominator);
  * presented on its own display slot (the endpoint lead).
  */
 uint64_t present_sched_units_to_tick(void);
+/*
+ * Horizontal render-cull widening, in degrees per side, applied while
+ * replays are armed so the retained list contains everything any interior
+ * camera can see (see the SMOOTHING ROTATION MARGIN comment at the cull
+ * plane builder in game/src/tracks.c). MDKR_SMOOTH_CULL_MARGIN_DEG
+ * overrides; clamped to [0, 45]; 0 disables. Default 15 covers camera
+ * swings up to ~450 deg/s at the authored tick rate.
+ */
+float mdkr_smooth_cull_margin_deg(void);
 
 /* Total authoritative ticks the clock has made due since process start. */
 uint64_t present_sched_ticks(void);

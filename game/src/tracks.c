@@ -1406,7 +1406,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
         gDPPipeSync(gTrackDL++);
         set_active_camera(gSceneCurrentPlayerID);
         viewport_main(&gTrackDL, &gTrackMtxPtr);
-        func_8002A31C();
+        func_8002A31C(1);
         // Show detailed skydome in single player.
         if (numViewports < 2) {
             mtx_world_origin(&gTrackDL, &gTrackMtxPtr);
@@ -1487,7 +1487,7 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
             ttcam_update(updateRate);
 #endif
             viewport_main(&gTrackDL, &gTrackMtxPtr);
-            func_8002A31C();
+            func_8002A31C(1);
             mtx_perspective(&gTrackDL, &gTrackMtxPtr);
             trackbg_render_gradient();
             camSetProjMtx(&gTrackDL, &gTrackMtxPtr);
@@ -3140,7 +3140,7 @@ void scene_visibility_prepare_viewport(s32 viewportIndex, s32 numViewports, s32 
     cam_build_view_basis();
     gCutsceneCameraActive = savedCutscene;
 
-    func_8002A31C();
+    func_8002A31C(0);
 
     gSceneActiveCamera = cam_get_active_camera();
     segmentIndex = gSceneActiveCamera->cameraSegmentID;
@@ -4677,7 +4677,7 @@ static void mdkr_build_cull_plane(MtxF *cameraMatrix, s32 planeIndex,
 
 #endif
 
-void func_8002A31C(void) {
+void func_8002A31C(s32 renderPass) {
     f32 ox1;
     f32 oy1;
     f32 oz1;
@@ -4714,6 +4714,48 @@ void func_8002A31C(void) {
         projectedSlope = tanf(halfHorizontalFov * (3.14159265358979323846f / 180.0f)) * 1.05f;
         if (projectedSlope > 1.3f) {
             cullSideX = projectedSlope * 100.0f;
+            if (cullSideX > 2000.0f) {
+                cullSideX = 2000.0f;
+            }
+        }
+    }
+    /*
+     * SMOOTHING ROTATION MARGIN. The retained display list is culled once
+     * per authored tick against THIS camera, but motion smoothing replays
+     * it under interpolated cameras up to a whole tick of rotation away.
+     * Content the tick's frustum culled at the leading edge of a pan is
+     * visible to those interior cameras and simply is not in the list —
+     * on screen that is level geometry (the hub waterfalls, the rainbow
+     * arc) popping in and out at 30 Hz while the view turns, invisible
+     * the moment the camera holds still (playtested and frame-diagnosed
+     * 2026-08-17; block crops show whole regions snapping between
+     * consecutive 120 Hz frames). So while replays are armed, widen the
+     * RENDER side planes by the worst per-tick camera swing the blend
+     * path will actually follow. Render-only by construction: object
+     * admission and every simulation-visible predicate keep
+     * sFaithfulCullPlanes, exactly like the ultrawide expansion above,
+     * so headless byte-identity and AI RNG parity are untouched. The
+     * cost is bounded overdraw during smoothing only.
+     */
+    /* renderPass gates the smoothing margin below: the tick-side
+     * visibility predicate (scene_visibility_prepare_viewport) shares this
+     * builder and feeds AI RNG through object admission, so it must see
+     * the EXACT legacy planes — the weather identity gate diverged at row
+     * 968 when the margin leaked into it. */
+    if (renderPass && present_sched_replay_armed() &&
+        present_sched_smoothing_enabled()) {
+        f32 marginDeg = mdkr_smooth_cull_margin_deg();
+        if (marginDeg > 0.0f) {
+            f32 halfAngleDeg =
+                atanf(cullSideX / 100.0f) * (180.0f / 3.14159265358979323846f)
+                + marginDeg;
+            if (halfAngleDeg < 88.0f) {
+                cullSideX =
+                    tanf(halfAngleDeg * (3.14159265358979323846f / 180.0f)) *
+                    100.0f;
+            } else {
+                cullSideX = 2000.0f;
+            }
             if (cullSideX > 2000.0f) {
                 cullSideX = 2000.0f;
             }
