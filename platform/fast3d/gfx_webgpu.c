@@ -146,6 +146,14 @@ static uint64_t s_gpu_frame_completions;
 static uint64_t s_gpu_surface_presents;
 static uint64_t s_gpu_surface_holds;
 static uint64_t s_gpu_surface_unavailable;
+/* Status split of the above + the spurious-occlusion defense census. */
+static uint64_t s_gpu_occluded_while_presentable;
+static uint64_t s_gpu_occluded_hidden;
+static uint64_t s_gpu_unavailable_timeout;
+static uint64_t s_gpu_unavailable_outdated;
+static uint64_t s_gpu_unavailable_other;
+static uint64_t s_gpu_occluded_retry_attempts;
+static uint64_t s_gpu_occluded_recovered;
 static uint64_t s_gpu_backpressure_waits;
 static uint64_t s_gpu_backpressure_polls;
 static uint64_t s_gpu_backpressure_skips;
@@ -868,6 +876,13 @@ static void wgpu_reset_backpressure_stats(void) {
     s_gpu_surface_presents = 0u;
     s_gpu_surface_holds = 0u;
     s_gpu_surface_unavailable = 0u;
+    s_gpu_occluded_while_presentable = 0u;
+    s_gpu_occluded_hidden = 0u;
+    s_gpu_unavailable_timeout = 0u;
+    s_gpu_unavailable_outdated = 0u;
+    s_gpu_unavailable_other = 0u;
+    s_gpu_occluded_retry_attempts = 0u;
+    s_gpu_occluded_recovered = 0u;
     s_gpu_backpressure_waits = 0u;
     s_gpu_backpressure_polls = 0u;
     s_gpu_backpressure_skips = 0u;
@@ -994,7 +1009,10 @@ static void wgpu_report_backpressure(void) {
             "inflight=%u highwater=%u waits=%llu polls=%llu skips=%llu "
             "endpointSkips=%llu replaySkips=%llu "
             "failures=%llu abandoned=%llu waitns=%llu runtimewaits=%llu "
-            "runtimewaitns=%llu rateMilliHz=%llu\n",
+            "runtimewaitns=%llu rateMilliHz=%llu "
+            "occludedvisible=%llu occludedhidden=%llu timeoutst=%llu "
+            "outdatedst=%llu otherst=%llu occlretries=%llu "
+            "occlrecovered=%llu\n",
             WGPU_FRAME_IN_FLIGHT_MAX,
             (unsigned long long)s_gpu_frame_submissions,
             (unsigned long long)s_gpu_frame_completions,
@@ -1012,7 +1030,14 @@ static void wgpu_report_backpressure(void) {
             (unsigned long long)s_gpu_backpressure_wait_ns,
             (unsigned long long)s_gpu_runtime_waits,
             (unsigned long long)s_gpu_runtime_wait_ns,
-            (unsigned long long)rate_millihz);
+            (unsigned long long)rate_millihz,
+            (unsigned long long)s_gpu_occluded_while_presentable,
+            (unsigned long long)s_gpu_occluded_hidden,
+            (unsigned long long)s_gpu_unavailable_timeout,
+            (unsigned long long)s_gpu_unavailable_outdated,
+            (unsigned long long)s_gpu_unavailable_other,
+            (unsigned long long)s_gpu_occluded_retry_attempts,
+            (unsigned long long)s_gpu_occluded_recovered);
 }
 
 static bool wgpu_submit_commands(
@@ -3197,6 +3222,48 @@ static void wgpu_end_frame(void) {
     if (!hold_present) {
         const uint64_t acquire_begin_ns = wgpu_monotonic_ns();
         wgpuSurfaceGetCurrentTexture(s_surface, &st);
+        /*
+         * SPURIOUS-OCCLUSION DEFENSE. The vendored wgpu-native v29 checks
+         * NSWindow.occlusionState BEFORE nextDrawable and refuses the
+         * acquire whenever the visible bit is clear — and macOS leaves
+         * that bit clear or flapping on visible, foreground,
+         * terminal-launched windows (upstream regression family around
+         * wgpu PR #9141; wgpu-native #590). Measured impact here: 23-55%
+         * of all rendered frames refused per play session, each one a
+         * repeat on screen — the dominant visible defect of the whole
+         * 2026-08-17 investigation. When our own platform state says the
+         * window is presentable, treat Occluded as suspect: pump the
+         * event loop so a pending occlusion notification can land (the
+         * documented recovery), re-assert activation once, and retry the
+         * acquire a bounded number of times. Genuinely hidden windows
+         * (platform says non-presentable) keep the old behavior exactly.
+         */
+        {
+            int occl_retries = 0;
+            while (WGPU_COMPAT_SURFACE_OCCLUDED(st.status) &&
+                   platform_sdl_surface_presentable() &&
+                   occl_retries < 4) {
+                s_gpu_occluded_retry_attempts++;
+                if (st.texture != NULL) {
+                    wgpuTextureRelease(st.texture);
+                    st.texture = NULL;
+                }
+                platform_present_occlusion_kick();
+                {
+                    struct timespec req;
+                    req.tv_sec = 0;
+                    req.tv_nsec = 300000; /* 300 us settle */
+                    nanosleep(&req, NULL);
+                }
+                memset(&st, 0, sizeof(st));
+                wgpuSurfaceGetCurrentTexture(s_surface, &st);
+                occl_retries++;
+            }
+            if (occl_retries > 0 &&
+                !WGPU_COMPAT_SURFACE_OCCLUDED(st.status)) {
+                s_gpu_occluded_recovered++;
+            }
+        }
         acquire_block_ns = wgpu_monotonic_ns() - acquire_begin_ns;
         acquire_attempted = true;
         WGPUSurfaceGetCurrentTextureStatus actual_status = st.status;
@@ -3243,6 +3310,25 @@ static void wgpu_end_frame(void) {
          st.status == WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal);
     if (!hold_present && !present_ok) {
         s_gpu_surface_unavailable++;
+        /* Split by status so a refusal storm can never hide inside one
+         * aggregate again (the 2026-08-17 lesson: 44,657 silent drops
+         * across five sessions before anyone looked). */
+        if (WGPU_COMPAT_SURFACE_OCCLUDED(st.status)) {
+            if (platform_sdl_surface_presentable()) {
+                s_gpu_occluded_while_presentable++;
+            } else {
+                s_gpu_occluded_hidden++;
+            }
+        } else if (st.status ==
+                   WGPUSurfaceGetCurrentTextureStatus_Timeout) {
+            s_gpu_unavailable_timeout++;
+        } else if (st.status ==
+                       WGPUSurfaceGetCurrentTextureStatus_Outdated ||
+                   st.status == WGPUSurfaceGetCurrentTextureStatus_Lost) {
+            s_gpu_unavailable_outdated++;
+        } else {
+            s_gpu_unavailable_other++;
+        }
     }
 #if !defined(__EMSCRIPTEN__)
     /* Closed-loop pacing feedback: how long the display made this frame wait

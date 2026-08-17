@@ -942,6 +942,10 @@ static int sdl_should_hide_window(void) {
  * where a human wants to watch the window but still not have it seize the
  * desktop. Native-only — its sole caller is under the same guard, and the
  * browser has no window-activation concept. */
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+static void platform_macos_activate_app(const char *why);
+#endif
+
 static int sdl_automation_surface_requested(void) {
     return g_headlessFrames >= 0 || g_headlessTicks >= 0 ||
            getenv("MDKR64_HIDDEN") != NULL;
@@ -1127,6 +1131,14 @@ int platform_sdl_init(void) {
             return -1;
         }
         g_sdlWindow = s_window;
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+        /* Terminal launches are the documented trigger for macOS never
+         * granting NSWindowOcclusionStateVisible, which the present
+         * library gates every drawable acquire on (see
+         * platform_present_occlusion_visible_bit). Activate at startup so
+         * every launch path behaves like a Finder launch. */
+        platform_macos_activate_app("startup activation for present gate");
+#endif
 #ifdef __APPLE__
         s_metalView = SDL_Metal_CreateView(s_window);
         if (!s_metalView) {
@@ -4130,6 +4142,84 @@ static uint64_t discipline_endpoint_lead_ns(void) {
     }
     return (uint64_t)cached;
 }
+
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+#include <objc/message.h>
+#include <objc/runtime.h>
+/*
+ * Direct NSWindow.occlusionState read, because the app and its present
+ * library MUST NOT disagree silently about visibility again: the vendored
+ * wgpu-native v29 gates every drawable acquire on this bit and returns
+ * Occluded storms when it is clear — measured at 23-55% of all rendered
+ * frames across five play sessions on a visible foreground window (the
+ * upstream regression family around wgpu PR #9141; terminal-launched
+ * apps are documented to miss the bit). Returns 1 visible, 0 not, -1
+ * unknown. NSWindowOcclusionStateVisible == 1 << 1.
+ */
+int platform_present_occlusion_visible_bit(void) {
+    SDL_SysWMinfo info;
+    if (s_window == NULL) {
+        return -1;
+    }
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(s_window, &info) ||
+        info.subsystem != SDL_SYSWM_COCOA || info.info.cocoa.window == NULL) {
+        return -1;
+    }
+    {
+        unsigned long state =
+            ((unsigned long (*)(void *, SEL))objc_msgSend)(
+                (void *)info.info.cocoa.window,
+                sel_registerName("occlusionState"));
+        return (state & (1ul << 1)) != 0ul ? 1 : 0;
+    }
+}
+
+/*
+ * Recovery kick for a spurious Occluded acquire: pump the event loop so a
+ * pending occlusion-state notification can land (the documented recovery
+ * in wgpu-native #590), and on the first spurious event of the session
+ * also raise + activate the app the way a Finder launch would have —
+ * terminal launches are the documented trigger for the bit never being
+ * granted in the first place.
+ */
+/* Activate + raise the app the way a Finder launch would have. NEVER for
+ * automation surfaces: those set SDL_HINT_MAC_BACKGROUND_APP precisely so
+ * a test run cannot steal keyboard focus or switch Spaces. */
+static void platform_macos_activate_app(const char *why) {
+    if (sdl_automation_surface_requested() || s_window == NULL) {
+        return;
+    }
+    SDL_RaiseWindow(s_window);
+    {
+        void *app = ((void *(*)(Class, SEL))objc_msgSend)(
+            objc_getClass("NSApplication"),
+            sel_registerName("sharedApplication"));
+        if (app != NULL) {
+            ((void (*)(void *, SEL, signed char))objc_msgSend)(
+                app, sel_registerName("activateIgnoringOtherApps:"),
+                (signed char)1);
+        }
+    }
+    fprintf(stderr, "[MACOS-ACTIVATE] %s\n", why);
+}
+
+void platform_present_occlusion_kick(void) {
+    static int activated;
+    SDL_PumpEvents();
+    if (!activated) {
+        activated = 1;
+        platform_macos_activate_app(
+            "first spurious occluded acquire: raise + activate");
+    }
+}
+#else
+int platform_present_occlusion_visible_bit(void) {
+    return -1;
+}
+void platform_present_occlusion_kick(void) {
+}
+#endif
 
 static void discipline_note(uint64_t block_ns, int unavailable) {
     uint64_t bin = block_ns / DISCIPLINE_BLOCK_BIN_NS;
