@@ -301,14 +301,49 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
 
 static uint64_t present_grid_time_ns(const MdkrPresentDeadlineClock *clock,
                                      uint64_t index) {
-    uint64_t whole_seconds = index / (uint64_t)clock->rate;
-    uint64_t remainder = index % (uint64_t)clock->rate;
+    uint64_t whole_seconds;
+    uint64_t remainder;
 
+    if (clock->period_override_fp != 0u) {
+        /* Disciplined re-rate: the measured display period, 8.8 fp ns. The
+         * <= 1/256 ns truncation per step is orders of magnitude below the
+         * phase controller's CREEP and is continuously absorbed by it. */
+        if (index > UINT64_MAX / clock->period_override_fp) {
+            return UINT64_MAX;
+        }
+        return clock->origin_ns + ((index * clock->period_override_fp) >> 8);
+    }
+    whole_seconds = index / (uint64_t)clock->rate;
+    remainder = index % (uint64_t)clock->rate;
     if (whole_seconds > (UINT64_MAX - clock->origin_ns) / NS_PER_SECOND) {
         return UINT64_MAX;
     }
     return clock->origin_ns + whole_seconds * NS_PER_SECOND +
            (remainder * NS_PER_SECOND) / (uint64_t)clock->rate;
+}
+
+/* The grid period currently in force, in 8.8 fixed-point nanoseconds. */
+static uint64_t present_grid_period_fp(const MdkrPresentDeadlineClock *clock) {
+    if (clock->period_override_fp != 0u) {
+        return clock->period_override_fp;
+    }
+    if (clock->rate == 0u) {
+        return 0u;
+    }
+    return (NS_PER_SECOND << 8) / (uint64_t)clock->rate;
+}
+
+/* floor(elapsed / period) for the effective grid, overflow-safe for
+ * host-time ranges. Mirrors the legacy exact-rational form when no
+ * override is active so those paths stay bit-for-bit. */
+static uint64_t present_grid_elapsed_intervals(
+    const MdkrPresentDeadlineClock *clock, uint64_t elapsed_ns) {
+    if (clock->period_override_fp != 0u) {
+        return (elapsed_ns << 8) / clock->period_override_fp;
+    }
+    return (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
+           ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
+               NS_PER_SECOND;
 }
 
 int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
@@ -350,11 +385,7 @@ uint64_t mdkr_present_grid_next(MdkrPresentDeadlineClock *clock,
         return present_grid_time_ns(clock, 1u);
     }
     elapsed_ns = now_ns > clock->origin_ns ? now_ns - clock->origin_ns : 0u;
-    /* floor(elapsed * rate / 1e9), overflow-safe for host-time ranges. */
-    elapsed_intervals =
-        (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
-        ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
-            NS_PER_SECOND;
+    elapsed_intervals = present_grid_elapsed_intervals(clock, elapsed_ns);
     {
         uint64_t next = present_grid_time_ns(clock, elapsed_intervals + 1u);
         if (next <= now_ns) {
@@ -377,16 +408,136 @@ void mdkr_present_deadline_commit(MdkrPresentDeadlineClock *clock,
         return;
     }
     elapsed_ns = now_ns > clock->origin_ns ? now_ns - clock->origin_ns : 0u;
-    /* floor(elapsed * rate / 1e9), overflow-safe for host-time ranges. */
-    elapsed_intervals =
-        (elapsed_ns / NS_PER_SECOND) * (uint64_t)clock->rate +
-        ((elapsed_ns % NS_PER_SECOND) * (uint64_t)clock->rate) /
-            NS_PER_SECOND;
+    elapsed_intervals = present_grid_elapsed_intervals(clock, elapsed_ns);
     if (elapsed_intervals >= clock->next_index) {
         clock->next_index = elapsed_intervals + 1u;
     } else {
         clock->next_index++;
     }
+}
+
+void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
+                                    uint64_t block_ns, int unavailable,
+                                    uint64_t now_ns) {
+    uint64_t period_fp;
+    int64_t delta;
+
+    if (clock == NULL || !clock->initialized || clock->rate == 0u) {
+        return;
+    }
+    period_fp = present_grid_period_fp(clock);
+    if (period_fp == 0u) {
+        return;
+    }
+    if (unavailable) {
+        /* The queue overran and dropped an image: the grid is running ahead
+         * of retirement. Back off hard — half a period — and forget the
+         * bound-interval sample chain; the drop broke its continuity. */
+        uint64_t backoff = (period_fp >> 8) / 2u;
+        clock->origin_ns += backoff;
+        clock->slew_total_ns += backoff;
+        clock->last_bound_ns = 0u;
+        clock->rerate_streak = 0u;
+        return;
+    }
+    /* RATE: consecutive display-bound completions sample the display's own
+     * period; sustained deviation re-rates the grid, and a measurement back
+     * inside SNAP_PPM of nominal restores the exact rational grid. */
+    if (block_ns > MDKR_PRESENT_DISCIPLINE_BOUND_MIN_NS) {
+        if (clock->last_bound_ns != 0u && now_ns > clock->last_bound_ns) {
+            uint64_t sample_ns = now_ns - clock->last_bound_ns;
+            if (sample_ns >= UINT64_C(2000000) &&
+                sample_ns <= UINT64_C(50000000)) {
+                uint64_t sample_fp = sample_ns << 8;
+                if (clock->period_ema_fp == 0u) {
+                    clock->period_ema_fp = period_fp;
+                }
+                clock->period_ema_fp +=
+                    ((int64_t)sample_fp - (int64_t)clock->period_ema_fp) >>
+                    MDKR_PRESENT_DISCIPLINE_EMA_SHIFT;
+                {
+                    uint64_t diff = clock->period_ema_fp > period_fp
+                                        ? clock->period_ema_fp - period_fp
+                                        : period_fp - clock->period_ema_fp;
+                    uint64_t ppm = period_fp == 0u
+                                       ? 0u
+                                       : (diff * UINT64_C(1000000)) /
+                                             period_fp;
+                    if (ppm > MDKR_PRESENT_DISCIPLINE_RERATE_PPM) {
+                        clock->rerate_streak++;
+                        if (clock->rerate_streak >=
+                            MDKR_PRESENT_DISCIPLINE_RERATE_CONFIRM) {
+                            uint64_t nominal_fp =
+                                (NS_PER_SECOND << 8) /
+                                (uint64_t)clock->rate;
+                            uint64_t ndiff =
+                                clock->period_ema_fp > nominal_fp
+                                    ? clock->period_ema_fp - nominal_fp
+                                    : nominal_fp - clock->period_ema_fp;
+                            uint64_t nppm =
+                                (ndiff * UINT64_C(1000000)) / nominal_fp;
+                            /* Re-anchor so the new period starts from the
+                             * present instant; the phase controller trims
+                             * the sub-period residue. */
+                            clock->period_override_fp =
+                                nppm <= MDKR_PRESENT_DISCIPLINE_SNAP_PPM
+                                    ? 0u
+                                    : clock->period_ema_fp;
+                            clock->origin_ns = now_ns;
+                            clock->next_index = 1u;
+                            clock->rerate_streak = 0u;
+                        }
+                    } else {
+                        clock->rerate_streak = 0u;
+                    }
+                }
+            }
+        }
+        clock->last_bound_ns = now_ns;
+    } else {
+        clock->last_bound_ns = 0u;
+        clock->rerate_streak = 0u;
+    }
+    /* PHASE: trend early by CREEP; arriving early enough to block past
+     * TARGET pushes the origin later by a clamped fraction of the excess. */
+    delta = -(int64_t)MDKR_PRESENT_DISCIPLINE_CREEP_NS;
+    if (block_ns > MDKR_PRESENT_DISCIPLINE_TARGET_BLOCK_NS) {
+        uint64_t push = (block_ns - MDKR_PRESENT_DISCIPLINE_TARGET_BLOCK_NS)
+                        >> MDKR_PRESENT_DISCIPLINE_GAIN_SHIFT;
+        if (push > MDKR_PRESENT_DISCIPLINE_MAX_SLEW_NS) {
+            push = MDKR_PRESENT_DISCIPLINE_MAX_SLEW_NS;
+        }
+        delta += (int64_t)push;
+    }
+    if (delta < 0) {
+        uint64_t back = (uint64_t)(-delta);
+        if (clock->origin_ns > back) {
+            clock->origin_ns -= back;
+        } else {
+            back = clock->origin_ns;
+            clock->origin_ns = 0u;
+        }
+        clock->slew_total_ns += back;
+    } else if (delta > 0) {
+        clock->origin_ns += (uint64_t)delta;
+        clock->slew_total_ns += (uint64_t)delta;
+    }
+}
+
+uint64_t mdkr_present_deadline_slew_total(
+    const MdkrPresentDeadlineClock *clock) {
+    return clock != NULL ? clock->slew_total_ns : 0u;
+}
+
+uint64_t mdkr_present_deadline_period_ns(
+    const MdkrPresentDeadlineClock *clock) {
+    if (clock == NULL || clock->rate == 0u) {
+        return 0u;
+    }
+    if (clock->period_override_fp != 0u) {
+        return clock->period_override_fp >> 8;
+    }
+    return NS_PER_SECOND / (uint64_t)clock->rate;
 }
 
 int mdkr_pacing_cadence_valid(const char *value) {
