@@ -201,6 +201,16 @@ void platform_present_note_acquire(uint64_t block_ns, int unavailable);
  * mode.
  */
 void platform_present_endpoint_gate(void);
+/*
+ * Spurious-occlusion defense (macOS). The present library gates drawable
+ * acquisition on NSWindow.occlusionState; the visible bit can be absent or
+ * flap on a visible foreground window (wgpu v29 regression family;
+ * terminal launches). visible_bit: 1 visible, 0 not, -1 unknown/other-OS.
+ * kick: pump events so a pending occlusion notification lands, and
+ * raise/activate the app once per session.
+ */
+int  platform_present_occlusion_visible_bit(void);
+void platform_present_occlusion_kick(void);
 
 /*
  * The trimmed squared coefficient of variation used by the present-interval

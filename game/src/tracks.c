@@ -311,7 +311,16 @@ FogData gFogData[4];
 Vec3i gScenePerspectivePos;
 VoidMesh *gVoidMesh;     // 0x10 bytes struct?
 unk8011D478 *D_8011D478; // 0xC bytes struct?
-s8 *D_8011D47C;
+#ifdef NATIVE_PORT
+/* Entry indices reach D_8011D4BA (raised past 128 for the widened lens);
+ * s8 storage truncated them into negative garbage that indexed memory
+ * before the arena (the grey sliver artifacts). One typedef so ROM stays
+ * byte-identical. */
+typedef s16 VoidPairIndex;
+#else
+typedef s8 VoidPairIndex;
+#endif
+VoidPairIndex *D_8011D47C;
 Vertex *gVoidVerts[2];
 Vertex *gVoidCurrVerts;
 s32 D_8011D48C;
@@ -1551,15 +1560,27 @@ void void_init(s32 viewportCount) {
     s32 triLimit;
     u8 *ptr;
 
+#ifdef NATIVE_PORT
+    /* The port's wider render lens (ultrawide guard band + smoothing
+     * margin) puts more geometry edges on the void plane than the ROM's
+     * 75-degree 4:3 lens ever did. Every ROM-era cap in this subsystem
+     * converts overflow into silently missing waterfall/void sheets for
+     * exactly one tick — the dead-center flashing diagnosed frame-by-
+     * frame on 2026-08-17. Double the theoretical worst case (175
+     * entries, ~170 spans) instead of sitting on it. */
+    D_8011D4BA = 351;
+    gVoidPrimLimit = 180;
+#else
     D_8011D4BA = 175;
     gVoidPrimLimit = 45;
+#endif
     // Halve the primitive limit for multiplayer.
     if (viewportCount >= 2) {
         gVoidPrimLimit >>= 1;
     }
 
     sp30 = (D_8011D4BA + 6) * sizeof(unk8011D478);
-    sp2C = D_8011D4BA + 5;
+    sp2C = (D_8011D4BA + 5) * (s32) sizeof(VoidPairIndex);
     vtxLimit = (gVoidPrimLimit + 5) * 4 * sizeof(Vertex);
     triLimit = (gVoidPrimLimit + 5) * 2 * sizeof(Triangle);
 
@@ -1572,7 +1593,7 @@ void void_init(s32 viewportCount) {
         D_8011D478 = (unk8011D478 *) ptr;
         ptr += sp30;
 
-        D_8011D47C = (s8 *) ptr;
+        D_8011D47C = (VoidPairIndex *) ptr;
         // Align by 8
 #ifdef NATIVE_PORT
         /* LP64: the original (s32) cast truncates the 64-bit arena pointer and,
@@ -1666,6 +1687,17 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     D_8011D4A4 = yCameraSins;
     D_8011D4A8 = -(D_8011D4A0 * D_8011D4AC + D_8011D4A4 * D_8011D4B0);
 
+#ifdef NATIVE_PORT
+    /* Sentinels FIRST: they are the whole-band floor/ceiling backstop, and
+     * pushing them after the segment loop meant table saturation silently
+     * dropped them (losing the entire curtain's closure). The entry table
+     * is insertion-sorted, so order does not change any sub-saturation
+     * result. */
+    func_80026C14(300, gCurrentLevelModel->lowerYBounds - 195, 1);
+    func_80026C14(-300, gCurrentLevelModel->lowerYBounds - 195, 1);
+    func_80026C14(300, gCurrentLevelModel->upperYBounds + 195, 0);
+    func_80026C14(-300, gCurrentLevelModel->upperYBounds + 195, 0);
+#endif
     i = 0;
     for (; i < numberOfSegments; i++) {
         bbox = &DKR_PTR(LevelModelSegmentBoundingBox, gCurrentLevelModel->segmentsBoundingBoxes)[segmentIds[i]];
@@ -1682,10 +1714,12 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
         }
     }
 
+#ifndef NATIVE_PORT
     func_80026C14(300, gCurrentLevelModel->lowerYBounds - 195, 1);
     func_80026C14(-300, gCurrentLevelModel->lowerYBounds - 195, 1);
     func_80026C14(300, gCurrentLevelModel->upperYBounds + 195, 0);
     func_80026C14(-300, gCurrentLevelModel->upperYBounds + 195, 0);
+#endif
 
     if (D_8011D49E >= D_8011D4BA || D_8011D49E == 0) {
         return;
@@ -2047,9 +2081,9 @@ void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3) {
      * lockstep with the walker's 88-entry worst case; behaviour below 10
      * planes is bit-identical to retail.
      */
-    f32 sp94[88];
-    f32 sp6C[44];
-    s8 sp60[44];
+    f32 sp94[176];
+    f32 sp6C[88];
+    s8 sp60[88];
 #else
     f32 sp94[20];
     f32 sp6C[10];
@@ -2061,7 +2095,7 @@ void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3) {
     s8 swapByte;
 
 #ifdef NATIVE_PORT
-    if (arg0 >= 44 || arg0 == 0) {
+    if (arg0 >= 88 || arg0 == 0) {
         return;
     }
 #else
