@@ -967,6 +967,8 @@ static unsigned wgpu_backpressure_limit_before_frame(void) {
         : WGPU_FRAME_IN_FLIGHT_MAX;
 }
 
+static void wgpu_report_backpressure_periodic(void);
+
 static void wgpu_track_frame_submission(void) {
     const uint64_t now = wgpu_monotonic_ns();
     if (s_gpu_first_submit_ns == 0u) {
@@ -974,6 +976,7 @@ static void wgpu_track_frame_submission(void) {
     }
     s_gpu_last_submit_ns = now;
     s_gpu_frame_submissions++;
+    wgpu_report_backpressure_periodic();
     s_gpu_frames_in_flight++;
     if (s_gpu_frames_in_flight > s_gpu_frames_in_flight_high_water) {
         s_gpu_frames_in_flight_high_water = s_gpu_frames_in_flight;
@@ -993,7 +996,7 @@ static void wgpu_abandon_in_flight(void) {
     s_gpu_frames_in_flight = 0u;
 }
 
-static void wgpu_report_backpressure(void) {
+static void wgpu_report_backpressure_tagged(const char *tag) {
     uint64_t rate_millihz = 0u;
     if (s_gpu_frame_submissions > 1u &&
         s_gpu_last_submit_ns > s_gpu_first_submit_ns) {
@@ -1004,7 +1007,7 @@ static void wgpu_report_backpressure(void) {
             ? intervals * UINT64_C(1000000000000) / elapsed : 0u;
     }
     fprintf(stderr,
-            "[WGPU-BACKPRESSURE] cap=%u submitted=%llu completed=%llu "
+            "%s cap=%u submitted=%llu completed=%llu "
             "presented=%llu held=%llu unavailable=%llu "
             "inflight=%u highwater=%u waits=%llu polls=%llu skips=%llu "
             "endpointSkips=%llu replaySkips=%llu "
@@ -1013,7 +1016,7 @@ static void wgpu_report_backpressure(void) {
             "occludedvisible=%llu occludedhidden=%llu timeoutst=%llu "
             "outdatedst=%llu otherst=%llu occlretries=%llu "
             "occlrecovered=%llu\n",
-            WGPU_FRAME_IN_FLIGHT_MAX,
+            tag, WGPU_FRAME_IN_FLIGHT_MAX,
             (unsigned long long)s_gpu_frame_submissions,
             (unsigned long long)s_gpu_frame_completions,
             (unsigned long long)s_gpu_surface_presents,
@@ -1038,6 +1041,21 @@ static void wgpu_report_backpressure(void) {
             (unsigned long long)s_gpu_unavailable_other,
             (unsigned long long)s_gpu_occluded_retry_attempts,
             (unsigned long long)s_gpu_occluded_recovered);
+}
+
+static void wgpu_report_backpressure(void) {
+    wgpu_report_backpressure_tagged("[WGPU-BACKPRESSURE]");
+}
+
+/* Cumulative in-flight ledger every ~34 s of 120 Hz presents, distinct tag so
+ * shutdown-row parsers (tests/check_pacing_quality.py) never match a partial.
+ * The 2026-08-17 sessions proved a shutdown-only aggregate cannot localize a
+ * refusal cluster inside an hour of play. */
+static void wgpu_report_backpressure_periodic(void) {
+    if (s_gpu_frame_submissions != 0u &&
+        (s_gpu_frame_submissions & 4095u) == 0u) {
+        wgpu_report_backpressure_tagged("[WGPU-BACKPRESSURE-PERIODIC]");
+    }
 }
 
 static bool wgpu_submit_commands(
@@ -3312,7 +3330,24 @@ static void wgpu_end_frame(void) {
         s_gpu_surface_unavailable++;
         /* Split by status so a refusal storm can never hide inside one
          * aggregate again (the 2026-08-17 lesson: 44,657 silent drops
-         * across five sessions before anyone looked). */
+         * across five sessions before anyone looked). The per-event row
+         * exists because the aggregate could not be localized in time:
+         * 3,924 session refusals with no way to tell whether they clustered
+         * on the defect the player was reporting. Rate-limited so a storm
+         * cannot flood the log: first 64 verbatim, then every 64th. */
+        {
+            static uint64_t s_refusal_rows;
+            s_refusal_rows++;
+            if (s_refusal_rows <= 64u || (s_refusal_rows & 63u) == 0u) {
+                fprintf(stderr,
+                        "[WGPU-REFUSAL] n=%llu frame=%d status=%d "
+                        "presentable=%d t_ns=%llu\n",
+                        (unsigned long long)s_refusal_rows, g_frameCounter,
+                        (int)st.status,
+                        platform_sdl_surface_presentable() ? 1 : 0,
+                        (unsigned long long)wgpu_monotonic_ns());
+            }
+        }
         if (WGPU_COMPAT_SURFACE_OCCLUDED(st.status)) {
             if (platform_sdl_surface_presentable()) {
                 s_gpu_occluded_while_presentable++;

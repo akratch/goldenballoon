@@ -167,22 +167,49 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
  * defect to its stage — a shard frame shows its jump-hold or topology
  * refusal on the row wearing the exact number of the dumped image.
  */
+/* Wall clock for the dt_us capture column. The 2026-08-17 session6 bracket
+ * was nearly undiagnosable because nothing recorded that capture itself had
+ * halved the present rate (120 -> ~64 fps): every row now carries its own
+ * inter-present interval so a polluted bracket is self-evident. */
+static uint64_t capture_wall_ns(void) {
+#if defined(_WIN32)
+    return 0u; /* dt_us reads 0 until a Windows capture rig needs it */
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0u;
+    }
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+#endif
+}
+
 static void capture_frame_row(int endpoint, int drew, uint64_t numerator,
                               uint64_t denominator) {
     static GfxPresentationPacketStats last;
+    static uint64_t last_wall_ns;
     GfxPresentationPacketStats now;
+    uint64_t wall_ns;
+    uint64_t dt_us;
     extern int g_frameCounter;
 
     if (!platform_capture_active()) {
+        last_wall_ns = 0u;
         return;
     }
+    wall_ns = capture_wall_ns();
+    dt_us = (last_wall_ns != 0u && wall_ns > last_wall_ns)
+                ? (wall_ns - last_wall_ns) / 1000u
+                : 0u;
+    last_wall_ns = wall_ns;
     gfx_presentation_packet_get_stats(&now);
     fprintf(stderr,
             "[CAPTURE] frame=%d endpoint=%d drew=%d alpha=%llu/%llu "
+            "dt_us=%llu "
             "dDeform=%llu dJump=%llu dIncompat=%llu dTopo=%llu "
             "dUvConfirm=%llu dUvHold=%llu dPhaseHold=%llu\n",
             g_frameCounter, endpoint, drew,
             (unsigned long long)numerator, (unsigned long long)denominator,
+            (unsigned long long)dt_us,
             (unsigned long long)(now.deformation_overrides -
                                  last.deformation_overrides),
             (unsigned long long)(now.renderer_vertex_jump_holds -

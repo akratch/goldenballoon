@@ -25,6 +25,10 @@
 
 #include "presentation_snapshot.h"
 
+/* The module's F9 capture-pose row names the platform present counter; the
+ * standalone link has no platform_sdl_min.c, so the counter lives here. */
+int g_frameCounter = 0;
+
 static int failures;
 
 static void expect(int condition, const char *message) {

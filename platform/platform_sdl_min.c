@@ -944,6 +944,7 @@ static int sdl_should_hide_window(void) {
  * browser has no window-activation concept. */
 #if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 static void platform_macos_activate_app(const char *why);
+static void platform_macos_install_occlusion_shim(void);
 #endif
 
 static int sdl_automation_surface_requested(void) {
@@ -1138,6 +1139,10 @@ int platform_sdl_init(void) {
          * platform_present_occlusion_visible_bit). Activate at startup so
          * every launch path behaves like a Finder launch. */
         platform_macos_activate_app("startup activation for present gate");
+        /* Activation alone was NOT sufficient: a full live session still
+         * measured 3,924 stale-bit refusals. The shim removes the class of
+         * failure rather than racing its notification. */
+        platform_macos_install_occlusion_shim();
 #endif
 #ifdef __APPLE__
         s_metalView = SDL_Metal_CreateView(s_window);
@@ -1301,6 +1306,7 @@ void platform_sdl_sync_drawable_size(void) {
  * on write. No external deps. */
 static int s_dumpFrom = -2;
 static int s_dumpEvery = 1;
+void platform_frame_dump_drain(void); /* defined with the writer below */
 /* F9 capture toggle: every-present dumps + per-frame [CAPTURE*] rows for as
  * long as the player holds the defect on screen. See the keydown handler. */
 static int s_captureActive;
@@ -1322,6 +1328,12 @@ void platform_capture_toggle(void) {
     fprintf(stderr, "[CAPTURE-%s] frame=%d\n",
             s_captureActive ? "START" : "STOP", g_frameCounter);
     fflush(stderr);
+    if (!s_captureActive) {
+        /* Settle the async writer so the bracket's file set and the
+         * written/dropped ledger are final before anyone opens the dir.
+         * Costs at most DUMP_QUEUE_DEPTH writes, once, at STOP. */
+        platform_frame_dump_drain();
+    }
 }
 
 static void platform_frame_dump_filter_init(void) {
@@ -1363,6 +1375,140 @@ int platform_frame_dump_prepare_due(void) {
         distance = phase == 0 ? 0 : s_dumpEvery - phase;
     }
     return distance <= DUMP_ADMISSION_PREROLL;
+}
+
+/* ---- Asynchronous frame-dump writer -------------------------------------
+ *
+ * Encoding + fwrite of a 1280x720 PPM on the present thread measurably halved
+ * the present rate during an F9 capture (120 -> ~64 fps, session6
+ * 2026-08-17), which both polluted the bracket being captured and drove the
+ * slot projector into its rate-deficit branch. The GPU readback itself stays
+ * synchronous (it needs the frame's own image); only the file write moves to
+ * a worker. The queue never blocks the present thread: when the writer falls
+ * behind, the frame is dropped and counted, and the count is reported at
+ * CAPTURE-STOP so a lossy bracket is self-evident. */
+enum { DUMP_QUEUE_DEPTH = 4 };
+typedef struct DumpJob {
+    unsigned char *pix; /* bottom-up rows, owned by the job */
+    int w, h;
+    char path[1024];
+} DumpJob;
+static DumpJob s_dumpQueue[DUMP_QUEUE_DEPTH];
+static int s_dumpQueueHead, s_dumpQueueLen;
+static SDL_mutex *s_dumpMutex;
+static SDL_cond *s_dumpCond;
+static SDL_Thread *s_dumpThread;
+static int s_dumpThreadStop;
+static uint64_t s_dumpWritten, s_dumpDropped;
+
+static void dump_write_ppm(const DumpJob *job) {
+    FILE *f = mdkr_fopen_utf8(job->path, "wb");
+    if (f == NULL) {
+        return;
+    }
+    fprintf(f, "P6\n%d %d\n255\n", job->w, job->h);
+    {
+        const size_t rowBytes = (size_t)job->w * 3u;
+        int y;
+        for (y = job->h - 1; y >= 0; y--) {
+            fwrite(job->pix + (size_t)y * rowBytes, 1, rowBytes, f);
+        }
+    }
+    fclose(f);
+}
+
+static int dump_writer_main(void *arg) {
+    (void)arg;
+    SDL_LockMutex(s_dumpMutex);
+    for (;;) {
+        while (s_dumpQueueLen == 0 && !s_dumpThreadStop) {
+            SDL_CondWait(s_dumpCond, s_dumpMutex);
+        }
+        if (s_dumpQueueLen == 0 && s_dumpThreadStop) {
+            break;
+        }
+        {
+            DumpJob job = s_dumpQueue[s_dumpQueueHead];
+            s_dumpQueueHead = (s_dumpQueueHead + 1) % DUMP_QUEUE_DEPTH;
+            s_dumpQueueLen--;
+            SDL_CondBroadcast(s_dumpCond); /* wake a space-waiting producer */
+            SDL_UnlockMutex(s_dumpMutex);
+            dump_write_ppm(&job);
+            free(job.pix);
+            SDL_LockMutex(s_dumpMutex);
+            s_dumpWritten++;
+        }
+    }
+    SDL_UnlockMutex(s_dumpMutex);
+    return 0;
+}
+
+/* Returns 1 when the job (and ownership of pix) was accepted. */
+static int dump_writer_enqueue(unsigned char *pix, int w, int h,
+                               const char *path) {
+    if (s_dumpMutex == NULL) {
+        s_dumpMutex = SDL_CreateMutex();
+        s_dumpCond = SDL_CreateCond();
+        if (s_dumpMutex == NULL || s_dumpCond == NULL) {
+            return 0;
+        }
+    }
+    if (s_dumpThread == NULL) {
+        s_dumpThreadStop = 0;
+        s_dumpThread =
+            SDL_CreateThread(dump_writer_main, "mdkr-dump-writer", NULL);
+        if (s_dumpThread == NULL) {
+            return 0;
+        }
+    }
+    SDL_LockMutex(s_dumpMutex);
+    /* Two loss policies, deliberately: an F9 capture must never stall the
+     * present thread (a stall is exactly the pollution the async writer
+     * exists to remove), so it drops and counts. A --dump-frames run is a
+     * fixture producer whose consumers require every frame (byte-identity
+     * compares), so it waits for space instead — still overlapped with the
+     * write, never lossy. */
+    while (s_dumpQueueLen == DUMP_QUEUE_DEPTH && !s_captureActive) {
+        SDL_CondWait(s_dumpCond, s_dumpMutex);
+    }
+    if (s_dumpQueueLen == DUMP_QUEUE_DEPTH) {
+        s_dumpDropped++;
+        SDL_UnlockMutex(s_dumpMutex);
+        return 0;
+    }
+    {
+        DumpJob *job =
+            &s_dumpQueue[(s_dumpQueueHead + s_dumpQueueLen) % DUMP_QUEUE_DEPTH];
+        job->pix = pix;
+        job->w = w;
+        job->h = h;
+        snprintf(job->path, sizeof(job->path), "%s", path);
+        s_dumpQueueLen++;
+    }
+    SDL_CondSignal(s_dumpCond);
+    SDL_UnlockMutex(s_dumpMutex);
+    return 1;
+}
+
+/* Flush queued writes and stop the worker. Called at shutdown (dump-based
+ * tests read the files after exit) and at F9 CAPTURE-STOP (so the summary
+ * row reports a settled ledger). The thread is restarted lazily by the next
+ * enqueue. */
+void platform_frame_dump_drain(void) {
+    if (s_dumpThread == NULL) {
+        return;
+    }
+    SDL_LockMutex(s_dumpMutex);
+    s_dumpThreadStop = 1;
+    SDL_CondBroadcast(s_dumpCond);
+    SDL_UnlockMutex(s_dumpMutex);
+    SDL_WaitThread(s_dumpThread, NULL);
+    s_dumpThread = NULL;
+    s_dumpThreadStop = 0;
+    fprintf(stderr, "[DUMP-WRITER] written=%llu dropped=%llu\n",
+            (unsigned long long)s_dumpWritten,
+            (unsigned long long)s_dumpDropped);
+    fflush(stderr);
 }
 
 static void platform_dump_frame(void) {
@@ -1432,15 +1578,11 @@ static void platform_dump_frame(void) {
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/frame_%04d.ppm", g_dumpFramesDir, g_frameCounter);
-    FILE *f = mdkr_fopen_utf8(path, "wb");
-    if (f) {
-        fprintf(f, "P6\n%d %d\n255\n", w, h);
-        for (int y = h - 1; y >= 0; y--) {
-            fwrite(pix + (size_t) y * rowBytes, 1, rowBytes, f);
-        }
-        fclose(f);
+    if (!dump_writer_enqueue(pix, w, h, path)) {
+        /* Writer saturated or unavailable: drop rather than stall the
+         * present thread (counted, reported at CAPTURE-STOP/drain). */
+        free(pix);
     }
-    free(pix);
 }
 
 /* ---- Content packs (see platform_os.h) ---------------------------------- *
@@ -3348,6 +3490,9 @@ void platform_sdl_present(void) {
 static void platform_present_discipline_trace_shutdown(void);
 
 void platform_sdl_shutdown(void) {
+    /* Dump-based tests read the PPMs after process exit: settle the async
+     * writer before any SDL teardown. No-op when no dumps were queued. */
+    platform_frame_dump_drain();
     platform_present_discipline_trace_shutdown();
 #ifdef MDKR_APP
     /*
@@ -4156,6 +4301,50 @@ static uint64_t discipline_endpoint_lead_ns(void) {
  * apps are documented to miss the bit). Returns 1 visible, 0 not, -1
  * unknown. NSWindowOcclusionStateVisible == 1 << 1.
  */
+/*
+ * In-process shim for -[NSWindow occlusionState]: OR the Visible bit into
+ * every answer. The vendored wgpu-native v29 refuses a drawable whenever the
+ * bit is clear (checked BEFORE nextDrawable — the upstream regression family
+ * around wgpu PR #9141), and live sessions measured the bit going stale on a
+ * visible, focused, actively-rendering window for multi-millisecond stretches:
+ * 3,924 presents were refused across one hour even after startup activation
+ * plus a pump-and-retry defense (which recovered only 3 — the bit stays clear
+ * far longer than any in-frame retry can wait). Every window in this process
+ * is ours and is a game surface, so "always presentable" is the correct
+ * policy; the only cost is drawing while genuinely hidden, which SDL
+ * minimization handling already bounds. MDKR_NO_OCCLUSION_SHIM=1 restores the
+ * stock getter for A/B diagnosis.
+ */
+static unsigned long (*s_occlusionOrigImp)(void *, SEL);
+static unsigned long platform_occlusion_state_shim(void *self, SEL cmd) {
+    unsigned long state =
+        s_occlusionOrigImp != NULL ? s_occlusionOrigImp(self, cmd) : 0ul;
+    return state | (1ul << 1); /* NSWindowOcclusionStateVisible */
+}
+static void platform_macos_install_occlusion_shim(void) {
+    const char *off = getenv("MDKR_NO_OCCLUSION_SHIM");
+    Class cls;
+    SEL sel;
+    Method method;
+    if (off != NULL && off[0] == '1') {
+        fprintf(stderr, "[MACOS-OCCLUSION-SHIM] disabled by env\n");
+        return;
+    }
+    cls = objc_getClass("NSWindow");
+    sel = sel_registerName("occlusionState");
+    method = cls != NULL ? class_getInstanceMethod(cls, sel) : NULL;
+    if (method == NULL) {
+        fprintf(stderr, "[MACOS-OCCLUSION-SHIM] getter not found; not installed\n");
+        return;
+    }
+    s_occlusionOrigImp =
+        (unsigned long (*)(void *, SEL))method_getImplementation(method);
+    method_setImplementation(method, (IMP)platform_occlusion_state_shim);
+    fprintf(stderr,
+            "[MACOS-OCCLUSION-SHIM] installed: occlusionState always reports "
+            "visible to the present library\n");
+}
+
 int platform_present_occlusion_visible_bit(void) {
     SDL_SysWMinfo info;
     if (s_window == NULL) {
