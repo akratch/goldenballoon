@@ -4228,11 +4228,30 @@ static MdkrDisplayRect dkr_draw_region(uint8_t draw_space) {
         case G_MTX_DKR_SPACE_FULLBLEED:
             return layout.fullbleed;
         case G_MTX_DKR_SPACE_WIDE_BG:
+        case G_MTX_DKR_SPACE_WIDE_HUD:
             return layout.presentation;
         case G_MTX_DKR_SPACE_WORLD:
         default:
             return rsp.world_safe_region ? layout.safe : layout.presentation;
     }
+}
+
+static MdkrDisplayRect dkr_screen_coordinate_region(uint8_t draw_space) {
+    const uint32_t width = dkr_output_overlay_active
+        ? gfx_output_dimensions.width
+        : gfx_current_dimensions.width;
+    const uint32_t height = dkr_output_overlay_active
+        ? gfx_output_dimensions.height
+        : gfx_current_dimensions.height;
+
+    if (draw_space == G_MTX_DKR_SPACE_WIDE_HUD) {
+        MdkrDisplayLayout layout = mdkr_display_calculate_layout(
+            width, height, mdkr_display_widescreen_enabled(),
+            mdkr_display_forced_aspect());
+        layout.safe.x = layout.presentation.x;
+        return layout.safe;
+    }
+    return dkr_draw_region(draw_space);
 }
 
 static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
@@ -4263,13 +4282,20 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
          * requires ALL FOUR edges: a split-screen or menu sub-rectangle that
          * happens to touch one bound keeps its authored inset exactly.
          */
-        if (lx0 <= 1.0f && ly0 <= 1.0f &&
+        bool full_surface = lx0 <= 1.0f && ly0 <= 1.0f &&
             lx1 >= dkr_logical_width - 1.0f &&
-            ly1 >= dkr_logical_height - 1.0f) {
+            ly1 >= dkr_logical_height - 1.0f;
+        if (full_surface) {
             lx0 = 0.0f;
             ly0 = 0.0f;
             lx1 = dkr_logical_width;
             ly1 = dkr_logical_height;
+        } else if (draw_space == G_MTX_DKR_SPACE_WIDE_HUD) {
+            /* HUD sub-scissors share the expanded positive coordinate origin;
+             * only the full-surface clip consumes the whole presentation. */
+            region = dkr_screen_coordinate_region(draw_space);
+            scale_x = region.width / dkr_logical_width;
+            scale_y = region.height / dkr_logical_height;
         }
     }
 
@@ -4319,7 +4345,7 @@ static void dkr_remap_viewport_and_scissor(void) {
 
 static void dkr_set_draw_space(uint8_t draw_space) {
     if (draw_space < G_MTX_DKR_SPACE_WORLD ||
-        draw_space > G_MTX_DKR_SPACE_WIDE_BG ||
+        draw_space > G_MTX_DKR_SPACE_WIDE_HUD ||
         rsp.draw_space == draw_space) {
         return;
     }
@@ -4610,7 +4636,7 @@ static void dkr_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
                                bool textured, bool poly_tex,
                                float s0, float t0, float s1, float t1) {
     dkr_prepare_draw_target();
-    MdkrDisplayRect region = dkr_draw_region(rsp.draw_space);
+    MdkrDisplayRect region = dkr_screen_coordinate_region(rsp.draw_space);
     float drawable_width = (float)(dkr_output_overlay_active
         ? gfx_output_dimensions.width
         : gfx_current_dimensions.width);

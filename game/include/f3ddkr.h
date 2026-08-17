@@ -162,6 +162,7 @@
 #define G_MTX_DKR_SPACE_SAFE_2D   2
 #define G_MTX_DKR_SPACE_FULLBLEED 3
 #define G_MTX_DKR_SPACE_WIDE_BG   4
+#define G_MTX_DKR_SPACE_WIDE_HUD  5
 #define G_MW_BILLBOARD 0x02 //0x01 = billboarding enabled, 0x00 = disabled
 #define G_MW_MVPMATRIX 0x0A  //Specifies the index of the mvp matrix. 
 /*

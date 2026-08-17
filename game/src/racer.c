@@ -58,6 +58,7 @@
 #include "gameplay_event_trace.h"
 #include "present_sched.h"
 #include "presentation_snapshot.h"
+#include "steering_compat.h"
 #include <stdio.h>  /* fprintf — loud non-finite-position assert below */
 #include <stdlib.h> /* abort */
 #include <string.h> /* memset — native intent sidecar capture */
@@ -5940,6 +5941,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     f32 velocityDiff;
     f32 traction;
     f32 surfaceTraction;
+    f32 lateralSteeringForce;
     f32 *miscAsset;
     ObjectTransform *attachmentTrans;
     f32 topSpeed;
@@ -5947,6 +5949,7 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     UNUSED s32 pad2;
 
     sp58 = FALSE;
+    lateralSteeringForce = 0.0f;
     // Set the square value of the current forward velocity
     velSquare = racer->velocity * racer->velocity;
     if (racer->velocity < 0.0f) {
@@ -6227,7 +6230,9 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
     // Degrade lateral velocity
     if (gCurrentPlayerIndex != PLAYER_COMPUTER) {
         if (!(racer->velocity > -2.0) && racer->drift_direction == 0 && !racer->raceFinished) {
-            racer->lateral_velocity += (racer->velocity * gCurrentStickX) / miscAsset[racer->characterId]; //!@Delta CONTINUOUS: stick-driven lateral force added straight into the velocity accumulator with no updateRateF, in func_80050A28 (structural twin of update_car_velocity_ground).
+            lateralSteeringForce =
+                (racer->velocity * gCurrentStickX) /
+                miscAsset[racer->characterId];
             if (racer->playerIndex == PLAYER_COMPUTER) {
                 racer->lateral_velocity *= 0.9;
             }
@@ -6241,14 +6246,25 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
         gCurrentCarSteerVel *= tempVel;
         surfaceTraction = ((1.0 - tempVel) * 0.7) + (surfaceTraction * tempVel);
     }
-    // Multiply current velocity by the surface grip levels.
-    racer->lateral_velocity *= surfaceTraction;
     velocityDiff = coss_f(racer->x_rotation_vel);
     if (velocityDiff < 0.0f) {
         velocityDiff = -velocityDiff;
     }
-    // Multiply lateral velocity by pitch
+#ifdef NATIVE_PORT
+    /*
+     * This is one affine retail recurrence per two VI fields. Running the same
+     * recurrence once per field makes a small analog deflection bite twice as
+     * quickly. The compatibility helper uses the exact composed half-step in
+     * Enhanced mode and preserves the original operation order otherwise.
+     */
+    racer->lateral_velocity = mdkr_lateral_traction_step(
+        racer->lateral_velocity, lateralSteeringForce, surfaceTraction,
+        velocityDiff, platform_sim_cadence_is_enhanced());
+#else
+    racer->lateral_velocity += lateralSteeringForce;
+    racer->lateral_velocity *= surfaceTraction;
     racer->lateral_velocity *= velocityDiff;
+#endif
     gCurrentSurfaceType = surfaceType;
     if (stoneWheels != 0) {
         miscAsset = (f32 *) get_misc_asset(ASSET_MISC_32);

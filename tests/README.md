@@ -1275,6 +1275,13 @@ resolved origin into every CMake configure it runs; without it a release lane
 can silently ship a launcher whose Phone Party surface is compiled out.
 `--self-test` proves each assertion still rejects the lane it names.
 
+`tests/check_release_local_only_surface.py` freezes the deferred-feature
+boundary for local-only desktop and Pages releases: native launchers compile
+Online Room out, and the web publisher removes every cloud route and runtime.
+The adjacent `check_browser_local_only_release.py` gate then exercises that
+stripped `publish-web` artifact in Chromium inside the Pages workflow; it is
+workflow-owned because the general suite does not produce that release stage.
+
 `tests/check_party_service_chaos.py` drives the real local Worker headlessly
 through four release-depth scenarios: a restart with live phone leases that
 rebinds each lease to its own seat and rotates the epoch while refusing
@@ -4599,6 +4606,19 @@ python3 tests/check_terry_flight_audio.py --build build-wizpig \
 ```
 
 The gate is registered as `terry_flight_audio` in `tools/run_checks.py`.
+
+## Taj entrance theme -- `tests/check_taj_theme.py`
+
+This real-ROM gate starts a new Adventure, summons Taj by honking near him, and reads
+the native MIDI event trace for entrance sequence 32. All 13 channels that
+contain authored notes must sound, with no channel-disabled rejection inherited
+from the hub's dynamic music mix.
+
+```bash
+python3 tests/check_taj_theme.py --build build --rom baserom.us.v80.z64
+```
+
+The gate is registered as `taj_theme` in `tools/run_checks.py`.
 
 ## Adventure trophy series — `tests/check_trophy_series.py`
 

@@ -176,6 +176,7 @@ s32 viewport_world_region_uses_safe_aperture(s32 viewPortIndex);
 void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx);
 void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
                                f32 authoredTileOffset);
+void mtx_ortho_wide_hud(Gfx **dList, Mtx **mtx);
 /*
  * Native projection handshake.  The query is available to the fixed-tick
  * camera resolver before rendering; the latch is the record render consumes

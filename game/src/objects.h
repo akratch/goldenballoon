@@ -297,6 +297,9 @@ Object *racerfx_get_boost(s32 boostID);
 void allocate_object_pools(void);
 void clear_object_pointers(void);
 void free_all_objects(void);
+#ifdef NATIVE_PORT
+void obj_postrace_door_collision_prepare(s32 targetLevelId);
+#endif
 s32 normalise_time(s32 timer);
 void func_8000CBC0(void);
 s32 func_8000CC20(Object *obj);

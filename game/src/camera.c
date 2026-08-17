@@ -2542,8 +2542,8 @@ void mtx_ortho_fullscreen(Gfx **dList, Mtx **mtx) {
  * Adjacent tiles therefore extend fixed menu art without stretching it or
  * introducing a cover-crop seam at the safe-area boundary.
  */
-void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
-                               f32 authoredTileOffset) {
+static void mtx_ortho_wide_tagged(Gfx **dList, Mtx **mtx,
+                                  f32 authoredOffset, u32 drawSpace) {
     MdkrDisplayLayout layout = mdkr_display_layout();
     MtxF wideOrtho;
     f32 horizontalScale = 1.0f;
@@ -2562,7 +2562,7 @@ void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
         horizontalScale = layout.safe.width / layout.presentation.width;
     }
     wideOrtho[0][0] *= horizontalScale;
-    wideOrtho[3][0] += authoredTileOffset * horizontalScale;
+    wideOrtho[3][0] += authoredOffset * horizontalScale;
 
     widthAndHeight = fb_size();
     height = GET_VIDEO_HEIGHT(widthAndHeight);
@@ -2576,7 +2576,7 @@ void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
     gSPViewport((*dList)++, OS_K0_TO_PHYSICAL(
         &gViewportStack[gActiveCameraID + 5]));
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++),
-                       G_MTX_DKR_INDEX_0, G_MTX_DKR_SPACE_WIDE_BG);
+                       G_MTX_DKR_INDEX_0, drawSpace);
     gModelMatrixStackPos = 0;
     gMtxOriginID = G_MTX_DKR_INDEX_0;
 
@@ -2586,6 +2586,21 @@ void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
         }
     }
     sShadowRegisterGameplayVp = 0;
+}
+
+void mtx_ortho_wide_background(Gfx **dList, Mtx **mtx,
+                               f32 authoredTileOffset) {
+    mtx_ortho_wide_tagged(dList, mtx, authoredTileOffset,
+                          G_MTX_DKR_SPACE_WIDE_BG);
+}
+
+/**
+ * Give the one-player race HUD the full presentation width without changing
+ * its authored vertical scale. HUD elements opt into edge anchoring separately;
+ * centered messages therefore retain their original position and proportions.
+ */
+void mtx_ortho_wide_hud(Gfx **dList, Mtx **mtx) {
+    mtx_ortho_wide_tagged(dList, mtx, 0.0f, G_MTX_DKR_SPACE_WIDE_HUD);
 }
 #endif
 

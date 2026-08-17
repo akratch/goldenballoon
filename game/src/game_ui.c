@@ -16,12 +16,15 @@
 #include "objects.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#include "display_config.h"
 #include "enh_speedometer.h"
+#include "hud_layout.h"
 #include "mdkr_trace.h"
 #include "taj_mod.h"
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include "net/net_roster_runtime.h"
+#include "video_config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -296,9 +299,114 @@ static s32 hud_presentation_viewport_layout(void) {
     return gHUDNumPlayers;
 }
 
+static s32 hud_element_index(const HudElement *element) {
+    uintptr_t address;
+    uintptr_t first;
+    uintptr_t end;
+
+    if (gCurrentHud == NULL || element == NULL) return -1;
+    address = (uintptr_t)element;
+    first = (uintptr_t)&gCurrentHud->entry[0];
+    end = (uintptr_t)&gCurrentHud->entry[HUD_ELEMENT_COUNT];
+    if (address < first || address >= end ||
+        (address - first) % sizeof(HudElement) != 0u) return -1;
+    return (s32)((address - first) / sizeof(HudElement));
+}
+
+static MdkrHudAnchor hud_widescreen_anchor(s32 elementIndex) {
+    switch (elementIndex) {
+        case HUD_RACE_POSITION:
+        case HUD_RACE_POSITION_END:
+        case HUD_WEAPON_DISPLAY:
+        case HUD_BALLOON_COUNT_ICON:
+        case HUD_BALLOON_COUNT_X:
+        case HUD_BALLOON_COUNT_NUMBER_1:
+        case HUD_BALLOON_COUNT_NUMBER_2:
+        case HUD_STOPWATCH_HANDS:
+        case HUD_STOPWATCH:
+        case HUD_TREASURE_METRE:
+        case HUD_SILVER_COIN_TALLY:
+        case HUD_WEAPON_QUANTITY:
+        case HUD_CHALLENGE_PORTRAIT:
+        case HUD_EGG_CHALLENGE_ICON:
+        case HUD_BATTLE_BANANA_ICON:
+        case HUD_BATTLE_BANANA_X:
+        case HUD_BATTLE_BANANA_COUNT_1:
+        case HUD_BATTLE_BANANA_COUNT_2:
+            return MDKR_HUD_ANCHOR_LEFT;
+        case HUD_LAP_COUNT_LABEL:
+        case HUD_LAP_COUNT_CURRENT:
+        case HUD_LAP_COUNT_SEPERATOR:
+        case HUD_LAP_COUNT_TOTAL:
+        case HUD_BANANA_COUNT_ICON_SPIN:
+        case HUD_BANANA_COUNT_NUMBER_1:
+        case HUD_BANANA_COUNT_NUMBER_2:
+        case HUD_RACE_TIME_LABEL:
+        case HUD_RACE_TIME_NUMBER:
+        case HUD_LAP_COUNT_FLAG:
+        case HUD_TIME_TRIAL_LAP_TEXT:
+        case HUD_TIME_TRIAL_LAP_NUMBER:
+        case HUD_BANANA_COUNT_ICON_STATIC:
+        case HUD_BANANA_COUNT_SPARKLE:
+        case HUD_SPEEDOMETRE_ARROW:
+        case HUD_SPEEDOMETRE_0:
+        case HUD_SPEEDOMETRE_30:
+        case HUD_SPEEDOMETRE_60:
+        case HUD_SPEEDOMETRE_90:
+        case HUD_SPEEDOMETRE_120:
+        case HUD_SPEEDOMETRE_150:
+        case HUD_SPEEDOMETRE_BG:
+            return MDKR_HUD_ANCHOR_RIGHT;
+        default:
+            return MDKR_HUD_ANCHOR_CENTER;
+    }
+}
+
+static s32 hud_widescreen_enabled(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_current();
+    return config != NULL &&
+           config->values[MDKR_VIDEO_WIDESCREEN_HUD].number != 0.0f &&
+           mdkr_display_widescreen_enabled() &&
+           hud_presentation_viewport_layout() == VIEWPORT_LAYOUT_1_PLAYER;
+}
+
+static f32 hud_widescreen_offset(MdkrHudAnchor anchor) {
+    MdkrDisplayLayout layout = mdkr_display_layout();
+    return mdkr_hud_horizontal_offset(
+        layout.presentation_aspect, hud_widescreen_enabled(), anchor);
+}
+
 static s32 hud_element_is_texture(const HudElement *element) {
     return (gAssetHudElementIds[element->spriteID] & ASSET_MASK_TEXTURE) ==
            ASSET_MASK_TEXTURE;
+}
+
+static s32 hud_widescreen_reflow_element(
+    const HudElement *identity, const HudElement *source, HudElement *output) {
+    MdkrHudAnchor anchor = hud_widescreen_anchor(hud_element_index(identity));
+    f32 offset = hud_widescreen_offset(anchor);
+
+    if (source == NULL || output == NULL || !hud_widescreen_enabled()) {
+        return FALSE;
+    }
+    if (hud_element_is_texture(source)) {
+        /* RDP rectangles cannot encode a negative upper-left coordinate. The
+         * WIDE_HUD renderer gives them a positive expanded origin, so add one
+         * side margin to the normal signed anchor offset. */
+        offset += hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
+    }
+    if (offset == 0.0f) return FALSE;
+    *output = *source;
+    output->pos.x += offset;
+    return TRUE;
+}
+
+static void hud_mtx_ortho(Gfx **dList, Mtx **mtx) {
+    if (hud_widescreen_enabled()) {
+        mtx_ortho_wide_hud(dList, mtx);
+    } else {
+        mtx_ortho(dList, mtx);
+    }
 }
 
 static void hud_baseline_apply_multiplayer_assets(
@@ -419,9 +527,6 @@ static HudElement hud_initialized_baseline(
 static s32 hud_endpoint_reflow_element(
     const HudElement *source, HudElement *output) {
     const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
-    uintptr_t sourceAddress;
-    uintptr_t firstAddress;
-    uintptr_t endAddress;
     s32 elementIndex;
     s32 outputViewport = -1;
     s32 index;
@@ -429,12 +534,8 @@ static s32 hud_endpoint_reflow_element(
     HudElement endpointBaseline;
     if (roster == NULL || roster->viewport_count == 0u ||
         gCurrentHud == NULL || source == NULL || output == NULL) return FALSE;
-    sourceAddress = (uintptr_t)source;
-    firstAddress = (uintptr_t)&gCurrentHud->entry[0];
-    endAddress = (uintptr_t)&gCurrentHud->entry[HUD_ELEMENT_COUNT];
-    if (sourceAddress < firstAddress || sourceAddress >= endAddress ||
-        (sourceAddress - firstAddress) % sizeof(HudElement) != 0u) return FALSE;
-    elementIndex = (s32)((sourceAddress - firstAddress) / sizeof(HudElement));
+    elementIndex = hud_element_index(source);
+    if (elementIndex < 0) return FALSE;
     /* The minimap and projected reticle already consume endpoint-local screen
      * geometry immediately before drawing. Rebasing them a second time would
      * be presentation feedback, not layout adaptation. */
@@ -465,6 +566,9 @@ static s32 hud_endpoint_reflow_element(
     }
     return TRUE;
 }
+#endif
+#ifndef NATIVE_PORT
+#define hud_mtx_ortho mtx_ortho
 #endif
 s32 gHudController;
 s32 D_80126D14;
@@ -1188,7 +1292,7 @@ void hud_render_player(Gfx **dList, Mtx **mtx, Vertex **vertexList, Object *obj,
 #endif
                 gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
                 hud_magnet_reticle(obj);
-                mtx_ortho(&gHudDL, &gHudMtx);
+                hud_mtx_ortho(&gHudDL, &gHudMtx);
                 gDPSetEnvColor(gHudDL++, 255, 255, 255, 0);
                 countdown = get_race_countdown() >> 1;
                 if (is_in_time_trial()) {
@@ -4243,6 +4347,7 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
     s32 hundredths;
     s32 countingDown;
     s32 timerHideCounter;
+    s32 timerX;
 
     if (!(gHUDNumPlayers != ONE_PLAYER && D_800E2794[gHUDNumPlayers][racer->playerIndex] != 1) ||
         (gHUDNumPlayers > ONE_PLAYER && racer->lap > 0 &&
@@ -4302,11 +4407,19 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
                 }
             }
 
+            timerX = gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.x;
+#ifdef NATIVE_PORT
+            /* hud_timer_render builds transient glyphs, so it cannot recover
+             * HUD_RACE_TIME_NUMBER's right anchor from pointer identity. Its
+             * texture glyphs already receive the positive-canvas center shift
+             * in hud_element_render; add the remaining anchor margin here. */
+            timerX += (s32)hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
+#endif
             if (gNumActivePlayers == 1) {
-                hud_timer_render(gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.x,
+                hud_timer_render(timerX,
                                  gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.y, minutes, seconds, hundredths, FALSE);
             } else {
-                hud_timer_render(gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.x,
+                hud_timer_render(timerX,
                                  gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.y, minutes, seconds, hundredths, TRUE);
             }
             gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
@@ -4536,7 +4649,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
         if (gNumActivePlayers == 2 && gHudToggleSettings[gHUDNumPlayers] == 0) {
             cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
             sprite_opaque(FALSE);
-            mtx_ortho(&gHudDL, &gHudMtx);
+            hud_mtx_ortho(&gHudDL, &gHudMtx);
             hud_battle_portraits(0, updateRate);
             cam_set_sprite_anim_mode(SPRITE_ANIM_NORMALIZED);
             rendermode_reset(&gHudDL);
@@ -4555,7 +4668,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
                     spE4 = gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.x;
                     spE0 = gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.y;
                     sprite_opaque(FALSE);
-                    mtx_ortho(&gHudDL, &gHudMtx);
+                    hud_mtx_ortho(&gHudDL, &gHudMtx);
                     cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
                     gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.x = 225.0f;
                     if (osTvType == OS_TV_TYPE_PAL) {
@@ -4705,7 +4818,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
     }
 
     rendermode_reset(&gHudDL);
-    mtx_ortho(&gHudDL, &gHudMtx);
+    hud_mtx_ortho(&gHudDL, &gHudMtx);
     lvlMdl = get_current_level_model();
     if (lvlMdl == NULL) {
         return;
@@ -4738,6 +4851,9 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
             gMinimapScreenY = -98;
             break;
     }
+#ifdef NATIVE_PORT
+    gMinimapScreenX += (s32)hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
+#endif
 #ifdef NATIVE_PORT
     if (mdkr_net_roster_runtime_active()) {
         static s8 reportedCanonical = -1;
@@ -5020,6 +5136,8 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
     s32 spriteElementId;
 #ifdef NATIVE_PORT
     HudElement endpointHud;
+    HudElement widescreenHud;
+    const HudElement *identityHud = hud;
     if (hud_endpoint_reflow_element(hud, &endpointHud)) {
         static u8 reportedOutput[MAXCONTROLLERS];
         const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
@@ -5042,6 +5160,10 @@ void hud_element_render(Gfx **dList, Mtx **mtx, Vertex **vtxList, HudElement *hu
             reportedOutput[outputIndex] = TRUE;
         }
         hud = &endpointHud;
+    }
+    if (hud_widescreen_reflow_element(
+            identityHud, hud, &widescreenHud)) {
+        hud = &widescreenHud;
     }
 #endif
 
