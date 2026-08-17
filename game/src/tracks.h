@@ -274,7 +274,7 @@ void wave_query_cache_restore(const WaveQueryCache *cache);
 void ttcam_update(s32);
 void trackbg_render_flashy(void);
 void initialise_player_viewport_vars(s32);
-void func_8002A31C(void);
+void func_8002A31C(s32 renderPass);
 void update_colour_cycle(LevelHeader_70 *arg0, s32 updateRate);
 void waves_update(s32);
 void waves_render(Gfx **, Mtx **, s32);

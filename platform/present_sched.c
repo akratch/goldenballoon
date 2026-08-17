@@ -628,6 +628,23 @@ uint64_t present_sched_ticks(void) {
     return host_frame_driver_clock_ticks(&s_driver);
 }
 
+float mdkr_smooth_cull_margin_deg(void) {
+    static float cached = -1.0f;
+    if (cached < 0.0f) {
+        const char *value = getenv("MDKR_SMOOTH_CULL_MARGIN_DEG");
+        cached = 15.0f;
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            double parsed = strtod(value, &end);
+            if (end != NULL && *end == '\0' && parsed >= 0.0 &&
+                parsed <= 45.0) {
+                cached = (float)parsed;
+            }
+        }
+    }
+    return cached;
+}
+
 uint64_t present_sched_units_to_tick(void) {
     uint64_t num = 0;
     uint64_t den = 1;
