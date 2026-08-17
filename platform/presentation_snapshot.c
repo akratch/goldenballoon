@@ -1147,12 +1147,26 @@ static UvScrollAuthoredSpan
     s_uv_authored[PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS];
 static size_t s_uv_authored_count;
 static bool s_uv_authored_wanted;
+/* Diagnostic census for the authored-rate chain (reported in [SNAPSHOT]):
+ * a run whose falls hold at 30 Hz needs to say WHERE the chain broke —
+ * never armed, never registered, refused as overlap, or looked up and
+ * missed. Counters only; no decision reads them. */
+static uint64_t s_uv_authored_arms;
+static uint64_t s_uv_authored_register_calls;
+static uint64_t s_uv_authored_register_overlaps;
+static uint64_t s_uv_authored_register_capacity;
+static uint64_t s_uv_authored_lookup_calls;
+static uint64_t s_uv_authored_lookup_hits;
+static uint64_t s_uv_authored_lookup_ambiguous;
 
 bool presentation_uv_scroll_authored_wanted(void) {
     return s_uv_authored_wanted;
 }
 
 void presentation_uv_scroll_authored_set_wanted(bool wanted) {
+    if (wanted) {
+        s_uv_authored_arms++;
+    }
     s_uv_authored_wanted = wanted;
 }
 
@@ -1167,6 +1181,7 @@ void presentation_uv_scroll_authored_register(
     const unsigned char *last = (const unsigned char *)end;
     size_t index;
 
+    s_uv_authored_register_calls++;
     if (begin == NULL || last == NULL || last <= begin || rate == NULL) {
         return;
     }
@@ -1180,9 +1195,11 @@ void presentation_uv_scroll_authored_register(
          * tick's walk never consumed the previous registration. Both are
          * resolved by refusing this span and letting measurement decide. */
         span->ambiguous = true;
+        s_uv_authored_register_overlaps++;
         return;
     }
     if (s_uv_authored_count >= PRESENTATION_UV_SCROLL_AUTHORED_MAX_SPANS) {
+        s_uv_authored_register_capacity++;
         return;
     }
     s_uv_authored[s_uv_authored_count].first = begin;
@@ -1197,6 +1214,7 @@ bool presentation_uv_scroll_authored_lookup(
     const unsigned char *probe = (const unsigned char *)address;
     size_t index;
 
+    s_uv_authored_lookup_calls++;
     if (probe == NULL || out == NULL) {
         return false;
     }
@@ -1206,9 +1224,11 @@ bool presentation_uv_scroll_authored_lookup(
             continue;
         }
         if (span->ambiguous) {
+            s_uv_authored_lookup_ambiguous++;
             return false;
         }
         *out = span->rate;
+        s_uv_authored_lookup_hits++;
         return true;
     }
     return false;
@@ -1249,7 +1269,10 @@ static void presentation_snapshot_report(void) {
            "camcutnote=%llu camcutconsumed=%llu camcutunconsumed=%llu "
            "camexcluded=%llu "
            "identityinsertfail=%llu "
-           "externalpeak=%llu externalcaptures=%llu\n",
+           "externalpeak=%llu externalcaptures=%llu "
+           "uvauth_arms=%llu uvauth_reg=%llu uvauth_overlap=%llu "
+           "uvauth_cap=%llu uvauth_lookup=%llu uvauth_hit=%llu "
+           "uvauth_ambig=%llu\n",
            (unsigned long long)s_stats.captures,
            (unsigned long long)s_stats.objects_peak,
            (unsigned long long)s_stats.discontinuities,
@@ -1283,7 +1306,14 @@ static void presentation_snapshot_report(void) {
            (unsigned long long)s_stats.camera_excluded_captures,
            (unsigned long long)s_stats.identity_insert_failures,
            (unsigned long long)s_stats.external_peak,
-           (unsigned long long)s_stats.external_captures);
+           (unsigned long long)s_stats.external_captures,
+           (unsigned long long)s_uv_authored_arms,
+           (unsigned long long)s_uv_authored_register_calls,
+           (unsigned long long)s_uv_authored_register_overlaps,
+           (unsigned long long)s_uv_authored_register_capacity,
+           (unsigned long long)s_uv_authored_lookup_calls,
+           (unsigned long long)s_uv_authored_lookup_hits,
+           (unsigned long long)s_uv_authored_lookup_ambiguous);
     fflush(stdout);
 }
 

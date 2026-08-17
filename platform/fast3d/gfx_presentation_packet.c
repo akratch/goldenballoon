@@ -322,16 +322,35 @@ bool gfx_presentation_packet_lookup_uv_scroll(
         s_stats.uv_scroll_authored_confirmations++;
         return true;
     }
+    /*
+     * INTERNAL CORROBORATION FIRST. The record's displacement describes
+     * exactly the [T, T+1] interval the replay is interpolating, and the
+     * capture already required every corner of every unskipped triangle to
+     * state ONE fold-resolved displacement. For a batch of two or more
+     * triangles that cross-triangle agreement is itself the second
+     * observation: the mis-resolved-wrap failure the two-tick rule guards
+     * against cannot move all corners of independent triangles by the same
+     * wrong amount. Demanding a SECOND TICK's agreement on top of that
+     * permanently refused every scroller whose authored rate varies per
+     * tick (eased flows, camera-coupled sheets — measured du sequences like
+     * -83, -72, -60 can never repeat), and held every scroller's first
+     * visible tick; measured on the hub route, that was 46% of all
+     * WORLD_SCROLL verdicts, each one a surface stepping at the tick rate
+     * against a gliding camera. Single-triangle batches keep the two-tick
+     * rule: one triangle's three corners share one driver write, so they
+     * corroborate nothing.
+     */
+    if (current->scroll.triangle_count >= 2u) {
+        *out = current->scroll;
+        s_stats.uv_scroll_confirmations++;
+        s_stats.uv_scroll_solo_accepts++;
+        return true;
+    }
     previous = uv_scroll_find(&s_uv_previous, key);
-    /* Confirmation, not just presence. Authored scroll speed is a level
-     * constant, so a real scroller reproduces the same displacement every
-     * tick. Requiring the previous published tick to agree is what keeps a
-     * single mis-resolved wrap off the screen.
-     *
-     * The refusal is attributed to its clause rather than merely counted, so
-     * a hold rate can be read as what it is: see the field comments on
-     * GfxPresentationPacketStats. The clauses are tested in the order they
-     * are cheapest to explain, and each hold lands in exactly one bucket. */
+    /* One-triangle batches: confirmation, not just presence. The refusal is
+     * attributed to its clause rather than merely counted, so a hold rate
+     * can be read as what it is: see the field comments on
+     * GfxPresentationPacketStats. */
     if (previous == NULL) {
         /* This batch had no published {T-1} record, so there is no second
          * observation to confirm against. Structural, and self-clearing: the

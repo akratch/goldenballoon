@@ -99,35 +99,61 @@ static void check_uv_scroll(void) {
     }
     gfx_presentation_packet_capture_abort();
 
-    /* One published tick is not a confirmation. The first present that draws
-     * a scroller therefore holds its authored phase, and says which clause
-     * held it: nothing has been seen at T-1 yet. The empty tick 10 exists so
-     * the pair IS adjacent -- a non-adjacent pair is refused by the table's
-     * own guard before any clause runs, and would prove nothing about them. */
+    /* A batch of two or more triangles carries its own corroboration: the
+     * capture already required every corner of every triangle to state one
+     * fold-resolved displacement, so its FIRST published tick confirms.
+     * (Before 2026-08-17 this held for a second tick's agreement, and the
+     * hub route measured that rule refusing 46% of WORLD_SCROLL verdicts --
+     * every eased or newly visible scroller stepping at the tick rate.) */
     publish_uv_tick(10u, NULL, NULL, NULL, NULL);
     publish_uv_tick(11u, batch_a, &scroll, NULL, NULL);
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 11u, 2u, &out),
-           "a scroller's first published tick does not confirm");
+    memset(&out, 0, sizeof(out));
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 11u, 2u, &out) &&
+               out.du == 4 && out.dv == 0 && out.moved_u == 0x3u,
+           "a multi-triangle scroller's first published tick confirms");
     memset(&stats, 0, sizeof(stats));
     gfx_presentation_packet_get_stats(&stats);
-    expect(stats.uv_scroll_hold_unpublished == 1u &&
-               stats.uv_scroll_holds == 1u,
-           "the unconfirmed first tick is attributed to the missing {T-1}");
+    expect(stats.uv_scroll_solo_accepts == 1u && stats.uv_scroll_holds == 0u,
+           "the single-tick acceptance is attributed to its own counter");
 
-    /* Two adjacent ticks agreeing is the confirmation, and it is the only
-     * thing that reaches the screen. */
-    publish_uv_tick(12u, batch_a, &scroll, NULL, NULL);
+    /* A single triangle's three corners share one driver write, so they
+     * corroborate nothing: one-triangle batches keep the two-tick rule and
+     * their first tick holds, attributed to the missing {T-1}. */
+    {
+        static const unsigned char batch_c[4] = { 0, 0, 0, 0 };
+        GfxPresentationUvScroll solo_tri = make_scroll(4, 0, 1u, 0x1u, 0u);
+        publish_uv_tick(12u, batch_a, &scroll, batch_c, &solo_tri);
+        expect(!gfx_presentation_packet_lookup_uv_scroll(batch_c, 12u, 1u,
+                                                         &out),
+               "a one-triangle scroller's first published tick does not "
+               "confirm");
+        memset(&stats, 0, sizeof(stats));
+        gfx_presentation_packet_get_stats(&stats);
+        expect(stats.uv_scroll_hold_unpublished == 1u &&
+                   stats.uv_scroll_holds == 1u,
+               "the unconfirmed first tick is attributed to the missing "
+               "{T-1}");
+        /* And its second agreeing tick confirms, exactly as before. */
+        publish_uv_tick(13u, batch_a, &scroll, batch_c, &solo_tri);
+        memset(&out, 0, sizeof(out));
+        expect(gfx_presentation_packet_lookup_uv_scroll(batch_c, 13u, 1u,
+                                                        &out) &&
+                   out.du == 4,
+               "two adjacent ticks agreeing confirm a one-triangle batch");
+    }
+
+    /* The multi-triangle batch keeps confirming on later ticks too. */
     memset(&out, 0, sizeof(out));
-    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 12u, 2u, &out) &&
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 13u, 2u, &out) &&
                out.du == 4 && out.dv == 0 && out.moved_u == 0x3u,
            "two adjacent ticks agreeing confirm the displacement");
 
     /* The published table is tick-exact in both directions: a replay that
      * asks for any tick but the one on the table gets nothing, and that
      * refusal is not a scroller's hold. */
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 11u, 2u, &out) &&
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 12u, 2u, &out) &&
                !gfx_presentation_packet_lookup_uv_scroll(
-                   batch_a, 13u, 2u, &out) &&
+                   batch_a, 14u, 2u, &out) &&
                !gfx_presentation_packet_lookup_uv_scroll(batch_a, 0u, 2u,
                                                          &out),
            "UV scroll refuses any tick but the published current one");
@@ -139,7 +165,7 @@ static void check_uv_scroll(void) {
     {
         const uint64_t before = stats.uv_scroll_holds;
         expect(!gfx_presentation_packet_lookup_uv_scroll(
-                   batch_b, 12u, 2u, &out),
+                   batch_b, 13u, 2u, &out),
                "an unregistered batch is not a scroller");
         memset(&stats, 0, sizeof(stats));
         gfx_presentation_packet_get_stats(&stats);
@@ -149,28 +175,44 @@ static void check_uv_scroll(void) {
 
     /* The triangle count the replay has in hand has to be the count the
      * census measured, or the correspondence is between different geometry. */
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 12u, 3u, &out),
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 13u, 3u, &out),
            "a batch whose triangle count moved cannot confirm");
     memset(&stats, 0, sizeof(stats));
     gfx_presentation_packet_get_stats(&stats);
     expect(stats.uv_scroll_hold_shape == 1u,
            "a topology disagreement is attributed to the shape clause");
 
-    /* Two ticks that disagree about the displacement is the wrap the resolver
-     * could not undo. Holding is the fail-closed answer and the phase clause
-     * is what names it. */
-    publish_uv_tick(13u, batch_a, &faster, NULL, NULL);
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 13u, 2u, &out),
-           "a displacement that changed between ticks holds");
-    memset(&stats, 0, sizeof(stats));
-    gfx_presentation_packet_get_stats(&stats);
-    expect(stats.uv_scroll_hold_phase == 1u,
-           "a displacement disagreement is attributed to the phase clause");
+    /* A multi-triangle batch whose displacement CHANGED between ticks is the
+     * eased/camera-coupled scroller the hub route measured holding forever:
+     * its cross-triangle agreement still corroborates the new value, so the
+     * current tick's displacement reaches the screen. A one-triangle batch
+     * with a changed displacement keeps the fail-closed phase hold. */
+    {
+        static const unsigned char batch_c2[4] = { 0, 0, 0, 0 };
+        GfxPresentationUvScroll solo_was = make_scroll(4, 0, 1u, 0x1u, 0u);
+        GfxPresentationUvScroll solo_now = make_scroll(9, 0, 1u, 0x1u, 0u);
+        publish_uv_tick(14u, batch_a, &scroll, batch_c2, &solo_was);
+        publish_uv_tick(15u, batch_a, &faster, batch_c2, &solo_now);
+        memset(&out, 0, sizeof(out));
+        expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 15u, 2u,
+                                                        &out) &&
+                   out.du == 8,
+               "a multi-triangle displacement change confirms at the new "
+               "value");
+        expect(!gfx_presentation_packet_lookup_uv_scroll(batch_c2, 15u, 1u,
+                                                         &out),
+               "a one-triangle displacement change holds");
+        memset(&stats, 0, sizeof(stats));
+        gfx_presentation_packet_get_stats(&stats);
+        expect(stats.uv_scroll_hold_phase == 1u,
+               "a displacement disagreement is attributed to the phase "
+               "clause");
+    }
 
     /* Two different batches at one address inside a single census: the replay
      * cannot tell them apart, so the key is poisoned rather than letting the
      * later one decide the earlier one's phase. */
-    gfx_presentation_packet_capture_begin(14u);
+    gfx_presentation_packet_capture_begin(16u);
     expect(gfx_presentation_packet_capture_uv_scroll(batch_a, &faster),
            "the first observation of a key in a census registers");
     expect(gfx_presentation_packet_capture_uv_scroll(batch_a, &faster),
@@ -178,8 +220,8 @@ static void check_uv_scroll(void) {
     expect(!gfx_presentation_packet_capture_uv_scroll(batch_a, &wider),
            "a second, different batch at the same address is refused");
     gfx_presentation_packet_freeze();
-    gfx_presentation_packet_publish_uv_scroll(14u);
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 14u, 2u, &out),
+    gfx_presentation_packet_publish_uv_scroll(16u);
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
            "a poisoned key holds even when both ticks agree");
     memset(&stats, 0, sizeof(stats));
     gfx_presentation_packet_get_stats(&stats);
@@ -189,19 +231,19 @@ static void check_uv_scroll(void) {
 
     /* A census that publishes nothing discards its staged table rather than
      * leaving the previous tick to masquerade as this one. */
-    publish_uv_tick(15u, batch_a, &scroll, NULL, NULL);
-    publish_uv_tick(16u, batch_a, &scroll, NULL, NULL);
-    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+    publish_uv_tick(17u, batch_a, &scroll, NULL, NULL);
+    publish_uv_tick(18u, batch_a, &scroll, NULL, NULL);
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 18u, 2u, &out),
            "a fresh adjacent pair confirms again after a poisoned tick");
-    gfx_presentation_packet_capture_begin(17u);
+    gfx_presentation_packet_capture_begin(19u);
     (void)gfx_presentation_packet_capture_uv_scroll(batch_a, &scroll);
     gfx_presentation_packet_freeze();
     gfx_presentation_packet_publish_uv_scroll(0u);
-    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+    expect(gfx_presentation_packet_lookup_uv_scroll(batch_a, 18u, 2u, &out),
            "a discarded census leaves the last published pair in place");
 
     gfx_presentation_packet_invalidate();
-    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 16u, 2u, &out),
+    expect(!gfx_presentation_packet_lookup_uv_scroll(batch_a, 18u, 2u, &out),
            "stage invalidation drops every published UV-scroll table");
     gfx_presentation_packet_shutdown();
 }
@@ -300,14 +342,17 @@ static void check_uv_scroll_authored(void) {
                                                      &out),
            "an authored record on a poisoned key still holds");
 
-    /* And the measured contract is untouched: a measured batch alongside an
-     * authored one still needs its previous tick to agree. */
+    /* And the measured contract still routes beside the authored one: a
+     * multi-triangle measured batch confirms on its own internal
+     * corroboration (2026-08-17 policy) and keeps confirming on an agreeing
+     * pair. */
     gfx_presentation_packet_shutdown();
     publish_uv_tick(29u, NULL, NULL, NULL, NULL);
     publish_uv_tick(30u, measured_batch, &measured, NULL, NULL);
-    expect(!gfx_presentation_packet_lookup_uv_scroll(measured_batch, 30u, 2u,
-                                                     &out),
-           "a measured scroller still does not confirm on one tick");
+    expect(gfx_presentation_packet_lookup_uv_scroll(measured_batch, 30u, 2u,
+                                                    &out) &&
+               !out.authored && out.du == 4,
+           "a multi-triangle measured scroller confirms on one tick");
     publish_uv_tick(31u, measured_batch, &measured, NULL, NULL);
     expect(gfx_presentation_packet_lookup_uv_scroll(measured_batch, 31u, 2u,
                                                     &out) &&

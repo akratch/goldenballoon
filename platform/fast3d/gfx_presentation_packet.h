@@ -210,6 +210,15 @@ typedef struct GfxPresentationPacketStats {
     uint64_t uv_scroll_hold_ambiguous;
     uint64_t uv_scroll_hold_shape;
     uint64_t uv_scroll_hold_phase;
+    /* Confirmations that stood on ONE tick's record: the batch's own
+     * cross-triangle agreement was the corroboration (>= 2 triangles whose
+     * corners all state one fold-resolved displacement), taken where the
+     * two-tick rule would otherwise hold a scroller that just came into
+     * view or whose authored rate genuinely varies per tick (eased flows,
+     * camera-coupled sheets). Field evidence 2026-08-17: the two-tick rule
+     * held 46% of hub WORLD_SCROLL verdicts, every one a surface stepping
+     * at 30 Hz against a gliding camera. */
+    uint64_t uv_scroll_solo_accepts;
     /* Registrations and confirmations that carried an AUTHORED rate rather
      * than a measured difference. A gate that drives a scroller whose rate is
      * not a whole number of units per tick reads these to prove the authored
