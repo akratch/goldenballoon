@@ -514,6 +514,13 @@ void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
     /* RATE: consecutive display-bound completions sample the display's own
      * period; sustained deviation re-rates the grid, and a measurement back
      * inside SNAP_PPM of nominal restores the exact rational grid. */
+    if (block_ns >= MDKR_PRESENT_DISCIPLINE_PUNISH_NS) {
+        /* The display pushed back: every early pull since the last block
+         * was legitimate phase-seeking, not proof of a faster panel. */
+        clock->early_credit_ns = 0u;
+    } else {
+        clock->early_credit_ns += MDKR_PRESENT_DISCIPLINE_CREEP_NS;
+    }
     if (block_ns > MDKR_PRESENT_DISCIPLINE_BOUND_MIN_NS) {
         if (clock->last_bound_ns != 0u && now_ns > clock->last_bound_ns) {
             uint64_t sample_ns = now_ns - clock->last_bound_ns;
@@ -568,6 +575,37 @@ void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
     } else {
         clock->last_bound_ns = 0u;
         clock->rerate_streak = 0u;
+    }
+    /* Staleness: see the CREDIT_PERIODS comment in the header. Two full
+     * periods of unpunished early pull prove the panel outruns the
+     * override; decay a quarter of the gap toward nominal and let honest
+     * blocks re-rate it back if this ever overshoots. */
+    if (clock->period_override_fp != 0u &&
+        clock->early_credit_ns >=
+            (clock->period_override_fp >> 8) *
+                (uint64_t)MDKR_PRESENT_DISCIPLINE_CREDIT_PERIODS) {
+        const uint64_t nominal_fp =
+            (NS_PER_SECOND << 8) / (uint64_t)clock->rate;
+        uint64_t gap = clock->period_override_fp > nominal_fp
+                           ? clock->period_override_fp - nominal_fp
+                           : nominal_fp - clock->period_override_fp;
+        gap >>= 1; /* halve the gap each decay step */
+        {
+            const uint64_t decayed = clock->period_override_fp > nominal_fp
+                                         ? nominal_fp + gap
+                                         : nominal_fp - gap;
+            const uint64_t ppm = (gap * UINT64_C(1000000)) / nominal_fp;
+            clock->rerate_expiries++;
+            clock->early_credit_ns = 0u;
+            clock->period_ema_fp = 0u;
+            if (ppm <= MDKR_PRESENT_DISCIPLINE_SNAP_PPM) {
+                clock->period_override_fp = 0u; /* home: exact grid */
+            } else {
+                clock->period_override_fp = decayed;
+            }
+            clock->origin_ns = now_ns;
+            clock->next_index = 1u;
+        }
     }
     /* PHASE: trend early by CREEP; arriving early enough to block past
      * TARGET pushes the origin later by a clamped fraction of the excess. */
