@@ -510,6 +510,7 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
             vehicleId = (Vehicle)launch->selections[0].vehicle_id;
         }
     }
+    obj_postrace_door_collision_prepare(levelId);
     {
         extern int g_frameCounter;
         if (mdkr_trace_enabled()) {

@@ -82,6 +82,7 @@ def run_case(binary: Path, rom: Path, name: str, variable: str,
         "size=40x40 retail=40x40",
         f"bonus_results_portrait: player=0 identity={identity} "
         "source=native-card",
+        f"{name}_visual: composed player=0",
     )
     for marker in required:
         if marker not in output:

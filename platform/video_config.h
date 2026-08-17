@@ -133,6 +133,8 @@ typedef enum MdkrVideoKey {
     MDKR_A11Y_SPEECH_RATE,
     MDKR_A11Y_SPEECH_VOLUME,
     MDKR_A11Y_SPEECH_RACE,
+    /* Presentation-only HUD anchoring; appended to preserve every prior key. */
+    MDKR_VIDEO_WIDESCREEN_HUD,
     MDKR_VIDEO_KEY_COUNT
 } MdkrVideoKey;
 

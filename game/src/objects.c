@@ -69,6 +69,11 @@
 #include "waves.h"
 #include "weather.h"
 
+#ifdef NATIVE_PORT
+#define POSTRACE_DOOR_COLLISION_DELAY 120
+static s32 sPostraceDoorCollisionTimer;
+#endif
+
 /* Wizpig and Terry presentation actors reuse retail racer object headers so their animated boss
  * meshes load through the original asset path. They are claimed before obj_init_racer(), though, and
  * therefore must never enter code that interprets their uninitialised object tail as Object_Racer
@@ -1696,6 +1701,15 @@ void clear_object_pointers(void) {
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
 }
+
+#ifdef NATIVE_PORT
+void obj_postrace_door_collision_prepare(s32 targetLevelId) {
+    sPostraceDoorCollisionTimer =
+        level_load_target_is_returning_to_source_map(targetLevelId)
+            ? POSTRACE_DOOR_COLLISION_DELAY
+            : 0;
+}
+#endif
 
 /**
  * Clear all objects from memory. Also clear rumble.
@@ -5020,6 +5034,14 @@ void obj_update(s32 updateRate) {
     ModelInstance *modInst;
     s32 sp54;
     Object *obj;
+
+#ifdef NATIVE_PORT
+    if (sPostraceDoorCollisionTimer > updateRate) {
+        sPostraceDoorCollisionTimer -= updateRate;
+    } else {
+        sPostraceDoorCollisionTimer = 0;
+    }
+#endif
 
     func_800245B4(-1);
     gEventStartTimer = gEventCountdown;
@@ -8430,6 +8452,26 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3, f32 *ar
             sp158->interactObj->distance = j;
             sp158->interactObj->obj = obj;
         }
+
+#ifdef NATIVE_PORT
+        /* A post-race hub entry starts the kart inside the race-door alcove
+         * while cutscene 100 drives it back into the world. The original
+         * object-collision stub made that authored path effectively intangible;
+         * the completed mesh collision instead lets the rising door carry the
+         * kart to its ceiling. Keep proximity above live so the door opens, but
+         * do not collide with its mesh during that return window. The exact
+         * source/destination transition relation distinguishes this from the
+         * initial clean-save hub cutscene, where locked doors must remain solid.
+         * An authored-tick timer bounds the exception so it cannot reactivate
+         * when the racer approaches another door later in the visit. */
+        if (sp158->behaviorId == BHV_DOOR &&
+            sp158->door != NULL &&
+            level_header()->race_type == RACETYPE_HUBWORLD &&
+            obj->behaviorId == BHV_RACER && obj->racer != NULL &&
+            sPostraceDoorCollisionTimer > 0) {
+            continue;
+        }
+#endif
 
         if (dist - 25.0f < sp154->unk3C * sp158->trans.scale) {
             spB4[sp160] = sp170;

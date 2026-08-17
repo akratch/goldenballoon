@@ -652,6 +652,14 @@ void alCSPStop(ALCSPlayer *seqp)
 
     alEvtqFlush(&seqp->evtq);
     seqp->state = AL_STOPPED;
+    /*
+     * Channel enable events are asynchronous. DKR commonly posts a reset for
+     * the outgoing track immediately before music_sequence_start() calls this
+     * function, so flushing the queue can otherwise carry that track's
+     * dynamic channel mask into its replacement. The replacement sequence
+     * event reinitialises all other channel state through __initFromBank().
+     */
+    seqp->chanMask = 0xFFFF;
     seqp->nextDelta =
         seqp->frameTime > 0 ? seqp->frameTime : AL_USEC_PER_FRAME;
     seqp->nextEvent.type = AL_SEQP_API_EVT;

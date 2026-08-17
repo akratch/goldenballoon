@@ -31,6 +31,14 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
         "path -- it is NOT how Pure gets 4:3; see Video.Aspect.",
         MDKR_VIDEO_CAT_PRESENTATION
     },
+    [MDKR_VIDEO_WIDESCREEN_HUD] = {
+        "Video.WidescreenHUD", "MDKR_WIDESCREEN_HUD",
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 1.0f,
+        "Widescreen HUD",
+        "Move persistent race information to the edges of a widescreen view. "
+        "Centered alerts and split-screen layouts stay authored.",
+        MDKR_VIDEO_CAT_INTERFACE
+    },
     [MDKR_VIDEO_ASPECT] = {
         "Video.Aspect", "MDKR_ASPECT",
         MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
@@ -850,6 +858,7 @@ static const float s_preset[MDKR_VIDEO_KEY_COUNT][3] = {
     [MDKR_A11Y_SPEECH_RATE]   = {    100.0f,   100.0f,     100.0f },
     [MDKR_A11Y_SPEECH_VOLUME] = {    100.0f,   100.0f,     100.0f },
     [MDKR_A11Y_SPEECH_RACE]   = {      1.0f,     1.0f,       1.0f },
+    [MDKR_VIDEO_WIDESCREEN_HUD] = {    0.0f,     0.0f,       0.0f },
 };
 
 /*

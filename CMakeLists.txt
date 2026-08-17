@@ -278,6 +278,8 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/user_paths.c       # immutable bundle vs mutable user-data policy
     ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c          # UTF-8/long-path OS filesystem boundary
     ${CMAKE_SOURCE_DIR}/platform/pacing_policy.c    # original/enhanced simulation cadence
+    ${CMAKE_SOURCE_DIR}/platform/steering_compat.c  # cadence-neutral car lateral response
+    ${CMAKE_SOURCE_DIR}/platform/hud_layout.c       # presentation-only wide HUD anchoring
     ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # exact fixed-authority accumulator
     ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c # exact host-time -> fixed tick tickets
     ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c  # bounded host edges -> tick pad state

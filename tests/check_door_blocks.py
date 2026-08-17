@@ -80,7 +80,10 @@ def run(binary: str, rom: str, save_dir: str, legacy: bool, verbose: bool):
     env = dict(
         os.environ,
         MDKR_AUDIO="0",          # belt-and-braces; --headless-frames is the guarantee
-        MDKR_SIMULATION_CADENCE="enhanced",
+        # This gate owns object-mesh solidity, not the enhanced steering model.
+        # Retail cadence keeps its calibrated center-line approach independent
+        # of deliberate changes to the optional 60 Hz traction recurrence.
+        MDKR_SIMULATION_CADENCE="original",
         MDKR_SYNTH_FIELDS="1",
         MDKR_TRACE="1",
         MDKR_DRIVE_ROUTE=ROUTE,

@@ -1297,6 +1297,26 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME pacing_policy COMMAND mdkr_pacing_policy_test)
 
+    add_executable(mdkr_steering_compat_test
+        ${CMAKE_SOURCE_DIR}/tests/test_steering_compat.c
+        ${CMAKE_SOURCE_DIR}/platform/steering_compat.c)
+    target_include_directories(mdkr_steering_compat_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_steering_compat_test PRIVATE m)
+    endif()
+    add_test(NAME steering_compat COMMAND mdkr_steering_compat_test)
+
+    add_executable(mdkr_hud_layout_test
+        ${CMAKE_SOURCE_DIR}/tests/test_hud_layout.c
+        ${CMAKE_SOURCE_DIR}/platform/hud_layout.c)
+    target_include_directories(mdkr_hud_layout_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_hud_layout_test PRIVATE m)
+    endif()
+    add_test(NAME hud_layout COMMAND mdkr_hud_layout_test)
+
     add_executable(mdkr_render_scale_test
         ${CMAKE_SOURCE_DIR}/tests/test_render_scale.c)
     target_include_directories(mdkr_render_scale_test PRIVATE

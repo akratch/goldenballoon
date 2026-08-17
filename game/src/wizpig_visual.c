@@ -103,8 +103,9 @@ static ObjectModel *wizpig_model_find(const Object *obj, s32 expectedModel) {
  *
  * A lower bound rather than an exact count: an asset carrying EXTRA animations still plays every
  * clip we ask for correctly, so pinning the count would reject assets that are actually fine. */
-static s32 wizpig_animations_ready(const ObjectModel *model) {
-    return model != NULL && model->numberOfAnimations > WIZPIG_ANIM_JUMP;
+static s32 wizpig_animation_ready(const ObjectModel *model, s32 animationID) {
+    return model != NULL && animationID >= 0 &&
+           model->numberOfAnimations > animationID;
 }
 
 static s32 wizpig_race_schema_ready(const Object *obj, s32 objectID) {
@@ -114,14 +115,16 @@ static s32 wizpig_race_schema_ready(const Object *obj, s32 objectID) {
         return model != NULL && model->numberOfTextures == 17 &&
                model->numberOfVertices == 740 &&
                model->numberOfTriangles == 561 &&
-               model->numberOfBatches == 58 && wizpig_animations_ready(model);
+               model->numberOfBatches == 58 &&
+               wizpig_animation_ready(model, WIZPIG_ANIM_IDLE);
     }
     if (objectID != ASSET_OBJECT_ID_WIZPIGROCKET)
         return FALSE;
     model = wizpig_model_find(obj, ASSET_OBJECTMODEL_WIZPIGROCKET);
     return model != NULL && model->numberOfTextures == 20 &&
            model->numberOfVertices == 887 && model->numberOfTriangles == 654 &&
-           model->numberOfBatches == 68 && wizpig_animations_ready(model);
+           model->numberOfBatches == 68 &&
+           wizpig_animation_ready(model, WIZPIG_ANIM_IDLE);
 }
 
 static s32 wizpig_donor_model_schema_ready(const Object *obj, s32 lod,
@@ -207,7 +210,8 @@ static s32 wizpig_select_schema_ready(const Object *obj) {
     ObjectModel *model = wizpig_model_find(obj, ASSET_OBJECTMODEL_WIZPIG);
     return model != NULL && model->numberOfTextures == 17 &&
            model->numberOfVertices == 740 && model->numberOfTriangles == 561 &&
-           model->numberOfBatches == 58 && wizpig_animations_ready(model);
+           model->numberOfBatches == 58 &&
+           wizpig_animation_ready(model, WIZPIG_ANIM_JUMP);
 }
 
 static s32 wizpig_sign_schema_ready(const Object *obj) {

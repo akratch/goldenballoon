@@ -645,6 +645,8 @@ CHECKS = (
     Check("terry_flight_audio", "check_terry_flight_audio.py", "native",
           "Terry fly-cycle flap cue/cadence, plane-engine suppression, and "
           "ground-engine control"),
+    Check("taj_theme", "check_taj_theme.py", "native",
+          "Taj entrance theme resets the hub mix and plays every authored layer"),
     Check("audio_level_reference", "check_audio_level_reference.py", "native",
           "absolute output level: RMS/crest/true-peak/per-band/per-slice against "
           "the frozen baseline, with injected-gain controls"),
@@ -872,6 +874,10 @@ CHECKS = (
           "every distributable release lane gates on a valid Phone Party "
           "origin and compiles it into the artifact, plus the gate's own "
           "rejection paths", args=("--self-test",)),
+    Check("release_local_only_surface", "check_release_local_only_surface.py",
+          "source",
+          "native previews compile out and Pages publishes no deferred cloud "
+          "surface"),
     Check("binary_size_evidence", "check_binary_size_evidence.py", "source",
           "recorded packaged-artifact sizes for every release lane against "
           "generous checked-in ceilings, with skip-on-absent and a strict "
@@ -922,6 +928,13 @@ CTEST_COMPANION_SCRIPTS = {
     "check_overlay_input_handoff.py",
 }
 
+# This gate consumes publish-web, an artifact made and verified inside the
+# Pages workflow after the ordinary dist/web build. The general runner cannot
+# manufacture that release-only stage, so workflow ownership is explicit here.
+WORKFLOW_COMPANION_SCRIPTS = {
+    "check_browser_local_only_release.py",
+}
+
 
 def cmake_registered_test_scripts() -> set[str]:
     """Script basenames a CMake ``add_test()`` command actually runs."""
@@ -944,7 +957,7 @@ def cmake_registered_test_scripts() -> set[str]:
 def validate_manifest() -> None:
     discovered = {path.name for path in TESTS.glob("check_*.py")}
     registered = ({check.script for check in CHECKS if check.script} |
-                  CTEST_COMPANION_SCRIPTS)
+                  CTEST_COMPANION_SCRIPTS | WORKFLOW_COMPANION_SCRIPTS)
     missing = sorted(discovered - registered)
     stale = sorted(registered - discovered)
     duplicate_names = sorted(

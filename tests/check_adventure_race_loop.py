@@ -137,6 +137,7 @@ MIN_RACE_PATH = 50000.0       # measured ~64000 world units over three laps
 MIN_HUB_BACK_FRAMES = 300     # measured 3158 after the return
 MIN_HUB_BACK_PATH = 500.0     # measured 37433; only needs to prove it moves at all
 MAX_STEP = 40.0               # world units in one frame (same bound as the race check)
+MAX_RETURN_LOBBY_Y = 80.0     # ground is ~5; the broken moving-door launch reached 232
 LOAD_SKIP = 3                 # racer rows to drop after a level load (see race_rows below)
 MIN_DISTINCT_COLOURS = 200    # check_race_drive.py calibration: broken build 59
 MIN_LUMA_SIGMA = 12.0         # check_race_drive.py calibration: broken build 5.9
@@ -437,6 +438,23 @@ def main() -> int:
     # world units between the lobby and the Ancient Lake grid), and comparing across
     # it would read as a teleport.
     race_rows = [r for r in rows if race1[3] + LOAD_SKIP <= r[0] < (lobby2[3] if lobby2 else FRAMES)]
+
+    # Returning from a race uses cutscene 100 to drive the kart out of the
+    # corresponding lobby door. Completed object-mesh collision once let that
+    # moving door carry the kart to the alcove ceiling before dropping it.
+    # Bound the whole return cinematic, not just its eventual landing.
+    return_lobby_rows = [
+        r for r in rows
+        if lobby2 and lobby2[3] < r[0] < (hub2[3] if hub2 else FRAMES)
+    ]
+    if not return_lobby_rows:
+        failures.append("no racer positions were traced during the post-race lobby return")
+    elif max(r[2] for r in return_lobby_rows) > MAX_RETURN_LOBBY_Y:
+        peak = max(return_lobby_rows, key=lambda r: r[2])
+        failures.append(
+            f"post-race lobby return launched the kart to y={peak[2]:.1f} "
+            f"at frame {peak[0]} (maximum {MAX_RETURN_LOBBY_Y:.1f})"
+        )
     # MOTION is asserted on the RACING window only -- the load to the finish -- not
     # on everything before the level changes back. After `fin=1` DKR freezes the
     # race clock and repositions the racer for the results sequence, which produces
