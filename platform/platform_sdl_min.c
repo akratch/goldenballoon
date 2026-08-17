@@ -1005,6 +1005,14 @@ int platform_sdl_init(void) {
         return -1;
     }
     s_sdlReady = 1;
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+    /* Process-global and window-agnostic, so it belongs at the COMMON init:
+     * the adopted-window path (launcher creates the window, engine adopts)
+     * never reaches the engine's window-creation branch, and its probe .app
+     * measured a 100% Occluded refusal storm — a never-activated background
+     * bundle never receives the visible bit at all. */
+    platform_macos_install_occlusion_shim();
+#endif
 
 #ifdef MDKR_APP
     /*
@@ -4322,14 +4330,19 @@ static unsigned long platform_occlusion_state_shim(void *self, SEL cmd) {
     return state | (1ul << 1); /* NSWindowOcclusionStateVisible */
 }
 static void platform_macos_install_occlusion_shim(void) {
+    static int s_installed;
     const char *off = getenv("MDKR_NO_OCCLUSION_SHIM");
     Class cls;
     SEL sel;
     Method method;
+    if (s_installed) {
+        return; /* called from common init AND the engine window branch */
+    }
     if (off != NULL && off[0] == '1') {
         fprintf(stderr, "[MACOS-OCCLUSION-SHIM] disabled by env\n");
         return;
     }
+    s_installed = 1;
     cls = objc_getClass("NSWindow");
     sel = sel_registerName("occlusionState");
     method = cls != NULL ? class_getInstanceMethod(cls, sel) : NULL;
@@ -4343,6 +4356,10 @@ static void platform_macos_install_occlusion_shim(void) {
     fprintf(stderr,
             "[MACOS-OCCLUSION-SHIM] installed: occlusionState always reports "
             "visible to the present library\n");
+}
+
+void platform_present_occlusion_shim_install(void) {
+    platform_macos_install_occlusion_shim();
 }
 
 int platform_present_occlusion_visible_bit(void) {
@@ -4403,6 +4420,8 @@ void platform_present_occlusion_kick(void) {
     }
 }
 #else
+void platform_present_occlusion_shim_install(void) {
+}
 int platform_present_occlusion_visible_bit(void) {
     return -1;
 }

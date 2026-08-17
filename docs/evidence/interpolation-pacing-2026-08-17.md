@@ -392,3 +392,70 @@ Verification: 194/194 units, check_pacing_quality PASS (mode=slot,
 variance 122 ppm, transitions 0), check_arbitrary_presentation_rates PASS
 (byte identity), check_weather_presentation_identity PASS,
 check_gpu_backpressure PASS, live smoke unavailable=0.
+
+## FIFTH WAVE (2026-08-17, four-agent independent review): the amplifier was ours
+
+Per the owner's direction, four independent Fable agents reviewed the
+accumulated evidence — an agnostic pixel-level diagnostician, a 1 Hz code
+tracer, a WebGPU/Metal specialist, and an adversarial reviewer of the whole
+chain. They converged:
+
+**Unified percept model.** The player has been reporting ONE perceptual
+signature — a ~1/second hitch of the high-contrast falls during smooth-
+pursuit panning — produced by DIFFERENT generators across eras: the
+occlusion refusal storm (sessions 1-6, killed by the shim), then session7's
+measured 999.90 +/- 0.06 ms metronomic acquire stall. A doubled frame
+during pursuit displaces the image ~2x the pan step on the retina; the
+falls (texture stddev 66, brightest object, ~30%/frame scroll
+decorrelation) are the worst-case stimulus in the scene. Static camera =
+no pursuit = invisible. Frame dumps are clean BY CONSTRUCTION — it is a
+timeline defect. This is why every content-side fix "changed nothing".
+
+**The amplifier: WGPU_SURFACE_MAX_FRAME_LATENCY 1 == a two-drawable Metal
+pool.** wgpu-hal v29 maps latency N to CAMetalLayer.maximumDrawableCount
+N+1 with allowsNextDrawableTimeout disabled; at 1 that is the legal
+minimum: one drawable on glass (held longer by WindowServer for a
+composited window), one in flight, ZERO slack — any ~1 ms system beat
+costs a full +8.3 ms inside a blocking nextDrawable. The libultraship
+precedent cited for the pin does not hold on Metal (its macOS backend
+runs a default THREE-deep pool via SDL_Renderer; gfx_metal.cpp:698).
+FIXED: latency 2 in gfx_webgpu.c AND app_host.cpp (the depth is a
+property of the configuration and must ride every configure);
+check_app_adopted_pacing expectations updated with the measured
+rationale.
+
+**Session7's generator was probably the measurement rig itself.** The
+session was launched with --dump-frames and no MDKR_DUMP_FROM filter:
+every present of the whole session was synchronously read back and
+written (53,215 PPMs, ~196 GB at ~440 MB/s) — a constant-rate dirty-page
+torrent whose kernel flush cadence is metronomic. Launch protocol fixed:
+user sessions get MDKR_DUMP_FROM=999999999 so dumps exist ONLY inside F9
+brackets. The no-dump control run is the decisive next measurement.
+
+**Third occlusion-storm site found and fixed.** check_app_adopted_pacing
+was failing 100%-refused ("active display session required" — a masking
+message): the LAUNCHER presents through wgpu before engine init, so the
+shim never installed for adopted-window/probe-.app paths. The shim is now
+installed at common SDL init, at launcher init
+(platform_present_occlusion_shim_install), and in the engine window
+branch (idempotent). Gate now PASSES.
+
+**Exonerated by source audit:** SDL3/sdl2-compat pump (nothing ~1000 ms
+gated; session7 provably had no controller open), wgpu-native timers
+(binary links no CoreVideo, no timer machinery), mdkr64's own loops (no
+1 Hz logic), EDR (surface is SDR BGRA8Unorm), aliasing-as-primary (static
+would shimmer too — though see below).
+
+**Remaining ranked follow-ups if any flash survives the pool fix + clean
+launch:** (1) stall-recovery re-spacing — after a >1-slot acquire gap the
+policy currently DROPS the 3/4-alpha present (alpha runs 1.0->0.25->0.5->
+1.0; p99 alpha-delta 503808 ppm, ~530/session), turning each stall into a
+1/2x->2x velocity wobble; re-space or slew instead. (2) Falls-material
+mip/aniso: measured 2.5x pan-vs-static motion-compensated temporal
+residual on the falls (6.5 vs 2.7; rock 1.2) — the continuous
+scintillation component; enable the gated g_pcMipmaps/aniso path for
+track materials and re-measure. (3) CADisplayLink timestamp rate
+reference for the PLL (slew was ~10 ms/s against the ~119.83 Hz panel;
+vblank-derived timestamps respect the no-compositor-noise doctrine).
+(4) Panel-side discriminators: external display / 240 fps slow-mo.
+Analysis artifacts: /tmp/interp-evidence/f9/{png,*.py}.

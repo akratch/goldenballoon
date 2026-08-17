@@ -101,6 +101,11 @@ bool AppHost::init(const char *title, int width, int height) {
         }
         sdlOwned_ = true;
     }
+    // The launcher presents through wgpu before engine init ever runs, and a
+    // background-launched bundle (every probe/automation .app) never receives
+    // the occlusion visible bit at all — measured as a 100% refused-drawable
+    // storm in check_app_adopted_pacing. Idempotent; no-op off macOS.
+    platform_present_occlusion_shim_install();
 
     if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
 #if SDL_VERSION_ATLEAST(2, 0, 14)
@@ -528,17 +533,17 @@ bool AppHost::configureWgpuSurface(int w, int h) {
     cfg.height                             = (uint32_t)h;
     cfg.alphaMode                          = WGPUCompositeAlphaMode_Auto;
     cfg.presentMode                        = WGPUPresentMode_Fifo; // vsync; matches the GL swap interval
-    // One frame in flight, the minimum the backend allows, for the same reason
-    // and at the same documented trade as the engine's pin (see
-    // WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c: latency minimized, CPU
-    // and GPU no longer overlapping). It has to be pinned HERE too rather than
-    // left to the engine's own configure: the launcher presents its UI through
-    // this configuration, and the depth is a property of the configuration, so
-    // any re-configure that does not carry it returns the surface to the
-    // backend's two-deep default.
+    // Same depth as the engine's pin, for the same measured reason (see
+    // WGPU_SURFACE_MAX_FRAME_LATENCY in gfx_webgpu.c: latency 1 meant a
+    // two-drawable Metal pool with zero slack, and a live 120 Hz session
+    // measured a once-per-second full-refresh acquire stall from it). It has
+    // to be pinned HERE too rather than left to the engine's own configure:
+    // the launcher presents its UI through this configuration, and the depth
+    // is a property of the configuration, so any re-configure that does not
+    // carry it silently changes the surface's depth.
     WGPUSurfaceConfigurationExtras latency = {};
     latency.chain.sType                    = (WGPUSType)WGPUSType_SurfaceConfigurationExtras;
-    latency.desiredMaximumFrameLatency     = 1;
+    latency.desiredMaximumFrameLatency     = 2;
     cfg.nextInChain                        = &latency.chain;
     if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_HOST_SURFACE_CONFIGURE)) {
         std::fprintf(stderr,

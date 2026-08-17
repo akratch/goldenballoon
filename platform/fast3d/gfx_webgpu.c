@@ -95,31 +95,34 @@ static enum GfxRenderingStatus s_runtime_status =
  * SWAP-CHAIN DEPTH. wgpu-native defaults desiredMaximumFrameLatency to 2: the
  * acquire for frame N+1 is allowed to return while frame N is still queued for
  * scan-out, which costs one whole refresh of input-to-photon latency -- a frame
- * of lag between the stick and the kart, the one thing a racing game cannot buy
- * back later. 1 is the minimum the backend allows and is what libultraship pins
- * (Fast3dWindow.cpp:1418).
+ * of lag between the stick and the kart.
  *
- * THIS IS A TRADE, NOT A FREE WIN, and the vendored header says so in as many
- * words (webgpu/wgpu.h, WGPUSurfaceConfigurationExtras): "1: Minimize latency
- * (CPU and GPU cannot run in parallel)." Depth 1 means the next acquire cannot
- * return until the previous image is done with, so CPU frame N+1 no longer
- * overlaps GPU frame N. On a CPU-bound frame that is free; on a GPU-bound one
- * it is not, and the two costs serialize.
+ * The pin to 1 was revisited on 2026-08-17 with the measured run its own
+ * comment asked for, and the measurement went against it. On Metal,
+ * latency N becomes CAMetalLayer.maximumDrawableCount = N + 1 (wgpu-hal
+ * v29 surface.rs), so 1 meant a TWO-drawable pool -- the legal minimum,
+ * with allowsNextDrawableTimeout disabled: one image on glass (held longer
+ * by WindowServer for a composited window), one in flight, zero slack. Any
+ * system beat that returns a drawable ~1 ms late costs a whole extra
+ * refresh inside a blocking nextDrawable. A live 120 Hz session measured
+ * exactly that: acquire-side stalls of one full period on a ~1.000 s
+ * metronome (session7, [PRESENT-DISCIPLINE] blockmaxus=21826), each one a
+ * doubled frame -- and during a camera pan a doubled frame is a visible
+ * flash on high-contrast content. The latency argument also cited
+ * libultraship's pin, which does not hold on Metal: its macOS backend goes
+ * through SDL_Renderer on a default-configured layer, i.e. a THREE-deep
+ * pool (gfx_metal.cpp:698); the shipped known-good config is 3.
  *
- * WHAT WE HAVE AND HAVE NOT MEASURED. The 2026-08-08 census
- * (docs/evidence/present-perf-baseline-2026-08-08.md) confirmed the pin
- * configures cleanly and left the pacing distributions unchanged, but every
- * window that session created was reported Occluded by the Metal backend, so
- * those runs presented ZERO frames. The throughput cost of losing CPU/GPU
- * overlap on this workload is therefore UNMEASURED, and it stays on that note's
- * open list until a foreground display session can run the comparison. The pin
- * is taken on the latency argument alone; if a measured run shows it costs
- * frames on a GPU-bound scene, this is the constant to revisit.
+ * 2 (= three drawables) restores the slack that absorbs compositor jitter.
+ * The extra frame of queueing latency only materializes when the queue
+ * actually runs ahead, which the closed-loop pacer's blocking acquire
+ * bounds; the endpoint-lead machinery, not pool starvation, is the tool
+ * for input latency.
  *
  * Native only. The browser present is rAF-driven and the canvas swap chain is
  * the user agent's to size; emdawnwebgpu has no extras chain to hang this on.
  */
-#define WGPU_SURFACE_MAX_FRAME_LATENCY 1u
+#define WGPU_SURFACE_MAX_FRAME_LATENCY 2u
 static unsigned s_surface_recovery_attempts = 0;
 static bool s_native_recovery_attempted = false;
 static bool s_callback_recovery_pending = false;

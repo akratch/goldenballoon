@@ -211,6 +211,11 @@ void platform_present_endpoint_gate(void);
  */
 int  platform_present_occlusion_visible_bit(void);
 void platform_present_occlusion_kick(void);
+/* Install the process-global NSWindow.occlusionState shim (macOS; no-op
+ * elsewhere). Idempotent. The app shell must call it after ITS SDL_Init:
+ * the launcher presents through wgpu before engine init runs, and a
+ * background-launched bundle otherwise storms 100% Occluded. */
+void platform_present_occlusion_shim_install(void);
 
 /*
  * The trimmed squared coefficient of variation used by the present-interval

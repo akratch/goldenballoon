@@ -392,11 +392,14 @@ def validate_present_mode(backend: Backend, requested: str,
             raise RuntimeError(
                 f"{backend.label}/{requested}: WebGPU resolved a present mode "
                 f"that is neither mailbox nor FIFO: {details}")
-        # Swap-chain depth is part of the same configuration and is the half of
-        # it a player feels rather than sees: every extra queued image is a
-        # refresh of lag between the stick and the kart. It must be the
-        # backend's minimum on every configure, because a re-configure that
-        # drops the extras chain silently restores the two-deep default.
+        # Swap-chain depth is part of the same configuration. Latency 2 (a
+        # three-drawable Metal pool) is the measured choice, not the minimum:
+        # the 2026-08-17 live sessions proved latency 1's two-drawable pool
+        # has zero slack, converting ~1 ms of compositor jitter into a full
+        # extra refresh inside a blocking nextDrawable once per second
+        # (docs/evidence/interpolation-pacing-2026-08-17.md). It must be
+        # carried on every configure, because a re-configure that drops the
+        # extras chain silently changes the depth.
         #
         # TWO SEPARATE WITNESSES, DELIBERATELY. This [PRESENT-MODE] row is the
         # ENGINE's configure and nothing else — the row is emitted by the
@@ -405,11 +408,11 @@ def validate_present_mode(backend: Backend, requested: str,
         # no such row; asserting only here would check the engine twice while
         # reading as if it covered both. The adopted window reports itself on
         # [SURFACE-CONFIG] and is asserted below.
-        if row.get("frameLatency") != "1":
+        if row.get("frameLatency") != "2":
             raise RuntimeError(
                 f"{backend.label}/{requested}: the engine configured the "
                 f"surface with frameLatency={row.get('frameLatency')}, "
-                f"expected the pinned minimum 1: {details}")
+                f"expected the measured pin 2: {details}")
         shell_rows = [shell for shell in text_rows(output, "SURFACE-CONFIG")
                       if shell.get("owner") == "app-shell"]
         if not shell_rows:
@@ -418,14 +421,14 @@ def validate_present_mode(backend: Backend, requested: str,
                 "configured no surface — expected at least one "
                 "[SURFACE-CONFIG] owner=app-shell row")
         for shell in shell_rows:
-            if shell.get("frameLatency") != "1":
+            if shell.get("frameLatency") != "2":
                 shell_details = " ".join(
                     f"{key}={value}" for key, value in shell.items())
                 raise RuntimeError(
                     f"{backend.label}/{requested}: the app shell configured "
                     f"the adopted surface with "
                     f"frameLatency={shell.get('frameLatency')}, expected the "
-                    f"pinned minimum 1: {shell_details}")
+                    f"measured pin 2: {shell_details}")
 
 
 def run_policy(binary: Path, rom: Path, backend: Backend, policy: str,
