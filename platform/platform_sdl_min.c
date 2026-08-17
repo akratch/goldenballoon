@@ -3297,7 +3297,10 @@ void platform_sdl_present(void) {
      * (WGPU_COMPAT_PRESENT) inside gfx_end_frame. Nothing to do. */
 }
 
+static void platform_present_discipline_trace_shutdown(void);
+
 void platform_sdl_shutdown(void) {
+    platform_present_discipline_trace_shutdown();
 #ifdef MDKR_APP
     /*
      * An adopted window belongs to the app shell, which is still running (it
@@ -4023,6 +4026,99 @@ static MdkrPresentDeadlineClock s_shedDeadline;
 #endif
 static bool s_shedDeadlineReady;
 static bool s_presentLastHeld;
+/*
+ * Closed-loop discipline for the native WebGPU display policy. When armed,
+ * the software deadline above stops being open-loop: every present's
+ * surface-acquire observation (platform_present_note_acquire) phase/rate
+ * disciplines the grid onto the display's real retirement cadence, and
+ * present_sched projects the interpolation phase by slot prediction
+ * (platform_present_slot_alpha_active). Everything here is inert for GL,
+ * browser, synthetic, margin, capped, tearing and latest-image runs.
+ */
+static bool s_presentDiscipline;
+static bool s_disciplineEverActive;
+static bool present_pace_quantum_strict_forced(void);
+#define DISCIPLINE_BLOCK_BINS 256u
+#define DISCIPLINE_BLOCK_BIN_NS UINT64_C(100000) /* 100 us */
+static uint64_t s_disciplineBlockHist[DISCIPLINE_BLOCK_BINS];
+static uint64_t s_disciplineBlockSamples;
+static uint64_t s_disciplineBlockMaxNs;
+static uint64_t s_disciplineUnavailable;
+static uint64_t s_disciplineLeads;
+static uint64_t s_disciplineLeadMissTotalNs;
+static uint64_t s_disciplineLeadMissMaxNs;
+
+static void discipline_note(uint64_t block_ns, int unavailable) {
+    uint64_t bin = block_ns / DISCIPLINE_BLOCK_BIN_NS;
+    if (bin >= DISCIPLINE_BLOCK_BINS) {
+        bin = DISCIPLINE_BLOCK_BINS - 1u;
+    }
+    s_disciplineBlockHist[bin]++;
+    s_disciplineBlockSamples++;
+    if (block_ns > s_disciplineBlockMaxNs) {
+        s_disciplineBlockMaxNs = block_ns;
+    }
+    if (unavailable) {
+        s_disciplineUnavailable++;
+    }
+}
+
+static uint64_t discipline_block_percentile_us(unsigned permille) {
+    uint64_t want;
+    uint64_t seen = 0u;
+    unsigned bin;
+    if (s_disciplineBlockSamples == 0u) {
+        return 0u;
+    }
+    want = (s_disciplineBlockSamples * permille + 999u) / 1000u;
+    for (bin = 0u; bin < DISCIPLINE_BLOCK_BINS; bin++) {
+        seen += s_disciplineBlockHist[bin];
+        if (seen >= want) {
+            return ((uint64_t)bin + 1u) * DISCIPLINE_BLOCK_BIN_NS / 1000u;
+        }
+    }
+    return DISCIPLINE_BLOCK_BINS * DISCIPLINE_BLOCK_BIN_NS / 1000u;
+}
+
+static void discipline_reset(void) {
+    s_presentDiscipline = false;
+    memset(s_disciplineBlockHist, 0, sizeof(s_disciplineBlockHist));
+    s_disciplineBlockSamples = 0u;
+    s_disciplineBlockMaxNs = 0u;
+    s_disciplineUnavailable = 0u;
+    s_disciplineLeads = 0u;
+    s_disciplineLeadMissTotalNs = 0u;
+    s_disciplineLeadMissMaxNs = 0u;
+}
+
+static void platform_present_discipline_trace_shutdown(void) {
+    if (!s_disciplineEverActive) {
+        return;
+    }
+    fprintf(stderr,
+            "[PRESENT-DISCIPLINE] active=%d samples=%llu blockp50us=%llu "
+            "blockp95us=%llu blockmaxus=%llu unavailable=%llu "
+            "slewtotalus=%llu periodns=%llu leads=%llu leadmissmeanus=%llu "
+            "leadmissmaxus=%llu\n",
+            s_presentDiscipline ? 1 : 0,
+            (unsigned long long)s_disciplineBlockSamples,
+            (unsigned long long)discipline_block_percentile_us(500u),
+            (unsigned long long)discipline_block_percentile_us(950u),
+            (unsigned long long)(s_disciplineBlockMaxNs / 1000u),
+            (unsigned long long)s_disciplineUnavailable,
+            (unsigned long long)(
+                mdkr_present_deadline_slew_total(&s_presentDeadline) /
+                1000u),
+            (unsigned long long)mdkr_present_deadline_period_ns(
+                &s_presentDeadline),
+            (unsigned long long)s_disciplineLeads,
+            (unsigned long long)(s_disciplineLeads != 0u
+                                     ? s_disciplineLeadMissTotalNs /
+                                           s_disciplineLeads / 1000u
+                                     : 0u),
+            (unsigned long long)(s_disciplineLeadMissMaxNs / 1000u));
+    fflush(stderr);
+}
 
 /*
  * MDKR_TEST_DISPLAY_RATE_SWITCH=<hz>@<tick> -- the headless seam for the
@@ -4169,6 +4265,23 @@ static void present_pace_lazy_init(void) {
             s_paceMode == PACE_REALTIME &&
             s_presentEffectiveRate != 0u &&
             mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
+        /*
+         * The deadline alone is open-loop against the host clock; a display
+         * never runs at exactly the reported integer rate and adaptive
+         * panels re-rate live. On a non-tearing blocking FIFO the acquire's
+         * own block time is display feedback, so the grid can be
+         * disciplined onto real retirement and the interpolation phase can
+         * be slot-projected (see platform_present_note_acquire /
+         * platform_present_slot_alpha_active).
+         */
+        s_presentDiscipline =
+            backendDisplayDeadline &&
+            !present_sched_allow_tearing() &&
+            present_sched_present_sync(s_presentDisplayRate) ==
+                MDKR_PRESENT_SYNC_BLOCKING;
+        if (s_presentDiscipline) {
+            s_disciplineEverActive = true;
+        }
 #endif
         s_presentSoftwareDeadline =
             heldFrameDeadline || backendDisplayDeadline;
@@ -4229,17 +4342,32 @@ int platform_present_subloop_fields(void) {
     return s_presentActive;
 }
 
-int platform_present_replay_queue_ahead(void) {
+int platform_present_slot_alpha_active(void) {
 #if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
     present_pace_lazy_init();
-    return s_paceMode == PACE_REALTIME &&
-           s_presentSoftwareDeadline &&
-           s_presentDisplayRate != 0u &&
-           !present_sched_allow_tearing() &&
-           present_sched_present_sync(s_presentDisplayRate) ==
-               MDKR_PRESENT_SYNC_BLOCKING;
+    /* MDKR_PRESENT_QUANTUM_STRICT pins the legacy always-grid projection so
+     * its gate keeps measuring the regime it always did; slot projection
+     * stands aside there and the disciplined grid still supplies the
+     * quantum. */
+    return s_presentDiscipline &&
+           !present_pace_quantum_strict_forced();
 #else
     return 0;
+#endif
+}
+
+void platform_present_note_acquire(uint64_t block_ns, int unavailable) {
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+    if (s_presentActive <= 0 || !s_presentDiscipline ||
+        !s_presentSoftwareDeadline) {
+        return;
+    }
+    mdkr_present_deadline_feedback(&s_presentDeadline, block_ns,
+                                   unavailable, pace_host_ns());
+    discipline_note(block_ns, unavailable);
+#else
+    (void)block_ns;
+    (void)unavailable;
 #endif
 }
 
@@ -4426,6 +4554,7 @@ void platform_present_config_apply(void) {
     s_occludedDeadlineReady = false;
     s_shedDeadlineReady = false;
     s_presentLastHeld = false;
+    discipline_reset();
     mdkr_present_interval_reset(&s_quantumIntervals);
     present_pace_lazy_init();
 
@@ -4534,13 +4663,34 @@ uint64_t platform_present_display_quantum_units(void) {
          * Declining here is what keeps every headless arm byte-identical. */
         return 0u;
     }
-    if (!s_presentActive ||
-        (s_presentSoftwareDeadline &&
-         s_presentKind != MDKR_PRESENT_DISPLAY)) {
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+    if (s_presentDiscipline) {
+        /*
+         * Closed-loop: the deadline grid tracks the display's real
+         * retirement through acquire feedback, so it needs no classifier
+         * testimony -- its quantum is honest by construction. On the
+         * nominal grid the exact rational form below is preserved
+         * bit-for-bit; under a PLL re-rate the quantum follows the
+         * disciplined period instead of the reported integer.
+         */
+        uint64_t period_ns;
+        if (s_presentDisplayRate == 0u) {
+            return 0u;
+        }
+        period_ns = mdkr_present_deadline_period_ns(&s_presentDeadline);
+        if (period_ns != 0u &&
+            period_ns !=
+                UINT64_C(1000000000) / (uint64_t)s_presentEffectiveRate) {
+            return period_ns * (uint64_t)s_fieldHz;
+        }
+        return (uint64_t)s_fieldHz * UINT64_C(1000000000) /
+               (uint64_t)s_presentDisplayRate;
+    }
+#endif
+    if (!s_presentActive || s_presentSoftwareDeadline) {
         /* Original presents one image per tick, and a software cadence is
-         * already the thing spacing presents. A display policy's software
-         * deadline is itself the reported display grid, so it remains a valid
-         * projection source; numeric and display-margin grids are not. */
+         * already the thing spacing presents -- its grid, not the display's,
+         * is what an opportunity lands on. */
         return 0u;
     }
     if (s_presentDisplayRate == 0u || present_sched_allow_tearing()) {
@@ -5595,6 +5745,8 @@ int platform_engine_session_begin(void) {
     s_presentDisplayRate = 0u;
     s_shedDeadlineReady = false;
     s_presentLastHeld = false;
+    discipline_reset();
+    s_disciplineEverActive = false;
     s_displaySwitchState = -1;
     s_displaySwitchRate = 0u;
     s_displaySwitchTick = 0u;

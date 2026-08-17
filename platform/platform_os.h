@@ -145,10 +145,6 @@ int      platform_vi_pace_compensating(void);
 /* Presentation subloop. Returns nonzero when the resolved policy needs host
  * opportunities between authoritative ticks. */
 int      platform_present_subloop_fields(void);
-/* Native WebGPU may queue one paced replay behind the image currently
- * retiring. False for synthetic/uncapped/tearing paths, where reserving the
- * authored endpoint slot remains the safer admission rule. */
-int      platform_present_replay_queue_ahead(void);
 /*
  * Apply a staged Video.FrameLimit / Video.MotionSmoothing / Video.AllowTearing
  * change as one ordered step. Registered as the MDKR_VIDEO_APPLY_PRESENTATION
@@ -165,13 +161,16 @@ unsigned platform_present_display_rate(void);
  * One presentation-grid interval in clock units (one source field == 1e9), or
  * 0 when this run's presents are NOT quantized to the display's own refresh.
  *
- * Nonzero means presentation follows the display's reported refresh -- either
- * through its vblank queue or native WebGPU's matching absolute deadline --
- * without tearing. Under those conditions one opportunity is one refresh, so
- * the interpolation phase can be projected onto that grid instead of read off
- * a jittery wake (mdkr_present_quantize_phase). Other software cadences return
- * 0 and the measured phase stands, which keeps synthetic, numeric-capped,
- * display-margin, uncapped, browser and original runs bit-for-bit as they were.
+ * Nonzero means one opportunity is one refresh, on one of two grounds:
+ * a blocking vblank queue whose measured intervals the classifier accepts as
+ * fixed (the legacy projection), or the CLOSED-LOOP native WebGPU display
+ * deadline, whose grid is disciplined onto real surface retirement by
+ * acquire feedback and therefore needs no classifier testimony. The
+ * interpolation phase is then projected onto that grid instead of read off
+ * a jittery wake (mdkr_present_quantize_phase / mdkr_present_slot_phase).
+ * Other software cadences return 0 and the measured phase stands, which
+ * keeps synthetic, numeric-capped, display-margin, uncapped, browser and
+ * original runs bit-for-bit as they were.
  *
  * The refresh underneath this is re-derived live (see the display-changed
  * handler); the latched POLICY is not.

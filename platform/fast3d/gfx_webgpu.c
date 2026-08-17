@@ -947,11 +947,9 @@ static bool wgpu_backpressure_check_below(
 }
 
 static unsigned wgpu_backpressure_limit_before_frame(void) {
-    if (!gfx_dkr_replay_pass_active() ||
-        platform_present_replay_queue_ahead()) {
-        return WGPU_FRAME_IN_FLIGHT_MAX;
-    }
-    return WGPU_FRAME_IN_FLIGHT_MAX - 1u;
+    return gfx_dkr_replay_pass_active()
+        ? WGPU_FRAME_IN_FLIGHT_MAX - 1u
+        : WGPU_FRAME_IN_FLIGHT_MAX;
 }
 
 static void wgpu_track_frame_submission(void) {
@@ -1936,10 +1934,8 @@ static bool wgpu_start_frame(void) {
             wgpu_backpressure_limit_before_frame(), true,
             runtime_admission)) {
         /* Return without opening an encoder so the scheduler stays responsive.
-         * Unpaced replays reserve one slot for the next authored endpoint.
-         * A native replay already spaced on a blocking display policy may use
-         * that slot to prepare the next refresh; authored frames may always use
-         * both slots, and neither path blocks here. */
+         * Replays reserve one slot for the next authored endpoint; authored
+         * frames may use both slots but never block for either one. */
         if (replay) {
             s_gpu_replay_admission_skips++;
         } else {
@@ -3196,8 +3192,13 @@ static void wgpu_end_frame(void) {
      * suboptimal acquire during a resize into a fatal reload panel.
      */
     bool surface_reconfigure_pending = false;
+    uint64_t acquire_block_ns = 0u;
+    bool acquire_attempted = false;
     if (!hold_present) {
+        const uint64_t acquire_begin_ns = wgpu_monotonic_ns();
         wgpuSurfaceGetCurrentTexture(s_surface, &st);
+        acquire_block_ns = wgpu_monotonic_ns() - acquire_begin_ns;
+        acquire_attempted = true;
         WGPUSurfaceGetCurrentTextureStatus actual_status = st.status;
         WGPUSurfaceGetCurrentTextureStatus injected_status = st.status;
         if (gfx_webgpu_fault_hit(GFX_WEBGPU_FAULT_SURFACE_SUBOPTIMAL)) {
@@ -3243,6 +3244,28 @@ static void wgpu_end_frame(void) {
     if (!hold_present && !present_ok) {
         s_gpu_surface_unavailable++;
     }
+#if !defined(__EMSCRIPTEN__)
+    /* Closed-loop pacing feedback: how long the display made this frame wait
+     * for a drawable, or that it refused one outright. An occluded/lost
+     * surface is a session condition, not cadence evidence, so it does not
+     * feed the loop. No-op outside discipline mode. */
+    if (acquire_attempted) {
+        if (present_ok) {
+            platform_present_note_acquire(acquire_block_ns, 0);
+        } else if ((st.status ==
+                        WGPUSurfaceGetCurrentTextureStatus_Timeout ||
+                    st.status ==
+                        WGPUSurfaceGetCurrentTextureStatus_Outdated) &&
+                   platform_sdl_surface_presentable()) {
+            /* A presentable window refusing a drawable is a queue overrun;
+             * a hidden one (Error normalized to Timeout above) is not. */
+            platform_present_note_acquire(acquire_block_ns, 1);
+        }
+    }
+#else
+    (void)acquire_attempted;
+    (void)acquire_block_ns;
+#endif
     if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
         static bool reported_test_surface;
         if (!reported_test_surface) {
