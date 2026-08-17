@@ -2031,17 +2031,44 @@ void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3) {
     s32 noSwap;
     s16 i;
     s16 j;
+#ifdef NATIVE_PORT
+    /*
+     * ROM-era capacity was 10 open planes (sp94[20]/sp6C[10]/sp60[10]) with
+     * a silent bail at arg0 >= 10 — and the measured peak across the hub
+     * tour is EXACTLY 10 (see the walker's sp7C triage note above). On the
+     * original 75-degree 4:3 lens the hub stayed under the bail; the
+     * port's wider guard-band lens crosses it as the camera pans the
+     * lagoon, and every crossing tick skipped this function entirely —
+     * i.e. the ENTIRE void/waterfall curtain vanished for that authored
+     * frame. On screen: the falls flashing out dead-center while turning,
+     * present again the next tick (playtested and frame-diagnosed
+     * 2026-08-17, frames 16141/16142: cascade present -> gone plus a
+     * sliver artifact, two consecutive authored frames). Sized in
+     * lockstep with the walker's 88-entry worst case; behaviour below 10
+     * planes is bit-identical to retail.
+     */
+    f32 sp94[88];
+    f32 sp6C[44];
+    s8 sp60[44];
+#else
     f32 sp94[20];
     f32 sp6C[10];
     s8 sp60[10];
+#endif
     s8 temp;
     s8 temp0;
     s8 temp1;
     s8 swapByte;
 
+#ifdef NATIVE_PORT
+    if (arg0 >= 44 || arg0 == 0) {
+        return;
+    }
+#else
     if (arg0 >= 10 || arg0 == 0) {
         return;
     }
+#endif
 
     for (j = 0, i = 0; i < arg0;) {
         temp = arg1[i];
