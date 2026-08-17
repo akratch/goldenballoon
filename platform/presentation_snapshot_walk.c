@@ -165,17 +165,26 @@ static void capture_cameras(uint64_t authored_tick) {
     gameMode = get_game_mode();
     /* Ordinary menus temporarily borrow camera-shaped matrices and may restore
      * gCameras[] before this boundary, so they deliberately keep their authored
-     * view-projection. A loaded cutscene level is different: render_scene owns
-     * its bank-4 camera for the full pass, even though the cinematic shell runs
-     * it under GAMEMODE_MENU. Its exact viewport IDs are safe to snapshot. */
+     * view-projection. A loaded LEVEL SCENE under the menu shell is different:
+     * render_scene owns its cameras for the full pass, even though the shell
+     * runs it under GAMEMODE_MENU. That covers both cutscene levels (bank-4
+     * cinematic cameras) and the title attract's live race demos, which stay
+     * RACETYPE_DEFAULT (menu.c loads them with player count 0, not the
+     * cutscene sentinel) — restricting this to the cutscene race types left
+     * every attract demo with ZERO captured cameras, so its flyby camera and
+     * terrain stepped at the authored tick rate while the racers blended
+     * (measured as the "characters jitter on the title animation" report,
+     * 2026-08-17). The borrow hazard the gate exists for cannot slip through
+     * the wider test: a borrowing menu never runs camSetProjMtx for a level
+     * scene, so presentation_snapshot_authored_cameras_copy() below returns
+     * zero entries unless a real scene latched a complete, conflict-free
+     * authored record this tick. */
     if (gameMode != GAMEMODE_INGAME && gameMode != GAMEMODE_MENU) {
         return;
     }
     if (gameMode == GAMEMODE_MENU) {
         levelHeader = level_header();
-        if (levelHeader == NULL ||
-            (levelHeader->race_type != RACETYPE_CUTSCENE_1 &&
-             levelHeader->race_type != RACETYPE_CUTSCENE_2)) {
+        if (levelHeader == NULL) {
             return;
         }
     }
