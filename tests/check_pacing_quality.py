@@ -188,6 +188,12 @@ ONE_TICK_PPM = 1_000_000
 # getting worse, not as evidence that it got better.
 ALPHA_VAR_MAX_PPM2 = 30_000_000_000
 DISPLAYED_P99_MAX_US = 40_000
+# A paced native WebGPU display run should not manufacture an immediate replay
+# after each nonblocking FIFO present and then shed it at the one-frame replay
+# admission boundary. Allow startup and host noise, but reject the alternating
+# submit/hold pattern that made continuously scrolling hub waterfalls shimmer
+# on 120 Hz VRR panels (measured 8,833 / 13,646 attempts before the fix).
+REPLAY_SKIP_MAX_FRACTION = 0.05
 
 # The display-change arm's transition. 100 is deliberately BETWEEN the two
 # refresh rates: a 100 Hz cap wants a latest-image queue against a 60 Hz
@@ -671,6 +677,21 @@ def check_alpha_quantum_honest(result: Run) -> list[str]:
         return [f"{label}: [ALPHA-QUANTUM] classifier evidence is not "
                 f"parseable: samples={samples_raw!r} "
                 f"transitions={transitions_raw!r}"]
+    disciplined = "[PRESENT-DISCIPLINE] active=1" in result.output
+    if disciplined:
+        # Closed-loop native pacing supersedes the classifier's testimony:
+        # the deadline grid is disciplined onto real surface retirement, so
+        # the projection is honest by construction and the phase is
+        # slot-projected. The classifier still publishes its own state for
+        # diagnostics, but it no longer decides the mode here.
+        if mode != "slot":
+            return [
+                f"{label}: [PRESENT-DISCIPLINE] active=1 requires the "
+                f"slot-projected phase (mode=slot) but [ALPHA-QUANTUM] "
+                f"reported mode={mode}"]
+        if units == "0":
+            return [f"{label}: [ALPHA-QUANTUM] mode=slot but units=0"]
+        return []
     expected_mode = "free" if timing == "variable" else "grid"
     if mode != expected_mode:
         return [
@@ -683,6 +704,55 @@ def check_alpha_quantum_honest(result: Run) -> list[str]:
     if mode == "grid" and units == "0":
         return [f"{label}: [ALPHA-QUANTUM] mode=grid but units=0"]
     return []
+
+
+def check_slot_quality(result: Run) -> list[str]:
+    """Motion-uniformity bounds for the closed-loop (slot-projected) arm.
+
+    Expressed relative to the run's own gridppm so they hold on any display
+    rate: the ideal alpha step IS one grid quantum, every frame. The pre-fix
+    free-mode measurement on the M3 ProMotion machine was p95 = 1.54 grid
+    (385,024ppm on a 250,000ppm grid) with 15 stalls and full-tick jumps in
+    30 s; the slot projector's residual events are the tick/display beat
+    (one soft repeat) and genuinely missed slots (counted anchors).
+    """
+    label = result.label
+    if "[PRESENT-DISCIPLINE] active=1" not in result.output:
+        return []
+    alpha = result.hist["alpha-delta"]
+    grid = alpha.get("gridppm", 0)
+    failures: list[str] = []
+    if grid <= 0:
+        return [f"{label}: disciplined run reported gridppm={grid}; the "
+                "slot projection publishes its quantum"]
+    displayed = alpha.get("displayed", 0)
+    p95 = alpha.get("p95", -1)
+    stalls = alpha.get("stalls", -1)
+    anchors = result.summary.get("slotanchors", -1)
+    binwidth = alpha.get("binwidth", 0)
+    # Two whole quanta is the environmental floor: a host hiccup or a GPU
+    # admission skip doubles exactly one step, and a busy interactive
+    # session produces a few percent of those. The regressions this bound
+    # exists to catch look different — wake-noise smear lands at NON-grid
+    # values (the pre-fix p95 was 385,024 on a 250,000 grid) and a pacing
+    # break floods the anchor count below. The absolute max is deliberately
+    # not gated: one ~30 ms scheduler stall per run is a fact of hosts.
+    if p95 < 0 or p95 > grid * 2 + binwidth:
+        failures.append(
+            f"{label}: alpha-delta p95={p95}ppm exceeds 2x the "
+            f"{grid}ppm slot quantum — steps are not uniform")
+    stall_budget = max(2, displayed // 500)
+    if stalls < 0 or stalls > stall_budget:
+        failures.append(
+            f"{label}: {stalls} stalled frames exceed the beat budget "
+            f"{stall_budget} — motion is freezing more often than the "
+            "tick/display beat can explain")
+    anchor_budget = max(2, displayed // 500)
+    if anchors < 0 or anchors > anchor_budget:
+        failures.append(
+            f"{label}: {anchors} slot re-anchors exceed {anchor_budget} — "
+            "the pacer is missing display slots")
+    return failures
 
 
 def check_realtime_quality(result: Run) -> list[str]:
@@ -712,6 +782,36 @@ def check_realtime_quality(result: Run) -> list[str]:
             f"{label}: displayed-interval p99 {p99}us exceeds "
             f"{DISPLAYED_P99_MAX_US}us — the slowest 1% of frames are "
             "arriving late enough to be seen")
+    replay_skips = result.pressure.get("replaySkips", -1)
+    interpolated = result.summary.get("interp", -1)
+    # `interp` counts only replays that DREW; a walk that refused lands in
+    # `stale`. Both were offered to admission, so both belong in the census
+    # denominator or the shed fraction overstates the defect.
+    stale = max(result.summary.get("stale", 0), 0)
+    replay_attempts = replay_skips + interpolated + stale
+    if (replay_skips < 0 or interpolated < 0 or replay_attempts <= 0):
+        failures.append(
+            f"{label}: missing replay admission census "
+            f"(interp={interpolated}, replaySkips={replay_skips})")
+    elif replay_skips > replay_attempts * REPLAY_SKIP_MAX_FRACTION:
+        failures.append(
+            f"{label}: WebGPU shed {replay_skips}/{replay_attempts} "
+            f"interpolation replays, above "
+            f"{REPLAY_SKIP_MAX_FRACTION:.0%} — optional frames are not being "
+            "offered on an evenly paced display clock")
+    unavailable = result.pressure.get("unavailable", -1)
+    presented = result.pressure.get("presented", -1)
+    # A host hiccup can legitimately cost one drawable every dozen or so
+    # seconds even on a healthy session (a ~30 ms scheduler stall renders
+    # two frames inside one retirement window). The defect this bound
+    # guards against measured 726 refusals in 30 s — 200x this budget.
+    unavailable_budget = max(2, presented // 1000)
+    if presented > 0 and unavailable > unavailable_budget:
+        failures.append(
+            f"{label}: the surface refused {unavailable} drawables in a "
+            f"session that presented (budget {unavailable_budget}) — the "
+            "pacer is overrunning real retirement (each refusal is a "
+            "rendered frame the player never saw, displayed as a repeat)")
     failures.extend(check_vblank_projection(result))
     failures.extend(check_alpha_quantum_strict(result))
     return failures
@@ -1050,6 +1150,7 @@ def main() -> int:
                 # new path (measured variance is well above the 2500ppm
                 # threshold there).
                 honest_paced = False
+                honest_quality: list[str] = []
                 for attempt in range(1, REALTIME_ATTEMPTS + 1):
                     label = "realtime-display-smoothing-quantum-honest"
                     if attempt > 1:
@@ -1068,12 +1169,23 @@ def main() -> int:
                             f"{label}: no valid measurement — {honest_cause}")
                         continue
                     honest_paced = True
-                    honest_failures = check_alpha_quantum_honest(
-                        honest_result)
-                    failures.extend(honest_failures)
+                    # mode-vs-state consistency is structural and never
+                    # excused by a busy host; the slot-quality tails are
+                    # bimodal for the same reason the strict arm's are, so
+                    # a transient miss is retried and only a repeatable one
+                    # is a regression.
+                    failures.extend(check_alpha_quantum_honest(
+                        honest_result))
+                    honest_quality = check_slot_quality(honest_result)
                     notes.append(
                         f"{label}: {alpha_quantum_row(honest_result.output)}")
-                    break
+                    if not honest_quality:
+                        break
+                    notes.append(
+                        f"{label}: paced, but outside the slot bounds — "
+                        f"{len(honest_quality)} bound(s); retrying")
+                if honest_quality:
+                    failures.extend(honest_quality)
                 if not honest_paced:
                     honest_message = (
                         "quantum-honest companion arm: NO PACED SESSION "

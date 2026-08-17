@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static int s_failures;
 
@@ -304,6 +305,204 @@ int main(void) {
            mdkr_present_deadline_target(
                &present_clock, UINT64_C(1050000000)) ==
                UINT64_C(1055555555));
+
+    /* Closed-loop discipline: acquire feedback locks the software grid onto
+     * the display's real retirement cadence (design: equilibrium keeps the
+     * acquire block near TARGET + GAIN*CREEP, so releases stay slightly
+     * ahead of retirement without ever overrunning the queue). */
+    {
+        MdkrPresentDeadlineClock clock;
+        uint64_t now = 0u;
+        uint64_t display_next = 0u;
+        uint64_t blocked;
+        uint64_t target_ns;
+        /* 119.88 Hz panel advertised as 120: the classic mismatch. */
+        const uint64_t display_period = UINT64_C(8341675);
+        unsigned overruns = 0u;
+        int frame;
+        expect("discipline clock init",
+               mdkr_present_deadline_init(&clock, 120u));
+        for (frame = 0; frame < 2000; frame++) {
+            target_ns = mdkr_present_deadline_target(&clock, now);
+            if (target_ns > now) {
+                now = target_ns; /* sleep to the deadline */
+            }
+            /* acquire blocks until the display retires the prior image */
+            blocked = display_next > now ? display_next - now : 0u;
+            now += blocked;
+            display_next += display_period;
+            mdkr_present_deadline_feedback(&clock, blocked, 0, now);
+            mdkr_present_deadline_commit(&clock, now);
+            if (frame > 500 && blocked > UINT64_C(4000000)) {
+                overruns++;
+            }
+            now += UINT64_C(500000); /* render cost before the next wake */
+        }
+        expect("discipline locks a 119.88 Hz panel under a 120 Hz grid",
+               overruns == 0u);
+        expect("discipline reports accumulated slew",
+               mdkr_present_deadline_slew_total(&clock) > 0u);
+        expect("a 1000ppm mismatch stays on the exact rational grid",
+               mdkr_present_deadline_period_ns(&clock) ==
+                   UINT64_C(1000000000) / 120u);
+    }
+    /* Discipline: a panel that slews (ProMotion 120 -> 96 Hz) re-locks. */
+    {
+        MdkrPresentDeadlineClock clock;
+        uint64_t now = 0u;
+        uint64_t display_next = 0u;
+        uint64_t blocked;
+        uint64_t target_ns;
+        uint64_t display_period = UINT64_C(8333333);
+        unsigned overruns = 0u;
+        int frame;
+        expect("slew clock init", mdkr_present_deadline_init(&clock, 120u));
+        for (frame = 0; frame < 3000; frame++) {
+            if (frame == 1000) {
+                display_period = UINT64_C(10416666); /* 96 Hz */
+            }
+            target_ns = mdkr_present_deadline_target(&clock, now);
+            if (target_ns > now) {
+                now = target_ns;
+            }
+            blocked = display_next > now ? display_next - now : 0u;
+            now += blocked;
+            display_next += display_period;
+            mdkr_present_deadline_feedback(&clock, blocked, 0, now);
+            mdkr_present_deadline_commit(&clock, now);
+            if (frame > 1400 && blocked > UINT64_C(5000000)) {
+                overruns++;
+            }
+            now += UINT64_C(500000);
+        }
+        expect("discipline re-locks after a ProMotion rate slew",
+               overruns == 0u);
+        expect("discipline re-rated onto the panel's real period",
+               mdkr_present_deadline_period_ns(&clock) >
+                       UINT64_C(10312500) && /* -1% */
+                   mdkr_present_deadline_period_ns(&clock) <
+                       UINT64_C(10520832) /* +1% */);
+    }
+    /* Discipline: a failed acquire backs the grid off half a quantum. */
+    {
+        MdkrPresentDeadlineClock clock;
+        uint64_t before;
+        expect("backoff clock init",
+               mdkr_present_deadline_init(&clock, 120u));
+        (void)mdkr_present_deadline_target(&clock, UINT64_C(1000));
+        before = clock.origin_ns;
+        mdkr_present_deadline_feedback(&clock, 0u, 1, UINT64_C(10000));
+        expect("unavailable backs off half a quantum",
+               clock.origin_ns == before + UINT64_C(1000000000) / 240u);
+    }
+    /* Discipline: per-frame slew is clamped. */
+    {
+        MdkrPresentDeadlineClock clock;
+        uint64_t before;
+        expect("clamp clock init",
+               mdkr_present_deadline_init(&clock, 120u));
+        (void)mdkr_present_deadline_target(&clock, UINT64_C(0));
+        before = clock.origin_ns;
+        mdkr_present_deadline_feedback(&clock, UINT64_C(50000000), 0,
+                                       UINT64_C(50000000));
+        expect("slew clamped to the per-frame maximum",
+               clock.origin_ns ==
+                   before + MDKR_PRESENT_DISCIPLINE_MAX_SLEW_NS -
+                       MDKR_PRESENT_DISCIPLINE_CREEP_NS);
+    }
+    /* Discipline: feedback before initialization is inert. */
+    {
+        MdkrPresentDeadlineClock clock;
+        expect("uninit clock init",
+               mdkr_present_deadline_init(&clock, 120u));
+        mdkr_present_deadline_feedback(&clock, UINT64_C(5000000), 0,
+                                       UINT64_C(5000000));
+        expect("feedback before first target leaves origin unset",
+               clock.origin_ns == 0u &&
+                   mdkr_present_deadline_slew_total(&clock) == 0u);
+    }
+
+    /* Slot-projected alpha: the drawn phase steps by exactly one display
+     * quantum per replay regardless of wake jitter; a genuinely missed slot
+     * re-anchors; a beat-event extra slot repeats just below the boundary. */
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t prev = 0u;
+        uint64_t measured;
+        uint64_t drawn;
+        long long jitter[3];
+        int i;
+        int uniform = 1;
+        jitter[0] = 23000000;
+        jitter[1] = -31000000;
+        jitter[2] = 8000000;
+        memset(&slot_state, 0, sizeof(slot_state));
+        for (i = 1; i <= 3; i++) {
+            measured = (uint64_t)((long long)(q * (uint64_t)i) +
+                                  jitter[i - 1]);
+            drawn = mdkr_present_slot_phase(&slot_state, 7u, measured, den,
+                                            q);
+            if (drawn != prev + q) {
+                uniform = 0;
+            }
+            prev = drawn;
+        }
+        expect("slot phase steps exactly one quantum under wake jitter",
+               uniform == 1);
+        expect("slot phase counted three snaps and no anchors",
+               slot_state.snaps == 3u && slot_state.anchors == 0u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 8u, q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 8u, 3u * q, den, q);
+        expect("a missed slot re-anchors to the measured grid point",
+               drawn == 3u * q);
+        expect("the re-anchor was counted", slot_state.anchors == 1u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 9u, q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 9u, 2u * q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 9u, 3u * q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 9u,
+                                        3u * q + q / 3u, den, q);
+        expect("a beat-event fifth slot clamps just below the boundary",
+               drawn == den - 1u);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 10u, q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 11u,
+                                        q + UINT64_C(40000000), den, q);
+        expect("a new tick restarts the sequence at one quantum",
+               drawn == q);
+    }
+    {
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        memset(&slot_state, 0, sizeof(slot_state));
+        expect("a zero quantum passes the measured phase through",
+               mdkr_present_slot_phase(&slot_state, 12u, UINT64_C(777), den,
+                                       0u) == UINT64_C(777));
+        expect("a quantum at or above the tick passes measured through",
+               mdkr_present_slot_phase(&slot_state, 12u, UINT64_C(777), den,
+                                       den) == UINT64_C(777));
+    }
 
     expect("initialize NTSC original clock",
            mdkr_pacing_clock_init(&ntsc, 60, 2, 6));

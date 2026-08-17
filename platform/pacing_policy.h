@@ -98,11 +98,51 @@ typedef enum MdkrPresentSync {
 } MdkrPresentSync;
 
 /* Absolute rational deadline grid for a numeric presentation cap. */
+/*
+ * Closed-loop discipline for the software present-deadline clock.
+ *
+ * The deadline grid is open-loop against CLOCK_MONOTONIC; a real display
+ * retires images on its own cadence, which is never exactly the reported
+ * integer rate (119.88 vs 120) and, on adaptive panels, hops between rate
+ * buckets. mdkr_present_deadline_feedback() closes the loop from the one
+ * signal the presentation backend always has: how long the surface acquire
+ * blocked before each present, plus whether it failed outright.
+ *
+ * Two nested controllers:
+ *  - PHASE: each frame drifts the grid origin earlier by CREEP and later by
+ *    a clamped fraction of any block beyond TARGET. Equilibrium holds the
+ *    block near TARGET + (CREEP << GAIN_SHIFT): releases land slightly
+ *    before retirement, the queue stays primed, and mismatches inside
+ *    RERATE_PPM (e.g. the 1000ppm of a 119.88 panel) are absorbed with the
+ *    exact integer-rational grid intact.
+ *  - RATE: when consecutive display-bound frames (block > BOUND_MIN) show a
+ *    period a sustained RERATE_PPM away from the grid's, the grid re-rates
+ *    onto the measured period (8.8 fixed-point ns), snapping back to the
+ *    exact integer-rational grid whenever the measurement returns to within
+ *    SNAP_PPM of nominal. Paths that never call feedback keep period
+ *    override zero and remain bit-for-bit on the legacy grid.
+ */
+#define MDKR_PRESENT_DISCIPLINE_TARGET_BLOCK_NS UINT64_C(1000000)
+#define MDKR_PRESENT_DISCIPLINE_MAX_SLEW_NS     UINT64_C(200000)
+#define MDKR_PRESENT_DISCIPLINE_CREEP_NS        UINT64_C(25000)
+#define MDKR_PRESENT_DISCIPLINE_GAIN_SHIFT      3u
+#define MDKR_PRESENT_DISCIPLINE_BOUND_MIN_NS    UINT64_C(200000)
+#define MDKR_PRESENT_DISCIPLINE_RERATE_PPM      UINT64_C(1200)
+#define MDKR_PRESENT_DISCIPLINE_SNAP_PPM        UINT64_C(600)
+#define MDKR_PRESENT_DISCIPLINE_RERATE_CONFIRM  8u
+#define MDKR_PRESENT_DISCIPLINE_EMA_SHIFT       3u
+
 typedef struct MdkrPresentDeadlineClock {
     uint64_t origin_ns;
     uint64_t next_index;
     unsigned rate;
     int initialized;
+    /* Discipline state; all zero (inert) until feedback is called. */
+    uint64_t period_override_fp; /* 8.8 fixed-point ns; 0 = legacy grid */
+    uint64_t period_ema_fp;      /* measured display period, 8.8 fp ns */
+    uint64_t last_bound_ns;      /* completion time of last bound frame */
+    uint64_t slew_total_ns;      /* cumulative |origin adjustment| */
+    unsigned rerate_streak;
 } MdkrPresentDeadlineClock;
 
 typedef struct MdkrPacingClock {
@@ -209,12 +249,72 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
                                      uint64_t tick_units,
                                      uint64_t quantum_units);
 
+/*
+ * Slot-projected interpolation phase for a disciplined display cadence.
+ *
+ * Under a closed-loop FIFO pacer, one displayed frame IS one display slot,
+ * so the drawn phase should advance by exactly one quantum per replay —
+ * reading it off the wake clock instead bakes scheduler jitter into every
+ * motion step (the measured p95 was 0.385 tick against an ideal constant
+ * 0.25 at 120 Hz). This projector predicts last + quantum and keeps the
+ * prediction whenever the measured phase agrees within SNAP; a larger
+ * disagreement (a genuinely missed slot) re-anchors onto the measured grid
+ * point and is counted. A prediction that would touch the tick boundary
+ * clamps to tick_units - 1: the tick/display beat's extra slot becomes one
+ * soft repeat of (nearly) the incoming endpoint image rather than a
+ * mid-tick stutter.
+ */
+/*
+ * The snap window separates wake noise from a genuinely missed display
+ * slot. Under a blocking FIFO the glass cadence is even no matter how
+ * noisy the CPU wakes are, so everything short of a whole-slot deviation
+ * is noise to be rejected; a real miss shows up as a full quantum. 3/4
+ * splits those: it absorbs the endpoint lead (<=8 ms cap, typically 3 ms)
+ * plus worst-case scheduler jitter, while a +1.0-quantum miss still lands
+ * outside and re-anchors.
+ */
+#define MDKR_PRESENT_SLOT_SNAP_NUM 3u
+#define MDKR_PRESENT_SLOT_SNAP_DEN 4u
+
+typedef struct MdkrPresentSlotState {
+    uint64_t last_units;    /* last drawn phase, accumulator units */
+    uint64_t last_measured; /* last measured phase, for the increment test */
+    uint64_t last_tick;     /* census tick that phase belonged to */
+    uint64_t snaps;         /* predicted-step frames (telemetry) */
+    uint64_t anchors;       /* re-anchor events (telemetry) */
+} MdkrPresentSlotState;
+
+uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
+                                 uint64_t measured_units,
+                                 uint64_t tick_units,
+                                 uint64_t quantum_units);
+
 int mdkr_present_deadline_init(MdkrPresentDeadlineClock *clock,
                                unsigned rate);
 uint64_t mdkr_present_deadline_target(MdkrPresentDeadlineClock *clock,
                                       uint64_t now_ns);
 void mdkr_present_deadline_commit(MdkrPresentDeadlineClock *clock,
                                   uint64_t now_ns);
+/*
+ * Feed one presented frame's acquire observation back into the clock (see
+ * the discipline comment above the struct). block_ns is how long the surface
+ * acquire blocked before this present; unavailable is nonzero when the
+ * acquire failed (queue overrun; the frame was dropped); now_ns is the
+ * monotonic completion time of the acquire, used to sample the display's
+ * real period across consecutive display-bound frames. Inert before the
+ * first target() call. Nudges origin (and, on sustained evidence, the grid
+ * period); never touches next_index.
+ */
+void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
+                                    uint64_t block_ns, int unavailable,
+                                    uint64_t now_ns);
+/* Cumulative |origin adjustment| applied by feedback, for telemetry. */
+uint64_t mdkr_present_deadline_slew_total(
+    const MdkrPresentDeadlineClock *clock);
+/* The grid period currently in force, whole nanoseconds (legacy rational
+ * grid when no rate override is active). 0 for an invalid clock. */
+uint64_t mdkr_present_deadline_period_ns(
+    const MdkrPresentDeadlineClock *clock);
 
 /*
  * The first grid point strictly after `now_ns`, on the same absolute rational

@@ -161,19 +161,46 @@ unsigned platform_present_display_rate(void);
  * One presentation-grid interval in clock units (one source field == 1e9), or
  * 0 when this run's presents are NOT quantized to the display's own refresh.
  *
- * Nonzero means the display's vblank is the only thing retiring presents --
- * realtime pacing, a policy with no software cadence of its own, a
- * vblank-synchronized queue that is not allowed to tear, and a refresh the host
- * actually reports. Under exactly those conditions one present is one refresh,
- * so the interpolation phase can be projected onto that grid instead of read
- * off a jittery wake (mdkr_present_quantize_phase). Any other combination
- * returns 0 and the measured phase stands, which is what keeps synthetic,
- * capped, uncapped, browser and original runs bit-for-bit as they were.
+ * Nonzero means one opportunity is one refresh, on one of two grounds:
+ * a blocking vblank queue whose measured intervals the classifier accepts as
+ * fixed (the legacy projection), or the CLOSED-LOOP native WebGPU display
+ * deadline, whose grid is disciplined onto real surface retirement by
+ * acquire feedback and therefore needs no classifier testimony. The
+ * interpolation phase is then projected onto that grid instead of read off
+ * a jittery wake (mdkr_present_quantize_phase / mdkr_present_slot_phase).
+ * Other software cadences return 0 and the measured phase stands, which
+ * keeps synthetic, numeric-capped, display-margin, uncapped, browser and
+ * original runs bit-for-bit as they were.
  *
  * The refresh underneath this is re-derived live (see the display-changed
  * handler); the latched POLICY is not.
  */
 uint64_t platform_present_display_quantum_units(void);
+/*
+ * Nonzero when the native display pacer is CLOSED-LOOP: a realtime
+ * FrameLimit=display run on native WebGPU whose deadline grid is disciplined
+ * by surface-acquire feedback (platform_present_note_acquire). Under that
+ * regime one displayed frame is one display slot, so present_sched projects
+ * the interpolation phase by slot prediction (mdkr_present_slot_phase)
+ * instead of reading the wake clock. Zero everywhere else, which is what
+ * keeps synthetic, browser, GL and margin runs bit-for-bit as they were.
+ */
+int platform_present_slot_alpha_active(void);
+/*
+ * One presented frame's acquire observation from the render backend:
+ * how long the surface acquire blocked before this present, and whether it
+ * failed outright (queue overrun; the image was dropped). Feeds the
+ * deadline-discipline loop; a no-op outside discipline mode.
+ */
+void platform_present_note_acquire(uint64_t block_ns, int unavailable);
+/*
+ * Sleep the remainder of the endpoint lead so the authored endpoint present
+ * leaves on its display slot (see the ENDPOINT LEAD comment in
+ * platform_vi_present_pace_units). Call immediately before presenting the
+ * tick's own image; a no-op when no lead was armed or outside discipline
+ * mode.
+ */
+void platform_present_endpoint_gate(void);
 
 /*
  * The trimmed squared coefficient of variation used by the present-interval

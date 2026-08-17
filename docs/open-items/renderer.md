@@ -42,9 +42,27 @@ a build of `origin/main`. What that leaves open:
   heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
   counts above zero independently, neither of which is vacuous at those
   numbers, and the gate passes on Chromium against the freshly linked wasm.
-- **RESOLVED AS A HARNESS ARTIFACT (2026-08-08). Read this before acting on the
-  numbers below.** The starvation described here reproduces only under the
-  SYNTHETIC pacer.
+- **CORRECTED A THIRD TIME (2026-08-17): the 2026-08-16 open-loop deadline
+  was itself a defect and is replaced by a closed loop.** The 08-16 change
+  correctly identified that native WebGPU FIFO present does not block the
+  calling thread, but its remedy — an open-loop deadline at the reported
+  integer refresh plus a second in-flight admission slot for replays — (a)
+  drifted against the panel's real retirement (measured ~119.83 Hz on the
+  "120 Hz" ProMotion panel; 20% failed acquires under the strict arm), (b)
+  fed the VRR classifier its own sleeps so grid-snapped alpha flapped on and
+  off mid-run, and (c) re-created the endpoint-starvation hazard the table
+  below had already rejected. The replacement disciplines the deadline from
+  measured acquire-block feedback (phase + bounded rate PLL), projects the
+  interpolation phase by display slot (`mode=slot`), presents the authored
+  endpoint on its own slot via a computed lead, and restores the endpoint
+  reservation. Mechanism, math and measurements:
+  [`interpolation-pacing-2026-08-17.md`](../evidence/interpolation-pacing-2026-08-17.md).
+  The 08-16 investigation's content isolation remains in
+  [`waterfall-interpolation-2026-08-16.md`](../evidence/waterfall-interpolation-2026-08-16.md).
+
+- **RESOLVED AS A HARNESS ARTIFACT (2026-08-08), for the synthetic and 60 Hz
+  case described below.** The starvation measured in that investigation
+  reproduces only under the SYNTHETIC pacer.
 
   **Correction (2026-08-08): the switch is `--headless-ticks`, NOT
   `MDKR_SYNTH_FIELDS`.** `platform_sdl_min.c` selects
@@ -73,9 +91,10 @@ a build of `origin/main`. What that leaves open:
   Under a real clock interpolation happens, authored frames are never dropped,
   and the 120 Hz arm settles at ~60 surface updates per second — the panel's
   actual refresh, which is the correct outcome for asking a 60 Hz display for
-  120. There is no production defect here and nothing to fix. The residual
-  `replaySkips` on the 120 Hz arm is the scheduler shedding presents the
-  display could never show.
+  120. On that 60 Hz host there was no production defect to fix. The residual
+  `replaySkips` on its 120 Hz request was the scheduler shedding presents the
+  60 Hz display could never show. That result did not qualify a native 120 Hz
+  surface; the 2026-08-16 correction above does.
 
   What remains true and useful: the smoothing gates that drive 120 Hz cannot
   run on WebGPU under the SYNTHETIC pacer for this reason, which is why
@@ -107,6 +126,12 @@ a build of `origin/main`. What that leaves open:
   | let a replay take the bounded drain | 598 | 0 | FAIL — interpolation-phase variance 1.2e11 ppm² against a 3e10 bound, `alpha-delta` p95 0.88 tick off the 500000 ppm grid, 35 ms displayed-interval max |
   | drop the replay's slot reservation | 85 | **515** | not reached — authored frames starve worse than the defect being fixed |
   | reservation kept, `WGPU_FRAME_IN_FLIGHT_MAX` raised to 3 | 407 | 192 | FAIL — the surface stopped re-ranking its present mode across a 60→120 Hz display change |
+
+  The 2026-08-16 fix relaxed the reservation for paced replays; 2026-08-17
+  reverted that relaxation. With the closed-loop deadline the immediate
+  re-attempt pattern that motivated it no longer exists (queue high-water
+  stays 1), so the reservation costs nothing and the starvation hazard this
+  table documents stays closed unconditionally.
 
   The blocking variant is the instructive one: it fixes the counters exactly
   and still fails, because the drain is a variable-length wait on the paced

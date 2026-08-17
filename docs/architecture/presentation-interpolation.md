@@ -438,6 +438,51 @@ registry and still have to agree with their previous tick.
 
 ---
 
+## The display clock and the drawn phase (discipline mode, 2026-08-17)
+
+Everything above defines WHAT an interpolated frame contains; this section
+defines WHEN one is released and WHICH phase it is stamped with, for the one
+regime where both matter perceptually: native WebGPU, realtime pacing,
+`Video.FrameLimit=display`, non-tearing blocking FIFO ("discipline mode",
+`platform_present_slot_alpha_active`). Motivation, measurements and the
+failed open-loop predecessor: `docs/evidence/interpolation-pacing-2026-08-17.md`.
+
+Invariants:
+
+1. **One clock.** The software deadline grid is the release schedule, and it
+   is CLOSED-LOOP: every present feeds back how long
+   `wgpuSurfaceGetCurrentTexture` blocked (the display's own backpressure)
+   via `platform_present_note_acquire` →
+   `mdkr_present_deadline_feedback`. Phase mismatches inside 1,200 ppm are
+   absorbed by origin slew on the exact integer-rational grid; sustained
+   larger mismatches (adaptive-panel rate buckets) re-rate the grid onto the
+   measured period and snap back at nominal. Paths that never call feedback
+   are bit-for-bit on the legacy grid — that is what keeps every synthetic,
+   browser, GL and margin arm byte-identical.
+2. **The drawn phase is a slot sequence, not a clock read.** Under a
+   blocking FIFO one displayed frame is one display slot regardless of CPU
+   wake noise, so `mdkr_present_slot_phase` advances the drawn phase by
+   exactly one quantum per replay and consults the measured wake phase only
+   to detect a genuinely missed slot (deviation > 3/4 quantum re-anchors;
+   counted as `slotanchors`). The tick/display beat's surplus slot becomes
+   one soft repeat just below the boundary — content-identical to the
+   incoming endpoint, never a mid-tick stutter. The accumulator itself is
+   untouched (same rule as the M3 grid projection it subsumes).
+3. **The endpoint owns a slot too.** The wake that will make the tick due
+   runs early by the endpoint lead (`MDKR_PRESENT_ENDPOINT_LEAD_US`,
+   default 3 ms) when the accumulator allows, and
+   `platform_present_endpoint_gate()` sleeps the remainder so the authored
+   image leaves ON its slot instead of tickCompute after it. Overruns are
+   telemetry (`leadmissmeanus`), not errors.
+4. **The authored endpoint keeps its reserved GPU slot.** Replays admit at
+   `WGPU_FRAME_IN_FLIGHT_MAX - 1`, unconditionally — the 2026-08 experiment
+   table's starvation result stands.
+5. **Telemetry is first-class.** `[PRESENT-DISCIPLINE]` (block distribution,
+   slew, period, lead census), `[ALPHA-QUANTUM] mode=slot`, and
+   `slotsnaps`/`slotanchors` in `[PRESENTSCHED-SUMMARY]`; gated by
+   `check_slot_quality` in `tests/check_pacing_quality.py` relative to the
+   run's own grid quantum.
+
 ## Design influences
 
 Three specific decisions in the presentation-safety wave were informed by

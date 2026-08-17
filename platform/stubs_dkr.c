@@ -772,6 +772,10 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 const uint64_t perf_present = present_perf_now();
                 const bool tick_displayed = !subloop || endpoint_drew;
                 if (tick_displayed) {
+                    /* Endpoint lead: if this tick's carrying wake ran early,
+                     * sleep the remainder so the authored image leaves on
+                     * its own display slot rather than tickCompute late. */
+                    platform_present_endpoint_gate();
                     platform_frame_sync();                  /* present this frame */
                 } else {
                     /* No graphics task completed for this opportunity. Hold
