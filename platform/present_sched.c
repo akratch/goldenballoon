@@ -1304,6 +1304,7 @@ void present_sched_trace_summary(void) {
                 "uvscrollcollision=%llu uvscrollhit=%llu uvscrollhold=%llu "
                 "uvscrollholdunpub=%llu uvscrollholdambig=%llu "
                 "uvscrollholdshape=%llu uvscrollholdphase=%llu "
+                "uvscrollsolo=%llu "
                 "uvscrollauthored=%llu uvscrollauthoredconfirm=%llu "
                 "uvscrolloverride=%llu uvscrollpeak=%zu "
                 "uvscrollbytespeak=%zu "
@@ -1404,6 +1405,7 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.uv_scroll_hold_ambiguous,
                 (unsigned long long)packet_stats.uv_scroll_hold_shape,
                 (unsigned long long)packet_stats.uv_scroll_hold_phase,
+                (unsigned long long)packet_stats.uv_scroll_solo_accepts,
                 (unsigned long long)
                     packet_stats.uv_scroll_authored_registrations,
                 (unsigned long long)
@@ -1470,7 +1472,9 @@ void present_sched_trace_summary(void) {
                 fprintf(stderr,
                         "[SMOOTH-VERDICT] class=%s blend=%u snap=%u "
                         "top_reason=%s pandemoted=%u noowner=%u "
-                        "topomismatch=%u heldpermille=%u\n",
+                        "topomismatch=%u uvhold=%u tickmismatch=%u "
+                        "generation=%u discontinuity=%u camcut=%u "
+                        "depmiss=%u heldpermille=%u\n",
                         surface_class_names[cls], (unsigned)blend,
                         (unsigned)snap, verdict_reason_names[top_reason],
                         (unsigned)packet_stats
@@ -1480,6 +1484,19 @@ void present_sched_trace_summary(void) {
                         (unsigned)packet_stats
                             .verdict_reason[cls]
                                            [MDKR_VERDICT_TOPOLOGY_MISMATCH],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_UV_HOLD],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_TICK_MISMATCH],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls]
+                                           [MDKR_VERDICT_GENERATION_MISMATCH],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_DISCONTINUITY],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_CAMERA_CUT],
+                        (unsigned)packet_stats
+                            .verdict_reason[cls][MDKR_VERDICT_DEPENDENCY_MISS],
                         (unsigned)held_permille);
             }
             gfx_presentation_packet_reset_verdict_stats();
