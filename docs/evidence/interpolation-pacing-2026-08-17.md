@@ -191,8 +191,51 @@ each with the measurement that exposed it:
 - Visual pass at the hub spawn and driving past all three falls
   (issues #35/#36 per the 2026-08 issue batch).
 
+## Second wave (2026-08-17, after visual playtest): content coverage
+
+The playtest falsified "waterfalls fixed": cadence was measurably uniform,
+yet the falls still flickered and cutscene characters smeared. Both are the
+signature of CONTENT that declines interpolation stepping at 30 Hz against
+a gliding 120 Hz camera. The per-class verdict census
+(`MDKR_SMOOTH_VERDICT=1` + `MDKR_PRESENT_SCHED_TRACE=1`) attributed it on
+the real hub route:
+
+- **WORLD_SCROLL held 46% of its verdicts (`heldpermille=456`), all
+  `UV_HOLD`.** Two mechanisms: (a) the measured path's two-tick confirm
+  rule can NEVER pass for a scroller whose rate varies per tick (measured
+  du sequences -83, -72, -60 on the hub's eased/camera-coupled sheets —
+  every such surface held forever); (b) every scroller's first visible
+  tick held (`holdunpub`), a constant churn while driving.
+- **The authored texscroll registry never engages in the hub at all**
+  (`uvauth_reg=0`, now a permanent `[SNAPSHOT]` census): the hub does not
+  run `obj_loop_texscroll`, so the 08-16 premise that the authored
+  {rate, phase} path served the falls was wrong there. It serves race
+  tracks that have `BHV_TEXTURE_SCROLL` objects.
+- The falls' main vertical scroll (constant dv=128/tick) did confirm and
+  blend — the flicker came from the held companion layers around it.
+
+**Fix:** `gfx_presentation_packet_lookup_uv_scroll` now accepts a
+single-tick measured record when the batch itself corroborates it — two or
+more triangles whose corners all state one fold-resolved displacement (the
+mis-resolved-wrap failure the two-tick rule guarded against cannot move
+independent triangles by the same wrong amount). One-triangle batches keep
+the two-tick rule. The record's du describes exactly the [T, T+1] interval
+being replayed, so this is also the CORRECT value for variable-rate
+scrollers, not a compromise. Hub route result: heldpermille 456 → 27,
+`uvscrollsolo=74,147` accepts, gates all green (194/194 unit,
+byte-identity, pacing).
+
+Character/cutscene note: OBJECT_ROOT blends 99.8%; the deformation
+contract correctly lerps within one animation and snaps on id changes.
+The cutscene backdrop layers were part of the held-scroll population above.
+If smear persists in cutscenes after this fix, the next suspects are the
+`deformincompatible` population (~2.6/tick, needs per-owner attribution)
+and sample-and-hold persistence at the panel's adaptive ~91-99 Hz.
+
 ## Remaining work
 
+- Visual re-test of falls and the Taj summon cutscene after the
+  single-tick acceptance fix.
 - ROG Ally 120 Hz VRR qualification with the same acceptance numbers.
 - Endpoint lead auto-sizing from `leadmissmeanus` telemetry; the game-pass
   cost (~5-6 ms, dominated by the real walk) also bounds how good any lead
