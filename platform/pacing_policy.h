@@ -277,10 +277,11 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
 #define MDKR_PRESENT_SLOT_SNAP_DEN 4u
 
 typedef struct MdkrPresentSlotState {
-    uint64_t last_units; /* last drawn phase, accumulator units */
-    uint64_t last_tick;  /* census tick that phase belonged to */
-    uint64_t snaps;      /* predicted-step frames (telemetry) */
-    uint64_t anchors;    /* re-anchor events (telemetry) */
+    uint64_t last_units;    /* last drawn phase, accumulator units */
+    uint64_t last_measured; /* last measured phase, for the increment test */
+    uint64_t last_tick;     /* census tick that phase belonged to */
+    uint64_t snaps;         /* predicted-step frames (telemetry) */
+    uint64_t anchors;       /* re-anchor events (telemetry) */
 } MdkrPresentSlotState;
 
 uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,

@@ -308,13 +308,23 @@ uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
     uint64_t diff;
     uint64_t snap;
 
+    uint64_t increment;
+
     if (state == NULL || quantum_units == 0u || tick_units == 0u ||
         quantum_units >= tick_units) {
         return measured_units;
     }
     if (state->last_tick != tick) {
+        /* First replay of a tick. Its measured phase carries a per-tick
+         * constant the projector must be invariant to — the endpoint lead
+         * plus the tick-vs-slot residual — so there is no honest absolute
+         * comparison to make here. The drawn phase starts the uniform
+         * sequence; the measurement seeds the increment test below. */
         state->last_tick = tick;
-        state->last_units = 0u;
+        state->last_measured = measured_units;
+        state->last_units = quantum_units;
+        state->snaps++;
+        return quantum_units;
     }
     predicted = state->last_units + quantum_units;
     if (predicted >= tick_units) {
@@ -324,8 +334,17 @@ uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
         drawn = tick_units - 1u;
         state->snaps++;
     } else {
-        diff = measured_units > predicted ? measured_units - predicted
-                                          : predicted - measured_units;
+        /* Offset-invariant slot test: one displayed frame is one slot, so
+         * the MEASURED phase should have advanced by one quantum since the
+         * previous replay regardless of any constant offset. Judging the
+         * increment (not the absolute position) is what keeps wake noise
+         * and the per-tick offset out of the decision while a genuinely
+         * missed slot (an increment near two quanta) still re-anchors. */
+        increment = measured_units > state->last_measured
+                        ? measured_units - state->last_measured
+                        : 0u;
+        diff = increment > quantum_units ? increment - quantum_units
+                                         : quantum_units - increment;
         snap = (quantum_units / MDKR_PRESENT_SLOT_SNAP_DEN) *
                MDKR_PRESENT_SLOT_SNAP_NUM;
         if (diff <= snap) {
@@ -343,6 +362,7 @@ uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
             state->anchors++;
         }
     }
+    state->last_measured = measured_units;
     if (drawn < state->last_units) {
         drawn = state->last_units; /* census counts the repeat as a stall */
     }

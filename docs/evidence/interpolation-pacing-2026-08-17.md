@@ -142,31 +142,43 @@ pacing/sim_sched/presentation unit suites.
 ## Measurements
 
 All 30 s, track 5, autopilot, WebGPU display+interpolate, 320x240,
-M3 ProMotion MacBook.
+M3 ProMotion MacBook, live foreground session. Ideal alpha step at 120 Hz
+over the 30 Hz tick is a constant 250,000 ppm; the census bins at 4,096 ppm,
+so 253,952 is the upper edge of the bin CONTAINING the ideal step.
 
-| Metric | 2026-08-16 build, free (healthy session) | 2026-08-16 build, strict (healthy) | This fix, slot (DEGRADED session) |
+| Metric | 2026-08-16 build, free | 2026-08-16 build, strict | This fix, slot |
 |---|---:|---:|---:|
-| alpha-delta p50 | 253,952 | 253,952 | 249,856-253,952 |
-| alpha-delta p95 | 385,024 | 503,808 | 503,808 |
-| alpha-delta max | 1,000,000 | 1,000,000 | 1,000,000 |
+| alpha-delta p50 | 253,952 | 253,952 | 253,952 |
+| alpha-delta p95 | 385,024 | 503,808 | **253,952** |
+| alpha-delta p99 | 458,752 | 503,808 | **253,952** |
+| alpha-delta variance (ppm^2) | 4.1e9 | 10.4e9 | **5.0e8** |
 | stalls | 15 | 0 | 0 |
 | regressions | 0 | 0 | 0 |
-| acquire failures (`unavailable`) | 0 | 726 (20%) | 0-2 |
-| displayed p95 (us) | 9,400 | 10,000 | 10,350 |
-| mode | free (flapped 3x) | grid (forced) | slot |
+| acquire failures (`unavailable`) | 0 | 726 (20%) | 2 |
+| displayed p95 / p99 (us) | 9,400 / 11,000 | 10,000 / 12,800 | **9,700 / 10,600** |
+| endpoint slot miss (mean) | unpaced (+1-3 ms) | unpaced | **455 us** (891/900 ticks led) |
+| mode | free (flapped 3x) | grid (forced) | slot (stable) |
 
-**The DEGRADED caveat is load-bearing.** Every post-fix capture so far ran
-against a locked/just-woken session: the same session free-ran the GL
-control at 860 presents/s (no compositor vsync at all), which is the
-documented `explain_unthrottled_presentation` environment. The residual
-2-quantum p95 tail in the post-fix column is dominated by whole-slot losses
-from background scheduler throttling, not by the alpha pipeline (stalls 0,
-p50 exactly on grid, zero overruns, slot re-anchors near the armed-lead
-count before the snap-window fix and near the beat budget after). The
-healthy-session A/B (this table's last column re-measured, plus the full
-`check_pacing_quality.py` battery) is captured automatically by
-`/tmp/interp-evidence/session_watch.sh` the next time a real display session
-exists, and this file must be updated with those numbers before release.
+The post-fix alpha distribution is a single histogram bin through p99 —
+uniform motion to within census resolution. The residual max=1e6 is one
+~29 ms host scheduler stall in 30 s (present in every arm of every build);
+its content jump is the correct response to genuinely lost time.
+
+Two implementation defects were found and fixed during live validation,
+each with the measurement that exposed it:
+- The slot projector originally compared measured phase against a
+  zero-based absolute slot sequence; the per-tick constant offset
+  (endpoint lead + tick/slot residual) swept through the snap window with
+  the beat and re-anchored every replay of the affected ticks (637/2,500
+  in one 30 s run, matching the 3-per-tick x beat-fraction prediction).
+  The comparison is now increment-based (one displayed frame must advance
+  the measured phase by ~one quantum), which is offset-invariant by
+  construction; re-anchors fell inside the beat budget immediately.
+- `check_pacing_quality.py`'s realtime verdict: two consecutive full-suite
+  PASSes on the live session, including the strict M3-baseline arm and the
+  new slot arm (grid-relative bounds, honest-arm retry policy mirroring
+  the strict arm's bimodality rationale, and an `unavailable` budget of
+  presented/1000 — the defect it guards against measured 200x that).
 
 ## Acceptance for release (ROG Ally 120 Hz VRR, plus this machine foreground)
 
@@ -181,7 +193,6 @@ exists, and this file must be updated with those numbers before release.
 
 ## Remaining work
 
-- Healthy-session re-measurement on this machine (automatic, see above).
 - ROG Ally 120 Hz VRR qualification with the same acceptance numbers.
 - Endpoint lead auto-sizing from `leadmissmeanus` telemetry; the game-pass
   cost (~5-6 ms, dominated by the real walk) also bounds how good any lead
