@@ -318,13 +318,55 @@ uint64_t mdkr_present_slot_phase(MdkrPresentSlotState *state, uint64_t tick,
         /* First replay of a tick. Its measured phase carries a per-tick
          * constant the projector must be invariant to — the endpoint lead
          * plus the tick-vs-slot residual — so there is no honest absolute
-         * comparison to make here. The drawn phase starts the uniform
-         * sequence; the measurement seeds the increment test below. */
+         * comparison to make here. At a healthy cadence the elapsed wall
+         * phase since the PREVIOUS tick's last replay is two slots (that
+         * replay, then the endpoint), and the drawn phase starts the
+         * uniform sequence at one quantum exactly as before.
+         *
+         * The elapsed test below is what keeps this branch honest under a
+         * present-rate deficit (a capture rig, a compositor stall, a
+         * genuinely heavy scene): with fewer opportunities than slots,
+         * EVERY interior present takes this branch, and pinning it to the
+         * first slot showed quarter-phase images where the pair had really
+         * advanced half a tick or more (measured live: an F9 capture
+         * session at ~64 fps drew endpoint/quarter pairs all bracket
+         * long). Elapsed is still an increment — whole ticks crossed plus
+         * the wrapped measured delta — so the per-tick constant cancels
+         * and wake noise stays inside the same snap window as the
+         * steady-state test. */
+        uint64_t drawn_first = quantum_units;
+        snap = (quantum_units / MDKR_PRESENT_SLOT_SNAP_DEN) *
+               MDKR_PRESENT_SLOT_SNAP_NUM;
+        if (tick > state->last_tick && tick - state->last_tick <= 4u &&
+            measured_units < tick_units &&
+            state->last_measured <= tick_units) {
+            const uint64_t elapsed = (tick - state->last_tick) * tick_units +
+                                     measured_units - state->last_measured;
+            if (elapsed > 2u * quantum_units + snap) {
+                /* More wall time passed than the healthy two slots: the
+                 * one-frame-one-slot premise is broken for this interval,
+                 * so the measured phase (quantized) is the honest anchor.
+                 * The endpoint-lead contamination is bounded by half a
+                 * quantum; the pinned first slot was off by whole ones. */
+                drawn_first = mdkr_present_quantize_phase(
+                    measured_units, tick_units, quantum_units);
+                if (drawn_first < quantum_units) {
+                    drawn_first = quantum_units;
+                }
+                if (drawn_first > tick_units - 1u) {
+                    drawn_first = tick_units - 1u;
+                }
+                state->anchors++;
+            } else {
+                state->snaps++;
+            }
+        } else {
+            state->snaps++;
+        }
         state->last_tick = tick;
         state->last_measured = measured_units;
-        state->last_units = quantum_units;
-        state->snaps++;
-        return quantum_units;
+        state->last_units = drawn_first;
+        return drawn_first;
     }
     predicted = state->last_units + quantum_units;
     if (predicted >= tick_units) {

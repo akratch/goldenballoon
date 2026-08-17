@@ -456,6 +456,46 @@ int main(void) {
                drawn == q);
     }
     {
+        /* Healthy cross-tick cadence: the previous tick's LAST replay sat at
+         * three quanta, the new tick's first replay measures one quantum in
+         * (elapsed = two slots exactly). The historical one-quantum start
+         * must be kept and counted as a snap, not an anchor. */
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 20u, q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 20u, 2u * q, den, q);
+        (void)mdkr_present_slot_phase(&slot_state, 20u, 3u * q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 21u,
+                                        q + UINT64_C(21000000), den, q);
+        expect("a healthy cross-tick first replay keeps the one-quantum start",
+               drawn == q);
+        expect("the healthy cross-tick start was a snap",
+               slot_state.anchors == 0u);
+    }
+    {
+        /* Present-rate deficit: only one interior opportunity per tick, so
+         * every replay takes the first-replay branch. With ~two quanta of
+         * wall phase really elapsed per opportunity pair, pinning the first
+         * slot showed quarter-phase images at half-tick pair positions (the
+         * measured 64 fps capture-rig regression). The elapsed test must
+         * anchor to the quantized measured phase instead. */
+        MdkrPresentSlotState slot_state;
+        const uint64_t den = UINT64_C(2000000000);
+        const uint64_t q = UINT64_C(500000000);
+        uint64_t drawn;
+        memset(&slot_state, 0, sizeof(slot_state));
+        (void)mdkr_present_slot_phase(&slot_state, 30u, 2u * q, den, q);
+        drawn = mdkr_present_slot_phase(&slot_state, 31u,
+                                        2u * q + UINT64_C(50000000), den, q);
+        expect("a rate-deficit first replay anchors to the measured phase",
+               drawn == 2u * q);
+        expect("the rate-deficit anchor was counted",
+               slot_state.anchors >= 1u);
+    }
+    {
         MdkrPresentSlotState slot_state;
         const uint64_t den = UINT64_C(2000000000);
         memset(&slot_state, 0, sizeof(slot_state));

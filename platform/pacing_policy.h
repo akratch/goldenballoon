@@ -284,6 +284,16 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
  * clamps to tick_units - 1: the tick/display beat's extra slot becomes one
  * soft repeat of (nearly) the incoming endpoint image rather than a
  * mid-tick stutter.
+ *
+ * The first replay of a tick is judged the same way, by increment: the
+ * elapsed phase since the previous tick's last replay (whole ticks crossed
+ * plus the wrapped measured delta — still offset-invariant) is two slots at
+ * a healthy cadence and keeps the historical one-quantum start; anything
+ * clearly longer means the run is presenting slower than the display and
+ * the first interior anchors to the quantized measured phase instead. A
+ * 64 fps capture-rig session proved the pinned start wrong: every tick drew
+ * an endpoint/quarter pair while the pose pairs had really advanced half a
+ * tick or more between opportunities.
  */
 /*
  * The snap window separates wake noise from a genuinely missed display

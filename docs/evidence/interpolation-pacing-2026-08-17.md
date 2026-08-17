@@ -330,3 +330,65 @@ slivers), and the whole-curtain bail at 175 entries. Instrument
 per-tick {D_8011D49E, gVoidPrimCount saturation, sorter-abort hits} in
 one pan bracket, then raise limits in lockstep (prim limit ~180, s16
 indices, clamp-not-bail at 175).
+
+## FOURTH WAVE (2026-08-17, session6 forensics): shim the bit, trust the dumps
+
+Session6 (one hour live, defense from merge c83b24c active, F9 bracket
+frames 442751-443398 while the falls flashed) settled three questions at
+once.
+
+**1. The pump-and-retry defense is necessary but not sufficient.** The
+ledger read submitted=440553 presented=436629 unavailable=3924
+occludedvisible=3924 occlretries=15699 occlrecovered=3: refusals fell from
+23-55% of frames to 0.89%, but every surviving refusal exhausted all four
+retries — the stale occlusionState bit persists far longer than the 1.2 ms
+an in-frame retry can afford, and only 3 of 3,924 events recovered. A
+notification-race defense cannot close a multi-millisecond stale window.
+Fix landed: an in-process method swizzle on -[NSWindow occlusionState]
+(platform_macos_install_occlusion_shim, platform_sdl_min.c) that ORs
+NSWindowOcclusionStateVisible into every answer the present library reads.
+Every window in this process is a game surface; "always presentable" is
+the correct policy, and MDKR_NO_OCCLUSION_SHIM=1 restores the stock getter
+for A/B. Smoke proof: 1793/1793 presents, unavailable=0, occlretries=0 —
+the refusal class is gone at the source, not raced.
+
+**2. The F9 capture rig was polluting its own brackets.** [PRESENTSCHED]
+presents-per-tick was 4.00 for 110,700 straight ticks and dropped to ~2.15
+exactly at CAPTURE-START, recovering to 3.88 at CAPTURE-STOP: the
+synchronous readback+PPM write halved the present rate (120 -> ~64 fps)
+for exactly the window being captured. Worse, the rate deficit exposed a
+real slot-projector gap: the first replay of a tick was PINNED to one
+quantum, so a ~2-present tick drew endpoint/quarter pairs (alpha 0.25)
+where the pose pair had really advanced half a tick — the bracket's
+E,1/4,E,1/4 cadence was the rig plus this pin, not the live defect. Both
+fixed: the PPM write moved to a bounded async writer thread (lossless
+blocking policy for --dump-frames fixtures, drop-and-count for F9; 119.5
+fps sustained WITH every-frame dumps in the smoke run), and the slot
+projector's first-replay branch now measures elapsed phase since the
+previous tick's last replay (still increment-based/offset-invariant) and
+anchors to the quantized measured phase when more than two healthy slots
+elapsed (mdkr_present_slot_phase, unit-tested both directions). [CAPTURE]
+rows now carry dt_us so a polluted bracket can never masquerade again.
+
+**3. The rendered content stream is PROVEN clean.** A single-frame
+anomaly scan over all 647 bracket PPMs (frame N vs both neighbors vs
+neighbor-skip diff) found ZERO content flashes — no vanishing falls, no
+one-frame breaks, at any threshold. The void-curtain capacity fix held.
+Everything upstream of the present boundary is now measured healthy:
+4.00 presents/tick, alpha p50=p95 ideal, content stream anomaly-free.
+Whatever remained on the glass was injected at or after present — which
+is exactly where the 3,924 unrescued refusals live.
+
+Also landed for localization-forever: rate-limited [WGPU-REFUSAL] rows
+(first 64 verbatim then every 64th, with frame + status + presentable bit
++ t_ns) and a [WGPU-BACKPRESSURE-PERIODIC] cumulative ledger every 4096
+submissions, distinct tag so expect_one parsers never collide. A latent
+link break (g_frameCounter in the capture-pose probe vs the standalone
+presentation-snapshot unit test) surfaced during this rebuild and was
+fixed in the test harness — the prior battery had exercised a stale
+binary.
+
+Verification: 194/194 units, check_pacing_quality PASS (mode=slot,
+variance 122 ppm, transitions 0), check_arbitrary_presentation_rates PASS
+(byte identity), check_weather_presentation_identity PASS,
+check_gpu_backpressure PASS, live smoke unavailable=0.
