@@ -67,7 +67,17 @@ fixed"). It also bought nothing once pacing was fixed (queue high-water 1).
 texscroll endpoint-vs-interior mismatch is at most 3/4 of an S10.5 unit =
 ~0.023 texel — mathematically real, visually negligible; the waterfall
 shimmer was NOT UV math. (b) The large translucent hub water sheet's ~2x
-endpoint step is an ownership gap, tracked separately. (c) Render-only
+endpoint step is RESOLVED AS AUTHORED CONTENT, not a defect: the hub ocean
+(all 24 `RENDER_WATER` segments, level-texture 25 / asset 1156) animates by
+a 26-frame texture flipbook advancing one frame every 2 authored ticks
+(15 Hz, `track_tex_anim` → `tex_animate_texture`), the same cadence the N64
+shows. Frame swaps are tick-quantized by authorship, land only on endpoint
+frames by construction, and the interpolation design deliberately excludes
+flipbooks from the registry ("a flipbook can never be mistaken for a
+scroll"). Everything else about the hub water IS owned: wave-tile matrices,
+wave vertex XYZ/RGBA, and the wave grid's own UV drift all interpolate; the
+flat far sheet's geometry is static. Any future endpoint-step gate over hub
+water crops must model out the 15 Hz flipbook component. (c) Render-only
 residuals (kart bob/spin, `camera.c` C7 census) still step at 30 Hz by
 design; documented follow-up.
 
@@ -177,5 +187,9 @@ exists, and this file must be updated with those numbers before release.
   cost (~5-6 ms, dominated by the real walk) also bounds how good any lead
   can be at 120 Hz — pipelining the walk is the structural fix if the Ally
   measurements demand it.
-- Hub translucent water sheet ownership (RC4b) — separate investigation.
 - C7 render-only residual stepping (kart bob/spin) — design follow-up.
+- (RC4b closed 2026-08-17: the hub water sheet's step is the authored 15 Hz
+  ocean flipbook, not an ownership gap. If sub-tick smoothing of flipbooks
+  is ever wanted, the contract would be phase-aligned frame selection or a
+  two-frame cross-fade — both diverge from authored appearance and are
+  deliberately NOT planned.)

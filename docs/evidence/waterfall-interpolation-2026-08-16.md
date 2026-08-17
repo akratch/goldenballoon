@@ -116,8 +116,12 @@ runtime thread.
 
 This closes the reported waterfall mechanism, not every presentation class.
 The large translucent water sheet visible later in the hub still has about a
-2x endpoint step and is not affected by the authored texscroll stage; it needs
-its wave/deformation ownership traced separately. Authored fractional texscroll
+2x endpoint step and is not affected by the authored texscroll stage.
+**Traced 2026-08-17: that step is the authored 26-frame ocean flipbook
+(level-texture 25 / asset 1156) advancing at 15 Hz via `track_tex_anim` —
+tick-quantized discrete content, identical to the N64's own cadence, and
+deliberately outside every interpolation contract. Not a defect; see
+`interpolation-pacing-2026-08-17.md` RC4b.** Authored fractional texscroll
 phase is also applied only to interior replays today, while real endpoints keep
 the authored triangle bytes. A future endpoint-unification change should render
 all phases through one explicit continuous-scroll contract, with pixel tests
