@@ -1,5 +1,16 @@
 # Timber's Island waterfall interpolation, 2026-08-16
 
+> **SUPERSEDED (2026-08-17).** The "Root cause" and "Fix" sections below are
+> incomplete: the open-loop display-rate deadline and the second in-flight
+> admission slot introduced new defects (character jitter from wake-clock
+> alpha on a drifting open-loop grid; a latent endpoint-starvation hazard)
+> and did not fix the shimmer. See
+> [`interpolation-pacing-2026-08-17.md`](interpolation-pacing-2026-08-17.md)
+> for the full mechanism and the closed-loop replacement. The content
+> isolation in this file (texscroll registry does real work; mipmap and
+> anisotropy hypotheses rejected; the residual water-sheet and fractional-
+> phase items) remains valid.
+
 ## Reported symptom
 
 On the Windows release build, enabling motion smoothing on a 120 Hz VRR ROG

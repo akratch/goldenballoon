@@ -42,19 +42,22 @@ a build of `origin/main`. What that leaves open:
   heavily than the outline one. `check_browser_runtime.py` now asserts BOTH
   counts above zero independently, neither of which is vacuous at those
   numbers, and the gate passes on Chromium against the freshly linked wasm.
-- **CORRECTED AGAIN (2026-08-16): a separate 120 Hz production defect was
-  hiding behind the valid 60 Hz conclusion below.** The synthetic starvation
-  remains a harness artifact, and a real 60 Hz panel still behaves as recorded.
-  A foreground 120 Hz ProMotion run exposed the assumption that native WebGPU
-  FIFO present blocks the calling thread. It does not: the loop immediately
-  offered another replay, rejected it at the one-frame admission boundary, and
-  paced only after that rejection. On the real Timber's Island route this
-  delivered 7,109 of 15,967 opportunities, shed 8,833 replays, and produced
-  18.4 ms p95 displayed intervals. Native WebGPU display mode now uses an
-  absolute display-rate opportunity deadline and permits one paced replay to
-  enter behind the retiring image. The same route delivers 9,154 of 9,177
-  opportunities at 119.4 Hz with zero replay/endpoint admission skips and an
-  observed queue-depth maximum of one. Full isolation and before/after tables:
+- **CORRECTED A THIRD TIME (2026-08-17): the 2026-08-16 open-loop deadline
+  was itself a defect and is replaced by a closed loop.** The 08-16 change
+  correctly identified that native WebGPU FIFO present does not block the
+  calling thread, but its remedy — an open-loop deadline at the reported
+  integer refresh plus a second in-flight admission slot for replays — (a)
+  drifted against the panel's real retirement (measured ~119.83 Hz on the
+  "120 Hz" ProMotion panel; 20% failed acquires under the strict arm), (b)
+  fed the VRR classifier its own sleeps so grid-snapped alpha flapped on and
+  off mid-run, and (c) re-created the endpoint-starvation hazard the table
+  below had already rejected. The replacement disciplines the deadline from
+  measured acquire-block feedback (phase + bounded rate PLL), projects the
+  interpolation phase by display slot (`mode=slot`), presents the authored
+  endpoint on its own slot via a computed lead, and restores the endpoint
+  reservation. Mechanism, math and measurements:
+  [`interpolation-pacing-2026-08-17.md`](../evidence/interpolation-pacing-2026-08-17.md).
+  The 08-16 investigation's content isolation remains in
   [`waterfall-interpolation-2026-08-16.md`](../evidence/waterfall-interpolation-2026-08-16.md).
 
 - **RESOLVED AS A HARNESS ARTIFACT (2026-08-08), for the synthetic and 60 Hz
@@ -124,12 +127,11 @@ a build of `origin/main`. What that leaves open:
   | drop the replay's slot reservation | 85 | **515** | not reached — authored frames starve worse than the defect being fixed |
   | reservation kept, `WGPU_FRAME_IN_FLIGHT_MAX` raised to 3 | 407 | 192 | FAIL — the surface stopped re-ranking its present mode across a 60→120 Hz display change |
 
-  The 2026-08-16 fix does not revive the rejected unconditional reservation
-  change. It first installs a real 120 Hz opportunity deadline, then relaxes
-  the reservation only for realtime, non-tearing policies already paced on a
-  blocking display cadence. Synthetic overload, uncapped and tearing paths keep
-  the reservation. That combination measured zero endpoint skips and never
-  exceeded one observed frame in flight.
+  The 2026-08-16 fix relaxed the reservation for paced replays; 2026-08-17
+  reverted that relaxation. With the closed-loop deadline the immediate
+  re-attempt pattern that motivated it no longer exists (queue high-water
+  stays 1), so the reservation costs nothing and the starvation hazard this
+  table documents stays closed unconditionally.
 
   The blocking variant is the instructive one: it fixes the counters exactly
   and still fails, because the drain is a variable-length wait on the paced
