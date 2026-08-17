@@ -493,6 +493,8 @@ void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
     uint64_t period_fp;
     int64_t delta;
 
+    (void)now_ns; /* retained in the signature for the removed rate
+                   * sampler; the phase controller needs no timestamp. */
     if (clock == NULL || !clock->initialized || clock->rate == 0u) {
         return;
     }
@@ -511,102 +513,24 @@ void mdkr_present_deadline_feedback(MdkrPresentDeadlineClock *clock,
         clock->rerate_streak = 0u;
         return;
     }
-    /* RATE: consecutive display-bound completions sample the display's own
-     * period; sustained deviation re-rates the grid, and a measurement back
-     * inside SNAP_PPM of nominal restores the exact rational grid. */
-    if (block_ns >= MDKR_PRESENT_DISCIPLINE_PUNISH_NS) {
-        /* The display pushed back: every early pull since the last block
-         * was legitimate phase-seeking, not proof of a faster panel. */
-        clock->early_credit_ns = 0u;
-    } else {
-        clock->early_credit_ns += MDKR_PRESENT_DISCIPLINE_CREEP_NS;
-    }
-    if (block_ns > MDKR_PRESENT_DISCIPLINE_BOUND_MIN_NS) {
-        if (clock->last_bound_ns != 0u && now_ns > clock->last_bound_ns) {
-            uint64_t sample_ns = now_ns - clock->last_bound_ns;
-            if (sample_ns >= UINT64_C(2000000) &&
-                sample_ns <= UINT64_C(50000000)) {
-                uint64_t sample_fp = sample_ns << 8;
-                if (clock->period_ema_fp == 0u) {
-                    clock->period_ema_fp = period_fp;
-                }
-                clock->period_ema_fp +=
-                    ((int64_t)sample_fp - (int64_t)clock->period_ema_fp) >>
-                    MDKR_PRESENT_DISCIPLINE_EMA_SHIFT;
-                {
-                    uint64_t diff = clock->period_ema_fp > period_fp
-                                        ? clock->period_ema_fp - period_fp
-                                        : period_fp - clock->period_ema_fp;
-                    uint64_t ppm = period_fp == 0u
-                                       ? 0u
-                                       : (diff * UINT64_C(1000000)) /
-                                             period_fp;
-                    if (ppm > MDKR_PRESENT_DISCIPLINE_RERATE_PPM) {
-                        clock->rerate_streak++;
-                        if (clock->rerate_streak >=
-                            MDKR_PRESENT_DISCIPLINE_RERATE_CONFIRM) {
-                            uint64_t nominal_fp =
-                                (NS_PER_SECOND << 8) /
-                                (uint64_t)clock->rate;
-                            uint64_t ndiff =
-                                clock->period_ema_fp > nominal_fp
-                                    ? clock->period_ema_fp - nominal_fp
-                                    : nominal_fp - clock->period_ema_fp;
-                            uint64_t nppm =
-                                (ndiff * UINT64_C(1000000)) / nominal_fp;
-                            /* Re-anchor so the new period starts from the
-                             * present instant; the phase controller trims
-                             * the sub-period residue. */
-                            clock->period_override_fp =
-                                nppm <= MDKR_PRESENT_DISCIPLINE_SNAP_PPM
-                                    ? 0u
-                                    : clock->period_ema_fp;
-                            clock->origin_ns = now_ns;
-                            clock->next_index = 1u;
-                            clock->rerate_streak = 0u;
-                        }
-                    } else {
-                        clock->rerate_streak = 0u;
-                    }
-                }
-            }
-        }
-        clock->last_bound_ns = now_ns;
-    } else {
-        clock->last_bound_ns = 0u;
-        clock->rerate_streak = 0u;
-    }
-    /* Staleness: see the CREDIT_PERIODS comment in the header. Two full
-     * periods of unpunished early pull prove the panel outruns the
-     * override; decay a quarter of the gap toward nominal and let honest
-     * blocks re-rate it back if this ever overshoots. */
-    if (clock->period_override_fp != 0u &&
-        clock->early_credit_ns >=
-            (clock->period_override_fp >> 8) *
-                (uint64_t)MDKR_PRESENT_DISCIPLINE_CREDIT_PERIODS) {
-        const uint64_t nominal_fp =
-            (NS_PER_SECOND << 8) / (uint64_t)clock->rate;
-        uint64_t gap = clock->period_override_fp > nominal_fp
-                           ? clock->period_override_fp - nominal_fp
-                           : nominal_fp - clock->period_override_fp;
-        gap >>= 1; /* halve the gap each decay step */
-        {
-            const uint64_t decayed = clock->period_override_fp > nominal_fp
-                                         ? nominal_fp + gap
-                                         : nominal_fp - gap;
-            const uint64_t ppm = (gap * UINT64_C(1000000)) / nominal_fp;
-            clock->rerate_expiries++;
-            clock->early_credit_ns = 0u;
-            clock->period_ema_fp = 0u;
-            if (ppm <= MDKR_PRESENT_DISCIPLINE_SNAP_PPM) {
-                clock->period_override_fp = 0u; /* home: exact grid */
-            } else {
-                clock->period_override_fp = decayed;
-            }
-            clock->origin_ns = now_ns;
-            clock->next_index = 1u;
-        }
-    }
+    /*
+     * NO RATE ADAPTATION — deliberately. Three field iterations tried to
+     * learn the display's true period from acquire-block intervals and
+     * every one produced a worse defect than it fixed: the samples are
+     * compositor recycling noise, not vblank cadence; a wrong lock is
+     * self-fulfilling (releasing at 106 Hz measures 106 Hz forever); a
+     * hard expiry thrashed (3,506 overrun drops per gate run); an
+     * unpunished-creep decay never fired because compositor hiccups
+     * punish the credit under any rate. Measured user impact of a stale
+     * override: ~11 forced repeats per second under a ~117 Hz panel — a
+     * 13 Hz strobe on every camera pan. The nominal exact-rational grid
+     * plus the phase controller below absorbs real-world integer-rate
+     * error (119.88-vs-120 needs 8.3 us/frame of slew, well inside the
+     * clamp), and a display genuinely slower than nominal paces the loop
+     * through the blocking acquire itself. Simple, and with the slot
+     * quantum exactly fieldHz/rate the projected alpha is uniform by
+     * construction.
+     */
     /* PHASE: trend early by CREEP; arriving early enough to block past
      * TARGET pushes the origin later by a clamped fraction of the excess. */
     delta = -(int64_t)MDKR_PRESENT_DISCIPLINE_CREEP_NS;
