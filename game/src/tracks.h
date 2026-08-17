@@ -64,13 +64,24 @@ typedef struct unk8011C238 {
     s16 unkA;
 } unk8011C238;
 
-/* Size: 0x8 bytes */
+/* Size: 0x8 bytes (retail). NATIVE_PORT appends a presentation-only field. */
 typedef struct unk8011D478 {
     s16 unk0;
     s16 unk2;
     s16 unk4;
     s8 unk6;
     s8 unk7;
+#ifdef NATIVE_PORT
+    /* WORLD-STABLE identity of the void plane this entry belongs to: a hash
+     * of the sliced world triangle (segment pointer + face index) or the
+     * segment bounding box, set at push time (see sVoidPendingKey). The
+     * entry's own coordinates are slices of a CAMERA-anchored plane and move
+     * every tick, but the world triangle they were sliced FROM does not —
+     * this key is what lets the interpolation pair a curtain quad with
+     * last tick's build of the same gap regardless of sort-order churn
+     * during pans. Presentation-only: never read by simulation code. */
+    u32 stableKey;
+#endif
 } unk8011D478;
 
 /* Size: 0x14 bytes */
