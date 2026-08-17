@@ -947,9 +947,11 @@ static bool wgpu_backpressure_check_below(
 }
 
 static unsigned wgpu_backpressure_limit_before_frame(void) {
-    return gfx_dkr_replay_pass_active()
-        ? WGPU_FRAME_IN_FLIGHT_MAX - 1u
-        : WGPU_FRAME_IN_FLIGHT_MAX;
+    if (!gfx_dkr_replay_pass_active() ||
+        platform_present_replay_queue_ahead()) {
+        return WGPU_FRAME_IN_FLIGHT_MAX;
+    }
+    return WGPU_FRAME_IN_FLIGHT_MAX - 1u;
 }
 
 static void wgpu_track_frame_submission(void) {
@@ -1934,8 +1936,10 @@ static bool wgpu_start_frame(void) {
             wgpu_backpressure_limit_before_frame(), true,
             runtime_admission)) {
         /* Return without opening an encoder so the scheduler stays responsive.
-         * Replays reserve one slot for the next authored endpoint; authored
-         * frames may use both slots but never block for either one. */
+         * Unpaced replays reserve one slot for the next authored endpoint.
+         * A native replay already spaced on a blocking display policy may use
+         * that slot to prepare the next refresh; authored frames may always use
+         * both slots, and neither path blocks here. */
         if (replay) {
             s_gpu_replay_admission_skips++;
         } else {

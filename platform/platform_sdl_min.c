@@ -4102,6 +4102,7 @@ unsigned platform_present_display_rate(void) {
 static void present_pace_lazy_init(void) {
     MdkrPresentPolicy effectivePolicy;
     bool heldFrameDeadline;
+    bool backendDisplayDeadline = false;
     if (s_presentActive >= 0) {
         return;
     }
@@ -4152,16 +4153,34 @@ static void present_pace_lazy_init(void) {
              * unreported refresh keeps a deterministic 60 Hz stand-in. */
             s_presentEffectiveRate = 60u;
         }
-        s_presentSoftwareDeadline = heldFrameDeadline;
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+        /*
+         * Native WebGPU FIFO constrains surface retirement but does not pace
+         * this thread: wgpuSurfacePresent returns after queueing the image.
+         * Without a deadline the very next replay is attempted immediately,
+         * rejected while that image is in flight, and only the rejection arms
+         * the shed floor. The resulting submit/hold alternation is visible as
+         * uneven motion on a 120 Hz VRR display even when interpolation math is
+         * exact. Space every opportunity on the reported display cadence.
+         * Browser WebGPU is excluded because requestAnimationFrame is already
+         * its opportunity clock; GL retains its blocking swap interval.
+         */
+        backendDisplayDeadline =
+            s_paceMode == PACE_REALTIME &&
+            s_presentEffectiveRate != 0u &&
+            mdkr_render_backend() == MDKR_BACKEND_WEBGPU;
+#endif
+        s_presentSoftwareDeadline =
+            heldFrameDeadline || backendDisplayDeadline;
     } else if (s_presentKind == MDKR_PRESENT_DISPLAY_MARGIN) {
         /*
          * The one policy whose whole content is a SOFTWARE cadence strictly
-         * under the display's. `display` deliberately installs no limiter and
-         * lets the blocking queue set the pace; this one cannot do that,
-         * because the queue's pace IS the refresh and the point here is to
-         * finish before it. So the deadline grid is unconditional rather than
-         * inherited from heldFrameDeadline: it is the mechanism, not a
-         * fallback for held frames.
+         * under the display's. A blocking GL swap can pace `display` directly,
+         * while native WebGPU now installs a matching deadline because its FIFO
+         * present call is nonblocking. Neither can serve a cadence deliberately
+         * below refresh, so this deadline grid is unconditional rather than
+         * inherited from heldFrameDeadline: it is the mechanism, not a fallback
+         * for held frames.
          *
          * The margin is applied to the SAME live refresh `display` follows,
          * including the synthetic stand-in, so a headless run is deterministic
@@ -4199,14 +4218,29 @@ static void present_pace_lazy_init(void) {
     }
     s_presentLastNs = pace_host_ns();
     MDKR_TRACE("present pace: policy=%s rate=%u tickFields=%d fieldHz=%d "
-               "heldDeadline=%d",
+               "heldDeadline=%d backendDisplayDeadline=%d",
                present_sched_present_policy_name(), s_presentEffectiveRate,
-               s_minFields, s_fieldHz, heldFrameDeadline ? 1 : 0);
+               s_minFields, s_fieldHz, heldFrameDeadline ? 1 : 0,
+               backendDisplayDeadline ? 1 : 0);
 }
 
 int platform_present_subloop_fields(void) {
     present_pace_lazy_init();
     return s_presentActive;
+}
+
+int platform_present_replay_queue_ahead(void) {
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
+    present_pace_lazy_init();
+    return s_paceMode == PACE_REALTIME &&
+           s_presentSoftwareDeadline &&
+           s_presentDisplayRate != 0u &&
+           !present_sched_allow_tearing() &&
+           present_sched_present_sync(s_presentDisplayRate) ==
+               MDKR_PRESENT_SYNC_BLOCKING;
+#else
+    return 0;
+#endif
 }
 
 /*
@@ -4500,10 +4534,13 @@ uint64_t platform_present_display_quantum_units(void) {
          * Declining here is what keeps every headless arm byte-identical. */
         return 0u;
     }
-    if (!s_presentActive || s_presentSoftwareDeadline) {
+    if (!s_presentActive ||
+        (s_presentSoftwareDeadline &&
+         s_presentKind != MDKR_PRESENT_DISPLAY)) {
         /* Original presents one image per tick, and a software cadence is
-         * already the thing spacing presents -- its grid, not the display's,
-         * is what an opportunity lands on. */
+         * already the thing spacing presents. A display policy's software
+         * deadline is itself the reported display grid, so it remains a valid
+         * projection source; numeric and display-margin grids are not. */
         return 0u;
     }
     if (s_presentDisplayRate == 0u || present_sched_allow_tearing()) {

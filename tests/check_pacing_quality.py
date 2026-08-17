@@ -188,6 +188,12 @@ ONE_TICK_PPM = 1_000_000
 # getting worse, not as evidence that it got better.
 ALPHA_VAR_MAX_PPM2 = 30_000_000_000
 DISPLAYED_P99_MAX_US = 40_000
+# A paced native WebGPU display run should not manufacture an immediate replay
+# after each nonblocking FIFO present and then shed it at the one-frame replay
+# admission boundary. Allow startup and host noise, but reject the alternating
+# submit/hold pattern that made continuously scrolling hub waterfalls shimmer
+# on 120 Hz VRR panels (measured 8,833 / 13,646 attempts before the fix).
+REPLAY_SKIP_MAX_FRACTION = 0.05
 
 # The display-change arm's transition. 100 is deliberately BETWEEN the two
 # refresh rates: a 100 Hz cap wants a latest-image queue against a 60 Hz
@@ -712,6 +718,19 @@ def check_realtime_quality(result: Run) -> list[str]:
             f"{label}: displayed-interval p99 {p99}us exceeds "
             f"{DISPLAYED_P99_MAX_US}us — the slowest 1% of frames are "
             "arriving late enough to be seen")
+    replay_skips = result.pressure.get("replaySkips", -1)
+    interpolated = result.summary.get("interp", -1)
+    replay_attempts = replay_skips + interpolated
+    if (replay_skips < 0 or interpolated < 0 or replay_attempts <= 0):
+        failures.append(
+            f"{label}: missing replay admission census "
+            f"(interp={interpolated}, replaySkips={replay_skips})")
+    elif replay_skips > replay_attempts * REPLAY_SKIP_MAX_FRACTION:
+        failures.append(
+            f"{label}: WebGPU shed {replay_skips}/{replay_attempts} "
+            f"interpolation replays, above "
+            f"{REPLAY_SKIP_MAX_FRACTION:.0%} — optional frames are not being "
+            "offered on an evenly paced display clock")
     failures.extend(check_vblank_projection(result))
     failures.extend(check_alpha_quantum_strict(result))
     return failures
