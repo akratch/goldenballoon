@@ -284,3 +284,49 @@ and computer racers' vertex animation is authored at 15 Hz.
   is ever wanted, the contract would be phase-aligned frame selection or a
   two-frame cross-fade — both diverge from authored appearance and are
   deliberately NOT planned.)
+
+## DEEP DIVE VERDICT (2026-08-17, investigation paused at user request)
+
+**The dominant remaining defect is not in this renderer.** Frame-delivery
+accounting across all five instrumented play sessions: 23-55% of fully
+rendered, submitted frames were REFUSED a drawable at the present boundary
+(`[WGPU-BACKPRESSURE] unavailable` = 23,094/47,459; 10,196/18,474;
+2,037/13,373; 6,451/21,300; 2,879/12,528) and silently shown as repeats.
+Classification is proven three ways: (1) elimination on independent
+counters — discipline-layer unavailable=0 (no Timeout/Outdated while
+presentable), [PRESENT-MODE] rows = 1 + user resizes (no Outdated/Lost),
+no 120-consecutive-timeout fatal despite bursts (only Occluded resets the
+recovery counter); (2) disassembly of the vendored wgpu-native v29.0.1.1:
+`Surface::acquire_texture` checks `NSWindow.occlusionState` BEFORE
+`nextDrawable` and returns Occluded (0x30001) without acquiring when
+NSWindowOcclusionStateVisible is clear; (3) the upstream regression family
+is documented: wgpu-native #590, wgpu #9430 / #9410 / #10087 (introduced
+by wgpu PR #9141 in v29) — including terminal-launched apps never
+receiving the visible bit. Every instrumented session was terminal-
+launched. The app is occlusion-blind (sdl2-compat has no occlusion flag)
+and treats Occluded as benign-transient, so each storm frame silently
+drops a rendered image: dead-center whole-frame strobing, worst while
+eye-tracking a pan, invisible to offscreen dumps, and untouched by all
+seven renderer-layer fixes (each of which was real and remains landed).
+
+Resume protocol (info per minute; record unavailable= for each):
+1. Launch via Finder/.app instead of terminal, same hub pan (~2 min).
+   unavailable~0 + clean falls => confirmed; fix = patch/pin wgpu-native
+   occlusion gate + app-side occlusion cross-check + status-split
+   telemetry in wgpu_report_backpressure.
+2. Accessibility "Dim Flashing Lights" check (30 s).
+3. MDKR_RENDERER=gl A/B (2 min) — clean GL indicts the WebGPU present.
+4. Fixed 60 Hz display mode A/B (2 min) — VRR amplifier check.
+5. External non-miniLED display (2 min) — panel-layer check.
+6. F9 bracket while flashing; dumps clean + eyes flashing locks in the
+   present-layer classification.
+
+Secondary (real, lower priority, from the authored-walk audit): the void
+curtain still has three port-amplified caps that can drop waterfall
+content on authored frames under the widened lens — gVoidPrimLimit=45
+saturation (the 44-plane sorter fix RAISED demand into this ceiling),
+D_8011D47C is s8 (index truncation above 128 entries => garbage quads /
+slivers), and the whole-curtain bail at 175 entries. Instrument
+per-tick {D_8011D49E, gVoidPrimCount saturation, sorter-abort hits} in
+one pan bracket, then raise limits in lockstep (prim limit ~180, s16
+indices, clamp-not-bail at 175).
