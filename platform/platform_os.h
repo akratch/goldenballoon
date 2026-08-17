@@ -323,6 +323,15 @@ extern const char *g_dumpFramesDir;
  * WebGPU uses this to make that explicit diagnostic capture exact even when
  * ordinary runtime admission is intentionally nonblocking. */
 int platform_frame_dump_due(void);
+/*
+ * F9 presentation-defect capture. While active every present is dumped
+ * (subject to --dump-frames) and the replay layers emit synchronized
+ * per-frame [CAPTURE*] diagnostics so a visible artifact can be bracketed
+ * with exact frames + logs. Toggled from the SDL key handler; readable from
+ * any replay-path code.
+ */
+int  platform_capture_active(void);
+void platform_capture_toggle(void);
 /* WebGPU evidence captures admit a short sequence immediately before a due
  * frame so renderer-only temporal state cannot depend on how many earlier
  * nonblocking opportunities each A/B arm happened to obtain. */

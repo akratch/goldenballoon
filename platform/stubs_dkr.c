@@ -158,6 +158,47 @@ EM_ASYNC_JS(int, mdkr_persist_save_async, (int kind), {
 #include "gfx_ptr.h"     /* gfx_ptr_store — register non-arena DL pointers */
 #include "fast3d/gfx_shadow_frame.h"
 #include "fast3d/gfx_pc_dkr.h"
+#include "fast3d/gfx_presentation_packet.h" /* F9 capture per-frame rows */
+
+/*
+ * F9 capture: one synchronized row per PRESENT while the player holds the
+ * toggle, keyed by the same g_frameCounter the frame dumper names its
+ * files with. The deltas are the packet census counters that attribute a
+ * defect to its stage — a shard frame shows its jump-hold or topology
+ * refusal on the row wearing the exact number of the dumped image.
+ */
+static void capture_frame_row(int endpoint, int drew, uint64_t numerator,
+                              uint64_t denominator) {
+    static GfxPresentationPacketStats last;
+    GfxPresentationPacketStats now;
+    extern int g_frameCounter;
+
+    if (!platform_capture_active()) {
+        return;
+    }
+    gfx_presentation_packet_get_stats(&now);
+    fprintf(stderr,
+            "[CAPTURE] frame=%d endpoint=%d drew=%d alpha=%llu/%llu "
+            "dDeform=%llu dJump=%llu dIncompat=%llu dTopo=%llu "
+            "dUvConfirm=%llu dUvHold=%llu dPhaseHold=%llu\n",
+            g_frameCounter, endpoint, drew,
+            (unsigned long long)numerator, (unsigned long long)denominator,
+            (unsigned long long)(now.deformation_overrides -
+                                 last.deformation_overrides),
+            (unsigned long long)(now.renderer_vertex_jump_holds -
+                                 last.renderer_vertex_jump_holds),
+            (unsigned long long)(now.deformation_incompatible -
+                                 last.deformation_incompatible),
+            (unsigned long long)(now.topology_mismatches -
+                                 last.topology_mismatches),
+            (unsigned long long)(now.uv_scroll_confirmations -
+                                 last.uv_scroll_confirmations),
+            (unsigned long long)(now.uv_scroll_holds -
+                                 last.uv_scroll_holds),
+            (unsigned long long)(now.deformation_phase_holds -
+                                 last.deformation_phase_holds));
+    last = now;
+}
 #include "rcp_dkr.h"
 
 #ifndef __EMSCRIPTEN__
@@ -789,6 +830,7 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                  * tick that just became due, so the phase is that tick with no
                  * sub-tick offset. */
                 present_perf_note_present(tick_displayed, 0u, 1u);
+                capture_frame_row(1, tick_displayed ? 1 : 0, 0u, 1u);
             }
             if (!oracle_variable_ticket && subloop && !catchup_ticket) {
                 /*
@@ -905,6 +947,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                         if (!elided) {
                             present_perf_note_present(
                                 drew, drawn_numerator, drawn_denominator);
+                            capture_frame_row(0, drew ? 1 : 0,
+                                              drawn_numerator,
+                                              drawn_denominator);
                         }
                     }
                 }
