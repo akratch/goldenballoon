@@ -232,10 +232,47 @@ If smear persists in cutscenes after this fix, the next suspects are the
 `deformincompatible` population (~2.6/tick, needs per-owner attribution)
 and sample-and-hold persistence at the panel's adaptive ~91-99 Hz.
 
+## Third wave (2026-08-17): menu-shell scenes captured zero cameras
+
+The second playtest narrowed the residual to cutscene/attract characters
+(Taj's greeting entrance, title-screen racer demos) and "falls terrible
+only while moving". Frame dumps made the mechanism unambiguous: in the Taj
+bridge shot, consecutive 120 Hz frames measured 0.33/0.33/0.33/6.2 — three
+near-identical interiors then a 19x endpoint jump. UV scrolls kept gliding
+(which is why static falls looked fine) while the camera and every object
+stepped at 30 Hz; a scene whose framing steps takes the falls with it,
+hence "fine static, terrible moving". Scheduler telemetry agreed:
+`interp=6872` replays but `interpviews=5712` — 1,160 replays drew with no
+interpolated camera view at all.
+
+Root cause: `capture_cameras` (presentation_snapshot_walk.c) captured
+cameras under `GAMEMODE_MENU` only for `RACETYPE_CUTSCENE_1/2` levels. The
+title attract demos are live AI races loaded by the menu shell as
+`RACETYPE_DEFAULT` (player count 0, not the cutscene sentinel), and the
+Taj greeting cinematic falls in the same class — those scenes captured
+ZERO cameras every tick, so `mdkr_camera_interpolated_view_projections`
+had nothing to substitute and the fail-closed design correctly rendered
+authored frames only. Fix: capture for EVERY loaded level scene under the
+menu shell; the menu-borrow hazard the old gate guarded against still
+cannot pass, because a borrowing menu never latches an authored camera
+record and `authored_cameras_copy()` returns zero entries for it.
+
+Frame-dump proof, same shot, same window: flat ~1.96 per-frame advance
+after the fix (no periodicity). Gates: camera snapshot coverage,
+presentation lifecycle, byte-identity, pacing quality, 194/194 unit — all
+PASS.
+
+Also established this wave: the wave-grid topology snap on 5x5 window
+shifts is CORRECT (buffer slots are reused by different world tiles, so
+cross-shift vertex lerp would smear two tiles together); cutscene-vehicle
+wheel/prop parts advance `modelIndex` per tick (authored flipbook class);
+and computer racers' vertex animation is authored at 15 Hz.
+
 ## Remaining work
 
-- Visual re-test of falls and the Taj summon cutscene after the
-  single-tick acceptance fix.
+- Visual re-test: falls while driving, Taj entrance, title attract racers.
+- Per-owner attribution of the residual `deformincompatible` (~2.6/tick)
+  population if character smear persists anywhere after this wave.
 - ROG Ally 120 Hz VRR qualification with the same acceptance numbers.
 - Endpoint lead auto-sizing from `leadmissmeanus` telemetry; the game-pass
   cost (~5-6 ms, dominated by the real walk) also bounds how good any lead
