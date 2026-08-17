@@ -3864,12 +3864,36 @@ static uint64_t pace_sleep_until(uint64_t target_ns) {
         }
     }
 #else
+    /*
+     * POSIX mirror of the Windows shape above: coarse-sleep to just short of
+     * the target, then finish with a yield spin. Darwin coalesces bare
+     * nanosleep wakes by whole milliseconds (more when the process is
+     * backgrounded), and a wake that lands a slot late is a displayed frame
+     * the player never gets back. The spin window is the same one
+     * millisecond Windows uses; sched_yield keeps it polite.
+     */
+#define PACE_POSIX_SPIN_NS UINT64_C(1000000)
     while (now < target_ns) {
         uint64_t rem = target_ns - now;
-        struct timespec req;
-        req.tv_sec  = (time_t)(rem / 1000000000ULL);
-        req.tv_nsec = (long)(rem % 1000000000ULL);
-        nanosleep(&req, NULL);
+        if (rem <= PACE_POSIX_SPIN_NS) {
+            /* Micro-sleeps this short do not get coalesced by whole
+             * milliseconds the way a single full-remainder nanosleep does,
+             * and they keep the finish polite without <sched.h>, which
+             * collides with the ROM SDK headers this file also pulls in. */
+            struct timespec req;
+            req.tv_sec = 0;
+            req.tv_nsec = 100000; /* 100 us */
+            nanosleep(&req, NULL);
+            now = pace_host_ns();
+            continue;
+        }
+        {
+            const uint64_t coarse = rem - PACE_POSIX_SPIN_NS;
+            struct timespec req;
+            req.tv_sec  = (time_t)(coarse / 1000000000ULL);
+            req.tv_nsec = (long)(coarse % 1000000000ULL);
+            nanosleep(&req, NULL);
+        }
         now = pace_host_ns();
     }
 #endif

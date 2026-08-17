@@ -264,8 +264,17 @@ uint64_t mdkr_present_quantize_phase(uint64_t phase_units,
  * soft repeat of (nearly) the incoming endpoint image rather than a
  * mid-tick stutter.
  */
-#define MDKR_PRESENT_SLOT_SNAP_NUM 6u
-#define MDKR_PRESENT_SLOT_SNAP_DEN 10u
+/*
+ * The snap window separates wake noise from a genuinely missed display
+ * slot. Under a blocking FIFO the glass cadence is even no matter how
+ * noisy the CPU wakes are, so everything short of a whole-slot deviation
+ * is noise to be rejected; a real miss shows up as a full quantum. 3/4
+ * splits those: it absorbs the endpoint lead (<=8 ms cap, typically 3 ms)
+ * plus worst-case scheduler jitter, while a +1.0-quantum miss still lands
+ * outside and re-anchors.
+ */
+#define MDKR_PRESENT_SLOT_SNAP_NUM 3u
+#define MDKR_PRESENT_SLOT_SNAP_DEN 4u
 
 typedef struct MdkrPresentSlotState {
     uint64_t last_units; /* last drawn phase, accumulator units */
