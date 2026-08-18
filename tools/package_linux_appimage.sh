@@ -347,6 +347,28 @@ if [[ -n "$tool" ]]; then
       --runtime-file "$runtime" "$appdir" "$appimage"; then
     echo "wrote $appimage"
     appimage_made=true
+  # Some binfmt-restricted environments (x86_64 containers under CPU
+  # emulation) refuse to exec the AppImage-runtime ELF at all, so the
+  # --appimage-extract-and-run flag above is never reached. The payload is
+  # still the same sha256-verified bytes: unpack its squashfs directly and
+  # run the inner AppRun. Direct exec succeeds everywhere else, so this
+  # branch stays dormant on the hosted lanes.
+  elif command -v unsquashfs >/dev/null 2>&1; then
+    echo "WARN: direct appimagetool exec failed; extracting its payload instead." >&2
+    tool_offset="$(readelf -h "$tool" | awk '
+      /Start of section headers/ { start = $NF }
+      /Size of section headers/ { size = $(NF-1) }
+      /Number of section headers/ { count = $(NF-0) }
+      END { print start + size * count }')"
+    if [[ -n "$tool_offset" ]] && \
+        unsquashfs -q -o "$tool_offset" -d "$work/appimagetool-root" "$tool" && \
+        ARCH=x86_64 "$work/appimagetool-root/AppRun" \
+          --runtime-file "$runtime" "$appdir" "$appimage"; then
+      echo "wrote $appimage (via extracted appimagetool payload)"
+      appimage_made=true
+    else
+      echo "WARN: AppImage build failed (extracted-payload fallback)." >&2
+    fi
   else
     echo "WARN: AppImage build failed." >&2
   fi
