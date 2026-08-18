@@ -1354,6 +1354,24 @@ phone signaling is forcibly unavailable, then the same seat rotates its epoch,
 rebinds and accepts fresh input after signaling returns. The one-attempt smoke
 must remain `STOP`; it cannot counterfeit hosted evidence.
 
+`tests/check_party_native_e2e.py` is the only gate that runs the native half
+for real: the packaged host model with its production libdatachannel transport
+(the `mdkr_native_party_e2e_driver` binary, which the check owns — it is
+deliberately not a ctest), a live `wrangler dev --local` Party Worker, and the
+shipped `/controller/` page in headless Chromium. The transport speaks plain
+`ws://` to the loopback Worker only under `MDKR_INTERNAL_TEST_TOKEN`; the
+bringup gate separately proves loopback HTTP stays refused without it. Its
+golden path requires the pending controller — which the real Worker reports
+with `"seat": null` — to be visible to the driver before approval, the
+driver's ECDH pairing phrase to match the page's rendered phrase, and fifty
+non-neutral pad packets to cross the real ingress after Connected. Its second
+scenario swallows the first `webrtc_offer` frame on the phone and requires the
+signaling retry deadline to reach Connected inside sixty seconds; its third
+SIGSTOPs the driver for three seconds mid-stream and requires a Connected
+controller with fresh input within five seconds of resuming, which drives the
+bounded transport queue and the host's custody self-heal through the true
+stack.
+
 The controller-page gate additionally covers exact 43-character fragment
 scrubbing, embedded private share/copy recovery, capability-free public-page
 share/copy plus code guidance, acknowledged duplicate-tab private navigation,

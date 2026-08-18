@@ -897,6 +897,10 @@ CHECKS = (
           "the shipped recovery copy, local play stays reachable"),
     Check("phone_party_webrtc", "check_phone_party_webrtc.py", "browser_local",
           "direct phone state/control channels, input-test RTT and wasm handoff queue"),
+    Check("party_native_e2e", "check_party_native_e2e.py", "browser_local",
+          "native host driver, real local Worker and real controller page: "
+          "seatless pending entry, matched phrases, Connected with real "
+          "input, dropped-offer retry under 60s and 3s-stall recovery"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
           "and explicit uncapped/display-margin-to-display semantics"),

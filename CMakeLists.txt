@@ -816,6 +816,37 @@ if(NOT EMSCRIPTEN)
                         -Wall -Wextra -Wpedantic -Werror)
                 endif()
                 add_test(NAME match_peer_crypto COMMAND mdkr_match_peer_crypto_test)
+
+                # End-to-end lane driver: the real WSS/WebRTC transport under
+                # the real host model, narrated on stdout. Deliberately no
+                # add_test() — it needs a live local Party Worker and a paired
+                # controller page that only tests/check_party_native_e2e.py
+                # provides, so that check owns running it (the same
+                # script-owns-binary split the GPU-adjacent gates use).
+                add_executable(mdkr_native_party_e2e_driver
+                    ${CMAKE_SOURCE_DIR}/tests/test_native_party_e2e_driver.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c
+                    ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp)
+                target_include_directories(mdkr_native_party_e2e_driver PRIVATE
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_native_party_e2e_driver SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_features(mdkr_native_party_e2e_driver PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_native_party_e2e_driver PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS
+                    Threads::Threads)
+                if(MSVC)
+                    target_compile_options(mdkr_native_party_e2e_driver PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_native_party_e2e_driver PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
             endif()
         endif()
 

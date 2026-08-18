@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -118,6 +120,37 @@ public:
     virtual bool poll(MdkrPartyTransportEvent &event) = 0;
     virtual void shutdown() = 0;
 };
+
+/*
+ * Loopback test gate for the end-to-end lane (tests/check_party_native_e2e.py).
+ * True only when BOTH hold: `url` is a plain-HTTP loopback URL — it starts
+ * with `http://127.0.0.1` or `http://localhost` followed by nothing, `:` or
+ * `/` (so `http://127.0.0.1.evil.example` never matches) — AND the process
+ * carries MDKR_INTERNAL_TEST_TOKEN=mdkr64-party-e2e-v1. Without the token
+ * every HTTP origin, loopback included, stays refused exactly as before, so
+ * the shipped fail-closed HTTPS-only posture is unchanged. This mirrors the
+ * Party service itself, which accepts plain HTTP solely for
+ * standards-defined loopback development (services/party/src/security.ts).
+ * Inline because the host model and the transport check it independently
+ * and are linked in different combinations by different test binaries.
+ */
+inline bool mdkr_party_loopback_test_url_allowed(const std::string &url) {
+    const char *token = std::getenv("MDKR_INTERNAL_TEST_TOKEN");
+    if (token == nullptr ||
+        std::strcmp(token, "mdkr64-party-e2e-v1") != 0) {
+        return false;
+    }
+    for (const char *prefix : {"http://127.0.0.1", "http://localhost"}) {
+        const size_t length = std::strlen(prefix);
+        if (url.compare(0u, length, prefix) != 0) continue;
+        /* Host boundary: the loopback name must end here, at a port, or at
+         * a path — never continue into a longer hostname. */
+        if (url.size() == length) return true;
+        const char next = url[length];
+        if (next == ':' || next == '/') return true;
+    }
+    return false;
+}
 
 class MdkrNativePartyHost {
 public:

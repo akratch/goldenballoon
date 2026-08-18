@@ -78,8 +78,22 @@ FetchContent_Declare(mdkr_libdatachannel
     PATCH_COMMAND "${CMAKE_COMMAND}"
       "-DSOURCE_DIR=<SOURCE_DIR>"
       "-DPATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-windows-mbedtls-verify.patch"
+      "-DDTLS_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-mbedtls-dtls-read-length.patch"
       -P "${CMAKE_SOURCE_DIR}/cmake/apply_libdatachannel_patch.cmake")
 FetchContent_MakeAvailable(mdkr_libdatachannel)
+
+# The DTLS read-length fix is load-bearing on every platform: without it the
+# Mbed TLS server side reports whole-buffer datagrams and no phone's first
+# DTLS flight can ever complete the handshake. A checkout that lost the patch
+# (for example a FETCHCONTENT_SOURCE_DIR override pointing at a pristine
+# clone, which skips PATCH_COMMAND) must fail configuration, not pairing.
+file(READ "${mdkr_libdatachannel_SOURCE_DIR}/src/impl/dtlstransport.cpp"
+    MDKR_LIBDATACHANNEL_DTLS_SOURCE)
+if(NOT MDKR_LIBDATACHANNEL_DTLS_SOURCE MATCHES "return int\\(bufMin\\)")
+    message(FATAL_ERROR
+        "libdatachannel Mbed TLS DTLS read-length patch was not applied")
+endif()
+unset(MDKR_LIBDATACHANNEL_DTLS_SOURCE)
 
 if(WIN32)
     file(READ "${mdkr_libdatachannel_SOURCE_DIR}/src/impl/websocket.cpp"

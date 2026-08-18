@@ -80,7 +80,8 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
         return false;
     }
     if (serviceOrigin.size() > kMaxUrl ||
-        serviceOrigin.rfind("https://", 0u) != 0u) {
+        (serviceOrigin.rfind("https://", 0u) != 0u &&
+         !mdkr_party_loopback_test_url_allowed(serviceOrigin))) {
         setError("Phone controllers require the configured secure Party service.");
         return false;
     }
@@ -184,7 +185,8 @@ bool MdkrNativePartyHost::roomStateValid(
         !printable(room.controllerUrl, kMaxUrl) ||
         !printable(room.fallbackCode, 12u) ||
         (room.inviteActive &&
-         (room.controllerUrl.rfind("https://", 0u) != 0u ||
+         ((room.controllerUrl.rfind("https://", 0u) != 0u &&
+           !mdkr_party_loopback_test_url_allowed(room.controllerUrl)) ||
           room.fallbackCode.size() != 6u ||
           !std::all_of(room.fallbackCode.begin(), room.fallbackCode.end(),
                        [](unsigned char byte) { return std::isdigit(byte) != 0; })))) {

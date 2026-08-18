@@ -24,5 +24,17 @@ int main() {
     assert(!mdkr_party_sas_phrase_for_test(
         scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", std::string(87u, 'C'),
         hostKey, phrase));
+
+    /* Signaling-URL pins. The https form matters because libdatachannel's
+     * URL parser rejects anything else ("wss:://host" — the shape the old
+     * five-character in-place rewrite produced from an https origin — never
+     * even reaches the network); the ws form is the loopback lane
+     * tests/check_party_native_e2e.py drives against wrangler dev. */
+    assert(mdkr_party_signaling_url_for_test(
+               "https://party.example.com", "/api/party/native-create") ==
+           "wss://party.example.com/api/party/native-create");
+    assert(mdkr_party_signaling_url_for_test(
+               "http://127.0.0.1:8787", "/api/party/native-create") ==
+           "ws://127.0.0.1:8787/api/party/native-create");
     return 0;
 }

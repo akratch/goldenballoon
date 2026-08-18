@@ -52,6 +52,27 @@ const std::array<const char *, 32> kRight = {{
     "Thunder",
 }};
 
+/*
+ * Signaling URL construction, shared by the create and reconnect sockets and
+ * pinned by tests/test_native_party_sas.cpp through
+ * mdkr_party_signaling_url_for_test. An https origin becomes wss and the
+ * loopback test origin (gated in initialize() below) becomes plain ws. The
+ * previous in-place rewrite here replaced the first five characters with
+ * "wss:", which turned every https origin into "wss:://host/..." — a URL
+ * libdatachannel's RFC 3986 parser rejects outright, so the production
+ * socket could never even begin its handshake. Splitting on the exact
+ * scheme keeps both forms honest.
+ */
+std::string signalingUrl(const std::string &origin, const std::string &path) {
+    std::string url = origin;
+    if (url.rfind("https://", 0u) == 0u) {
+        url.replace(0u, 8u, "wss://");
+    } else {
+        url.replace(0u, 7u, "ws://");
+    }
+    return url + path;
+}
+
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         Clock::now().time_since_epoch()).count());
@@ -283,6 +304,13 @@ public:
         if (!identity_.generate()) return false;
         origin_ = serviceOrigin;
         while (!origin_.empty() && origin_.back() == '/') origin_.pop_back();
+        /* The host has already refused anything that is not HTTPS or the
+         * token-gated loopback test origin; re-checking here keeps this
+         * transport fail-closed even if it is ever driven directly. */
+        if (origin_.rfind("https://", 0u) != 0u &&
+            !mdkr_party_loopback_test_url_allowed(origin_)) {
+            return false;
+        }
         return connect(true);
     }
 
@@ -395,10 +423,9 @@ private:
         socket->onMessage([weak, generation](rtc::message_variant message) {
             if (auto state = weak.lock()) state->socketMessage(generation, message);
         });
-        std::string url = origin_;
-        url.replace(0u, 5u, "wss:");
-        url += create ? "/api/party/native-create"
-                      : "/api/party/" + roomId_ + "/connect";
+        const std::string url = signalingUrl(
+            origin_, create ? "/api/party/native-create"
+                            : "/api/party/" + roomId_ + "/connect");
         try {
             socket->open(url);
             return true;
@@ -594,7 +621,9 @@ private:
         if (!safeString(value, "roomId", room, 22u) || room.size() != 22u ||
             !safeString(value, "hostCredential", credential, 43u) ||
             credential.size() != 43u || !safeString(value, "controllerUrl", url, 2048u) ||
-            url.rfind("https://", 0u) != 0u || !safeString(value, "fallbackCode", code, 6u) ||
+            (url.rfind("https://", 0u) != 0u &&
+             !mdkr_party_loopback_test_url_allowed(url)) ||
+            !safeString(value, "fallbackCode", code, 6u) ||
             code.size() != 6u || !uintValue(value, "inviteGeneration", generation,
                 std::numeric_limits<unsigned>::max()) || generation == 0u ||
             !uintValue(value, "inviteExpiresInMs", expiresIn, 300000u) || expiresIn == 0u) {
@@ -851,6 +880,23 @@ private:
                 }
             }
         });
+        /* The peer must be registered BEFORE the first createDataChannel:
+         * creating the channel is what makes libdatachannel set the local
+         * description, and onLocalDescription fires as soon as it does.
+         * markOfferSent and sendPeerSignal both look this peer up in peers_
+         * and silently return when it is absent, so registering only after
+         * the channels exist (as this function originally did) raced the
+         * callback -- the first offer was discarded unsent, offerSentMs
+         * stayed 0, and the retry ladder (which reads offerSentMs == 0 as
+         * "no offer to retry yet") could never rescue the stranded phone. */
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (shuttingDown_) {
+                peer->connection->close();
+                return;
+            }
+            peers_[peer->id] = peer;
+        }
         rtc::DataChannelInit stateConfiguration;
         stateConfiguration.reliability.unordered = true;
         stateConfiguration.reliability.maxRetransmits = 0u;
@@ -859,6 +905,13 @@ private:
                 "mdkr-pad-state-v1", stateConfiguration);
             peer->control = peer->connection->createDataChannel("mdkr-pad-control-v1");
         } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = peers_.find(peer->id);
+                if (found != peers_.end() && found->second == peer) {
+                    peers_.erase(found);
+                }
+            }
             peer->connection->close();
             return;
         }
@@ -887,10 +940,6 @@ private:
                 if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
             }
         });
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!shuttingDown_) peers_[peer->id] = peer;
-        }
     }
 
     void peerDisconnected(const std::shared_ptr<Peer> &peer, bool failed) {
@@ -1164,6 +1213,11 @@ private:
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport() {
     return std::make_unique<LibDatachannelPartyTransport>();
+}
+
+std::string mdkr_party_signaling_url_for_test(
+    const std::string &origin, const std::string &path) {
+    return signalingUrl(origin, path);
 }
 
 bool mdkr_party_sas_phrase_for_test(
