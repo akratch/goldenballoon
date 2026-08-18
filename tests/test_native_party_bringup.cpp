@@ -427,12 +427,16 @@ void loopbackTestTokenGatesLoopbackHttp() {
         assert(host.view().inviteVisible);
     }
 
-    /* The token widens nothing beyond loopback: a public HTTP origin and a
-     * loopback-lookalike hostname stay refused even while it is set. */
+    /* The token widens nothing beyond loopback: a public HTTP origin, a
+     * loopback-lookalike hostname, and userinfo smuggling — where RFC 3986
+     * reads the loopback text as userinfo and the real host follows the
+     * '@' — all stay refused even while it is set. */
     const char *const stillRefused[] = {
         "http://party.example.invalid",
         "http://127.0.0.1.evil.example",
         "http://localhost.evil.example",
+        "http://127.0.0.1:@evil.example",
+        "http://localhost:8080@evil.example",
     };
     for (const char *origin : stillRefused) {
         mdkr_native_remote_pad_reset_all();

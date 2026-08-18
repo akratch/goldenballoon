@@ -147,7 +147,19 @@ inline bool mdkr_party_loopback_test_url_allowed(const std::string &url) {
          * a path — never continue into a longer hostname. */
         if (url.size() == length) return true;
         const char next = url[length];
-        if (next == ':' || next == '/') return true;
+        if (next != ':' && next != '/') continue;
+        /* The rest of the authority must not smuggle a real host behind
+         * userinfo: RFC 3986 reads "http://127.0.0.1:@evil.example/..." as
+         * userinfo "127.0.0.1:" at host evil.example. Allow the one port
+         * colon consumed above and refuse any '@' or further ':' before
+         * the path begins. */
+        for (size_t index = length + (next == ':' ? 1u : 0u);
+             index < url.size(); index++) {
+            const char byte = url[index];
+            if (byte == '/') break;
+            if (byte == '@' || byte == ':') return false;
+        }
+        return true;
     }
     return false;
 }

@@ -394,6 +394,11 @@ def scenario_stall(origin: str, binary: Path, chrome_path: str, base: Path,
         time.sleep(0.3)  # drain lines written before the stop landed
         baseline = latest_nonneutral(driver.snapshot())
         time.sleep(2.7)
+        # The stopped driver cannot print, so everything from this index on
+        # was emitted after the resume; the heal detection below must only
+        # look there (the normal approve flow already emits phase=leased
+        # once, long before the stall).
+        resume_index = len(driver.snapshot())
         os.kill(driver.proc.pid, signal.SIGCONT)
         stopped = False
 
@@ -410,9 +415,10 @@ def scenario_stall(origin: str, binary: Path, chrome_path: str, base: Path,
                 "input did not resume on a Connected controller within 5s "
                 f"of SIGCONT; baseline={baseline} "
                 f"last lines: {driver.snapshot()[-8:]}")
-        healed = any("phase=leased" in line
-                     for line in driver.snapshot()
-                     if CONTROLLER.match(line))
+        healed = any(
+            (value := CONTROLLER.match(line)) and
+            value.group(1) == controller_id and value.group(2) == "leased"
+            for line in driver.snapshot()[resume_index:])
         driver.wait_line(RESULT_OK.match, "result=ok", timeout)
         require(driver.wait_exit(10) == 0, "driver exited non-zero")
     finally:
