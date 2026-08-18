@@ -752,6 +752,7 @@ if(NOT EMSCRIPTEN)
         if(MDKR_NATIVE_PHONE_PARTY)
             list(APPEND APP_SOURCES
                 ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
                 ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp)
         else()
             list(APPEND APP_SOURCES
@@ -773,7 +774,8 @@ if(NOT EMSCRIPTEN)
             if(MDKR_NATIVE_PHONE_PARTY)
                 add_executable(mdkr_native_party_sas_test
                     ${CMAKE_SOURCE_DIR}/tests/test_native_party_sas.cpp
-                    ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp)
+                    ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp)
                 target_include_directories(mdkr_native_party_sas_test PRIVATE
                     ${CMAKE_SOURCE_DIR}/platform
                     ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}

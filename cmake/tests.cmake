@@ -1030,6 +1030,24 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME native_remote_pad_ingress
         COMMAND mdkr_native_remote_pad_ingress_test)
 
+    # The transport's bounded event queue, isolated from the network so its
+    # overflow policy (drop the oldest droppable pad packet; never drop a
+    # room/control event; never latch) is directly testable without a real
+    # WebSocket/WebRTC stack.
+    add_executable(mdkr_party_event_queue_test
+        ${CMAKE_SOURCE_DIR}/tests/test_party_event_queue.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp)
+    target_include_directories(mdkr_party_event_queue_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_party_event_queue_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(mdkr_party_event_queue_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_party_event_queue_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME party_event_queue COMMAND mdkr_party_event_queue_test)
+
     add_executable(mdkr_native_party_host_test
         ${CMAKE_SOURCE_DIR}/tests/test_native_party_host.cpp
         ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp

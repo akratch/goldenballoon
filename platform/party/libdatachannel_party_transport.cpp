@@ -1,5 +1,6 @@
 #include "libdatachannel_party_transport.h"
 #include "mozilla_ca_bundle.h"
+#include "party_event_queue.h"
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
@@ -14,7 +15,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
@@ -307,9 +308,21 @@ public:
     bool poll(MdkrPartyTransportEvent &event) {
         tick();
         std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.empty()) return false;
-        event = std::move(events_.front());
-        events_.pop_front();
+        if (drainedIndex_ >= drained_.size()) {
+            drained_ = queue_.drain();
+            drainedIndex_ = 0u;
+            /* Log a burst only when its size changes, not once per drained
+             * event: a sustained flood must not itself become a stderr
+             * flood. */
+            const uint64_t dropped = queue_.droppedPadPackets();
+            if (dropped != loggedDroppedPadPackets_) {
+                std::fprintf(stderr, "[PARTY-QUEUE] dropped=%llu\n",
+                    static_cast<unsigned long long>(dropped));
+                loggedDroppedPadPackets_ = dropped;
+            }
+        }
+        if (drainedIndex_ >= drained_.size()) return false;
+        event = std::move(drained_[drainedIndex_++]);
         return true;
     }
 
@@ -334,17 +347,8 @@ public:
 private:
     void enqueue(MdkrPartyTransportEvent event) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (shuttingDown_ || overflowed_) return;
-        if (events_.size() >= kMaxQueuedEvents) {
-            events_.clear();
-            overflowed_ = true;
-            MdkrPartyTransportEvent error;
-            error.type = MdkrPartyTransportEventType::Error;
-            error.message = "Phone input paused because network updates overflowed safely.";
-            events_.push_back(std::move(error));
-            return;
-        }
-        events_.push_back(std::move(event));
+        if (shuttingDown_) return;
+        queue_.push(std::move(event));
     }
 
     bool connect(bool create) {
@@ -925,7 +929,10 @@ private:
     }
 
     std::mutex mutex_;
-    std::deque<MdkrPartyTransportEvent> events_;
+    MdkrPartyEventQueue queue_{kMaxQueuedEvents};
+    std::vector<MdkrPartyTransportEvent> drained_;
+    size_t drainedIndex_ = 0u;
+    uint64_t loggedDroppedPadPackets_ = 0u;
     std::shared_ptr<rtc::WebSocket> socket_;
     std::map<std::string, std::shared_ptr<Peer>> peers_;
     std::map<std::string, MdkrNativePartyController> controllers_;
@@ -944,7 +951,6 @@ private:
     Clock::time_point reconnectAt_{};
     bool creating_ = false;
     bool shuttingDown_ = false;
-    bool overflowed_ = false;
 };
 
 class LibDatachannelPartyTransport final : public MdkrPartyTransport {
