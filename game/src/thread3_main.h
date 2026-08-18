@@ -118,9 +118,6 @@ void mark_read_eeprom_settings(void);
 void mark_write_eeprom_settings(void);
 s32 drm_validate_dmem(void);
 void level_transition_begin(s32 type);
-#ifdef NATIVE_PORT
-s32 level_load_target_is_returning_to_source_map(s32 levelId);
-#endif
 void func_8006F20C(void);
 void begin_trophy_race_teleport(void);
 void begin_lighthouse_rocket_cutscene(void);

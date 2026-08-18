@@ -116,6 +116,23 @@ int mdkr_objcoll_norecover(void) {
     return cached;
 }
 
+/* MDKR_DOORCARRY=legacy restores the authored carry-frame pairing for RISING
+ * sliding doors in collision_objectmodel() -- the pairing that welded a door's
+ * vertical step onto laterally blocked racer points and launched the kart to
+ * the alcove ceiling on the post-race lobby return (issue #41). Same
+ * one-binary-two-arms convention as MDKR_OBJCOLL above: the fix's failure mode
+ * is an ordinary-looking drive with nothing on stderr, so
+ * tests/check_postrace_door_fling.py needs the launching arm from the same
+ * binary to prove its altitude bound still bites. Inert unless set. */
+int mdkr_doorcarry_legacy(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("MDKR_DOORCARRY");
+        cached = (e != NULL && strstr(e, "legacy") != NULL) ? 1 : 0;
+    }
+    return cached;
+}
+
 /* Count of points the recovery pass ejected, reported at headless exit as
  * "[OBJRECOVER] points=N iters=M embedded=K". Unconditional, like [OBJCOLL]'s
  * own summary, so a check can read it without turning tracing on. `points`

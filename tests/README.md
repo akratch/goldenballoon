@@ -4226,6 +4226,36 @@ from the ROM, validates the slot checksum, and decodes course and balloon bits
 itself. Loss must be status 1 / `(1,0,0,0,0,0)`; win must be status 2 /
 `(2,1,0,0,0,0)`. Shared repository save state is never read or removed.
 
+## Post-race door fling — `tests/check_postrace_door_fling.py`
+
+Issue #41: every way out of an Adventure race funnels through one return load
+(`levelId=12 entrance=3 cutscene=100`) that places the kart in the race door's
+alcove and drives it back out while the door — opened by the kart's own
+proximity — is still rising. `collision_objectmodel()`'s authored frame pairing
+(previous-tick inverse, current-tick forward) is what lets moving meshes carry
+riders; for a rising gate it welded the door's vertical step onto every
+laterally blocked racer point and the integrator amplified that into a launch
+(measured y 5 → 231 in 28 ticks, pinned at the alcove ceiling). The fix
+evaluates rising sliding doors in one consistent current-pose frame with
+world-history origins, and re-primes a spawned object's collision matrices
+from its final pose so the first post-load tick reads and writes one frame.
+
+```bash
+python3 tests/check_postrace_door_fling.py -v   # three arms, muted + headless
+```
+
+Two fixed arms drive the quit paths the race-loop check does not: a pause-menu
+`RETURN TO LOBBY` mid-lap (`adventure_quit_midrace.txt`) and the same quit
+during the starting camera pan (`adventure_quit_startpan.txt`). Both must show
+the real return load, a bounded return altitude, no single-frame teleport, and
+a completed descent to the alcove floor. The third arm re-runs the mid-race
+quit with `MDKR_DOORCARRY=legacy`, which restores the carry-frame pairing for
+rising doors from the same binary; the launch must reappear, otherwise the
+fixed arms' altitude bound is not being tested. The win/loss return paths stay
+covered by `check_adventure_race_loop.py`'s own return-altitude assertion.
+
+The gate is registered as `postrace_door_fling` in `tools/run_checks.py`.
+
 ## Recording a time — `race_full_3lap_tt.txt` + `tests/check_race_finish_time.py`
 
 **`race_full_3lap.txt` can never save a time, and neither can any `*_time_trial`
