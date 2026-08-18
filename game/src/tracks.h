@@ -64,13 +64,27 @@ typedef struct unk8011C238 {
     s16 unkA;
 } unk8011C238;
 
-/* Size: 0x8 bytes */
+/*
+ * Void-curtain PAIR index. Retail stored it in the s8 struct field below and
+ * s8 locals; the port's raised void caps (e84a852: entries to 351, so pairs
+ * to ~175) exceed an s8's positive range, and a wrapped-negative pair index
+ * turns D_8011D47C[unk7 * 2] into an out-of-bounds write. Widened in the
+ * port everywhere a pair index flows: unk7 below, the render walk's sp7C
+ * list, and func_80026E54's list parameter.
+ */
+#ifdef NATIVE_PORT
+typedef s16 VoidPairIndex;
+#else
+typedef s8 VoidPairIndex;
+#endif
+
+/* Size: 0x8 bytes on retail (unk7 is s8 there; see VoidPairIndex) */
 typedef struct unk8011D478 {
     s16 unk0;
     s16 unk2;
     s16 unk4;
     s8 unk6;
-    s8 unk7;
+    VoidPairIndex unk7;
 } unk8011D478;
 
 /* Size: 0x14 bytes */
@@ -247,7 +261,7 @@ void scene_presentation_tick(s32 updateRate);
 void slowly_change_fog(s32 fogIdx, s32 red, s32 green, s32 blue, s32 near, s32 far, s32 switchTimer);
 s32 func_8002FD74(f32 x0, f32 z0, f32 x1, f32 x2, s32 count, Vec4f *arg5);
 void func_80026C14(s16 arg0, s16 arg1, s32 arg2);
-void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3);
+void func_80026E54(s16 arg0, VoidPairIndex *arg1, f32 arg2, f32 arg3);
 void func_80026070(LevelModelSegmentBoundingBox *arg0, f32 arg1, f32 arg2, f32 arg3);
 void func_80026430(LevelModelSegment *segment, f32 arg1, f32 arg2, f32 arg3);
 

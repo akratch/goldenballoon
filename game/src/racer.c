@@ -6234,6 +6234,17 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
                 (racer->velocity * gCurrentStickX) /
                 miscAsset[racer->characterId];
             if (racer->playerIndex == PLAYER_COMPUTER) {
+#ifdef NATIVE_PORT
+                /* Retail added the just-computed force BEFORE this damp; the
+                 * cadence helper below adds it AFTER, which let the force
+                 * escape the 0.9 on this path. Reachable: a handed-off racer
+                 * (finish or attract-demo context, racer.c:4906-4909) keeps
+                 * gCurrentPlayerIndex at the human slot while playerIndex is
+                 * already PLAYER_COMPUTER. Fold the force here and zero it so
+                 * the helper cannot add it a second time. */
+                racer->lateral_velocity += lateralSteeringForce;
+                lateralSteeringForce = 0.0f;
+#endif
                 racer->lateral_velocity *= 0.9;
             }
         }

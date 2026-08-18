@@ -1661,9 +1661,9 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     // so this has not been observed to fire, but the fix is cheap and the
     // capacity guard below makes an over-long run degrade (dropped edge)
     // instead of corrupting the stack frame if it ever does.
-    s8 sp7C[88];
+    VoidPairIndex sp7C[88];
 #else
-    s8 sp7C[24]; // possible UB here, real size is unknown
+    VoidPairIndex sp7C[24]; // possible UB here, real size is unknown
 #endif
     s32 pad;
 
@@ -2053,7 +2053,7 @@ void func_80026C14(s16 arg0, s16 arg1, s32 arg2) {
     }
 }
 
-void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3) {
+void func_80026E54(s16 arg0, VoidPairIndex *arg1, f32 arg2, f32 arg3) {
     unk8011D478 *next;
     unk8011D478 *curr;
     s16 temp3;
