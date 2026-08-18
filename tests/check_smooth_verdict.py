@@ -78,10 +78,17 @@ PAN_DEMOTE_FORCED_YAW_DEG = "45.0"
 EXPECTED_PRODUCTION_THRESHOLD_DEG = 22.5
 FATAL_RE = fatal_re(r"\[FX BUG\]", "Assertion", "Validation Error")
 
+# The row grew six reason counters (uvhold, tickmismatch, generation,
+# discontinuity, camcut, depmiss) between topomismatch= and heldpermille=
+# when the 2026-08-17 interpolation stack widened the census. The old exact
+# adjacency match then found ZERO rows on a binary that was printing them on
+# every run ("no [SMOOTH-VERDICT] rows at all", 2026-08-18) — so the fields
+# this gate does not consume are bridged instead of enumerated, and the next
+# added counter cannot silently blind the gate again.
 ROW_RE = re.compile(
     r"\[SMOOTH-VERDICT\] class=(\S+) blend=(\d+) snap=(\d+) "
     r"top_reason=(\S+) pandemoted=(\d+) noowner=(\d+) "
-    r"topomismatch=(\d+) heldpermille=(\d+)"
+    r"topomismatch=(\d+) (?:\w+=\d+ )*heldpermille=(\d+)"
 )
 PAN_THRESHOLD_RE = re.compile(r"\[PAN-DEMOTE\] armed threshold=([0-9.]+)")
 PAN_FORCED_YAW_RE = re.compile(r"\[PAN-DEMOTE-TEST\] forced_yaw=([0-9.]+)")
