@@ -1,0 +1,46 @@
+# DKR regression fixture -- QUIT AN ADVENTURE RACE FROM THE PAUSE MENU.
+#
+#   Timber's Island -> Dino Domain lobby -> Ancient Lake -> pause mid-lap ->
+#   RETURN TO LOBBY -> the post-race return cinematic (cutscene 100).
+#
+# Driven by tests/check_postrace_door_fling.py with the same closed-loop
+# steering as tests/check_adventure_race_loop.py (MDKR_DRIVE_ROUTE +
+# MDKR_AUTOPILOT, enhanced cadence). The frontend block is identical to
+# adventure_race_loop.txt; see that file for why every tap is where it is.
+#
+# Measured (enhanced cadence): level_load levelId=5 @7167; the pause at 8100
+# lands well into lap 1. The Adventure pause menu for a regular race is
+# [CONTINUE, RESTART RACE, RETURN TO LOBBY, QUIT GAME] (menu_pause_init), so
+# two single DOWN taps select RETURN TO LOBBY and A confirms; selecting it
+# needs no sub-dialog. The pair is retried twice in case a tap lands on an
+# edge-swallowed frame; once the level unloads the retries tap into nothing.
+# Measured return: level_load levelId=12 entrance=3 cutscene=100 @8164.
+
+# --- Frontend navigation ---
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 A 4
+2050 A 4
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4
+
+# --- Pause mid-race and quit to the lobby (retried) ---
+8100 START 4
+8130 DOWN 6
+8145 DOWN 6
+8160 A 6
+
+8400 START 4
+8430 DOWN 6
+8445 DOWN 6
+8460 A 6
+
+8700 START 4
+8730 DOWN 6
+8745 DOWN 6
+8760 A 6

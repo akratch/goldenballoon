@@ -1224,17 +1224,6 @@ void func_8006D968(s8 *arg0) {
     }
 }
 
-#ifdef NATIVE_PORT
-/* An exit records its source in [0] and selected destination in [2]/[3]. On a
- * post-race return the source is loaded again while that destination remains
- * intact. Fresh Adventure loads and forward exit traversal do not satisfy both
- * sides of this relation. */
-s32 level_load_target_is_returning_to_source_map(s32 levelId) {
-    return levelId == gLevelSettings[0] &&
-           gLevelSettings[2] != gLevelSettings[0];
-}
-#endif
-
 /**
  * Returns the current game mode.
  */

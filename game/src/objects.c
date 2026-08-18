@@ -69,11 +69,6 @@
 #include "waves.h"
 #include "weather.h"
 
-#ifdef NATIVE_PORT
-#define POSTRACE_DOOR_COLLISION_DELAY 120
-static s32 sPostraceDoorCollisionTimer;
-#endif
-
 /* Wizpig and Terry presentation actors reuse retail racer object headers so their animated boss
  * meshes load through the original asset path. They are claimed before obj_init_racer(), though, and
  * therefore must never enter code that interprets their uninitialised object tail as Object_Racer
@@ -120,6 +115,7 @@ int  mdkr_objcoll_legacy(void); /*   ""      — MDKR_OBJCOLL=legacy A/B arm */
  * seams that measure it. All in platform/hasm_stubs_temp.c beside the two
  * above; all inert unless their variable/token is set. */
 int   mdkr_objcoll_norecover(void);          /* MDKR_OBJCOLL=norecover A/B arm  */
+int   mdkr_doorcarry_legacy(void);           /* MDKR_DOORCARRY=legacy A/B arm   */
 void  mdkr_objcoll_recovered(int iterations);/* [OBJRECOVER] counters           */
 int   mdkr_objcoll_wedge_test_enabled(void); /* versioned internal test token   */
 void  mdkr_objcoll_embed_probe(int inside);  /* [OBJEMB] arrival probe          */
@@ -1701,15 +1697,6 @@ void clear_object_pointers(void) {
     D_8011AD53 = 0;
     gOverrideDoors = FALSE;
 }
-
-#ifdef NATIVE_PORT
-void obj_postrace_door_collision_prepare(s32 targetLevelId) {
-    sPostraceDoorCollisionTimer =
-        level_load_target_is_returning_to_source_map(targetLevelId)
-            ? POSTRACE_DOOR_COLLISION_DELAY
-            : 0;
-}
-#endif
 
 /**
  * Clear all objects from memory. Also clear rumble.
@@ -4339,6 +4326,23 @@ Object *spawn_object(LevelObjectEntryCommon *entry, s32 spawnFlags) {
 #endif
     }
     run_object_init_func(curObj, entry, 0);
+#ifdef NATIVE_PORT
+    /* Collision matrices are primed by obj_init_collision() DURING the data
+     * walk above, but the behaviour init that just ran is what gives a door its
+     * authored closedRotation, scale and homeY. Both primed parities therefore
+     * hold a pose the object never has in play. The per-tick transform corrects
+     * only one parity on the first obj_update, so the very first racer-vs-object
+     * query pairs a stale world->local inverse with the corrected local->world
+     * forward: measured on the post-race lobby return, that round trip displaces
+     * a stationary point by ~59 world units and is what launched the kart off
+     * the rising race door (issue #41). Re-prime both parities from the final
+     * pose so tick one reads and writes one consistent frame, exactly as every
+     * later tick does. */
+    if (curObj->collisionData != NULL) {
+        obj_collision_transform(curObj);
+        obj_collision_transform(curObj);
+    }
+#endif
     if (curObj->interactObj != NULL) {
         curObj->interactObj->x_position = curObj->trans.x_position;
         curObj->interactObj->y_position = curObj->trans.y_position;
@@ -5034,14 +5038,6 @@ void obj_update(s32 updateRate) {
     ModelInstance *modInst;
     s32 sp54;
     Object *obj;
-
-#ifdef NATIVE_PORT
-    if (sPostraceDoorCollisionTimer > updateRate) {
-        sPostraceDoorCollisionTimer -= updateRate;
-    } else {
-        sPostraceDoorCollisionTimer = 0;
-    }
-#endif
 
     func_800245B4(-1);
     gEventStartTimer = gEventCountdown;
@@ -8453,26 +8449,6 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3, f32 *ar
             sp158->interactObj->obj = obj;
         }
 
-#ifdef NATIVE_PORT
-        /* A post-race hub entry starts the kart inside the race-door alcove
-         * while cutscene 100 drives it back into the world. The original
-         * object-collision stub made that authored path effectively intangible;
-         * the completed mesh collision instead lets the rising door carry the
-         * kart to its ceiling. Keep proximity above live so the door opens, but
-         * do not collide with its mesh during that return window. The exact
-         * source/destination transition relation distinguishes this from the
-         * initial clean-save hub cutscene, where locked doors must remain solid.
-         * An authored-tick timer bounds the exception so it cannot reactivate
-         * when the racer approaches another door later in the visit. */
-        if (sp158->behaviorId == BHV_DOOR &&
-            sp158->door != NULL &&
-            level_header()->race_type == RACETYPE_HUBWORLD &&
-            obj->behaviorId == BHV_RACER && obj->racer != NULL &&
-            sPostraceDoorCollisionTimer > 0) {
-            continue;
-        }
-#endif
-
         if (dist - 25.0f < sp154->unk3C * sp158->trans.scale) {
             spB4[sp160] = sp170;
             sp8C[sp160] = dist;
@@ -8495,6 +8471,9 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3, f32 *ar
     sp168 = 0;
     sp170 = 0;
     while (sp170 < sp160) {
+#ifdef NATIVE_PORT
+        s32 doorRising;
+#endif
         sp158 = gCollisionObjects[spB4[sp170]];
         modInst = sp158->modelInstances[sp158->modelIndex];
         sp154 = modInst->objModel;
@@ -8505,7 +8484,46 @@ s32 collision_objectmodel(Object *obj, s32 arg1, s32 *arg2, Vec3f *arg3, f32 *ar
         spDC = (MtxF *) &collision->_matrices[((sp158->collisionData->mtxFlip + 1) & 1) << 1];
 #endif
 
+#ifdef NATIVE_PORT
+        /* A sliding hub door that is RISING this tick is a gate leaving the
+         * point of contact, not a platform carrying it. The authored read/write
+         * pairing here (previous-tick inverse against current-tick forward) is
+         * what lets moving meshes push riders, but for a rising door it welds
+         * the door's vertical step onto every clipped point: the post-race
+         * return cinematic drives the kart through the door plane mid-rise, the
+         * facet walk blocks it with a purely LATERAL normal, and the frame pair
+         * adds +2 per tick of lift that the racer integrator amplifies until
+         * the kart is pinned to the alcove ceiling (issue #41; measured
+         * y 5 -> 231 in 28 ticks, matching the report on every exit path).
+         * Evaluate rising doors in one consistent current-pose frame with
+         * world-history origins instead: the door contributes no relative
+         * motion, so it still blocks laterally while it covers the doorway and
+         * releases cleanly underneath once it has risen past — the retail
+         * N64 outcome. Closing and static doors keep the authored pairing
+         * (equal poses make it identical for static doors, and a closing door
+         * must still push the kart out from underneath). */
+        doorRising = sp158->behaviorId == BHV_DOOR && sp158->door != NULL &&
+                     (sp158->door->doorType & 2) &&
+                     sp158->door->openDir == DOOR_OPENING &&
+                     !mdkr_doorcarry_legacy();
+        if (doorRising) {
+#ifdef AVOID_UB
+            spDC = &collision->matrices[sp158->collisionData->mtxFlip & 1];
+#else
+            spDC = (MtxF *) &collision->_matrices[(sp158->collisionData->mtxFlip & 1) << 1];
+#endif
+        }
+#endif
+
         sp14C = func_8001790C(obj, sp158);
+#ifdef NATIVE_PORT
+        if (doorRising) {
+            /* The pair entry is already recycled above; ignore its cached
+             * previous-pose locals and rebuild origins from world history so
+             * both endpoints live in the same frame. */
+            sp14C = NULL;
+        }
+#endif
         if (sp14C != NULL) {
             for (i = 0, j = 0; j < arg1; j++, i += 3) {
                 sp13C[j] = sp14C->unk0C[i + 0];

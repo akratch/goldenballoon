@@ -1,0 +1,37 @@
+# DKR regression fixture -- QUIT AN ADVENTURE RACE DURING THE STARTING PAN.
+#
+# Same route as adventure_quit_midrace.txt, but the pause fires ~60 frames
+# after the race level loads, while the pre-race camera pan still owns the
+# screen and the clock is 0. This is the second reproduction path of issue
+# #41 ("exit from the starting camera pan"). Measured (enhanced cadence):
+# level_load levelId=5 @7167, return load levelId=12 entrance=3 cutscene=100
+# @7294 with clock=0 -- the quit really happened before the race began.
+
+# --- Frontend navigation ---
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 A 4
+2050 A 4
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4
+
+# --- Pause during the start pan and quit to the lobby (retried) ---
+7230 START 4
+7260 DOWN 6
+7275 DOWN 6
+7290 A 6
+
+7420 START 4
+7450 DOWN 6
+7465 DOWN 6
+7480 A 6
+
+7620 START 4
+7650 DOWN 6
+7665 DOWN 6
+7680 A 6

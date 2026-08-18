@@ -730,6 +730,9 @@ CHECKS = (
           "per-door balloon numeral binding across shared models and GL/WebGPU"),
     Check("adventure_race_loop", "check_adventure_race_loop.py", "native",
           "Adventure hub/race return loop"),
+    Check("postrace_door_fling", "check_postrace_door_fling.py", "native",
+          "post-race lobby returns stay grounded on the quit paths, with the "
+          "rising-door carry-frame legacy control"),
     Check("trophy_series", "check_trophy_series.py", "native",
           "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
