@@ -1526,6 +1526,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c)
     target_include_directories(mdkr_presentation_snapshot_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        # resolve_object_pair uses sqrtf; glibc needs an explicit -lm (found
+        # by the Linux lane — macOS bundles it in libSystem and never fails).
+        target_link_libraries(mdkr_presentation_snapshot_test PRIVATE m)
+    endif()
     add_test(NAME presentation_snapshot
         COMMAND mdkr_presentation_snapshot_test)
 
