@@ -10,11 +10,10 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [1.4.0] — 2026-08-18
 
-Motion smoothing is the headline: the interpolation stack was rebuilt
-closed-loop and the one long-standing artifact class it carried — world
-geometry (most visibly the Timber's Island waterfalls) flashing or breaking
-apart while the camera moves — was root-caused and fixed. Smoothing is now a
-qualified path on ProMotion/120 Hz displays.
+The interpolation stack was rebuilt with closed-loop pacing, and the world-
+geometry flashing it previously produced under camera motion (most visibly
+the Timber's Island waterfalls) is fixed at its cause. Motion smoothing is
+a qualified configuration on 120 Hz displays as of this release.
 
 ### Fixed
 
