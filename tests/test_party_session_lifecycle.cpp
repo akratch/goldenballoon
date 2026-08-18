@@ -521,6 +521,12 @@ void stall_with_live_packets_recovers_input() {
     assert(host.view().message == "Phone input paused safely. Reconnecting…");
     /* No room transition happened: a stable room sends none mid-race. */
     assert(host.view().transitionId == transitionBefore);
+    /* Ingress custody is gone, so haptics support reads false at that layer,
+     * but the host must still remember the phone had haptics before the
+     * stall -- the WebRTC channel never dropped, so nothing will ever tell
+     * it again. */
+    assert(!mdkr_native_remote_pad_haptics_supported(kPort));
+    assert(host.view().controllers[0].haptics);
 
     /* The phone, unaware anything happened locally, keeps streaming at its
      * normal cadence. One more service() call, still with no room_state
@@ -533,6 +539,10 @@ void stall_with_live_packets_recovers_input() {
            MdkrNativePartyControllerPhase::Connected);
     assert(mdkr_native_remote_pad_info(kPort, &owner, &connection));
     assert(owner != 0u && connection == kConnection);
+    /* Rumble must work again on the healed seat without waiting for a real
+     * reconnect: the heal reasserts haptics support at the ingress layer from
+     * the controller's remembered capability. */
+    assert(mdkr_native_remote_pad_haptics_supported(kPort));
 
     const std::vector<uint32_t> delivered = drainSeat(kPort, owner, kConnection);
     assert(!delivered.empty());

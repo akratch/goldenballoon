@@ -336,12 +336,15 @@ void MdkrNativePartyHost::applyEvent(
                     candidate->connectionSequence,
                     event.packet.data(), event.packet.size())) {
                 candidate->direct = false;
-                candidate->haptics = false;
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
                 /* Queue exhaustion revoked custody at the ingress crossing,
                  * but nothing here waits for a room transition to fix it --
                  * a stable mid-race room never sends one. Flag it so
-                 * service() heals the seat on its own next tick. */
+                 * service() heals the seat on its own next tick. Leave
+                 * candidate->haptics untouched: it is the phone's known
+                 * hardware capability, not a liveness bit, and the healing
+                 * loop needs it to re-assert ingress haptics support once the
+                 * seat is rebound (a fresh bind always clears that bit). */
                 candidate->needsRebind = true;
                 view_.message =
                     "Phone input paused safely. Reconnecting…";
@@ -405,7 +408,12 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
      * that a changed identity triggers publishes neutral before any packet
      * from the new epoch can reach the sim -- the same fail-neutral path a
      * genuine reconnect already relies on. Runs before events are drained so
-     * a fresh packet queued for this very tick lands on a live seat.
+     * a fresh packet queued for this very tick lands on a live seat. A fresh
+     * bind always clears the ingress haptics bit (native_remote_pad_ingress.cpp
+     * clearPayload), and in this exact scenario the WebRTC channel never
+     * dropped, so no ControllerConnected event will ever come along to set it
+     * again -- reassert it ourselves from the controller's own remembered
+     * capability, the same call ControllerConnected makes.
      */
     for (MdkrNativePartyController &candidate : view_.controllers) {
         if (!candidate.needsRebind || !occupiesSeat(candidate) ||
@@ -427,6 +435,9 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
         candidate.needsRebind = false;
         candidate.direct = true;
         candidate.phase = MdkrNativePartyControllerPhase::Connected;
+        (void)mdkr_native_remote_pad_set_haptics(
+            candidate.seat - 1u, owner, candidate.connectionSequence,
+            candidate.haptics);
         view_.message = "Phone input reconnected.";
     }
 
