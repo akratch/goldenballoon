@@ -453,7 +453,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--timeout", type=int, default=180)
+    # 180 predated the closed-loop present pacer (2026-08-17): at
+    # MDKR_PRESENT_RATE=60 the race arm is now genuinely paced (~17-38 ms per
+    # host field in Darwin's background band), so 10,000 fixed ticks need
+    # ~340 s there. Measured honest budget, same practice as 5de655b.
+    parser.add_argument("--timeout", type=int, default=480)
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument(
         "--expect-water-owned", action=argparse.BooleanOptionalAction,

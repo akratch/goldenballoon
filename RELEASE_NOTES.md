@@ -14,6 +14,12 @@ Recommended settings: **WebGPU**, **Restored**, frame limit **Original**,
 Motion smoothing **Interpolated** on high-refresh (120 Hz) displays or
 **Off** elsewhere, gameplay tick rate **Original**, camera **Authored**.
 
+WebGPU with Restored presentation remains the qualified native and browser
+visual path. Interpolated draws presentation-only in-between images from
+adjacent game ticks — your inputs and the simulation still run at the
+authored rate, and nothing interpolation draws is ever fed back into
+gameplay.
+
 ## Smooth motion, without the glitches
 
 - The waterfalls, cliffs, and world geometry no longer flash, vanish, or
@@ -45,8 +51,9 @@ Motion smoothing **Interpolated** on high-refresh (120 Hz) displays or
 
 Save data, settings, unlocked Magic Codes, and Time Trial ghosts from 1.3.0
 carry over unchanged. Phone Party and Online Room remain out of the
-player-facing build, exactly as in 1.3.0. The launcher remains keyboard and
-gamepad operable.
+player-facing build, exactly as in 1.3.0. The launcher is keyboard and
+gamepad operable, but does not claim a
+VoiceOver, UI Automation, or other screen-reader semantic tree.
 
 ## Known reports under investigation
 
