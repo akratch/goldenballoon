@@ -348,6 +348,15 @@ def scenario_offer_drop(origin: str, binary: Path, chrome_path: str,
             inject=DROP_FIRST_OFFER)
         phone.call("Page.navigate", {"url": url})
         _, controller_id = wait_pending(driver, timeout)
+        # This is the complete swallow proof, not just a "something happened"
+        # check: DROP_FIRST_OFFER's own guard (`=== 0`) makes 1 the only value
+        # __mdkrE2EDroppedOffers can ever take -- every later webrtc_offer
+        # frame, including the retried one that follows, matches the `else`
+        # branch and passes through untouched instead of incrementing it. A
+        # second read after reaching Connected would therefore always read 1
+        # too, whether the retry path swallowed zero further offers (the
+        # intended behavior) or a hundred -- it would be a vacuous assertion,
+        # so this is the one and only place that fact is asserted.
         wait_value(phone, "globalThis.__mdkrE2EDroppedOffers",
                    lambda value: value == 1, "first offer swallowed", timeout)
         dropped_at = time.monotonic()
@@ -358,8 +367,6 @@ def scenario_offer_drop(origin: str, binary: Path, chrome_path: str,
         for line in driver.snapshot():
             require("could not connect" not in line,
                     f"driver gave the controller up instead of retrying: {line}")
-        require(phone.evaluate("globalThis.__mdkrE2EDroppedOffers") == 1,
-                "more than one offer frame was swallowed")
         activate_controls(phone, timeout)
         driver.wait_line(RESULT_OK.match, "result=ok", timeout)
         require(driver.wait_exit(10) == 0, "driver exited non-zero")

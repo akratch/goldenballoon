@@ -413,6 +413,13 @@ void MdkrNativePartyHost::applyEvent(
 void MdkrNativePartyHost::setError(const std::string &message) {
     releaseAll();
     transport_.shutdown();
+    /* Review fix: a controller left needsRebind from a push failure earlier
+     * in this same drain cycle must not survive into the Error room --
+     * releaseAll() above already revoked its seat's custody, so the next
+     * service() heal loop must never see a reason to touch it again. */
+    for (MdkrNativePartyController &candidate : view_.controllers) {
+        candidate.needsRebind = false;
+    }
     view_.phase = MdkrNativePartyPhase::Error;
     view_.busy = false;
     view_.inviteVisible = false;
@@ -440,31 +447,40 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
      * dropped, so no ControllerConnected event will ever come along to set it
      * again -- reassert it ourselves from the controller's own remembered
      * capability, the same call ControllerConnected makes.
+     *
+     * Review fix: also gate the whole loop on the room not being Error or
+     * Closed. setError() already clears needsRebind on its way out (belt),
+     * but a terminal or closed room must never re-bind a seat regardless of
+     * how a flag got left standing (suspenders).
      */
-    for (MdkrNativePartyController &candidate : view_.controllers) {
-        if (!candidate.needsRebind || !occupiesSeat(candidate) ||
-            candidate.connectionSequence == 0u) {
-            continue;
+    if (view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::Closed) {
+        for (MdkrNativePartyController &candidate : view_.controllers) {
+            if (!candidate.needsRebind || !occupiesSeat(candidate) ||
+                candidate.connectionSequence == 0u) {
+                continue;
+            }
+            if (candidate.lastRebindMs != 0u &&
+                nowMs >= candidate.lastRebindMs &&
+                nowMs - candidate.lastRebindMs < kRebindRateLimitMs) {
+                continue;
+            }
+            candidate.lastRebindMs = nowMs;
+            candidate.leaseGeneration++;
+            const uint64_t owner = ownerFor(candidate);
+            if (owner == 0u ||
+                !mdkr_native_remote_pad_bind(
+                    candidate.seat - 1u, owner, candidate.connectionSequence)) {
+                continue;
+            }
+            candidate.needsRebind = false;
+            candidate.direct = true;
+            candidate.phase = MdkrNativePartyControllerPhase::Connected;
+            (void)mdkr_native_remote_pad_set_haptics(
+                candidate.seat - 1u, owner, candidate.connectionSequence,
+                candidate.haptics);
+            view_.message = "Phone input reconnected.";
         }
-        if (candidate.lastRebindMs != 0u && nowMs >= candidate.lastRebindMs &&
-            nowMs - candidate.lastRebindMs < kRebindRateLimitMs) {
-            continue;
-        }
-        candidate.lastRebindMs = nowMs;
-        candidate.leaseGeneration++;
-        const uint64_t owner = ownerFor(candidate);
-        if (owner == 0u ||
-            !mdkr_native_remote_pad_bind(
-                candidate.seat - 1u, owner, candidate.connectionSequence)) {
-            continue;
-        }
-        candidate.needsRebind = false;
-        candidate.direct = true;
-        candidate.phase = MdkrNativePartyControllerPhase::Connected;
-        (void)mdkr_native_remote_pad_set_haptics(
-            candidate.seat - 1u, owner, candidate.connectionSequence,
-            candidate.haptics);
-        view_.message = "Phone input reconnected.";
     }
 
     MdkrPartyTransportEvent event;

@@ -382,6 +382,81 @@ void expiryLatchesInHostsOwnClockDomain() {
     assert(host.view().phase == MdkrNativePartyPhase::InviteRevoked);
 }
 
+/* Review fix: setError() releases every seat and shuts the transport down,
+ * but before this fix left a controller's needsRebind flag standing. If a
+ * push failure (queue overflow revokes ingress custody, same shape as the
+ * stall-recovery coverage in test_party_session_lifecycle.cpp) and a
+ * terminal Error land in the same drain cycle, service()'s top-of-loop heal
+ * on the very next tick re-bound the already-released seat, flipped the
+ * controller back to Connected and overwrote the terminal message -- all
+ * inside a room the host had already declared Error. Prove the controller
+ * stays put, the room stays in Error, and the error message is not
+ * clobbered. */
+void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {pending("phone-a")}));
+    host.service(1000u);
+    assert(host.approve("phone-a", 1u));
+
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    transport.events.push_back(roomEvent(2u, 1u, 121000u, {phone}));
+    host.service(1001u);
+
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1002u);
+    assert(host.view().controllers[0].direct);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+
+    /* Flood the bounded ingress queue with live packets for this same
+     * controller -- the same overflow shape
+     * stall_with_live_packets_recovers_input() in
+     * test_party_session_lifecycle.cpp drives -- so that, part-way through,
+     * a push fails and the host marks the controller needsRebind. Queue a
+     * terminal Error right behind it: both land in the ONE drain cycle
+     * below. */
+    const uint32_t flood = MDKR_NATIVE_REMOTE_PAD_QUEUE_CAPACITY + 8u;
+    uint32_t sequence = 1u;
+    for (uint32_t index = 0u; index < flood; ++index) {
+        MdkrPartyTransportEvent packet;
+        packet.type = MdkrPartyTransportEventType::ControllerPacket;
+        packet.controllerId = "phone-a";
+        packet.packet = padPacket(9u, ++sequence);
+        transport.events.push_back(packet);
+    }
+    MdkrPartyTransportEvent fatal;
+    fatal.type = MdkrPartyTransportEventType::Error;
+    fatal.message =
+        "Phone controllers are unavailable. Local controllers still work.";
+    transport.events.push_back(fatal);
+    host.service(2000u);
+
+    assert(host.view().phase == MdkrNativePartyPhase::Error);
+    assert(host.view().message == fatal.message);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+
+    /* The next tick, with no new events at all, is exactly where the bug
+     * lived: the top-of-service heal loop must not resurrect the released
+     * seat inside an Error room. */
+    host.service(2100u);
+    assert(host.view().phase == MdkrNativePartyPhase::Error);
+    assert(host.view().message == fatal.message);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(!host.view().controllers[0].needsRebind);
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
 }  // namespace
 
 int main() {
@@ -393,6 +468,7 @@ int main() {
     giveUpClearsOnlyItsOwnControllersCommandPending();
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
     expiryLatchesInHostsOwnClockDomain();
+    terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
