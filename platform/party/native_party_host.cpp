@@ -280,10 +280,17 @@ void MdkrNativePartyHost::applyRoomState(
 
     view_.transitionId = room.transitionId;
     view_.inviteGeneration = room.inviteGeneration;
-    view_.inviteExpiresAtMs = room.inviteExpiresAtMs;
+    /* I1 fix: room.inviteExpiresInMs is relative (ms remaining as of the
+     * transport's parse), specifically so it can be anchored here in the
+     * HOST's own service clock (nowMs) rather than compared as if it were
+     * already an absolute instant in some other clock's domain. Every
+     * downstream read of view_.inviteExpiresAtMs (the tail of service()
+     * below, ui_phone_party.cpp's countdown) already compares it against
+     * this same nowMs domain, so latching it here is the entire fix. */
+    view_.inviteExpiresAtMs = nowMs + room.inviteExpiresInMs;
     view_.controllerUrl = room.inviteActive ? room.controllerUrl : std::string{};
     view_.fallbackCode = room.inviteActive ? room.fallbackCode : std::string{};
-    view_.inviteVisible = room.inviteActive && room.inviteExpiresAtMs > nowMs;
+    view_.inviteVisible = room.inviteActive && view_.inviteExpiresAtMs > nowMs;
     view_.phase = view_.inviteVisible ? MdkrNativePartyPhase::Open
                                      : MdkrNativePartyPhase::InviteRevoked;
     view_.busy = false;

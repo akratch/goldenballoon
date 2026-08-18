@@ -117,7 +117,7 @@ MdkrPartyTransportEvent roomEvent(
     event.type = MdkrPartyTransportEventType::RoomState;
     event.room.transitionId = transition;
     event.room.inviteGeneration = generation;
-    event.room.inviteExpiresAtMs = expires;
+    event.room.inviteExpiresInMs = expires;
     event.room.controllerUrl = "https://party.example/controller/#secret";
     event.room.fallbackCode = "123456";
     event.room.inviteActive = true;

@@ -126,12 +126,12 @@ std::string inviteUrlFor(const std::string &origin) {
 }
 
 MdkrPartyTransportEvent inviteRoom(
-    const std::string &url, const std::string &code, uint64_t expiresAtMs) {
+    const std::string &url, const std::string &code, uint64_t expiresInMs) {
     MdkrPartyTransportEvent event;
     event.type = MdkrPartyTransportEventType::RoomState;
     event.room.transitionId = 1u;
     event.room.inviteGeneration = 1u;
-    event.room.inviteExpiresAtMs = expiresAtMs;
+    event.room.inviteExpiresInMs = expiresInMs;
     event.room.controllerUrl = url;
     event.room.fallbackCode = code;
     event.room.inviteActive = true;
@@ -239,7 +239,10 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     assert(host.open(origin));
 
     const std::string url = inviteUrlFor(origin);
-    transport.events.push_back(inviteRoom(url, "406913", 121000u));
+    /* Relative expiresInMs=120000 latched against nowMs=1000 (host's own
+     * clock) lands the deadline at exactly 121000, matching the original
+     * absolute fixture value this test was written against. */
+    transport.events.push_back(inviteRoom(url, "406913", 120000u));
     host.service(1000u);
 
     const MdkrNativePartyView &view = host.view();
@@ -284,7 +287,11 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     pending.publicKey = std::string(87u, 'C');
     pending.pairingPhrase = "Royal-Penguin Nimble-Comet";
     pending.connectionSequence = 1u;
-    MdkrPartyTransportEvent joined = inviteRoom(url, "406913", 121000u);
+    /* Superseding transitionId, applied at nowMs=1001: expiresInMs=119999
+     * lands this second latch at 121000 too, so the later
+     * host.service(121000u) expiry check below still fires exactly as it
+     * did against the original absolute fixture. */
+    MdkrPartyTransportEvent joined = inviteRoom(url, "406913", 119999u);
     joined.room.transitionId = 2u;
     joined.room.controllers.push_back(pending);
     transport.events.push_back(std::move(joined));

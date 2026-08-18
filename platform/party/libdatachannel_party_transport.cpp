@@ -626,15 +626,20 @@ private:
             value["controllers"].size() > 8u) return false;
         room.transitionId = transition;
         room.inviteGeneration = static_cast<unsigned>(generation);
-        room.inviteExpiresAtMs = wallExpiryToSteady(wallExpiry);
+        /* I1: kept in this function's own steady-clock domain
+         * (wallExpiryToSteady/steadyNowMs) throughout parsing -- only
+         * translated to a cross-domain-safe *relative* value
+         * (room.inviteExpiresInMs) once, right before returning, so the host
+         * can anchor it in its own clock instead of this transport's. */
+        uint64_t expiresAtSteadyMs = wallExpiryToSteady(wallExpiry);
         room.inviteActive = value.value("phase", std::string{}) == "open" &&
-            room.inviteExpiresAtMs > steadyNowMs();
+            expiresAtSteadyMs > steadyNowMs();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (room.inviteGeneration == inviteGeneration_) {
                 room.controllerUrl = inviteUrl_;
                 room.fallbackCode = fallbackCode_;
-                room.inviteExpiresAtMs = inviteExpiresAtMs_;
+                expiresAtSteadyMs = inviteExpiresAtMs_;
             }
         }
         if (safeString(value, "controllerUrl", room.controllerUrl, 2048u, false) &&
@@ -644,7 +649,7 @@ private:
                 inviteUrl_ = room.controllerUrl;
                 fallbackCode_ = room.fallbackCode;
                 inviteGeneration_ = room.inviteGeneration;
-                inviteExpiresAtMs_ = room.inviteExpiresAtMs;
+                inviteExpiresAtMs_ = expiresAtSteadyMs;
             }
         } else return false;
         for (const Json &item : value["controllers"]) {
@@ -661,7 +666,14 @@ private:
             else if (phase == "connected") controller.phase = MdkrNativePartyControllerPhase::Connected;
             else return false;
             uint64_t seat = 0u;
-            if (!item["seat"].is_null() && !uintValue(item, "seat", seat, 4u)) return false;
+            /* I5: a pending controller with no seat assigned yet may arrive
+             * with the "seat" key absent entirely, not merely null. nlohmann's
+             * const operator[] on a missing key is undefined behaviour under
+             * NDEBUG (an end-iterator dereference, not a catchable
+             * exception) -- contains() first, same as every other field in
+             * this function. */
+            if (item.contains("seat") && !item["seat"].is_null() &&
+                !uintValue(item, "seat", seat, 4u)) return false;
             uint64_t lease = 0u;
             uint64_t connection = 0u;
             if (!uintValue(item, "leaseGeneration", lease,
@@ -681,6 +693,9 @@ private:
             controller.pairingPhrase = std::move(phrase);
             room.controllers.push_back(std::move(controller));
         }
+        const uint64_t nowSteady = steadyNowMs();
+        room.inviteExpiresInMs =
+            expiresAtSteadyMs > nowSteady ? expiresAtSteadyMs - nowSteady : 0u;
         return true;
     }
 

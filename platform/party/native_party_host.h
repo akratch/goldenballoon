@@ -73,7 +73,14 @@ enum class MdkrPartyTransportEventType {
 struct MdkrPartyTransportRoomState {
     uint64_t transitionId = 0u;
     unsigned inviteGeneration = 0u;
-    uint64_t inviteExpiresAtMs = 0u;
+    /* Relative milliseconds remaining as of when the transport parsed this
+     * room update, NOT an absolute instant. The transport and the host each
+     * run their own clock (transport: std::chrono::steady_clock since boot;
+     * host: SDL_GetTicks64 since SDL init) -- an absolute value here would
+     * cross domains and be meaningless once compared against the host's own
+     * nowMs. The host latches nowMs + inviteExpiresInMs in its own clock at
+     * the event-application site instead. */
+    uint64_t inviteExpiresInMs = 0u;
     std::string controllerUrl;
     std::string fallbackCode;
     bool inviteActive = false;
