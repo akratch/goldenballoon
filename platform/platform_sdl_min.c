@@ -4277,7 +4277,11 @@ static uint64_t s_disciplineEndpointSlotNs;
 
 /* MDKR_PRESENT_ENDPOINT_LEAD_US: how early the tick-carrying wake runs so
  * the authored endpoint can be computed and still presented on its slot.
- * 0 disables the lead. Cached like every other one-shot env read here. */
+ * 0 disables the lead. Cached like every other one-shot env read here.
+ * Guarded with its only caller (the WebGPU present-discipline loop): the
+ * Emscripten build has no discipline loop and compiles with -Werror, so an
+ * unguarded definition is an unused-function error there. */
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
 static uint64_t discipline_endpoint_lead_ns(void) {
     static int64_t cached = -1;
     if (cached < 0) {
@@ -4295,6 +4299,7 @@ static uint64_t discipline_endpoint_lead_ns(void) {
     }
     return (uint64_t)cached;
 }
+#endif /* MDKR_WEBGPU_BACKEND && !__EMSCRIPTEN__ */
 
 #if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 #include <objc/message.h>
@@ -4429,6 +4434,9 @@ void platform_present_occlusion_kick(void) {
 }
 #endif
 
+/* Guarded with its only caller (WebGPU acquire accounting) for the same
+ * -Werror reason as discipline_endpoint_lead_ns above. */
+#if defined(MDKR_WEBGPU_BACKEND) && !defined(__EMSCRIPTEN__)
 static void discipline_note(uint64_t block_ns, int unavailable) {
     uint64_t bin = block_ns / DISCIPLINE_BLOCK_BIN_NS;
     if (bin >= DISCIPLINE_BLOCK_BINS) {
@@ -4443,6 +4451,7 @@ static void discipline_note(uint64_t block_ns, int unavailable) {
         s_disciplineUnavailable++;
     }
 }
+#endif /* MDKR_WEBGPU_BACKEND && !__EMSCRIPTEN__ */
 
 static uint64_t discipline_block_percentile_us(unsigned permille) {
     uint64_t want;
