@@ -253,6 +253,43 @@ void commandRejectionAndRemovalStayRecoverable() {
     assert(transport.calls.back() == "remove:phone");
 }
 
+/* C3 give-up review fix: a CommandRejected-shaped event that carries a
+ * controller identity (the connect_timeout give-up path) must only clear
+ * that one controller's commandPending. Before this fix, any CommandRejected
+ * -- including this new autonomous 20-60 s timeout ladder, which can land at
+ * any time, not just reactively right after a host-issued command -- cleared
+ * every controller's commandPending, silently unblocking an unrelated
+ * controller's genuinely in-flight command. An event with no controller
+ * identity (a true host-command rejection) keeps the old room-wide
+ * behavior. */
+void giveUpClearsOnlyItsOwnControllersCommandPending() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 5000u, {pending("phone-a"), pending("phone-b")}));
+    host.service(1u);
+    assert(host.approve("phone-a", 1u));
+    assert(host.approve("phone-b", 2u));
+    assert(host.view().controllers[0].commandPending);
+    assert(host.view().controllers[1].commandPending);
+
+    /* A give-up event scoped to phone-b only, with no intervening RoomState
+     * (which would otherwise reset every commandPending on its own). */
+    MdkrPartyTransportEvent timedOut;
+    timedOut.type = MdkrPartyTransportEventType::CommandRejected;
+    timedOut.controllerId = "phone-b";
+    timedOut.message = "This phone could not connect. Remove it and pair again.";
+    transport.events.push_back(timedOut);
+    host.service(2u);
+
+    assert(host.view().controllers[0].commandPending);   // phone-a: untouched
+    assert(!host.view().controllers[1].commandPending);  // phone-b: its own
+    assert(host.view().message ==
+        "This phone could not connect. Remove it and pair again.");
+}
+
 }  // namespace
 
 int main() {
@@ -261,6 +298,7 @@ int main() {
     invalidAndStaleUpdatesFailClosed();
     expiryPreservesApprovedSeat();
     commandRejectionAndRemovalStayRecoverable();
+    giveUpClearsOnlyItsOwnControllersCommandPending();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }

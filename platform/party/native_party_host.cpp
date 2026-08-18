@@ -359,10 +359,27 @@ void MdkrNativePartyHost::applyEvent(
             return;
         }
         case MdkrPartyTransportEventType::CommandRejected:
-            for (MdkrNativePartyController &candidate : view_.controllers) {
-                candidate.commandPending = false;
+            if (event.controllerId.empty()) {
+                /* No controller identity: a genuine host-command rejection
+                 * (approve/reject/rotate/dismiss/close all funnel into the
+                 * same undifferentiated host_command_result path today) is
+                 * really room-wide -- the one pending action just failed,
+                 * so every commandPending and the room-level busy flag
+                 * clear exactly as before. */
+                for (MdkrNativePartyController &candidate : view_.controllers) {
+                    candidate.commandPending = false;
+                }
+                view_.busy = false;
+            } else {
+                /* A controller-scoped rejection (C3's connect_timeout
+                 * give-up) must not clear an unrelated controller's
+                 * genuinely in-flight command -- only the named
+                 * controller's own commandPending is touched. busy tracks
+                 * room-level invite actions, not any one controller, so it
+                 * is left untouched here. */
+                MdkrNativePartyController *candidate = controller(event.controllerId);
+                if (candidate != nullptr) candidate->commandPending = false;
             }
-            view_.busy = false;
             view_.message = safeMessage(
                 event.message, "That controller action did not complete. Try again.");
             return;
