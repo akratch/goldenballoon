@@ -37,6 +37,12 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* C1 self-heal: set when an ingress push failed (queue overflow revoked
+     * the seat's custody) while otherwise healthy. service() clears it once
+     * the seat has a fresh bind; lastRebindMs rate-limits repeated attempts
+     * so a wedged phone cannot spin the rebind every tick. */
+    bool needsRebind = false;
+    uint64_t lastRebindMs = 0u;
 };
 
 struct MdkrNativePartyView {

@@ -17,6 +17,9 @@ constexpr size_t kMaxPhrase = 48u;
 constexpr size_t kPublicKeyLength = 87u;
 constexpr size_t kMaxUrl = 2048u;
 constexpr size_t kMaxMessage = 240u;
+/* C1 self-heal: at most one rebind attempt per controller per this window,
+ * so a phone that keeps overflowing the queue cannot make service() spin. */
+constexpr uint64_t kRebindRateLimitMs = 500u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -335,6 +338,11 @@ void MdkrNativePartyHost::applyEvent(
                 candidate->direct = false;
                 candidate->haptics = false;
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
+                /* Queue exhaustion revoked custody at the ingress crossing,
+                 * but nothing here waits for a room transition to fix it --
+                 * a stable mid-race room never sends one. Flag it so
+                 * service() heals the seat on its own next tick. */
+                candidate->needsRebind = true;
                 view_.message =
                     "Phone input paused safely. Reconnecting…";
             }
@@ -385,6 +393,43 @@ void MdkrNativePartyHost::setError(const std::string &message) {
 }
 
 void MdkrNativePartyHost::service(uint64_t nowMs) {
+    /* C1 self-heal. Ingress queue exhaustion revokes a seat's custody at the
+     * transport crossing (native_remote_pad_ingress.cpp) below the room state
+     * machine entirely -- the WebRTC channel and its 5 s pings never notice.
+     * The only other rebind site is applyRoomState, which runs solely on an
+     * advancing room transitionId; a stable mid-race room sends none, so
+     * without this loop "Reconnecting..." is a promise nothing fulfills. Heal
+     * it ourselves: re-issuing mdkr_native_remote_pad_bind with a fresh lease
+     * generation gives the seat a new owner identity (the same call
+     * applyRoomState makes for a real reconnect), and the engine-side rebind
+     * that a changed identity triggers publishes neutral before any packet
+     * from the new epoch can reach the sim -- the same fail-neutral path a
+     * genuine reconnect already relies on. Runs before events are drained so
+     * a fresh packet queued for this very tick lands on a live seat.
+     */
+    for (MdkrNativePartyController &candidate : view_.controllers) {
+        if (!candidate.needsRebind || !occupiesSeat(candidate) ||
+            candidate.connectionSequence == 0u) {
+            continue;
+        }
+        if (candidate.lastRebindMs != 0u && nowMs >= candidate.lastRebindMs &&
+            nowMs - candidate.lastRebindMs < kRebindRateLimitMs) {
+            continue;
+        }
+        candidate.lastRebindMs = nowMs;
+        candidate.leaseGeneration++;
+        const uint64_t owner = ownerFor(candidate);
+        if (owner == 0u ||
+            !mdkr_native_remote_pad_bind(
+                candidate.seat - 1u, owner, candidate.connectionSequence)) {
+            continue;
+        }
+        candidate.needsRebind = false;
+        candidate.direct = true;
+        candidate.phase = MdkrNativePartyControllerPhase::Connected;
+        view_.message = "Phone input reconnected.";
+    }
+
     MdkrPartyTransportEvent event;
     size_t count = 0u;
     while (count < kMaxEventsPerService && transport_.poll(event)) {
