@@ -1,84 +1,57 @@
-# Golden Balloon 1.3.0
+# Golden Balloon 1.4.0
 
-*Released 2026-08-16.*
+*Released 2026-08-18.*
 
-This release replaces the withdrawn 1.2.1. If you downloaded 1.2.1 for
-Windows, please update: that build could not save any launcher setting.
-No game data is included, and existing preferences carry over unchanged.
+This release makes **Motion smoothing** a first-class, qualified way to play.
+The interpolation engine was rebuilt to pace itself against your display's
+real refresh rate, and the one artifact that had haunted smoothed play since
+it shipped — world geometry (most visibly the Timber's Island waterfalls)
+flashing or breaking apart while you drive — was traced to its root cause and
+fixed. If you tried smoothing before and turned it off, this is the release
+to try it again.
 
-Recommended settings are unchanged: **WebGPU**, **Restored**, frame limit
-**Original**, Motion smoothing **Off**, gameplay tick rate **Original**, camera
-**Authored**.
+Recommended settings: **WebGPU**, **Restored**, frame limit **Original**,
+Motion smoothing **Interpolated** on high-refresh (120 Hz) displays or
+**Off** elsewhere, gameplay tick rate **Original**, camera **Authored**.
 
-WebGPU with Restored presentation remains the qualified native and browser
-visual path. The launcher is keyboard and gamepad operable, but does not claim a
-VoiceOver, UI Automation, or other screen-reader semantic tree.
+## Smooth motion, without the glitches
 
-## New racers: Wizpig and Terry
+- The waterfalls, cliffs, and world geometry no longer flash, vanish, or
+  shear while the camera moves with Motion smoothing on. Waves, scrolling
+  water, characters, and effects all keep their full smoothing.
+- Frame pacing locks onto your panel's measured refresh instead of assuming
+  a nominal one, so smoothed play holds an even cadence over long sessions.
+- Scrolling textures (rivers, falls, lava) glide between game ticks instead
+  of stepping; menu and cutscene cameras are smoothed too.
 
-Beat Wizpig a second time — or enter `WIZPIGPOWER` — and he joins the
-character select. Beat the Dino Domain rematch — or enter `TERRYFLY` — and
-Terry does too. Wizpig rides his rocket on plane tracks; Terry flies under his
-own wings. Both race with normal attacks, items, and collisions, and each has
-his own portrait, placard, and character-select entrance. Their runs don't
-write Time Trial records or ghosts, so your leaderboards stay yours.
+## Fixes you asked for
 
-`CONTROL WIZPIG` and `CONTROL TERRY` in the Magic Codes menu switch each racer
-on or off once unlocked.
+- **Exiting a race in Adventure no longer flings your kart** off the rising
+  door — quit mid-race, quit during the starting pan, or win and return; you
+  land by the door and drive away normally (issue #41).
+- **Steering feels like the original again**, especially with the 60 FPS
+  gameplay option: turning strength follows the authored handling curve
+  instead of biting twice as fast (issue #37).
+- **Wizpig is actually playable** in Adventure and Tracks — no more silent
+  swap to Krunch (issue #40).
+- **Taj's theme** plays with all of its instruments again (issue #39).
+- **Texture packs fit**: packs are matched by each texture's logical size,
+  so replacement textures land where they should (issue #34).
+- **Widescreen HUD** (new toggle): anchor the balloon count, lap counter,
+  and minimap to the edges of a widescreen display instead of the 4:3
+  center (issue #38). Off by default.
 
-## Local multiplayer in this release
+## Compatibility
 
-Keyboard, touch controls, gamepads, and local split-screen all work without an
-online service. Phone Party and Online Room are not included in 1.3.0: the
-release has no buttons, browser role pages, or production network paths for
-them. No Cloudflare account or other cloud setup is needed to use anything
-included in this release.
+Save data, settings, unlocked Magic Codes, and Time Trial ghosts from 1.3.0
+carry over unchanged. Phone Party and Online Room remain out of the
+player-facing build, exactly as in 1.3.0. The launcher remains keyboard and
+gamepad operable.
 
-## Magic Codes remember themselves
+## Known reports under investigation
 
-Codes you've unlocked and switched on come back after a restart. Codes that
-change how a save is read, grant one-time rewards, show the credits, or can
-lock the game deliberately do not restore themselves.
-
-## Fixed
-
-**Windows: settings save again.** The withdrawn 1.2.1 Windows build failed to
-write its settings file at all — ROM path, preferences, and ROM removal were
-all lost on restart. Saving now works regardless of how the executable was
-built, and the fix is guarded on every platform we ship. *(#32)*
-
-**Windows: non-English user folders and portable installs now save reliably.**
-Non-English account and folder paths work normally. Put `portable.txt` beside
-`GoldenBalloon.exe` only when you deliberately want options, saves, and add-ons
-beside the game. Without it, an unwritable user folder falls back to the
-portable location and reports that choice instead of losing settings. *(#33)*
-
-**Missing music and silver-coin chimes.** On some tracks the busiest musical
-passages dropped notes, and the silver-coin pickup jingle could cut off after
-its first note. Both were limits carried over from the N64's smaller audio
-budget; the full arrangement now plays. *(#30)*
-
-**No more getting stuck in doors and trees.** A kart that ended up inside a
-locked door or a piece of scenery after an angled bounce could stay wedged
-there. It's now pushed back out the same way the ground already pushes karts
-out.
-
-**A plugged-in but idle controller no longer disables the keyboard.** Player
-one can drive on keys with a gamepad connected; whichever device you actually
-use takes over.
-
-**Small screens: the "Forget Remembered ROM" dialog is readable again** instead
-of collapsing into a tall, one-word-per-line column on handhelds.
-
-**Compact launcher controls stay inside the window.** The typed ROM path and
-**Use This Path** action now stack when they cannot fit on one row.
-
-## Smoother in-between frames
-
-Sudden camera pitch and roll changes now cut cleanly instead of one axis
-blending while another snaps, and cutscene shots are as smooth as gameplay.
-With Motion smoothing on, controls are sampled right before each game tick,
-trimming about a frame of input delay at 60 Hz. These changes affect
-presentation only: physics, timers, audio, and saves still advance at the
-game's authored rate. Interpolated draws presentation-only in-between images
-from adjacent authored states; Original repeats authored holds.
+One Windows report of characters briefly appearing unanimated ("T-posing")
+at race start (issue #35) could not be reproduced from this release's source
+on any tested configuration, including the exact 1.3.0 code. The 1.4.0
+Windows package is produced by the validated CI lane; if you saw this on
+1.3.0, please retest on 1.4.0 and let us know either way in the issue.

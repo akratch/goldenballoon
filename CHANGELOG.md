@@ -8,6 +8,55 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
+## [1.4.0] — 2026-08-18
+
+Motion smoothing is the headline: the interpolation stack was rebuilt
+closed-loop and the one long-standing artifact class it carried — world
+geometry (most visibly the Timber's Island waterfalls) flashing or breaking
+apart while the camera moves — was root-caused and fixed. Smoothing is now a
+qualified path on ProMotion/120 Hz displays.
+
+### Fixed
+
+- World geometry no longer flashes/vanishes under camera motion with Motion
+  smoothing enabled (issue #36). Level-geometry interpolation pairs were
+  keyed by BSP walk order, which permutes as the camera moves; mispaired
+  batches blended toward the wrong mesh on interpolated frames only. Static
+  world vertex blending — a no-op when paired correctly — is now demoted to
+  authored bytes (`MDKR_WORLD_STATIC_VERTEX_BLEND=1` restores the old path
+  for comparison). Waves, scrolling water, objects and particles keep full
+  interpolation.
+- Exiting a race in Adventure no longer launches the kart off the rising
+  door (issue #41): collision matrices are primed from the door's final
+  authored pose on spawn, and a rising sliding door blocks laterally without
+  imparting its vertical carry. Replaces the 1.3.x timer-based door
+  intangibility window, which masked only a subset of exits.
+- Present pacing is closed-loop against the panel's measured refresh
+  (~119.83 Hz on the qualifying display); alpha is slot-projected;
+  the Metal drawable pool is three-deep; macOS occlusion-state refusals
+  (wgpu-native v29 regression family) are shimmed out in-process.
+- Steering under the enhanced gameplay cadence uses the exact composed
+  half-step, restoring the analog feel of the authored 30 Hz recurrence
+  (issue #37); the retail force/damp order is also preserved for
+  handed-off (finished/demo) racers.
+- Taj's theme plays with all 16 sequence channels restored (issue #39).
+- Wizpig is playable in Adventure and Tracks; the race model validator no
+  longer rejects him over animations the race path never plays (issue #40).
+- Texture pack overrides are addressed by the tile's logical size, fixing
+  misfitting pack textures (issue #34).
+- UV-scrolled surfaces interpolate their scroll between ticks (residual
+  holds 2.7%, was 46%); menu and cutscene cameras interpolate.
+- Void-curtain capacity raised (sliver shards, vanishing backdrop at high
+  plane counts) and its pair indices widened past the retail s8 range.
+
+### Added
+
+- `Video.WidescreenHUD` (`MDKR_WIDESCREEN_HUD`): anchors HUD elements to the
+  display edges in widescreen (issue #38). Off by default.
+- Diagnostic surfaces for presentation work: F9 capture rig with async
+  frame-dump writer, `[SMOOTH-VERDICT]` per-class census,
+  `[WGPU-REFUSAL]`/`[WGPU-BACKPRESSURE-PERIODIC]` rows, `[DRAWDIST]` trace.
+
 ## [1.3.0] — 2026-08-16
 
 Phone Party and Online Room foundations described below remain in source and
