@@ -680,6 +680,40 @@ static bool dkr_replay_pan_demote_enabled(void) {
 }
 
 /*
+ * WORLD_STATIC vertex-position blending, default OFF.
+ * MDKR_WORLD_STATIC_VERTEX_BLEND=1 restores the pre-2026-08-18 blending for
+ * A/B; the default demotes exactly the MDKR_SURF_WORLD_STATIC deformation
+ * stage to its authored-bytes hold path, leaving WATER_WAVE (real per-tick
+ * vertex motion), WORLD_SCROLL, and every object/particle class untouched.
+ *
+ * Why (2026-08-18 falls-flash root cause): level-geometry deformation pairs
+ * are keyed by walk-order stream ordinals (dkr_deformation_begin_stream)
+ * under one ROOT owner, and BSP traversal order permutes with camera motion
+ * — so a cross-tick lookup can bind two DIFFERENT segment batches whose
+ * vertex delta sits under the 4096 sanity ceiling. For static world geometry
+ * a CORRECT pair blends identical bytes (a no-op), so the blend stage
+ * carries no image value and all of the mispair risk. The F9-bracketed hub
+ * falls "flash/vanish while moving" events were exactly such mispaired
+ * blends in the interpolated slots (endpoint slots always drew authored):
+ * machine A/B on the falls corridor repro measured 21 flash events / 805
+ * residual energy with blending on vs 3 / 70 (healthy background) with it
+ * off, with WATER_WAVE/WORLD_SCROLL/OBJECT_ROOT blend counts unchanged.
+ * If static-world blending is ever genuinely needed, the pairing must first
+ * move to content-stable keys (DKR-R's shadow-identity lesson), not walk
+ * position.
+ */
+static int dkr_replay_world_static_vertex_blend = -1;
+static bool dkr_replay_world_static_vertex_blend_enabled(void) {
+    if (dkr_replay_world_static_vertex_blend < 0) {
+        const char *value = getenv("MDKR_WORLD_STATIC_VERTEX_BLEND");
+        dkr_replay_world_static_vertex_blend =
+            value != NULL &&
+            (strcmp(value, "1") == 0 || strcmp(value, "on") == 0);
+    }
+    return dkr_replay_world_static_vertex_blend != 0;
+}
+
+/*
  * Deterministic negative-control input for check_smooth_verdict.py. The
  * production route's actual yaw is deliberately measured above, but tying a
  * release gate to the chance that a hard pan and one particular scrolling
@@ -7244,10 +7278,17 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     (void)dkr_replay_resolve_alpha(
                         deform_class, &world_static_alpha_req,
                         &world_static_alpha_reason);
+                    /* See dkr_replay_world_static_vertex_blend_enabled():
+                     * static world batches gain nothing from a correct blend
+                     * and everything can go wrong on a walk-order mispair, so
+                     * the gate can demote this one class to its authored hold
+                     * without touching WATER_WAVE. */
                     retained_replay = dkr_replay_deformation_vertices(
                         &rsp.deformation_owner,
                         rsp.deformation_viewport, ordinal, retained_n, false,
-                        world_static_alpha_reason == MDKR_VERDICT_BLEND,
+                        world_static_alpha_reason == MDKR_VERDICT_BLEND &&
+                            (deform_class != MDKR_SURF_WORLD_STATIC ||
+                             dkr_replay_world_static_vertex_blend_enabled()),
                         retained_vertices, position_overrides,
                         color_overrides);
                     if (retained_replay !=

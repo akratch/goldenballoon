@@ -459,3 +459,74 @@ reference for the PLL (slew was ~10 ms/s against the ~119.83 Hz panel;
 vblank-derived timestamps respect the no-compositor-noise doctrine).
 (4) Panel-side discriminators: external display / 240 fps slow-mo.
 Analysis artifacts: /tmp/interp-evidence/f9/{png,*.py}.
+
+## SEVENTH WAVE (2026-08-18): root cause found and fixed — walk-order
+## mispaired WORLD_STATIC vertex blends
+
+The owner's F9 bracket (session /tmp/mdkr-f9-falls, drive STRAIGHT at the
+twin-falls door, no pan) finally captured the defect inside the dumps:
+whole falls sheets strobing. The decisive measurement was the per-frame
+presence timeline of one falls column against the [PRESENTSCHED] tick
+boundaries: **ON at every endpoint slot, ABSENT for exactly the three
+interpolated slots of afflicted ticks** (frames 11653-55 of tick 2919,
+11661-63 of tick 2921; pattern ON-off-off-off-ON), while a mispositioned
+jagged white mass appeared at a single mid-slot (11654). Static-control
+bracket: clean. So the defect lives ONLY in interpolated replays, is
+whole-batch coherent, is not tick-phase locked to one slot, and every
+authored frame is perfect — which is why five weeks of delivery/cadence/
+alpha/content forensics stayed green ("pan-only" in the original report
+was wrong: ANY camera motion triggers it; the F9 bracket was a straight
+drive).
+
+Mechanism, proven by bisection then structurally: level-geometry
+deformation pairs are keyed (owner, generation, class, viewport,
+ordinal=stream<<16|batch) where `stream` is dkr_deformation_begin_stream's
+per-owner VISIT COUNTER — all level segments share one ROOT owner, so
+streams enumerate segments in BSP WALK ORDER (tracks.c segment traversal,
+camera-position keyed). Camera motion permutes the walk order; the same
+key then binds two DIFFERENT segment batches across adjacent ticks, and
+neighboring level geometry sits far under the 4096-unit
+DKR_DEFORMATION_SANITY_DELTA ceiling, so the mispair blends: falls quads
+lerp into the cliff (vanish), foreign batches lerp across the view (white
+shards), whole regions alternate as order churns per tick (black strobe
+storms in door corridors). The 2026-08-17 sanity-ceiling comment in
+gfx_pc_dkr.c had already described these percepts; the ceiling catches
+model-extent mispairs, not neighbor-batch mispairs.
+
+Machine repro + verification (all headless, hub falls corridor route
+"0:200,500:896,928:1534,1693:897,2258:386,1556:897,2258:386,1556:210,623",
+MDKR_DUMP_FROM=11200, --headless-ticks 3500; detector =
+motion-compensated top-half residual, flash pair > max(8, 4*median);
+scripts /tmp/mdkr-t1ab/flash_detect.py, recipe reproducible from this
+section):
+  baseline                          21 flashes / energy 805 / max 69.9
+  MDKR_TEST_UV_SCROLL_INTERPOLATION=off   22 / 840  (exonerated)
+  MDKR_TEST_DEFORMATION_INTERPOLATION=off  3 /  70  (kills it)
+  MDKR_TEST_OBJECT_INTERPOLATION=off       3 /  70  (kills it too —
+      world arm's owner_present rides dkr_replay_object_alpha_valid)
+  MDKR_WORLD_STATIC_VERTEX_BLEND=off       3 /  70  (surgical arm)
+  fixed default (blend off)                3 /  70  (healthy background:
+      the 3 residual events are authored one-tick steps, present in
+      every healthy arm)
+[SMOOTH-VERDICT] in the surgical arm: WATER_WAVE blend=109,986,
+WORLD_SCROLL blend=45,507, OBJECT_ROOT blend=100,704 — untouched.
+
+FIX (this commit): WORLD_STATIC vertex-position blending default OFF
+(gfx_pc_dkr.c dkr_replay_world_static_vertex_blend_enabled;
+MDKR_WORLD_STATIC_VERTEX_BLEND=1 restores for A/B). Rationale: a CORRECT
+world-static pair blends identical bytes — the stage carries zero image
+value and all of the mispair risk. WATER_WAVE (real vertex motion) keeps
+its topology-keyed blending; WORLD_SCROLL/objects/particles unaffected.
+If static-world blending is ever needed, pairing must first move to
+content-stable keys (DKR-R presentation_identity.cpp is the working
+precedent in this exact game).
+
+Falsified along the way (2026-08-18 PM): draw-distance/object-admission
+(owner live A/B at 400%, arm verified hot via [DRAWDIST]), and the
+mip/aniso scintillation arm as THE percept (three-arm A/B measured no
+residual change — though note the arm's validity caveat: the first
+attempt measured the wrong scenery; the corrected repro then found the
+true mechanism before the scintillation A/B was re-run at the falls).
+The 15 Hz flipbook-beat and BSP-order-percept theories are superseded:
+BSP order churn is real but its role is TRIGGER of the pairing desync,
+not a direct percept.
