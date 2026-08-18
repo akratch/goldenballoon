@@ -355,10 +355,12 @@ if [[ -n "$tool" ]]; then
   # branch stays dormant on the hosted lanes.
   elif command -v unsquashfs >/dev/null 2>&1; then
     echo "WARN: direct appimagetool exec failed; extracting its payload instead." >&2
+    # readelf's "Start of section headers" line ends in "(bytes into file)",
+    # so the number is field 5 on all three lines, never $NF.
     tool_offset="$(readelf -h "$tool" | awk '
-      /Start of section headers/ { start = $NF }
-      /Size of section headers/ { size = $(NF-1) }
-      /Number of section headers/ { count = $(NF-0) }
+      /Start of section headers/ { start = $5 }
+      /Size of section headers/ { size = $5 }
+      /Number of section headers/ { count = $5 }
       END { print start + size * count }')"
     if [[ -n "$tool_offset" ]] && \
         unsquashfs -q -o "$tool_offset" -d "$work/appimagetool-root" "$tool" && \
