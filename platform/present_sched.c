@@ -1297,7 +1297,6 @@ void present_sched_trace_summary(void) {
                 "deformoverride=%llu "
                 "deformmiss=%llu "
                 "deformincompatible=%llu deformcollision=%llu "
-                "voidbatches=%llu voidinterp=%llu voidheld=%llu "
                 "colorhit=%llu coloroverride=%llu "
                 "particledeformhit=%llu particledeformoverride=%llu "
                 "renderervertexreg=%llu renderervertexhit=%llu "
@@ -1367,9 +1366,6 @@ void present_sched_trace_summary(void) {
                 (unsigned long long)packet_stats.deformation_misses,
                 (unsigned long long)packet_stats.deformation_incompatible,
                 (unsigned long long)packet_stats.deformation_collisions,
-                (unsigned long long)packet_stats.void_replay_batches,
-                (unsigned long long)packet_stats.void_replay_interpolated,
-                (unsigned long long)packet_stats.void_replay_held,
                 (unsigned long long)packet_stats.deformation_color_hits,
                 (unsigned long long)packet_stats.deformation_color_overrides,
                 (unsigned long long)

@@ -555,17 +555,6 @@ static bool dkr_replay_object_interpolation_enabled(void) {
     return dkr_replay_object_interpolation != 0;
 }
 
-/* Verbose per-batch curtain rows for the void-replay census; diagnostic
- * only (MDKR_VOID_DIAG=1), independent of the always-on counters. */
-static int dkr_void_diag = -1;
-static bool dkr_void_diag_enabled(void) {
-    if (dkr_void_diag < 0) {
-        const char *value = getenv("MDKR_VOID_DIAG");
-        dkr_void_diag = value != NULL && value[0] == '1';
-    }
-    return dkr_void_diag != 0;
-}
-
 static bool dkr_replay_deformation_interpolation_enabled(void) {
     if (dkr_replay_deformation_interpolation < 0) {
         const char *value = getenv("MDKR_TEST_DEFORMATION_INTERPOLATION");
@@ -5895,19 +5884,6 @@ static DkrRetainedVertexReplay dkr_replay_deformation_vertices(
                 dz > limit || dz < -limit) {
                 interpolate = false;
                 gfx_presentation_packet_note_renderer_vertex_jump();
-                if (dkr_void_diag_enabled()) {
-                    static int jump_rows;
-                    if (jump_rows < 400) {
-                        jump_rows++;
-                        fprintf(stderr,
-                                "[JUMP-HOLD] tick=%llu owner=%p n=%d vi=%d "
-                                "limit=%.0f dx=%.0f dy=%.0f dz=%.0f\n",
-                                (unsigned long long)
-                                    dkr_last_walked_authored_tick,
-                                owner->address, count, index, limit,
-                                dx, dy, dz);
-                    }
-                }
                 break;
             }
         }
@@ -7123,21 +7099,6 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                         particle_alpha_reason == MDKR_VERDICT_BLEND,
                         retained_vertices, position_overrides,
                         color_overrides);
-                    if (dkr_void_diag_enabled() &&
-                        gfx_presentation_packet_void_range_contains(
-                            (uint64_t)cmd->words.w1)) {
-                        fprintf(stderr,
-                                "[VOID-PART] tick=%llu reason=%d result=%d "
-                                "n=%d vp=%d owner=%p gen=%llu\n",
-                                (unsigned long long)
-                                    dkr_last_walked_authored_tick,
-                                (int)particle_alpha_reason,
-                                (int)retained_replay, retained_n,
-                                packet_binding.viewport,
-                                packet_binding.owner.address,
-                                (unsigned long long)
-                                    packet_binding.owner.generation);
-                    }
                     if (retained_replay !=
                             DKR_RETAINED_VERTEX_UNAVAILABLE) {
                         vertex_source = retained_vertices;
@@ -7306,30 +7267,6 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
             }
             DTRACE("G_VTX n=%d append=%d slot=%d bb=%d addr=%08x->%p", n, append,
                    rsp.active_slot, rsp.billboard, cmd->words.w1, (const void *)v);
-            /* Void-curtain replay census (see the stats-struct comment): the
-             * curtain REBUILDS on a camera-anchored line every tick, so a
-             * replay that draws it unblended is a 30 Hz teleport on screen.
-             * Placed at the common tail so a batch excluded by ANY earlier
-             * gate (no deformation owner, billboard state, packet vertex) is
-             * still counted — and, under MDKR_VOID_DIAG, says which gate. */
-            if (dkr_replay_pass &&
-                gfx_presentation_packet_void_range_contains(
-                    (uint64_t)cmd->words.w1)) {
-                gfx_presentation_packet_note_void_replay(
-                    position_override != NULL);
-                if (dkr_void_diag_enabled()) {
-                    fprintf(stderr,
-                            "[VOID-DIAG] tick=%llu addr=%08x n=%d interp=%d "
-                            "bb=%d ownervalid=%d packetvtx=%d y0=%d\n",
-                            (unsigned long long)dkr_last_walked_authored_tick,
-                            (unsigned)cmd->words.w1, retained_n,
-                            position_override != NULL ? 1 : 0,
-                            rsp.billboard ? 1 : 0,
-                            rsp.deformation_owner_valid ? 1 : 0,
-                            retained_packet_vertex ? 1 : 0,
-                            v != NULL ? (int)v[0].y : 0);
-                }
-            }
             if (dkr_replay_pass && packet_binding_found &&
                 packet_binding.stale && retained_n > 0 &&
                 packet_binding.key_size >= sizeof(Vertex)) {

@@ -2,7 +2,6 @@
 #include "gfx_deformation_shape.h"
 
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1027,67 +1026,6 @@ bool gfx_presentation_packet_deformation_reordered(
 
 void gfx_presentation_packet_note_deformation_incompatible(void) {
     s_stats.deformation_incompatible++;
-}
-
-/* ---- void-curtain batch recognition (see header) ------------------------ */
-
-/*
- * Ranges are in DISPLAY-LIST ADDRESS SPACE (the 32-bit word a gSPVertexDKR
- * carries, i.e. OS_K0_TO_PHYSICAL of the live buffer), NOT host pointers:
- * a replay walk resolves vertex loads into the retained arena COPY, so a
- * live host pointer would never match there — measured as voidbatches=0 on
- * a full hub tour before this was fixed. The DL words themselves are
- * preserved byte-for-byte in the retained copy, so they are the one stable
- * identity both walks share.
- */
-#define GFX_VOID_RANGE_MAX 16u
-static struct {
-    uint64_t base;
-    uint64_t end;
-} s_void_ranges[GFX_VOID_RANGE_MAX];
-static unsigned s_void_range_count;
-
-void gfx_presentation_packet_void_ranges_reset(void) {
-    s_void_range_count = 0u;
-    memset(s_void_ranges, 0, sizeof(s_void_ranges));
-}
-
-void gfx_presentation_packet_void_range_note(uint64_t dl_address,
-                                             size_t bytes) {
-    if (dl_address == 0u || bytes == 0u ||
-        s_void_range_count >= GFX_VOID_RANGE_MAX) {
-        return;
-    }
-    s_void_ranges[s_void_range_count].base = dl_address;
-    s_void_ranges[s_void_range_count].end = dl_address + (uint64_t)bytes;
-    s_void_range_count++;
-    /* A few lines per level load; existence is the point (a route with no
-     * row means the level allocated no void arena at all). */
-    fprintf(stderr, "[VOID-RANGE] base=0x%llx bytes=%llu\n",
-            (unsigned long long)dl_address, (unsigned long long)bytes);
-}
-
-int gfx_presentation_packet_void_range_contains(uint64_t dl_address) {
-    unsigned index;
-    if (dl_address == 0u) {
-        return 0;
-    }
-    for (index = 0u; index < s_void_range_count; index++) {
-        if (dl_address >= s_void_ranges[index].base &&
-            dl_address < s_void_ranges[index].end) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-void gfx_presentation_packet_note_void_replay(int interpolated) {
-    s_stats.void_replay_batches++;
-    if (interpolated) {
-        s_stats.void_replay_interpolated++;
-    } else {
-        s_stats.void_replay_held++;
-    }
 }
 
 void gfx_presentation_packet_note_phase_hold(bool effect) {

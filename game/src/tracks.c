@@ -13,7 +13,6 @@
 #include "enh_draw_distance.h"
 #include "fast3d/gfx_presentation_packet.h"
 #include "gfx_shadow_frame.h"
-#include "rcp_dkr.h"
 #include "mdkr_bounds.h"
 #include "platform_os.h"
 #include "net/net_roster_runtime.h"
@@ -1607,13 +1606,6 @@ void void_init(s32 viewportCount) {
         ptr = (u8 *) ((s32) (ptr + sp2C + 8) & ~7);
 #endif
 
-#ifdef NATIVE_PORT
-        /* Register the curtain's vertex double buffers with the presentation
-         * packet layer so the replay can recognise (and census) void batches
-         * by pointer. Reset first: the arena is reallocated per level, and a
-         * stale range over freed memory must never match a new batch. */
-        gfx_presentation_packet_void_ranges_reset();
-#endif
         for (i = 0; i < viewportCount; i++) {
             gVoidMesh[i].tris[0] = (Triangle *) ptr;
             ptr += triLimit;
@@ -1626,14 +1618,6 @@ void void_init(s32 viewportCount) {
 
             gVoidMesh[i].verts[1] = (Vertex *) ptr;
             ptr += vtxLimit;
-#ifdef NATIVE_PORT
-            gfx_presentation_packet_void_range_note(
-                (u64) OS_K0_TO_PHYSICAL(gVoidMesh[i].verts[0]),
-                (size_t) vtxLimit);
-            gfx_presentation_packet_void_range_note(
-                (u64) OS_K0_TO_PHYSICAL(gVoidMesh[i].verts[1]),
-                (size_t) vtxLimit);
-#endif
         }
     }
     gVoidVertexFlip = 0;
@@ -1651,117 +1635,6 @@ void void_free(void) {
 }
 
 // root func for the out of bounds void rendering
-#ifdef NATIVE_PORT
-/*
- * VOID CURTAIN INTERPOLATION IDENTITY. The curtain rebuilds every authored
- * tick on a line re-anchored to that tick's camera (250 units ahead,
- * perpendicular to yaw — see the D_8011D4A0..B0 setup below), so an
- * uninterpolated curtain TELEPORTS at 30 Hz while the interpolated camera
- * glides at display rate around it: measured 2026-08-17 as voidinterp=0 of
- * voidbatches=1745 across a full hub tour — the falls "breaking" during
- * pans, invisible when static. The double-buffer flip (gVoidVertexFlip)
- * also alternates every batch's address each tick, so no address-derived
- * pairing can ever hold.
- *
- * The fix rides the weather rail (game/src/weather.c
- * weather_register_vertex_batch): one batch per QUAD, registered
- * renderer-owned under a stable identity token per (viewport, quad index).
- * Quad index is generation order, which is the sorted-plane order — stable
- * while the strip set is stable; when the set churns, the pair guard below
- * refuses any swap that moved a vertex farther than legitimate per-tick
- * curtain motion (camera travel + window slide, bounded well under it).
- */
-#define VOID_QUAD_IDENTITY_VIEWPORTS 4
-#define VOID_QUAD_IDENTITY_SLOTS 256
-#define VOID_QUAD_IDENTITY_TOKENS 1021
-#define VOID_QUAD_PAIR_GUARD 900.0f
-static u8 sVoidIdentityTokens[VOID_QUAD_IDENTITY_TOKENS];
-static s32 sVoidCurrentViewport;
-/* Plane identity for the entry pair ABOUT to be pushed through
- * func_80026C14 (both crossings of one slice share it). See the
- * unk8011D478.stableKey comment in tracks.h. */
-static u32 sVoidPendingKey;
-/* Per generated quad: mixed key of the TWO planes the quad spans, latched
- * at write time and consumed by the flush (which always trails by one). */
-static u32 sVoidQuadKeys[VOID_QUAD_IDENTITY_SLOTS];
-
-static u32 void_key_mix(u32 a, u32 b) {
-    u32 h = a * 2654435761u;
-    h ^= (b + 0x9e3779b9u + (h << 6) + (h >> 2));
-    return h;
-}
-
-/* One plane opens a quad in EVERY band its span crosses (func_80026E54 runs
- * once per band), so the plane key alone collides with itself within a tick
- * and the packet layer's collision-poison defense then refuses the pair for
- * exactly the widest sheets — measured as deformcollision=1174 and an 89%
- * curtain hold rate on a falls-circling route. Mixing in the plane's
- * per-tick quad ordinal makes every key unique within the tick; when band
- * churn shifts the ordinal, the mispair is between ADJACENT segments of the
- * SAME sheet, which the blend renders as a near-invisible in-sheet morph
- * bounded by the pair guard. Reset per walk (void_check). */
-#define VOID_PLANE_COUNT_SLOTS 128u
-static struct {
-    u32 key;
-    u32 n;
-} sVoidPlaneQuadCounts[VOID_PLANE_COUNT_SLOTS];
-static u32 sVoidPlaneCountUsed;
-
-static void void_plane_counts_reset(void) {
-    sVoidPlaneCountUsed = 0u;
-    memset(sVoidPlaneQuadCounts, 0, sizeof(sVoidPlaneQuadCounts));
-}
-
-static u32 void_plane_quad_ordinal(u32 planeKey) {
-    u32 index = planeKey % VOID_PLANE_COUNT_SLOTS;
-    u32 probes = 0u;
-    while (probes < VOID_PLANE_COUNT_SLOTS) {
-        if (sVoidPlaneQuadCounts[index].key == planeKey &&
-            sVoidPlaneQuadCounts[index].n != 0u) {
-            return sVoidPlaneQuadCounts[index].n++;
-        }
-        if (sVoidPlaneQuadCounts[index].n == 0u) {
-            sVoidPlaneQuadCounts[index].key = planeKey;
-            sVoidPlaneQuadCounts[index].n = 1u;
-            return sVoidPlaneQuadCounts[index].n++;
-        }
-        index = (index + 1u) % VOID_PLANE_COUNT_SLOTS;
-        probes++;
-    }
-    return 0u; /* table full: collide rather than fault */
-}
-
-static void void_register_quad_batch(const void *vtx, s32 quadIndex) {
-    GfxPresentationMatrixOwner owner;
-    u64 generation = 0u;
-    const void *identity;
-
-    if (vtx == NULL || quadIndex < 0 ||
-        quadIndex >= VOID_QUAD_IDENTITY_SLOTS ||
-        sVoidCurrentViewport < 0 ||
-        sVoidCurrentViewport >= VOID_QUAD_IDENTITY_VIEWPORTS) {
-        return;
-    }
-    identity = &sVoidIdentityTokens[sVoidQuadKeys[quadIndex] %
-                                    VOID_QUAD_IDENTITY_TOKENS];
-    if (!presentation_snapshot_identity_ensure_generation(identity,
-                                                          &generation)) {
-        return;
-    }
-    memset(&owner, 0, sizeof(owner));
-    owner.address = identity;
-    owner.generation = generation;
-    owner.matrix_class = GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES;
-    owner.surface_class = MDKR_SURF_PARTICLE;
-    owner.renderer_owned = true;
-    owner.max_vertex_delta = VOID_QUAD_PAIR_GUARD;
-    owner.capture_tick = presentation_task_authoring_tick();
-    owner.valid = true;
-    (void) gfx_presentation_packet_register_vertex_identity(
-        vtx, sVoidCurrentViewport, &owner);
-}
-#endif
-
 void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
     s16 i;
     s16 j;
@@ -1794,10 +1667,6 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
 #endif
     s32 pad;
 
-#ifdef NATIVE_PORT
-    sVoidCurrentViewport = viewportIndex;
-    void_plane_counts_reset();
-#endif
     gVoidTris[0] = gVoidMesh[viewportIndex].tris[0];
     gVoidTris[1] = gVoidMesh[viewportIndex].tris[1];
     gVoidVerts[0] = gVoidMesh[viewportIndex].verts[0];
@@ -1824,10 +1693,8 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
      * dropped them (losing the entire curtain's closure). The entry table
      * is insertion-sorted, so order does not change any sub-saturation
      * result. */
-    sVoidPendingKey = 0xF100Du; /* whole-band floor pair */
     func_80026C14(300, gCurrentLevelModel->lowerYBounds - 195, 1);
     func_80026C14(-300, gCurrentLevelModel->lowerYBounds - 195, 1);
-    sVoidPendingKey = 0xF200Du; /* whole-band ceiling pair */
     func_80026C14(300, gCurrentLevelModel->upperYBounds + 195, 0);
     func_80026C14(-300, gCurrentLevelModel->upperYBounds + 195, 0);
 #endif
@@ -1943,9 +1810,6 @@ void void_check(u8 *segmentIds, s32 numberOfSegments, s32 viewportIndex) {
          * address-keyed static cache would freeze its first frames as a
          * permanent phantom wall). */
         gfx_shadow_caster_exclude_mark(gVoidCurrTris);
-        /* Under per-quad flushing the pending group is always the latest
-         * quad; same index formula as the in-generate flush. */
-        void_register_quad_batch(gVoidCurrVerts, gVoidPrimCount - 1);
 #endif
         gSPVertexDKR(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrVerts), gVoidVertCount, 0);
         gSPPolygon(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrTris), gVoidVertCount >> 1, TRIN_DISABLE_TEXTURE);
@@ -2024,12 +1888,6 @@ void func_80026070(LevelModelSegmentBoundingBox *arg0, f32 arg1, f32 arg2, f32 a
         if (sp60[1] > 300.0) {
             sp60[1] = 300.0f;
         }
-#ifdef NATIVE_PORT
-        /* Plane identity: the segment bounding box this floor-band slice
-         * came from — world-static across ticks. */
-        sVoidPendingKey = void_key_mix(
-            (u32) ((uintptr_t) arg0 >> 4), 0x0B0Bu);
-#endif
         func_80026C14(sp60[1], gCurrentLevelModel->lowerYBounds - 195, 0);
         func_80026C14(sp60[0], gCurrentLevelModel->lowerYBounds - 195, 0);
     }
@@ -2154,13 +2012,6 @@ void func_80026430(LevelModelSegment *segment, f32 arg1, f32 arg2, f32 arg3) {
                     if (spC4[0] == spC4[1]) {
                         var_s0 |= 8;
                     }
-#ifdef NATIVE_PORT
-                    /* Plane identity: the WORLD TRIANGLE this slice came
-                     * from (segment + face index) — the one thing about the
-                     * entry that does not move with the camera. */
-                    sVoidPendingKey = void_key_mix(
-                        (u32) ((uintptr_t) segment >> 4), (u32) j);
-#endif
                     func_80026C14(spC4[0], spB8[0], var_s0);
                     func_80026C14(spC4[1], spB8[1], var_s0);
                 }
@@ -2187,9 +2038,6 @@ void func_80026C14(s16 arg0, s16 arg1, s32 arg2) {
             D_8011D478[j].unk2 = D_8011D478[j - 1].unk2;
             D_8011D478[j].unk7 = D_8011D478[j - 1].unk7;
             D_8011D478[j].unk6 = D_8011D478[j - 1].unk6;
-#ifdef NATIVE_PORT
-            D_8011D478[j].stableKey = D_8011D478[j - 1].stableKey;
-#endif
             j--;
         }
         D_8011D478[i].unk0 = arg0;
@@ -2197,9 +2045,6 @@ void func_80026C14(s16 arg0, s16 arg1, s32 arg2) {
         D_8011D478[i].unk4 = 0;
         D_8011D478[i].unk7 = D_8011D49C;
         D_8011D478[i].unk6 = arg2;
-#ifdef NATIVE_PORT
-        D_8011D478[i].stableKey = sVoidPendingKey;
-#endif
         D_8011D47C[D_8011D49E] = -1;
         if (D_8011D49E & 1) {
             D_8011D49C++;
@@ -2299,25 +2144,6 @@ void func_80026E54(s16 arg0, s8 *arg1, f32 arg2, f32 arg3) {
         if (temp0 && !temp1) {
             temp3 = (sp60[i] * 2);
             temp4 = (sp60[i + 1] * 2);
-#ifdef NATIVE_PORT
-            /* Latch the quad's world-stable identity for the registration
-             * at flush time (gVoidPrimCount is the index the quad is about
-             * to occupy). Keyed by the TOP plane ALONE, deliberately: each
-             * top plane opens at most one quad per tick (i is unique in
-             * this loop), and which plane happens to close it depends on
-             * the height-sort adjacency, which churns continuously during
-             * pans. Mixing the closing plane into the key made identity
-             * churn with the sort (measured: blend rate fell to 25% on a
-             * falls-circling route); with the opener alone, a changed
-             * closing edge is a same-identity morph the pair guard bounds,
-             * not an identity break. */
-            if (gVoidPrimCount < (s32) ARRAY_COUNT(sVoidQuadKeys)) {
-                u32 planeKey =
-                    D_8011D478[D_8011D47C[arg1[i] * 2]].stableKey;
-                sVoidQuadKeys[gVoidPrimCount] = void_key_mix(
-                    planeKey, void_plane_quad_ordinal(planeKey));
-            }
-#endif
             void_generate_primitive(&sp94[temp3], &sp94[temp4], arg3, arg2);
         }
     }
@@ -2340,32 +2166,17 @@ s32 void_generate_primitive(f32 *arg0, f32 *arg1, f32 arg2, f32 arg3) {
         return 0;
     }
 
+    if (gVoidVertCount == 24) {
 #ifdef NATIVE_PORT
-    /* Per-QUAD batches (retail flushed every 24 verts / 6 quads): one batch
-     * per quad is what makes the per-quad identity registration exact — a
-     * strip-set change can shift which quad lands at which index, but it can
-     * no longer shift content ACROSS a shared batch's interior, and the pair
-     * guard covers the index swaps. Display-list-only change: more (tiny)
-     * vertex loads, identical pixels per authored frame. */
-    if (gVoidVertCount == 4) {
         /* See the flush site: void geometry never casts. */
         gfx_shadow_caster_exclude_mark(gVoidCurrTris);
-        void_register_quad_batch(gVoidCurrVerts, gVoidPrimCount - 1);
-        gSPVertexDKR(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrVerts), gVoidVertCount, 0);
-        gSPPolygon(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrTris), (gVoidVertCount >> 1), TRIN_DISABLE_TEXTURE);
-        gVoidCurrVerts = gTrackVtxPtr;
-        gVoidVertCount = 0;
-        gVoidCurrTris = gTrackTriPtr;
-    }
-#else
-    if (gVoidVertCount == 24) {
-        gSPVertexDKR(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrVerts), gVoidVertCount, 0);
-        gSPPolygon(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrTris), (gVoidVertCount >> 1), TRIN_DISABLE_TEXTURE);
-        gVoidCurrVerts = gTrackVtxPtr;
-        gVoidVertCount = 0;
-        gVoidCurrTris = gTrackTriPtr;
-    }
 #endif
+        gSPVertexDKR(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrVerts), gVoidVertCount, 0);
+        gSPPolygon(gTrackDL++, OS_K0_TO_PHYSICAL(gVoidCurrTris), (gVoidVertCount >> 1), TRIN_DISABLE_TEXTURE);
+        gVoidCurrVerts = gTrackVtxPtr;
+        gVoidVertCount = 0;
+        gVoidCurrTris = gTrackTriPtr;
+    }
 
     vertX1 = arg2 * D_8011D4A0 + D_8011D4AC;
     vertZ1 = arg2 * D_8011D4A4 + D_8011D4B0;

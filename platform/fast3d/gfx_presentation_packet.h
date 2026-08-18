@@ -270,20 +270,6 @@ typedef struct GfxPresentationPacketStats {
      */
     uint64_t shadow_reorder_checks;
     uint64_t shadow_reorder_mismatches;
-    /*
-     * VOID CURTAIN replay census. The curtain (tracks.c void walker) is the
-     * one world batch family that TELEPORTS every authored tick: its quads
-     * are rebuilt on a line re-anchored to the tick camera (250 units ahead,
-     * perpendicular to yaw), so an uninterpolated curtain steps at 30 Hz
-     * against a 120 Hz gliding world -- visible exactly as the falls
-     * "breaking" during pans and invisible when static. These three say, per
-     * replayed curtain batch, whether the deformation stage actually blended
-     * it or left the teleport on screen. Batches are recognised by vertex
-     * pointer against the registered per-viewport double buffers.
-     */
-    uint64_t void_replay_batches;
-    uint64_t void_replay_interpolated;
-    uint64_t void_replay_held;
 } GfxPresentationPacketStats;
 
 typedef struct GfxPresentationDeformationBinding {
@@ -435,22 +421,6 @@ void gfx_presentation_packet_note_uv_scroll_override(void);
 bool gfx_presentation_packet_publish_deformation(void);
 void gfx_presentation_packet_note_future_capture(bool success);
 void gfx_presentation_packet_note_deformation_incompatible(void);
-
-/*
- * Void-curtain batch recognition (see the census comment on the stats
- * struct). The walker registers each viewport's two vertex double buffers
- * at level alloc; the replay asks whether a batch's vertex pointer lies in
- * any registered range and reports the blend outcome. reset() is called at
- * the same alloc so ranges from a freed level arena can never false-match.
- */
-void gfx_presentation_packet_void_ranges_reset(void);
-/* dl_address is the 32-bit vertex-load word (OS_K0_TO_PHYSICAL of the live
- * buffer), not a host pointer — the retained replay resolves into an arena
- * copy, so only the DL word is a shared identity across both walks. */
-void gfx_presentation_packet_void_range_note(uint64_t dl_address,
-                                             size_t bytes);
-int gfx_presentation_packet_void_range_contains(uint64_t dl_address);
-void gfx_presentation_packet_note_void_replay(int interpolated);
 void gfx_presentation_packet_note_phase_hold(bool effect);
 void gfx_presentation_packet_note_deformation_override(void);
 void gfx_presentation_packet_note_particle_deformation(bool overridden);
