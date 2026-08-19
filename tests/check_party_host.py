@@ -108,30 +108,45 @@ def run(args: argparse.Namespace) -> None:
             sas = cdp.evaluate("""(async () => {
               const host=await MDKRPartySas.createIdentity();
               const phone=await MDKRPartySas.createIdentity();
+              const hostFingerprint=MDKRPartySas.sdpFingerprint(
+                'a=fingerprint:sha-256 ab:cd:ef:01\\r\\n');
               const transcript={roomId:'abcdefghijklmnopqrstuv',
-                hostPublicKey:host.publicKey,controllerPublicKey:phone.publicKey};
+                hostPublicKey:host.publicKey,controllerPublicKey:phone.publicKey,
+                hostFingerprint,
+                controllerFingerprint:'sha-256 23:45:67:89'};
               const a=await MDKRPartySas.phrase(host.privateKey,phone.publicKey,transcript);
               const b=await MDKRPartySas.phrase(phone.privateKey,host.publicKey,transcript);
-              return {a,b,hostLength:host.publicKey.length,phoneLength:phone.publicKey.length};
+              const refused=await MDKRPartySas.phrase(host.privateKey,phone.publicKey,
+                {...transcript,controllerFingerprint:''}).then(()=>false,()=>true);
+              return {a,b,refused,hostFingerprint,
+                hostLength:host.publicKey.length,phoneLength:phone.publicKey.length};
             })()""", await_promise=True)
             require(sas["a"] == sas["b"] and sas["hostLength"] == 87 and
-                    sas["phoneLength"] == 87 and len(sas["a"].split()) == 2,
-                    f"ECDH pairing phrase mismatch: {sas}")
+                    sas["phoneLength"] == 87 and len(sas["a"].split()) == 2 and
+                    sas["hostFingerprint"] == "sha-256 AB:CD:EF:01" and
+                    sas["refused"] is True,
+                    f"ECDH v2 pairing phrase mismatch: {sas}")
 
             cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
               type:'room_state', transitionId:2, controllers:[{
-                controllerId:'phone-one', name:'Sam’s phone', phrase:'Bright Balloon',
+                controllerId:'phone-one', name:'Sam’s phone',
                 phase:'pending', seat:null, leaseGeneration:0, connectionSequence:1
               }]});""")
             pending = wait_value(cdp, """(() => ({
               text: document.getElementById('party-pending-list').textContent,
               buttons: document.querySelectorAll('#party-pending-list button').length,
+              approveDisabled: document.querySelector(
+                '#party-pending-list .btn-primary').disabled,
               seat: document.querySelector('#party-pending-list select').value
             }))()""", lambda value: isinstance(value, dict) and value.get("buttons") == 2,
                 "pending approval", args.timeout)
-            require("Sam’s phone" in pending["text"] and "Bright Balloon" in pending["text"] and
+            # v2 ritual: the phrase binds the direct channel, so a pending
+            # phone shows the placeholder and Approve is NOT phrase-gated.
+            require("Sam’s phone" in pending["text"] and
+                    "Phrase appears when the phone connects." in pending["text"] and
+                    pending["approveDisabled"] is False and
                     pending["seat"] == "2",
-                    f"identity/phrase absent from approval: {pending}")
+                    f"identity/placeholder absent from approval: {pending}")
             cdp.evaluate("document.querySelector('#party-pending-list .btn-primary').click()")
             wait_value(cdp,
                 "globalThis.__mdkrPartyHostTestState.requests.some(p=>p.endsWith('/approve'))",
@@ -144,7 +159,7 @@ def run(args: argparse.Namespace) -> None:
 
             cdp.evaluate("""globalThis.MDKRPartyHost.applyRoomState({
               type:'room_state', transitionId:3, controllers:[{
-                controllerId:'phone-one', name:'Sam’s phone', phrase:'Bright Balloon',
+                controllerId:'phone-one', name:'Sam’s phone',
                 phase:'leased', seat:2, leaseGeneration:1, connectionSequence:1
               }]});""")
             seat = wait_value(cdp, """(() => ({

@@ -45,7 +45,7 @@ def run(args: argparse.Namespace) -> None:
         try:
             room_state = {"type": "room_state", "transitionId": 2,
                           "controllers": [{"controllerId": "phone-one",
-                              "name": "Test phone", "phrase": "Bright Balloon",
+                              "name": "Test phone",
                               "phase": "leased", "seat": 1, "leaseGeneration": 7,
                               "connectionSequence": 1}]}
             host_source = """
@@ -64,7 +64,7 @@ def run(args: argparse.Namespace) -> None:
                 directSignaling:true,autoApprove:false,seat:1,connectionSequence:1,
                 capability:'A'.repeat(43),
                 async request(){return {roomId:'abcdefghijklmnopqrstuv',
-                  controllerId:'phone-one',credential:'C'.repeat(43),protocol:1,
+                  controllerId:'phone-one',credential:'C'.repeat(43),protocol:2,
                   phrase:'Bright Balloon'}}
               };
             """

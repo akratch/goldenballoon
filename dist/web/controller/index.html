@@ -47,10 +47,7 @@
     <section id="state-waiting" class="state-card" aria-labelledby="waiting-title" hidden>
       <p class="eyebrow">Waiting for approval</p>
       <h1 id="waiting-title">Check the display</h1>
-      <p>Check this phrase matches the one shown on the display.</p>
-      <div class="phrase" aria-label="Pairing phrase">
-        <span>Pairing phrase</span><strong id="pairing-phrase">Bright Balloon</strong>
-      </div>
+      <p>The pairing phrase appears on both screens when this phone connects.</p>
       <label for="device-name">Phone name <span>(optional)</span></label>
       <input id="device-name" name="device-name" type="text" maxlength="24"
              autocomplete="off" spellcheck="false"
@@ -62,6 +59,10 @@
       <p class="eyebrow">Approved</p>
       <div id="seat-badge" class="seat-badge" aria-hidden="true">1</div>
       <h1 id="assigned-title">Controller 1</h1>
+      <p>Check this phrase matches the one shown on the display.</p>
+      <div class="phrase" aria-label="Pairing phrase">
+        <span>Pairing phrase</span><strong id="pairing-phrase"></strong>
+      </div>
       <p>Test the connection, then pick up your phone and race.</p>
       <button id="input-test" class="input-test" type="button">
         <span>Press Go</span><small id="input-test-status">Connection test</small>

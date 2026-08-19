@@ -62,6 +62,8 @@
       "The display uses a newer controller protocol. Refresh this controller."],
     protocol_update_required: ["This controller page is out of date",
       "Reload to update."],
+    unverified_connection: ["Connection not verified",
+      "This phone could not verify its direct connection to the display, so it stays disconnected. Enter the newest code from the display to try again."],
     invite_expired: ["Invite expired",
       "Ask the display to show a new QR code, then scan it again."],
     left_room: ["Controller disconnected",
@@ -204,7 +206,7 @@
     if (!exactKeys(value, keys) ||
         !/^[A-Za-z0-9_-]{22}$/.test(value.controllerId) ||
         !/^[A-Za-z0-9_-]{43}$/.test(value.credential) ||
-        !/^[A-Za-z0-9_-]{22}$/.test(value.roomId) || value.protocol !== 1 ||
+        !/^[A-Za-z0-9_-]{22}$/.test(value.roomId) || value.protocol !== 2 ||
         !/^[A-Za-z0-9_-]{87}$/.test(value.hostPublicKey)) return null;
     return Object.freeze({...value});
   }
@@ -589,12 +591,12 @@
       async redeem() {
         if (testConfig.redeemError) throw new Error(testConfig.redeemError);
         return {phrase: testConfig.phrase || "Bright Balloon",
-          protocol: testConfig.protocol || 1};
+          protocol: testConfig.protocol || 2};
       },
       async redeemCode() {
         if (testConfig.redeemError) throw new Error(testConfig.redeemError);
         return {phrase: testConfig.phrase || "Bright Balloon",
-          protocol: testConfig.protocol || 1};
+          protocol: testConfig.protocol || 2};
       },
     };
   }
@@ -644,6 +646,9 @@
         stateChannel = null;
         controlChannel = null;
         connection.close();
+        // The phrase vouched for that exact channel; a reconnect derives
+        // fresh words from its own answer, and a refusal shows none.
+        $("pairing-phrase").textContent = "";
       } else {
         recoveryPeerGeneration = currentPeerGeneration;
       }
@@ -710,6 +715,44 @@
           4011, "controller_signal_send_failed");
         return false;
       }
+    }
+
+    /* SAS v2: the pairing phrase binds this exact channel — the host
+     * fingerprint from the offer this page just applied, this page's own
+     * from the answer it will signal — and can only exist once both
+     * descriptions are set. Without a host key there is no verified
+     * pairing to bind (loopback test seams keep their stubbed phrase);
+     * with one, a description whose fingerprints cannot be canonicalized
+     * is terminal: no phrase may vouch for a channel it does not bind. */
+    async function bindPairingPhrase(connection) {
+      if (!controllerInfo?.hostPublicKey) return;
+      const hostFingerprint = globalThis.MDKRPartySas.sdpFingerprint(
+        connection.remoteDescription?.sdp);
+      const controllerFingerprint = globalThis.MDKRPartySas.sdpFingerprint(
+        connection.localDescription?.sdp);
+      let phrase = "";
+      if (hostFingerprint && controllerFingerprint) {
+        try {
+          const identity = await identityPromise;
+          phrase = await globalThis.MDKRPartySas.phrase(
+            identity.privateKey, controllerInfo.hostPublicKey, {
+              roomId: controllerInfo.roomId,
+              hostPublicKey: controllerInfo.hostPublicKey,
+              controllerPublicKey: identity.publicKey,
+              hostFingerprint, controllerFingerprint,
+            });
+        } catch (_) { phrase = ""; }
+      }
+      if (peer !== connection || leavingPage) return;
+      if (!phrase) {
+        $("pairing-phrase").textContent = "";
+        showError("unverified_connection");
+        api.close();
+        if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
+        if (wakeLock) wakeLock.release().catch(() => {});
+        return;
+      }
+      $("pairing-phrase").textContent = phrase;
     }
 
     async function acceptOffer(message) {
@@ -829,7 +872,9 @@
           sdp: connection.localDescription});
       } catch (_) {
         if (peer === connection) directTransportLost(connection, true);
+        return;
       }
+      void bindPairingPhrase(connection);
     }
 
     function normalizedControllerState(value) {
@@ -1116,35 +1161,24 @@
         reconnectExhausted = false;
         return connectControl(controllerInfo);
       },
+      // The pairing phrase is no longer derived here: it binds the direct
+      // channel's own DTLS fingerprints, which only exist once the WebRTC
+      // descriptions are set, so bindPairingPhrase derives it at connection.
       async redeem(secret) {
         const identity = await identityPromise;
         const value = await post("/api/controller/redeem", {capability: secret,
-          protocol: 1, name: normalizedDeviceName($("device-name").value),
+          protocol: 2, name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
-        const phrase = value.hostPublicKey
-          ? await globalThis.MDKRPartySas.phrase(
-          identity.privateKey, value.hostPublicKey, {roomId: value.roomId,
-            hostPublicKey: value.hostPublicKey,
-            controllerPublicKey: identity.publicKey})
-          : value.phrase;
-        const connected = {...value, phrase};
-        connectControl(connected);
-        return connected;
+        connectControl(value);
+        return value;
       },
       async redeemCode(code) {
         const identity = await identityPromise;
-        const value = await post("/api/controller/code", {code, protocol: 1,
+        const value = await post("/api/controller/code", {code, protocol: 2,
           name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
-        const phrase = value.hostPublicKey
-          ? await globalThis.MDKRPartySas.phrase(
-          identity.privateKey, value.hostPublicKey, {roomId: value.roomId,
-            hostPublicKey: value.hostPublicKey,
-            controllerPublicKey: identity.publicKey})
-          : value.phrase;
-        const connected = {...value, phrase};
-        connectControl(connected);
-        return connected;
+        connectControl(value);
+        return value;
       },
     };
     return api;
@@ -1166,11 +1200,11 @@
     try {
       const result = await transport.redeemCode(code);
       if (leavingPage) return;
-      if (result.protocol !== 1) {
+      if (result.protocol !== 2) {
         showError("update_required", "Refresh controller", "reload");
         return;
       }
-      $("pairing-phrase").textContent = result.phrase || "Bright Balloon";
+      $("pairing-phrase").textContent = result.phrase || "";
       render("waiting", {focus: $("device-name")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);
@@ -1380,11 +1414,11 @@
       const result = await transport.redeem(capability);
       capability = "";
       if (leavingPage) return;
-      if (result.protocol !== 1) {
+      if (result.protocol !== 2) {
         showError("update_required", "Refresh controller", "reload");
         return;
       }
-      $("pairing-phrase").textContent = result.phrase || "Bright Balloon";
+      $("pairing-phrase").textContent = result.phrase || "";
       render("waiting", {focus: $("device-name")});
       if (testConfig && testConfig.autoApprove !== false) {
         setTimeout(() => approve(testConfig.seat || 1), testConfig.approveDelayMs || 0);

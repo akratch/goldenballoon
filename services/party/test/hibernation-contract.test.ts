@@ -178,7 +178,7 @@ describe("Workers Free hibernation lifecycle", () => {
     const pending = nextMessageMatching(host, "pending controller",
       value => value.type === "room_state" && value.controllers.length === 1);
     const redeemed = await post("/api/controller/redeem",
-      {capability, protocol: 1, name: "Phone", controllerPublicKey});
+      {capability, protocol: 2, name: "Phone", controllerPublicKey});
     expect(redeemed.status).toBe(201);
     const controller = await redeemed.json() as Record<string, string>;
     await pending;
@@ -223,7 +223,7 @@ describe("Workers Free hibernation lifecycle", () => {
     const room = await created.json() as Record<string, string>;
     const capability = new URL(room.controllerUrl!).hash.slice(1);
     const redeemed = await post("/api/controller/redeem",
-      {capability, protocol: 1, name: "Phone", controllerPublicKey});
+      {capability, protocol: 2, name: "Phone", controllerPublicKey});
     expect(redeemed.status).toBe(201);
     const controller = await redeemed.json() as Record<string, string>;
 
@@ -339,7 +339,7 @@ describe("Workers Free hibernation lifecycle", () => {
 
     const redeem = async (key: string) => {
       const redeemed = await post("/api/controller/redeem",
-        {capability, protocol: 1, controllerPublicKey: key.repeat(87)});
+        {capability, protocol: 2, controllerPublicKey: key.repeat(87)});
       expect(redeemed.status).toBe(201);
       return redeemed.json() as Promise<Record<string, string>>;
     };

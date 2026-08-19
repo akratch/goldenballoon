@@ -37,7 +37,10 @@ export function applyRoomCommand(room: StoredRoom, command: RoomCommand): RoomRe
   if (terminal) return {ok: false, error: terminal};
   if (command.type === "redeem") {
     const input = command.value;
-    if (input.protocol !== 1) return {ok: false, error: "protocol_update_required"};
+    // Pairing protocol 2 = SAS v2 (the phrase binds both DTLS fingerprints).
+    // A protocol-1 page derives words this room's hosts can never match, so
+    // it is refused here rather than paired into a phrase that cannot verify.
+    if (input.protocol !== 2) return {ok: false, error: "protocol_update_required"};
     if (input.now >= room.inviteExpiresAt) return {ok: false, error: "invite_expired"};
     const inviteMatches = input.inviteDigest.length > 0 &&
       constantTimeEqual(input.inviteDigest, room.inviteDigest);

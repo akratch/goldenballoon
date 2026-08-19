@@ -475,7 +475,7 @@ def assert_pairing(origin: str, evidence: list[str]) -> None:
     capability = controller_url.split("#", 1)[1]
 
     status, headers, controller = http(origin, "/api/controller/redeem",
-        {"capability": capability, "protocol": 1,
+        {"capability": capability, "protocol": 2,
          "controllerPublicKey": public_key(), "name": "Verifier"})
     require(status == 201, f"invite redeem failed: {status} {controller}")
     require(headers.get("cache-control") == "no-store",
@@ -588,7 +588,7 @@ def assert_pairing(origin: str, evidence: list[str]) -> None:
 
     # Fallback code path.
     status, headers, fallback = http(origin, "/api/controller/code",
-        {"code": room["fallbackCode"], "protocol": 1,
+        {"code": room["fallbackCode"], "protocol": 2,
          "controllerPublicKey": public_key(), "name": "Fallback"})
     require(status == 201, f"fallback code redeem failed: {status} {fallback}")
     require(headers.get("cache-control") == "no-store",
@@ -607,16 +607,16 @@ def assert_pairing(origin: str, evidence: list[str]) -> None:
             "rotation reissued the same invite or code")
 
     status, _, stale = http(origin, "/api/controller/redeem",
-        {"capability": capability, "protocol": 1,
+        {"capability": capability, "protocol": 2,
          "controllerPublicKey": public_key()})
     require(status != 201, f"the rotated-away invite still redeems: {status} {stale}")
     status, _, stale_code = http(origin, "/api/controller/code",
-        {"code": room["fallbackCode"], "protocol": 1,
+        {"code": room["fallbackCode"], "protocol": 2,
          "controllerPublicKey": public_key()})
     require(status != 201,
             f"the rotated-away fallback code still redeems: {status} {stale_code}")
     status, _, fresh = http(origin, "/api/controller/redeem",
-        {"capability": new_capability, "protocol": 1,
+        {"capability": new_capability, "protocol": 2,
          "controllerPublicKey": public_key()})
     require(status == 201, f"the rotated invite does not redeem: {status} {fresh}")
     evidence.append("invites: fallback code paired; rotation invalidated the old "

@@ -434,7 +434,7 @@ async function redeemToRoom(body: Record<string, unknown>, env: Env, roomId: str
   }));
   if (!response.ok) return response;
   const result = await response.json() as Record<string, unknown>;
-  return json({controllerId, credential, roomId, protocol: 1,
+  return json({controllerId, credential, roomId, protocol: 2,
     hostPublicKey: result.hostPublicKey}, 201);
 }
 
