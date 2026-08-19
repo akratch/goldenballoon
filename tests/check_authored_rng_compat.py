@@ -169,6 +169,8 @@ def run(binary: Path, rom: Path, timeout: int, verbose: bool) -> list[str]:
             LC_ALL="C", MDKR_AUDIO="0", MDKR_SIMULATION_CADENCE="original",
             MDKR_SYNTH_FIELDS="2", MDKR_TRACE="1", MDKR_ORACLE_STATE="1",
             MDKR_RENDERER="gl", MDKR_SAVE_DIR=str(run_dir / "save"),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(run_dir / "save" / "video.ini"),
         )
         command = [str(binary), "--headless-frames", str(FRAMES),
                    "--input-script", str(script), "--rom", str(rom)]

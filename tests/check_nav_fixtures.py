@@ -84,7 +84,9 @@ def run_magic_code_submission(binary: str, rom: str, scripts: Path,
     with tempfile.TemporaryDirectory(prefix="mdkr-magic-code-fixture-") as run_root:
         save = os.path.join(run_root, "save")
         os.mkdir(save)
-        env = dict(os.environ, MDKR_AUDIO="0", MDKR_TRACE="1", MDKR_SAVE_DIR=save)
+        # Isolate the video config with the save (see check_door_blocks.py).
+        env = dict(os.environ, MDKR_AUDIO="0", MDKR_TRACE="1", MDKR_SAVE_DIR=save,
+                   MDKR_VIDEO_CONFIG_PATH=os.path.join(save, "video.ini"))
         cmd = [binary, "--headless-frames", "3650", "--input-script", script,
                "--rom", rom]
         if verbose:
@@ -164,6 +166,7 @@ def main() -> int:
                 MDKR_AUDIO="0",
                 MDKR_TRACE="1",
                 MDKR_SAVE_DIR=save,
+                MDKR_VIDEO_CONFIG_PATH=os.path.join(save, "video.ini"),
             )
             cmd = [binary, "--headless-frames", str(frames),
                    "--input-script", script, "--rom", rom]

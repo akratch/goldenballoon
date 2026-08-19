@@ -240,6 +240,8 @@ def clean_environment(
         MDKR_NO_CRASH_HANDLER="1",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         LC_ALL="C",
     )
     env.update(extra)

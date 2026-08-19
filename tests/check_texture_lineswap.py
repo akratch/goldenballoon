@@ -173,6 +173,8 @@ def run(binary: str, rom: str, script: str, frames: int, dump_from: int,
         MDKR_AUDIO="0",     # belt-and-braces; --headless-frames is the guarantee
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=save_dir,
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"),
         MDKR_DUMP_FROM=str(dump_from),
         MDKR_DUMP_EVERY=str(dump_every),
         MDKR64_HIDDEN="1",

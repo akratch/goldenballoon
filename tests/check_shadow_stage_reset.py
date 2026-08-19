@@ -65,6 +65,8 @@ def run_arm(binary: Path, rom: Path, label: str, root: Path,
         MDKR_LOAD_TRACK="5",
         MDKR_WORLD_FX_TRACE="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     if trace:
         env["MDKR_TRACE"] = "1"

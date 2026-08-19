@@ -62,6 +62,8 @@ def main() -> int:
             MDKR_TRACE="1",
             MDKR_RENDERER="gl",
             MDKR_SAVE_DIR=str(save_dir),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
             MDKR_TAJ_P2_LEAD_TRACE="1",
             MDKR_AUTOPILOT="1",
             MDKR_DRIVE_ROUTE=DRIVE_ROUTE,

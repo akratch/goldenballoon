@@ -172,7 +172,9 @@ def run_arm(binary: str, rom: str, arm: Arm, verbose: bool) -> Arm:
                MDKR_TRACE="1",
                MDKR_BOOST_TRACE="1",
                MDKR_ZIPPAD_BOOST=spec,
-               MDKR_SAVE_DIR=save_dir)
+               MDKR_SAVE_DIR=save_dir,
+               # Isolate the video config with the save (see check_door_blocks.py).
+               MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"))
     # Nothing inherited may perturb the physics under measurement.
     for stale in ("MDKR_FORCE_BOOST", "MDKR_BOSS_SLOW", "MDKR_FORCE_LAPS",
                   "MDKR_RNGSEED", "MDKR_ARCTAN", "MDKR_TRIG", "MDKR_LOAD_TRACK",

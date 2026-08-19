@@ -90,6 +90,8 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, script: Path,
         MDKR_LOAD_TRACK="37",
         MDKR_RENDERER="gl",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_SIMULATION_CADENCE=cadence,
         MDKR_STATE_HASH="3",
         MDKR_SYNTH_FIELDS="1" if cadence == "enhanced" else "2",

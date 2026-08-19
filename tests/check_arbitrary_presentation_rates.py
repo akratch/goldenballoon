@@ -98,6 +98,8 @@ def run(binary: Path, rom: Path, root: Path, label: str,
         MDKR_PRESENT_SMOOTHING="interpolate",
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_SIMULATION_CADENCE=cadence,
         MDKR_STATE_HASH=HASH_VERSION,
         MDKR_SYNTH_FIELDS="1" if cadence == "enhanced" else "2",

@@ -122,6 +122,8 @@ def run_backend(
                 "MDKR_AUDIO": "0",
                 "MDKR_RENDERER": renderer,
                 "MDKR_SAVE_DIR": str(root / "save"),
+                # Isolate the video config with the save (see check_door_blocks.py).
+                "MDKR_VIDEO_CONFIG_PATH": str(root / "save" / "video.ini"),
             }
         )
         if renderer == "webgpu":

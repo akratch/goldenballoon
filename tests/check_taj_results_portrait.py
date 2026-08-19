@@ -152,6 +152,8 @@ def main() -> int:
             MDKR_DUMP_FROM=str(CAPTURE_FRAMES[0]),
             MDKR_DUMP_EVERY=str(CAPTURE_FRAMES[1] - CAPTURE_FRAMES[0]),
             MDKR_SAVE_DIR=str(save_dir),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         )
         command = [
             str(binary), "--headless-frames", str(args.frames),

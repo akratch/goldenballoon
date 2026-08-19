@@ -266,6 +266,8 @@ def main() -> int:
             MDKR_DUMP_FROM="5400",
             MDKR_DUMP_EVERY="100",
             MDKR_SAVE_DIR=str(save_dir),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         )
         command = [
             str(binary), "--headless-frames", str(args.frames),
@@ -380,6 +382,7 @@ def main() -> int:
             MDKR_TAJ_VISUAL_FREEZE_CARPET="1",
             MDKR_TAJ_VISUAL_UNSCALED_CARPET="1",
             MDKR_SAVE_DIR=str(control_dir / "save"),
+            MDKR_VIDEO_CONFIG_PATH=str(control_dir / "save" / "video.ini"),
         )
         control_process = subprocess.run(
             [str(binary), "--headless-frames", "5450", "--input-script",
@@ -452,7 +455,8 @@ def main() -> int:
         imported_save = imported_dir / "save"
         imported_save.mkdir(parents=True)
         (imported_save / "eeprom.bin").write_bytes(make_eeprom(0x3F, 18))
-        imported_env = dict(env, MDKR_SAVE_DIR=str(imported_save))
+        imported_env = dict(env, MDKR_SAVE_DIR=str(imported_save),
+                            MDKR_VIDEO_CONFIG_PATH=str(imported_save / "video.ini"))
         imported_command = [
             str(binary), "--headless-frames", "1700", "--rom", str(rom),
         ]
@@ -485,6 +489,7 @@ def main() -> int:
         split_env = dict(
             env,
             MDKR_SAVE_DIR=str(split_save),
+            MDKR_VIDEO_CONFIG_PATH=str(split_save / "video.ini"),
             MDKR_DUMP_FROM="3000",
             MDKR_DUMP_EVERY="50",
         )
@@ -535,6 +540,7 @@ def main() -> int:
         no_shadow_env = dict(
             split_env,
             MDKR_SAVE_DIR=str(no_shadow_save),
+            MDKR_VIDEO_CONFIG_PATH=str(no_shadow_save / "video.ini"),
             MDKR_TAJ_VISUAL_DISABLE_MULTIPLAYER_SHADOW="1",
         )
         no_shadow_process = subprocess.run(
@@ -594,7 +600,8 @@ def main() -> int:
         for players, multiplayer_script in MULTIPLAYER_SCRIPTS.items():
             multiplayer_dir = run_dir / f"{players}p"
             multiplayer_dir.mkdir()
-            multiplayer_env = dict(env, MDKR_SAVE_DIR=str(save_dir))
+            multiplayer_env = dict(env, MDKR_SAVE_DIR=str(save_dir),
+                                   MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"))
             multiplayer_process = subprocess.run(
                 [str(binary), "--headless-frames", "3600", "--input-script",
                  str(multiplayer_script), "--rom", str(rom)],
@@ -638,7 +645,8 @@ def main() -> int:
             (vehicle_save_dir / "eeprom.bin").write_bytes(
                 make_vehicle_select_eeprom()
             )
-            vehicle_env = dict(env, MDKR_SAVE_DIR=str(vehicle_save_dir))
+            vehicle_env = dict(env, MDKR_SAVE_DIR=str(vehicle_save_dir),
+                               MDKR_VIDEO_CONFIG_PATH=str(vehicle_save_dir / "video.ini"))
             vehicle_script = vehicle_dir / f"taj_{name}.txt"
             vehicle_lines: list[str] = []
             for line in SCRIPT.read_text(encoding="ascii").splitlines():
@@ -699,6 +707,7 @@ def main() -> int:
         canonical_env = dict(
             env,
             MDKR_SAVE_DIR=str(tt_save_dir),
+            MDKR_VIDEO_CONFIG_PATH=str(tt_save_dir / "video.ini"),
             MDKR_SIMULATION_CADENCE="enhanced",
             MDKR_SYNTH_FIELDS="1",
         )
@@ -750,7 +759,8 @@ def main() -> int:
                 tt_lines.append("4970 DOWN 6")
             tt_lines.append(line)
         tt_script.write_text("\n".join(tt_lines) + "\n", encoding="ascii")
-        tt_env = dict(env, MDKR_SAVE_DIR=str(tt_save_dir))
+        tt_env = dict(env, MDKR_SAVE_DIR=str(tt_save_dir),
+                      MDKR_VIDEO_CONFIG_PATH=str(tt_save_dir / "video.ini"))
         tt_command = [
             str(binary), "--headless-frames", str(TIME_TRIAL_FRAMES),
             "--input-script", str(tt_script), "--rom", str(rom),

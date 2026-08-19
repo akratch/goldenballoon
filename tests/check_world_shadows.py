@@ -142,6 +142,8 @@ def run_arm(
         MDKR_DUMP_EVERY="999",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     # The one variable under audit. A shipping arm leaves it out entirely -- the
     # env dict above is already scrubbed of every inherited MDKR_*/GE007_ key,

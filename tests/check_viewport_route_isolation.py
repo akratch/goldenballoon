@@ -101,6 +101,8 @@ def run_arm(binary: Path, rom: Path, root: Path, players: int,
         MDKR_DUMP_FROM=str(DUMP_FROM),
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_SIMULATION_CADENCE="original",
         MDKR_STATE_HASH="3",
         MDKR_SYNTH_FIELDS="2",

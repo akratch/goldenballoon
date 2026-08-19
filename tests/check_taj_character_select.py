@@ -453,6 +453,8 @@ def main() -> int:
                 MDKR_RENDERER=args.renderer,
                 MDKR_RENDER_SCALE="1",
                 MDKR_SAVE_DIR=str(save_dir),
+                # Isolate the video config with the save (see check_door_blocks.py).
+                MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
                 MDKR_DUMP_FROM=str(UNSELECTED_FRAME),
                 MDKR_DUMP_EVERY="20",
                 MDKR64_HIDDEN="1",
@@ -628,6 +630,7 @@ def main() -> int:
                 control_env = dict(env)
                 control_env.update(
                     MDKR_SAVE_DIR=str(control_save),
+                    MDKR_VIDEO_CONFIG_PATH=str(control_save / "video.ini"),
                     MDKR_TAJ_SELECT_UNSCALED_SHADOW="1",
                 )
                 control_process = subprocess.run(
@@ -706,6 +709,7 @@ def main() -> int:
                     LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                     MDKR_TAJ_SELECT_TRACE="1", MDKR_RENDERER=args.renderer,
                     MDKR_RENDER_SCALE="1", MDKR_SAVE_DIR=str(player_save),
+                    MDKR_VIDEO_CONFIG_PATH=str(player_save / "video.ini"),
                     # Keep a pre-Taj frame so the placard oracle can reject
                     # static grass/background pixels that happen to resemble
                     # a controller colour, particularly P3 green.
@@ -801,6 +805,7 @@ def main() -> int:
                 MDKR_TAJ_SELECT_FAIL_SPAWNS="100",
                 MDKR_RENDERER=args.renderer,
                 MDKR_SAVE_DIR=str(failure_save),
+                MDKR_VIDEO_CONFIG_PATH=str(failure_save / "video.ini"),
                 MDKR64_HIDDEN="1",
             )
             if args.aspect:

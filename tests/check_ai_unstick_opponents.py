@@ -206,6 +206,8 @@ def run_race(binary: str, rom: str, level: int, seed: str, frames: int,
         MDKR_RNGSEED=seed,
         MDKR_AI_STUCK_TRACE=str(STRIDE),
         MDKR_SAVE_DIR=save_dir,
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"),
     )
     # Deliberately absent: MDKR_TRACE (see the module docstring) and
     # MDKR_AUTOPILOT_UNSTICK -- this check must observe the game's own recovery,

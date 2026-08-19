@@ -292,6 +292,8 @@ def run(binary: Path, rom: Path, root: Path, timeout: int,
         # the replay-admission starvation stayed invisible.
         MDKR_RENDERER=RENDERER,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_PRESENT_RATE=PRESENT_RATE,
         MDKR_PRESENT_SMOOTHING="interpolate",

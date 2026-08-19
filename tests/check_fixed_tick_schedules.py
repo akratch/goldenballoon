@@ -151,6 +151,8 @@ def run(binary: Path, rom: Path, run_root: Path, label: str,
         MDKR_PRESENT_SCHED_TRACE="1",
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_STATE_HASH="3",
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
