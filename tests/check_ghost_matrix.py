@@ -28,7 +28,11 @@ The three runs per pair
 -----------------------
 Each pair gets its own `MDKR_SAVE_DIR`, so no pair can see another's EEPROM or
 Controller Pak, and the 6-slot pak ghost directory (`DKR_GHOST_SLOT_COUNT`,
-save_data.c) is never contended -- 47 ghosts do not fit on one pak.
+save_data.c) is never contended -- 47 ghosts do not fit on one pak. The
+contended case is owned by tests/check_ghost_bank_capacity.py, which drives
+more pairs than the window holds against ONE shared save directory and gates
+platform/ghost_bank.c's window swapping (issue #46); this check stays about
+per-pair round-tripping.
 
   1. **measure** -- drive the Time Trial to the finish with plain A taps and read
      the frame at which the post-race OPTIONS stage opens offering SAVE GHOST.

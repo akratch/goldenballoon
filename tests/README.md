@@ -4450,6 +4450,61 @@ mask and is driveable by a human; it is the AI line that does not get a car roun
 that track. If it ever finishes, the check fails and tells you to promote it out of
 `NO_GHOST_PAIRS`.
 
+## Ghost bank capacity — `tests/check_ghost_bank_capacity.py`
+
+The ghost matrix above gives every pair its own `MDKR_SAVE_DIR` because the
+authored DKRACING-GHOSTS note holds exactly six ghost slots
+(`DKR_GHOST_SLOT_COUNT`, `game/src/save_data.c`) — the original ROM's own file
+format, and on the port exactly the "CONTROLLER PAK FULL after six ghosts"
+defect of issue #46. `platform/ghost_bank.c` lifts that ceiling without
+touching the format: before a pair is loaded or saved, the least-recently-used
+window pair is swapped out to a per-pair bank file under `<save>/ghost-bank/`
+and the requested pair's banked record is swapped back in, verbatim. This
+check is the matrix's counterpart for that machinery: it drives **more pairs
+than the window holds against ONE shared save directory** — the contention the
+matrix deliberately avoids.
+
+```bash
+python3 tests/check_ghost_bank_capacity.py             # 8 pairs, one save dir
+python3 tests/check_ghost_bank_capacity.py --pairs 10
+python3 tests/check_ghost_bank_capacity.py --list      # candidate pool
+```
+
+Driving mechanics (navigation prefix, cadence arms, options-frame measurement,
+generated tap scripts, exit-code-first verdicts) are imported from
+`check_ghost_matrix.py` rather than re-derived, so the two checks cannot drift.
+Each pair measures its SAVE GHOST frame on a private directory (the
+deterministic re-drive can never beat its own stored time), then all writes
+and reads run **sequentially against the one shared directory**. Asserted:
+
+1. Every save reports status 0, and **no** `[TTGHOST]` row of any run reports
+   status 6 (`CONTROLLER_PAK_NO_ROOM_FOR_GHOSTS`) — the defect fails loud on
+   first occurrence.
+2. Every pair reloads in a fresh process with the exact
+   `nodes`/`character`/`time` it saved; with more pairs than slots that is
+   only possible through bank restoration.
+3. Byte identity through eviction: the serialised record captured from the pak
+   image after each save must reappear **verbatim** after that pair's read
+   run. Pairs whose record was absent beforehand were genuinely evicted; at
+   least pairs-minus-six such round trips must occur, and each must be traced
+   by the bank itself (`[GHOSTBANK] event=restore`), so whatever restored the
+   bytes provably was the bank.
+4. The pak container keeps its authored 32192-byte real-hardware-faithful
+   size: extra pairs live in the bank, never in a grown pak.
+
+The authored per-slot ghost erase (`func_800753D8`), whole-note deletion and
+reformat still stick — the bank reconciles its index against the live window,
+drops bank copies the game deleted, and fails toward deletion when its own
+sidecar is lost: sweeps read the bank directory itself, so records neither
+the window nor the index can vouch for are quarantined to `.bad.N` (never
+loaded again, still recoverable by hand) rather than left to resurrect — and
+a wipe after note deletion/reformat quarantines rather than unlinks, so a
+pak-side I/O accident cannot destroy the library. `tests/test_ghost_bank.c`
+covers those arms at the unit level, along with LRU order, swap bookkeeping,
+the first-run migration split of a pre-bank note, and refused-write no-ops;
+the swap's crash-ordering argument lives in the code comment at
+`ghost_bank.c`'s evict site, not in a unit that interrupts the stores.
+
 ## Taj vehicle challenges — `tests/check_taj_challenges.py`
 
 This is the end-to-end gate for all three dynamically created Timber's Island

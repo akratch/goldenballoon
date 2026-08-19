@@ -744,6 +744,11 @@ CHECKS = (
           # ceiling fired on the qualification host. This is a wedge bound, not
           # a runtime target; individual children retain their own 420s guard.
           timeout=3600),
+    Check("ghost_bank_capacity", "check_ghost_bank_capacity.py", "native",
+          "more than six Time Trial ghost pairs in ONE save directory: no "
+          "spurious NO ROOM FOR GHOSTS, and evicted pairs return from the "
+          "ghost bank byte-identical (issue #46)",
+          timeout=2400),
     Check("boost_magnitude", "check_boost_magnitude.py", "native",
           "zip-pad boost per-frame speed trace, racer-count independence, and "
           "perturbed-boost-constant positive controls"),

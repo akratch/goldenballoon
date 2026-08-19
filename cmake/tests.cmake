@@ -1676,6 +1676,39 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME virtual_pak COMMAND mdkr_virtual_pak_test)
 
+    # The per-(level, vehicle) ghost bank behind issue #46. The test's fake
+    # pak stubs carry the real save_data.h signatures, so it compiles against
+    # the game headers the way the camera kernel tests do.
+    add_executable(mdkr_ghost_bank_test
+        ${CMAKE_SOURCE_DIR}/tests/test_ghost_bank.c
+        ${CMAKE_SOURCE_DIR}/platform/ghost_bank.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_ghost_bank_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/src
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/include/sys
+        ${CMAKE_SOURCE_DIR}/game/libultra
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    target_compile_definitions(mdkr_ghost_bank_test PRIVATE
+        VERSION_us_v80
+        _LANGUAGE_C
+        MODERN_CC
+        NON_MATCHING=1
+        AVOID_UB=1
+        NATIVE_PORT=1
+        F3DDKR_GBI
+        _FINALROM)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_compile_options(mdkr_ghost_bank_test PRIVATE
+            -fms-extensions
+            -Wno-c23-extensions)
+    endif()
+    add_test(NAME ghost_bank COMMAND mdkr_ghost_bank_test)
+
     add_executable(mdkr_webgpu_fault_test
         ${CMAKE_SOURCE_DIR}/tests/test_webgpu_fault.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_webgpu_fault.c)

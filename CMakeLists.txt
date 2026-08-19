@@ -341,6 +341,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/sha256.c
     ${CMAKE_SOURCE_DIR}/platform/save_codec.c
     ${CMAKE_SOURCE_DIR}/platform/virtual_pak.c
+    ${CMAKE_SOURCE_DIR}/platform/ghost_bank.c # per-(level, vehicle) TT ghost bank (issue #46)
     ${CMAKE_SOURCE_DIR}/platform/segment_consts.c
     ${CMAKE_SOURCE_DIR}/platform/gu_port.c
     ${CMAKE_SOURCE_DIR}/platform/asset_swap.c
