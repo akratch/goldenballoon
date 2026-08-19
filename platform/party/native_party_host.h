@@ -54,6 +54,15 @@ struct MdkrNativePartyController {
     uint64_t lastRebindMs = 0u;
 };
 
+/* I2: the one sentence every mismatch surface shows -- the room message
+ * MdkrNativePartyHost::applyEvent sets and the seat row ui_phone_party.cpp
+ * derives from protocolMismatch. Both screens were designed to give the
+ * same remedy, so the copy lives once, here, where the flag it narrates is
+ * declared; tests/test_native_party_host.cpp pins the sentence itself. */
+inline constexpr char kMdkrPartyProtocolMismatchCopy[] =
+    "This phone's controller page is a different version. "
+    "Refresh the page on the phone.";
+
 struct MdkrNativePartyView {
     MdkrNativePartyPhase phase = MdkrNativePartyPhase::Closed;
     std::string controllerUrl;

@@ -32,7 +32,7 @@ void unansweredOfferAtDeadlineRecreatesThePeer() {
     const uint64_t now = offerSentMs + kDeadlineMs;
     const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/1u, /*authenticated=*/false,
-        /*socketOpen=*/false);
+        /*protocolMismatched=*/false, /*socketOpen=*/false);
     assert(decision.recreatePeer);
     assert(!decision.resendOffer);
     assert(!decision.giveUp);
@@ -45,7 +45,7 @@ void thirdUnansweredOfferAtDeadlineGivesUp() {
     const uint64_t now = offerSentMs + kDeadlineMs;
     const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/3u, /*authenticated=*/false,
-        /*socketOpen=*/false);
+        /*protocolMismatched=*/false, /*socketOpen=*/false);
     assert(decision.giveUp);
     assert(!decision.recreatePeer);
     assert(!decision.resendOffer);
@@ -59,7 +59,7 @@ void socketReopenWithPendingOfferResendsRegardlessOfAge() {
     const uint64_t now = offerSentMs + 500u;  // well within the deadline
     const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/1u, /*authenticated=*/false,
-        /*socketOpen=*/true);
+        /*protocolMismatched=*/false, /*socketOpen=*/true);
     assert(decision.resendOffer);
     assert(!decision.recreatePeer);
     assert(!decision.giveUp);
@@ -72,7 +72,7 @@ void freshOfferUnderTheDeadlineDoesNothing() {
     const uint64_t now = offerSentMs + (kDeadlineMs - 1u);
     allDecisionsAreFalse(mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/1u, /*authenticated=*/false,
-        /*socketOpen=*/false));
+        /*protocolMismatched=*/false, /*socketOpen=*/false));
 }
 
 /* Negative (a): authenticated peers are never recreated by this policy, no
@@ -83,10 +83,10 @@ void authenticatedPeersNeverRecreate() {
     const uint64_t now = offerSentMs + 999999u;
     allDecisionsAreFalse(mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/9u, /*authenticated=*/true,
-        /*socketOpen=*/false));
+        /*protocolMismatched=*/false, /*socketOpen=*/false));
     allDecisionsAreFalse(mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/9u, /*authenticated=*/true,
-        /*socketOpen=*/true));
+        /*protocolMismatched=*/false, /*socketOpen=*/true));
 }
 
 /* Negative (b): a young, unanswered offer with no socket reopen does
@@ -97,7 +97,34 @@ void youngOffersDoNothing() {
     const uint64_t now = offerSentMs + 250u;
     allDecisionsAreFalse(mdkr_party_retry_decide(
         now, offerSentMs, /*offerAttempts=*/1u, /*authenticated=*/false,
-        /*socketOpen=*/false));
+        /*protocolMismatched=*/false, /*socketOpen=*/false));
+}
+
+/* Negative (c), I2: a peer whose controller_ready declared the wrong
+ * pairing-protocol version is connected-but-wrong-version, not stranded --
+ * its offer WAS answered, so there is nothing for this ladder to rescue and
+ * nothing a recreated peer, resent offer, or give-up could fix. Walk every
+ * rung the pre-fix ladder would have fired: the 20 s recreate (attempts 1
+ * and 2), the 60 s give-up (attempt 3), far beyond it, and the
+ * socket-reopen resend. The peer stays untouched on all of them; its only
+ * exit is replacement by a fresh peer when the phone reloads. */
+void wrongVersionPeersAreNeverRetriedResentOrGivenUpOn() {
+    const uint64_t offerSentMs = 1000u;
+    const unsigned attempts[] = {1u, 2u, 3u};
+    const uint64_t ages[] = {kDeadlineMs, 2u * kDeadlineMs, 3u * kDeadlineMs,
+                             999999u};
+    for (const unsigned attempt : attempts) {
+        for (const uint64_t age : ages) {
+            allDecisionsAreFalse(mdkr_party_retry_decide(
+                offerSentMs + age, offerSentMs, attempt,
+                /*authenticated=*/false, /*protocolMismatched=*/true,
+                /*socketOpen=*/false));
+        }
+        allDecisionsAreFalse(mdkr_party_retry_decide(
+            offerSentMs + kDeadlineMs, offerSentMs, attempt,
+            /*authenticated=*/false, /*protocolMismatched=*/true,
+            /*socketOpen=*/true));
+    }
 }
 
 /* No offer sent yet (still gathering ICE candidates, say) is never a
@@ -105,7 +132,8 @@ void youngOffersDoNothing() {
 void noOutstandingOfferDoesNothing() {
     allDecisionsAreFalse(mdkr_party_retry_decide(
         999999u, /*offerSentMs=*/0u, /*offerAttempts=*/0u,
-        /*authenticated=*/false, /*socketOpen=*/true));
+        /*authenticated=*/false, /*protocolMismatched=*/false,
+        /*socketOpen=*/true));
 }
 
 }  // namespace
@@ -117,6 +145,7 @@ int main() {
     freshOfferUnderTheDeadlineDoesNothing();
     authenticatedPeersNeverRecreate();
     youngOffersDoNothing();
+    wrongVersionPeersAreNeverRetriedResentOrGivenUpOn();
     noOutstandingOfferDoesNothing();
     return 0;
 }

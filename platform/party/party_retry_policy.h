@@ -19,6 +19,13 @@
  * together with any change):
  *  - An authenticated peer (one that has completed controller_ready) is
  *    never recreated by this policy: it is a live, connected phone.
+ *  - A protocol-mismatched peer (one whose controller_ready declared a
+ *    different pairing-protocol version, I2) is never this policy's
+ *    business either: its offer WAS answered, so it is connected-but-
+ *    wrong-version, not stranded, and no recreated peer, resent offer, or
+ *    give-up can close a version gap. The recovery is the phone reloading
+ *    into a matching page, which arrives as a fresh peer with the flag
+ *    clear.
  *  - An unauthenticated peer whose outstanding offer has been unanswered
  *    for >= 20 s gets a fresh peer and a fresh offer (recreatePeer),
  *    unless it has already used all 3 attempts, in which case it gives up
@@ -50,6 +57,11 @@ struct MdkrPartyRetryDecision {
  * out and only advances when recreatePeer produces a genuinely new offer
  * (a resend does not consume an attempt).
  *
+ * protocolMismatched is the transport's per-peer I2 latch: set the moment a
+ * controller_ready arrives with any pairing-protocol version but this
+ * build's own, cleared only by the peer's replacement (a reloaded phone is
+ * a fresh peer).
+ *
  * socketOpen is edge-triggered: the caller passes true only on the call
  * that observes the signaling socket having just reopened, never on every
  * tick it happens to already be open -- otherwise an unanswered offer
@@ -57,6 +69,6 @@ struct MdkrPartyRetryDecision {
  */
 MdkrPartyRetryDecision mdkr_party_retry_decide(
     uint64_t nowMs, uint64_t offerSentMs, unsigned offerAttempts,
-    bool authenticated, bool socketOpen);
+    bool authenticated, bool protocolMismatched, bool socketOpen);
 
 #endif /* MDKR_PARTY_RETRY_POLICY_H */

@@ -350,6 +350,14 @@ struct Peer {
     uint32_t peerGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
+    /* I2: this peer's controller_ready declared a different pairing-protocol
+     * version. It is connected-but-wrong-version, not stranded: the C3
+     * unanswered-offer ladder must leave it alone (no recreate, no resend,
+     * no give-up -- none of those can close a version gap). Cleared only by
+     * a later controller_ready that matches on this same channel; the usual
+     * recovery -- the phone reloading into a matching page -- arrives as a
+     * fresh peer (createPeer / room-state retirement), flag clear. */
+    bool protocolMismatch = false;
     uint32_t pingNonce = 0u;
     Clock::time_point nextPingAt{};
     Clock::time_point pingOutstandingAt{};
@@ -521,7 +529,8 @@ private:
                 if (peer->failed || peer->gaveUp) continue;
                 const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
                     steadyNowMs(), peer->offerSentMs, peer->offerAttempts,
-                    peer->authenticated, /*socketOpen=*/true);
+                    peer->authenticated, peer->protocolMismatch,
+                    /*socketOpen=*/true);
                 if (decision.resendOffer) pendingOffers.push_back(peer);
             }
         }
@@ -593,7 +602,8 @@ private:
                     if (!peer->gaveUp) {
                         const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
                             nowMs, peer->offerSentMs, peer->offerAttempts,
-                            /*authenticated=*/false, /*socketOpen=*/false);
+                            /*authenticated=*/false, peer->protocolMismatch,
+                            /*socketOpen=*/false);
                         if (decision.giveUp) {
                             peer->gaveUp = true;
                             timedOut.push_back(peer);
@@ -1068,21 +1078,31 @@ private:
                 const bool matched = ready.type ==
                     MdkrPartyTransportEventType::ControllerConnected;
                 enqueue(std::move(ready));
-                if (matched) {
-                    {
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        const auto found = peers_.find(peer->id);
-                        if (found != peers_.end() && found->second == peer) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto found = peers_.find(peer->id);
+                    if (found != peers_.end() && found->second == peer) {
+                        peer->protocolMismatch = !matched;
+                        if (matched) {
                             peer->authenticated = true;
                             peer->pingOutstandingAt = Clock::time_point{};
-                            peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                            peer->nextPingAt =
+                                Clock::now() + std::chrono::seconds(5);
                         }
                     }
+                }
+                if (matched) {
                     peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
                 }
                 /* I2 mismatch: no ack and no authentication, but the peer is
-                 * left standing -- the phone may simply reload into a page
-                 * version that matches and complete controller_ready then. */
+                 * left standing for the mismatch's whole lifetime -- the
+                 * protocolMismatch latch keeps the C3 unanswered-offer
+                 * ladder (tick()/socketOpened via mdkr_party_retry_decide)
+                 * from recreating or giving up on it, since its offer WAS
+                 * answered and no retry can close a version gap. The phone
+                 * may simply reload into a page version that matches and
+                 * complete controller_ready then, arriving as a fresh
+                 * peer. */
             } else if (value.value("type", std::string{}) == "input_test" &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {

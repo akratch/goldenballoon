@@ -74,14 +74,6 @@ const char *typedCommandErrorCopy(const std::string &code) {
     return nullptr;
 }
 
-/* I2: one copy for a version-mismatched phone, shared by the room message
- * here and asserted verbatim by tests/test_native_party_host.cpp. The seat
- * row in ui_phone_party.cpp carries the same sentence, keyed off the
- * controller's protocolMismatch flag. */
-constexpr const char *kProtocolMismatchCopy =
-    "This phone's controller page is a different version. "
-    "Refresh the page on the phone.";
-
 }  // namespace
 
 MdkrNativePartyHost::MdkrNativePartyHost(MdkrPartyTransport &transport)
@@ -418,7 +410,7 @@ void MdkrNativePartyHost::applyEvent(
             if (candidate->phase == MdkrNativePartyControllerPhase::Connected) {
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
             }
-            view_.message = kProtocolMismatchCopy;
+            view_.message = kMdkrPartyProtocolMismatchCopy;
             return;
         }
         case MdkrPartyTransportEventType::CommandRejected: {
@@ -441,7 +433,19 @@ void MdkrNativePartyHost::applyEvent(
                  * room-level invite actions, not any one controller, so it
                  * is left untouched here. */
                 MdkrNativePartyController *candidate = controller(event.controllerId);
-                if (candidate != nullptr) candidate->commandPending = false;
+                if (candidate != nullptr) {
+                    candidate->commandPending = false;
+                    /* I2 review fix: a version-mismatched seat keeps the
+                     * honest room copy. The transport's ladder no longer
+                     * gives up on such a peer at the source, but any
+                     * rejection that still names a mismatched controller
+                     * -- the give-up shape included -- would recommend
+                     * the wrong remedy ("remove it and pair again" cannot
+                     * fix a page version) right beside the seat row's
+                     * correct one. Bookkeeping above still happened; only
+                     * the message overwrite is suppressed. */
+                    if (candidate->protocolMismatch) return;
+                }
             }
             /* I3: a recognized typed code wins over whatever prose the
              * transport attached; an unknown or absent code keeps the

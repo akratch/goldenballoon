@@ -614,6 +614,71 @@ void protocolMismatchMarksSeatLoudlyWithoutRebindLoop() {
            MdkrNativePartyControllerPhase::Connected);
 }
 
+/* I2 review fix: a controller-scoped CommandRejected naming a
+ * version-mismatched seat must not overwrite the room message. The one
+ * such rejection that arrives on its own schedule is the transport's C3
+ * give-up ("This phone could not connect. Remove it and pair again.") --
+ * for a protocol gap that remedy is simply wrong (removing and re-pairing
+ * cannot fix a page version), and it would sit in the room banner
+ * contradicting the seat row's correct "refresh the phone" copy. The
+ * rejection still does its bookkeeping (commandPending clears); only the
+ * message overwrite is suppressed, and only for the mismatched seat --
+ * rejections naming a healthy controller, and room-wide rejections, keep
+ * their existing surfaces exactly. */
+void giveUpForMismatchedSeatKeepsTheHonestRoomCopy() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u), pending("phone-b")}));
+    host.service(1000u);
+
+    MdkrPartyTransportEvent mismatch;
+    mismatch.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+    mismatch.controllerId = "phone-a";
+    mismatch.theirProtocol = 3u;
+    transport.events.push_back(mismatch);
+    host.service(1001u);
+    assert(host.view().message ==
+        "This phone's controller page is a different version. "
+        "Refresh the page on the phone.");
+
+    /* The C3 ladder's give-up shape, ~60 s later on the pre-fix transport.
+     * The honest copy must survive it. */
+    MdkrPartyTransportEvent gaveUp;
+    gaveUp.type = MdkrPartyTransportEventType::CommandRejected;
+    gaveUp.controllerId = "phone-a";
+    gaveUp.message = "This phone could not connect. Remove it and pair again.";
+    transport.events.push_back(gaveUp);
+    host.service(61000u);
+    assert(host.view().message ==
+        "This phone's controller page is a different version. "
+        "Refresh the page on the phone.");
+    assert(!host.view().controllers[0].commandPending);
+
+    /* Scoped suppression only: a rejection naming a healthy controller
+     * still surfaces its copy (typed code and generic prose alike). */
+    assert(host.approve("phone-b", 2u));
+    MdkrPartyTransportEvent full;
+    full.type = MdkrPartyTransportEventType::CommandRejected;
+    full.controllerId = "phone-b";
+    full.errorCode = "room_full";
+    transport.events.push_back(full);
+    host.service(61001u);
+    assert(host.view().message == "No free phone slot.");
+    assert(!host.view().controllers[1].commandPending);
+
+    /* Room-wide rejections (no controller identity) are untouched too. */
+    MdkrPartyTransportEvent roomWide;
+    roomWide.type = MdkrPartyTransportEventType::CommandRejected;
+    roomWide.message = "That controller slot was just taken. Choose another.";
+    transport.events.push_back(roomWide);
+    host.service(61002u);
+    assert(host.view().message ==
+        "That controller slot was just taken. Choose another.");
+}
+
 }  // namespace
 
 int main() {
@@ -628,6 +693,7 @@ int main() {
     expiryLatchesInHostsOwnClockDomain();
     terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
     protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
+    giveUpForMismatchedSeatKeepsTheHonestRoomCopy();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
