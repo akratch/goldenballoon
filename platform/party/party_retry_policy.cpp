@@ -6,11 +6,15 @@ namespace {
 constexpr uint64_t kUnauthenticatedDeadlineMs = 20000u;
 constexpr unsigned kMaxOfferAttempts = 3u;
 /* I4 resume ladder: the same 300 ms-doubling-to-8 s ladder the transport
- * always ran, now decided here; and the terminal limit -- the third
- * consecutive service-refused resume ends the room for good. */
+ * always ran, now decided here; and the terminal gates -- at least three
+ * consecutive service-refused resumes AND a refusal streak that has
+ * spanned 30 s (see the header for why the floor exists: an edge
+ * incident's 5xx looks exactly like a dead room's 404 through
+ * libdatachannel, and only the dead room keeps refusing past it). */
 constexpr unsigned kResumeBaseDelayMs = 300u;
 constexpr unsigned kResumeMaxDelayMs = 8000u;
 constexpr unsigned kResumeRejectionLimit = 3u;
+constexpr uint64_t kResumeTerminalFloorMs = 30000u;
 
 }  // namespace
 
@@ -47,13 +51,22 @@ MdkrPartyRetryDecision mdkr_party_retry_decide(
 
 MdkrPartyResumeDecision mdkr_party_resume_decide(
     unsigned reconnectAttempt, bool resumeRejected,
-    unsigned consecutiveResumeRejections) {
+    unsigned consecutiveResumeRejections,
+    uint64_t nowMs, uint64_t firstRejectedMs) {
     MdkrPartyResumeDecision decision;
 
-    /* Terminal only on an ACTUAL refusal that completes the streak: a
+    /* Terminal only on an ACTUAL refusal that completes the streak (a
      * network-level failure carrying a stale streak proved nothing about
-     * the room, so it can never be the deciding strike. */
-    if (resumeRejected && consecutiveResumeRejections >= kResumeRejectionLimit) {
+     * the room, so it can never be the deciding strike), and only once the
+     * streak has both enough strikes AND enough wall clock behind it --
+     * the floor is what separates a dead room from a service incident
+     * whose refusals read identically (I-1). */
+    const uint64_t streakSpanMs =
+        firstRejectedMs != 0u && nowMs >= firstRejectedMs
+            ? nowMs - firstRejectedMs : 0u;
+    if (resumeRejected &&
+        consecutiveResumeRejections >= kResumeRejectionLimit &&
+        streakSpanMs >= kResumeTerminalFloorMs) {
         decision.terminal = true;
         return decision;
     }

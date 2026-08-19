@@ -103,14 +103,36 @@ MdkrPartyRetryDecision mdkr_party_retry_decide(
  *  - reconnectAttempt: 1-based closes since the last successful upgrade,
  *    driving the existing 300 ms..8 s delay ladder, unchanged.
  *
+ *  - nowMs / firstRejectedMs share the transport's one steady clock
+ *    (steadyNowMs()), exactly like the offer policy's nowMs/offerSentMs.
+ *    firstRejectedMs is when the standing streak's FIRST refusal was
+ *    counted; 0 means no refusal streak is standing. It resets with the
+ *    streak (a completed upgrade) and, like the streak, survives
+ *    intervening network-level failures.
+ *
  * Verdict (values are contractual -- update this comment and the test
- * together with any change): the THIRD consecutive refusal is terminal --
- * three separate TCP+TLS+HTTP round trips where the service said "no" is a
- * dead room, not weather; a one-off refusal mid-deploy retries as before.
- * Terminal means the ladder ends: no next delay, no further socket opens,
- * and the transport reports the room gone so the host can offer a new
- * invite (a brand-new room) as the way forward. Everything else keeps the
- * pre-existing bounded ladder: delays 300 ms doubling to a 8000 ms cap.
+ * together with any change): terminal requires ALL of
+ *   (1) this close was itself a refusal (a network failure atop a standing
+ *       streak proved nothing and can never be the deciding strike),
+ *   (2) at least 3 consecutive refusals, and
+ *   (3) the refusal streak has SPANNED at least 30 s of wall clock, first
+ *       refusal to this deciding one.
+ * The floor exists because libdatachannel swallows the HTTP status: a
+ * correlated edge incident (5xx/429, a worker exception) refuses upgrades
+ * exactly like a dead room's 404, and without the floor the streak
+ * completes on the ladder's 600 + 1200 ms rungs -- every healthy room
+ * would land RoomEnded ~2 s into a blip that recovers on its own. A dead
+ * room refuses deterministically forever, so it can afford the wait: under
+ * the 300 ms..8 s ladder the verdict now lands ~33 s after the room died
+ * (refusals at ~0/0.3/0.9/2.1/4.5/9.3/17.3/25.3/33.3 s) instead of ~2 s.
+ * Sub-30 s incidents ride the ladder and recover exactly as before this
+ * policy existed. "Refusal" still includes the rare EOF-after-TLS-before-
+ * the-101 middlebox shape -- one that does it persistently for 30 s has
+ * made the room unusable anyway. Terminal means the ladder ends: no next
+ * delay, no further socket opens, and the transport reports the room gone
+ * so the host can offer a new invite (a brand-new room) as the way
+ * forward. Everything else keeps the pre-existing bounded ladder: delays
+ * 300 ms doubling to a 8000 ms cap.
  */
 struct MdkrPartyResumeDecision {
     bool retry = false;      /* schedule another resume after delayMs */
@@ -120,6 +142,7 @@ struct MdkrPartyResumeDecision {
 
 MdkrPartyResumeDecision mdkr_party_resume_decide(
     unsigned reconnectAttempt, bool resumeRejected,
-    unsigned consecutiveResumeRejections);
+    unsigned consecutiveResumeRejections,
+    uint64_t nowMs, uint64_t firstRejectedMs);
 
 #endif /* MDKR_PARTY_RETRY_POLICY_H */

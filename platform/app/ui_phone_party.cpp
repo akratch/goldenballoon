@@ -357,7 +357,13 @@ void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin,
 }
 
 void drawCloseRoom(MdkrNativePartyHost &host) {
-    if (host.view().phase == MdkrNativePartyPhase::Closed) return;
+    /* An ended room (I4) is already over -- a close button beside "Create
+     * New Invite" would offer a second way to do nothing. Only the fresh
+     * invite moves forward from RoomEnded. */
+    if (host.view().phase == MdkrNativePartyPhase::Closed ||
+        host.view().phase == MdkrNativePartyPhase::RoomEnded) {
+        return;
+    }
     ui::Gap(ui::kGapM);
     if (ImGui::Button("Close Phone Controller Room", ui::kBtnSecondary())) {
         ImGui::OpenPopup("Close phone controller room?");

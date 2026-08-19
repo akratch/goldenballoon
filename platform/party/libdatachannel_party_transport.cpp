@@ -519,10 +519,12 @@ private:
             reconnectAttempt_ = 0u;
             reconnectAt_ = Clock::time_point{};
             /* I4: a completed upgrade is the service saying yes -- the only
-             * thing that ever resets the consecutive-refusal streak the
-             * resume policy counts toward its terminal verdict. */
+             * thing that ever resets the consecutive-refusal streak (and
+             * its first-refusal timestamp) the resume policy weighs toward
+             * its terminal verdict. */
             resumeRejected_ = false;
             resumeRejections_ = 0u;
+            firstResumeRejectedMs_ = 0u;
             /* C3: the socket just (re)opened. Any still-unauthenticated
              * peer with an outstanding offer may have had that offer
              * dropped by the Worker while the socket was down -- resend it
@@ -562,7 +564,12 @@ private:
              * resume handshake" is precisely -- and only -- this string on
              * a non-create socket. socketClosed(), which libdatachannel
              * fires right after this callback, feeds the latch to
-             * mdkr_party_resume_decide. */
+             * mdkr_party_resume_decide. The load-bearing literals -- this
+             * one and the network-level trio -- are pinned at configure
+             * time against the dependency's own source
+             * (cmake/datachannel.cmake), so a libdatachannel bump that
+             * rewords them fails the build instead of silently reverting
+             * gone-room detection to always-retry. */
             if (!creating_ && reason == "WebSocket connection failed") {
                 resumeRejected_ = true;
             }
@@ -597,10 +604,20 @@ private:
             const bool rejected = resumeRejected_;
             resumeRejected_ = false;
             if (!credential_.empty()) {
-                if (rejected) resumeRejections_++;
+                const uint64_t nowSteadyMs = steadyNowMs();
+                if (rejected) {
+                    resumeRejections_++;
+                    /* I-1: the streak's first refusal starts the 30 s
+                     * wall-clock floor the terminal verdict must also
+                     * clear. Same steady clock as everything else here. */
+                    if (firstResumeRejectedMs_ == 0u) {
+                        firstResumeRejectedMs_ = nowSteadyMs;
+                    }
+                }
                 reconnectAttempt_ = std::min(reconnectAttempt_ + 1u, 6u);
                 const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
-                    reconnectAttempt_, rejected, resumeRejections_);
+                    reconnectAttempt_, rejected, resumeRejections_,
+                    nowSteadyMs, firstResumeRejectedMs_);
                 if (decision.terminal) {
                     roomGone_ = true;
                     reconnectAt_ = Clock::time_point{};
@@ -1292,11 +1309,13 @@ private:
     Clock::time_point reconnectAt_{};
     /* I4 resume classification (mdkr_party_resume_decide): the per-attempt
      * "the service refused this upgrade" latch socketError sets and
-     * socketClosed consumes; the consecutive-refusal streak a successful
-     * open resets; and the terminal latch after which this transport never
-     * opens another socket. */
+     * socketClosed consumes; the consecutive-refusal streak and its
+     * first-refusal timestamp (steadyNowMs domain, 0 = none standing) that
+     * only a successful open resets; and the terminal latch after which
+     * this transport never opens another socket. */
     bool resumeRejected_ = false;
     unsigned resumeRejections_ = 0u;
+    uint64_t firstResumeRejectedMs_ = 0u;
     bool roomGone_ = false;
     bool creating_ = false;
     bool shuttingDown_ = false;

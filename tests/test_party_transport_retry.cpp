@@ -140,8 +140,16 @@ void noOutstandingOfferDoesNothing() {
  * Same pure-decision seam as the offer policy above; the transport's
  * socketClosed() supplies the inputs and applies the verdict. See
  * party_retry_policy.h for the classification writeup (what a refused
- * resume looks like through libdatachannel, and why three consecutive
- * refusals mean the room is gone for good). ---- */
+ * resume looks like through libdatachannel, and why the terminal verdict
+ * needs BOTH three consecutive refusals AND a refusal streak that has
+ * spanned at least 30 s of wall clock -- a dead room refuses
+ * deterministically forever, so it can afford to wait out a correlated
+ * edge incident whose 5xx answers look identical through libdatachannel).
+ * nowMs/firstRejectedMs share the transport's one steady clock, exactly
+ * like nowMs/offerSentMs above; firstRejectedMs == 0 means no refusal
+ * streak is standing. ---- */
+
+constexpr uint64_t kTerminalFloorMs = 30000u;
 
 /* (5) Regression: a transient close -- a live socket dropping, or any
  * network-level failure (TCP/TLS/timeout) -- keeps the existing bounded
@@ -152,55 +160,95 @@ void transientClosesKeepTheBoundedLadderUnderEightSeconds() {
     for (unsigned attempt = 1u; attempt <= 12u; attempt++) {
         const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
             attempt, /*resumeRejected=*/false,
-            /*consecutiveResumeRejections=*/0u);
+            /*consecutiveResumeRejections=*/0u,
+            /*nowMs=*/1000u + attempt * 8000u, /*firstRejectedMs=*/0u);
         assert(decision.retry);
         assert(!decision.terminal);
         assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
         assert(decision.delayMs >= previousDelay);
         previousDelay = decision.delayMs;
     }
-    assert(mdkr_party_resume_decide(1u, false, 0u).delayMs == 300u);
-    assert(mdkr_party_resume_decide(6u, false, 0u).delayMs == 8000u);
+    assert(mdkr_party_resume_decide(1u, false, 0u, 1000u, 0u).delayMs == 300u);
+    assert(mdkr_party_resume_decide(6u, false, 0u, 1000u, 0u).delayMs == 8000u);
 }
 
 /* (6) One or two refused resumes could still be a service blip mid-deploy;
- * the ladder keeps going, on its usual bounded delays. */
+ * the ladder keeps going, on its usual bounded delays -- even if the thin
+ * streak has somehow been standing longer than the terminal floor. */
 void rejectedResumesBelowTheLimitStillRetry() {
     for (unsigned rejections = 1u; rejections <= 2u; rejections++) {
         const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
             /*reconnectAttempt=*/rejections, /*resumeRejected=*/true,
-            /*consecutiveResumeRejections=*/rejections);
+            /*consecutiveResumeRejections=*/rejections,
+            /*nowMs=*/1000u + 2u * kTerminalFloorMs,
+            /*firstRejectedMs=*/1000u);
         assert(decision.retry);
         assert(!decision.terminal);
         assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
     }
 }
 
-/* (7) The third consecutive refused resume is the terminal verdict: the
- * service has now answered "no" to three separate fresh handshakes, which
- * is a deleted/expired room (or an equally unrecoverable credential), not
- * weather. No next delay -- the ladder ends here. */
-void thirdConsecutiveRejectedResumeIsTerminal() {
+/* (7) I-1 fix: three refusals arriving FAST -- the shape of a correlated
+ * edge incident, where live sockets drop and upgrades answer 5xx at the
+ * same moment, completing the streak on the ladder's 600 + 1200 ms rungs
+ * about 2.1 s after the drop -- must NOT be terminal. The room may be
+ * perfectly healthy behind a service that recovers in seconds; keep
+ * climbing the bounded ladder until the refusals have lasted. */
+void rapidRefusalStreakInsideTheFloorKeepsRetrying() {
+    const uint64_t firstRejectedMs = 1000u;
+    const unsigned counts[] = {3u, 4u, 5u};
+    for (const unsigned count : counts) {
+        const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+            /*reconnectAttempt=*/count, /*resumeRejected=*/true,
+            /*consecutiveResumeRejections=*/count,
+            /*nowMs=*/firstRejectedMs + 2100u, firstRejectedMs);
+        assert(decision.retry);
+        assert(!decision.terminal);
+        assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
+    }
+    /* One tick under the floor is still under the floor. */
+    assert(!mdkr_party_resume_decide(9u, true, 9u,
+        firstRejectedMs + (kTerminalFloorMs - 1u), firstRejectedMs).terminal);
+}
+
+/* (8) The terminal verdict: at least three consecutive refusals AND the
+ * refusal streak has spanned the 30 s floor from its first refusal to this
+ * deciding one. The service has now answered "no" to separate fresh
+ * handshakes across half a minute -- a deleted/expired room (or an equally
+ * unrecoverable credential), not an incident blip. No next delay -- the
+ * ladder ends here. */
+void refusalsSpanningTheFloorAreTerminal() {
+    const uint64_t firstRejectedMs = 1000u;
     const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
-        /*reconnectAttempt=*/3u, /*resumeRejected=*/true,
-        /*consecutiveResumeRejections=*/3u);
+        /*reconnectAttempt=*/9u, /*resumeRejected=*/true,
+        /*consecutiveResumeRejections=*/9u,
+        /*nowMs=*/firstRejectedMs + kTerminalFloorMs, firstRejectedMs);
     assert(decision.terminal);
     assert(!decision.retry);
     assert(decision.delayMs == 0u);
-    /* And past the limit, in case a caller's count ever overshoots. */
-    assert(mdkr_party_resume_decide(9u, true, 7u).terminal);
+    /* Well past the floor, and with a count overshoot, still terminal. */
+    assert(mdkr_party_resume_decide(12u, true, 40u,
+        firstRejectedMs + 10u * kTerminalFloorMs, firstRejectedMs).terminal);
+    /* Exactly the minimum count at exactly the floor is the earliest
+     * possible verdict. */
+    assert(mdkr_party_resume_decide(9u, true, 3u,
+        firstRejectedMs + kTerminalFloorMs, firstRejectedMs).terminal);
 }
 
-/* (8) A network-level failure is never terminal, even when it lands on top
- * of a standing rejection streak: this attempt never reached the service,
- * so it proved nothing about the room. Only an actual refusal may be the
- * third strike. */
+/* (9) A network-level failure is never terminal and never the deciding
+ * strike, even when it lands on top of a standing refusal streak that
+ * already satisfies both the count and the floor: this attempt never
+ * reached the service, so it proved nothing about the room. Only an actual
+ * refusal may end the ladder. */
 void networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak() {
+    const uint64_t firstRejectedMs = 1000u;
     const unsigned staleStreaks[] = {2u, 3u, 7u};
     for (const unsigned staleStreak : staleStreaks) {
         const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
             /*reconnectAttempt=*/8u, /*resumeRejected=*/false,
-            staleStreak);
+            staleStreak,
+            /*nowMs=*/firstRejectedMs + 4u * kTerminalFloorMs,
+            firstRejectedMs);
         assert(decision.retry);
         assert(!decision.terminal);
         assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
@@ -220,7 +268,8 @@ int main() {
     noOutstandingOfferDoesNothing();
     transientClosesKeepTheBoundedLadderUnderEightSeconds();
     rejectedResumesBelowTheLimitStillRetry();
-    thirdConsecutiveRejectedResumeIsTerminal();
+    rapidRefusalStreakInsideTheFloorKeepsRetrying();
+    refusalsSpanningTheFloorAreTerminal();
     networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak();
     return 0;
 }
