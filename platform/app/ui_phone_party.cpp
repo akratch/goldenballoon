@@ -92,6 +92,13 @@ void announceState(const MdkrNativePartyView &view) {
 
 const char *statusText(const MdkrNativePartyController &controller) {
     if (controller.commandPending) return "Updating…";
+    /* I2: a version-mismatched phone must never read as the "Reconnecting"
+     * its Leased phase would otherwise show -- reconnecting is a promise the
+     * transport keeps, while this state only the player can fix. */
+    if (controller.protocolMismatch) {
+        return "This phone's controller page is a different version. "
+               "Refresh the page on the phone.";
+    }
     switch (controller.phase) {
         case MdkrNativePartyControllerPhase::Pending: return "Waiting for approval";
         case MdkrNativePartyControllerPhase::Approved: return "Approved";

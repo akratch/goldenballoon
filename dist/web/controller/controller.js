@@ -60,6 +60,8 @@
       "This browser cannot make the direct controller connection. Share this controller link to an updated Safari or Chrome."],
     update_required: ["Controller update required",
       "The display uses a newer controller protocol. Refresh this controller."],
+    protocol_update_required: ["This controller page is out of date",
+      "Reload to update."],
     invite_expired: ["Invite expired",
       "Ask the display to show a new QR code, then scan it again."],
     left_room: ["Controller disconnected",

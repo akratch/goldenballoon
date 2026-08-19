@@ -135,6 +135,42 @@ bool commandRejectionFromSignal(const Json &value,
     return true;
 }
 
+/*
+ * controller_ready classification, shared by the live control channel
+ * (controlMessage below) and the mdkr_party_controller_ready_event_for_test
+ * seam. Only a controller_ready addressed to this exact peer -- matching
+ * controllerId AND connectionSequence -- produces an event at all; anything
+ * else stays ignored exactly as before. A matching peer that declares any
+ * pairing-protocol version but kProtocol becomes ControllerProtocolMismatch
+ * (I2) rather than the pre-fix silent drop, which left the phone healthy at
+ * the WebRTC layer while its seat sat in an indistinguishable
+ * "Reconnecting" forever. May throw on malformed JSON field types; both
+ * callers already run it under a catch-all.
+ */
+bool controllerReadyEventFromControl(const Json &value,
+                                     const std::string &peerId,
+                                     uint32_t connectionSequence,
+                                     MdkrPartyTransportEvent &event) {
+    if (value.value("type", std::string{}) != "controller_ready" ||
+        value.value("controllerId", std::string{}) != peerId ||
+        value.value("connectionSequence", 0u) != connectionSequence) {
+        return false;
+    }
+    const unsigned theirProtocol = value.value("protocol", 0u);
+    if (theirProtocol != kProtocol) {
+        event.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+        event.controllerId = peerId;
+        event.theirProtocol = theirProtocol;
+        return true;
+    }
+    event.type = MdkrPartyTransportEventType::ControllerConnected;
+    event.controllerId = peerId;
+    event.haptics = value.contains("capabilities") &&
+        value["capabilities"].is_object() &&
+        value["capabilities"].value("vibration", false);
+    return true;
+}
+
 std::string base64Url(const uint8_t *bytes, size_t length) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -1026,28 +1062,27 @@ private:
         Json value = Json::parse(text, nullptr, false);
         if (value.is_discarded() || !value.is_object()) return;
         try {
-            if (value.value("type", std::string{}) == "controller_ready" &&
-                value.value("protocol", 0u) == kProtocol &&
-                value.value("controllerId", std::string{}) == peer->id &&
-                value.value("connectionSequence", 0u) == peer->connectionSequence) {
-                const bool haptics = value.contains("capabilities") &&
-                    value["capabilities"].is_object() &&
-                    value["capabilities"].value("vibration", false);
-                MdkrPartyTransportEvent event;
-                event.type = MdkrPartyTransportEventType::ControllerConnected;
-                event.controllerId = peer->id;
-                event.haptics = haptics;
-                enqueue(std::move(event));
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    const auto found = peers_.find(peer->id);
-                    if (found != peers_.end() && found->second == peer) {
-                        peer->authenticated = true;
-                        peer->pingOutstandingAt = Clock::time_point{};
-                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+            MdkrPartyTransportEvent ready;
+            if (controllerReadyEventFromControl(
+                    value, peer->id, peer->connectionSequence, ready)) {
+                const bool matched = ready.type ==
+                    MdkrPartyTransportEventType::ControllerConnected;
+                enqueue(std::move(ready));
+                if (matched) {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        const auto found = peers_.find(peer->id);
+                        if (found != peers_.end() && found->second == peer) {
+                            peer->authenticated = true;
+                            peer->pingOutstandingAt = Clock::time_point{};
+                            peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                        }
                     }
+                    peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
                 }
-                peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
+                /* I2 mismatch: no ack and no authentication, but the peer is
+                 * left standing -- the phone may simply reload into a page
+                 * version that matches and complete controller_ready then. */
             } else if (value.value("type", std::string{}) == "input_test" &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
@@ -1270,4 +1305,16 @@ bool mdkr_party_host_command_rejection_for_test(
     /* Same guard the socket path's outer try gives the shared parser. */
     try { return commandRejectionFromSignal(value, event); }
     catch (...) { return false; }
+}
+
+bool mdkr_party_controller_ready_event_for_test(
+    const std::string &text, const std::string &controllerId,
+    uint32_t connectionSequence, MdkrPartyTransportEvent &event) {
+    const Json value = Json::parse(text, nullptr, false);
+    if (value.is_discarded() || !value.is_object()) return false;
+    /* Same guard the control channel's outer try gives the shared parser. */
+    try {
+        return controllerReadyEventFromControl(
+            value, controllerId, connectionSequence, event);
+    } catch (...) { return false; }
 }

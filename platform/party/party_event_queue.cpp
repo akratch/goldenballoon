@@ -20,6 +20,7 @@ bool isDroppable(MdkrPartyTransportEventType type) {
         case MdkrPartyTransportEventType::ControllerConnected:
         case MdkrPartyTransportEventType::ControllerDisconnected:
         case MdkrPartyTransportEventType::ControllerPhrase:
+        case MdkrPartyTransportEventType::ControllerProtocolMismatch:
         case MdkrPartyTransportEventType::CommandRejected:
         case MdkrPartyTransportEventType::Recovering:
         case MdkrPartyTransportEventType::Error:

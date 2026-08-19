@@ -803,6 +803,10 @@ def exhaustion_proof(origin: str, boot: Callable[[int], None],
     require('service_budget_safe: ["Phone pairing is full right now"'
             in controller_source,
             "the controller page no longer maps service_budget_safe to its copy")
+    require('protocol_update_required: ["This controller page is out of date",\n'
+            '      "Reload to update."]' in controller_source,
+            "the controller page no longer maps protocol_update_required "
+            "(room-model.ts's protocol refusal) to its copy")
     require("Keyboard, gamepads and this display’s touch controls still "
             "work offline." in controller_source,
             "the controller capacity copy lost its local-play recovery line")

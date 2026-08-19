@@ -74,6 +74,14 @@ const char *typedCommandErrorCopy(const std::string &code) {
     return nullptr;
 }
 
+/* I2: one copy for a version-mismatched phone, shared by the room message
+ * here and asserted verbatim by tests/test_native_party_host.cpp. The seat
+ * row in ui_phone_party.cpp carries the same sentence, keyed off the
+ * controller's protocolMismatch flag. */
+constexpr const char *kProtocolMismatchCopy =
+    "This phone's controller page is a different version. "
+    "Refresh the page on the phone.";
+
 }  // namespace
 
 MdkrNativePartyHost::MdkrNativePartyHost(MdkrPartyTransport &transport)
@@ -331,6 +339,9 @@ void MdkrNativePartyHost::applyEvent(
             candidate->phase = MdkrNativePartyControllerPhase::Connected;
             candidate->direct = true;
             candidate->haptics = event.haptics;
+            /* I2 recovery: a genuine controller_ready at this build's own
+             * protocol means the phone reloaded into a matching page. */
+            candidate->protocolMismatch = false;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, event.haptics);
@@ -383,6 +394,31 @@ void MdkrNativePartyHost::applyEvent(
             if (candidate != nullptr && printable(event.message, kMaxPhrase)) {
                 candidate->pairingPhrase = event.message;
             }
+            return;
+        }
+        case MdkrPartyTransportEventType::ControllerProtocolMismatch: {
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate)) return;
+            /* I2: the phone's page completed the handshake but speaks a
+             * different pairing-protocol version. Say so, visibly distinct
+             * from "Reconnecting", and demote the seat to neutral input.
+             * The room and the seat's lease stay intact -- the transport
+             * kept the peer up, and the phone reloading into a matching
+             * page version (ControllerConnected) is the recovery. Clear
+             * needsRebind: the C1 heal loop's fresh bind cannot fix a
+             * version gap, and its "Phone input reconnected." copy would
+             * paper over this honest state with a lie. */
+            candidate->protocolMismatch = true;
+            candidate->needsRebind = false;
+            candidate->direct = false;
+            candidate->haptics = false;
+            (void)mdkr_native_remote_pad_set_haptics(
+                candidate->seat - 1u, ownerFor(*candidate),
+                candidate->connectionSequence, false);
+            if (candidate->phase == MdkrNativePartyControllerPhase::Connected) {
+                candidate->phase = MdkrNativePartyControllerPhase::Leased;
+            }
+            view_.message = kProtocolMismatchCopy;
             return;
         }
         case MdkrPartyTransportEventType::CommandRejected: {
@@ -479,8 +515,13 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
     if (view_.phase != MdkrNativePartyPhase::Error &&
         view_.phase != MdkrNativePartyPhase::Closed) {
         for (MdkrNativePartyController &candidate : view_.controllers) {
-            if (!candidate.needsRebind || !occupiesSeat(candidate) ||
-                candidate.connectionSequence == 0u) {
+            /* I2: a version-mismatched seat is excluded outright. A fresh
+             * bind cannot fix a protocol gap, and this loop's "Phone input
+             * reconnected." would overwrite the honest mismatch copy.
+             * applyEvent already clears needsRebind at the mismatch site
+             * (belt); this keeps the loop safe regardless (suspenders). */
+            if (candidate.protocolMismatch || !candidate.needsRebind ||
+                !occupiesSeat(candidate) || candidate.connectionSequence == 0u) {
                 continue;
             }
             if (candidate.lastRebindMs != 0u &&

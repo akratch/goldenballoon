@@ -39,6 +39,13 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* I2: the phone's controller page completed the WebRTC handshake but
+     * spoke a different pairing-protocol version, so its input can never be
+     * trusted. The seat keeps its lease (the room is not torn down) but must
+     * show this honestly instead of an indistinguishable "Reconnecting".
+     * Cleared by a genuine ControllerConnected -- the phone reloading into a
+     * matching page version is the recovery path. */
+    bool protocolMismatch = false;
     /* C1 self-heal: set when an ingress push failed (queue overflow revoked
      * the seat's custody) while otherwise healthy. service() clears it once
      * the seat has a fresh bind; lastRebindMs rate-limits repeated attempts
@@ -66,6 +73,7 @@ enum class MdkrPartyTransportEventType {
     ControllerDisconnected,
     ControllerPacket,
     ControllerPhrase,
+    ControllerProtocolMismatch,
     CommandRejected,
     Recovering,
     Error,
@@ -98,6 +106,9 @@ struct MdkrPartyTransportEvent {
      * code, verbatim (services/party/src/party-room.ts commandError).
      * Empty means unknown; the host then keeps its generic copy. */
     std::string errorCode;
+    /* ControllerProtocolMismatch only: the protocol version the phone's
+     * controller_ready declared. Zero means it declared none at all. */
+    unsigned theirProtocol = 0u;
     std::vector<uint8_t> packet;
     bool haptics = false;
 };

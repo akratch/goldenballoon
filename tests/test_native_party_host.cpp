@@ -523,6 +523,97 @@ void terminalErrorAfterPushFailureStaysErrorAndNeverRebinds() {
     assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
 }
 
+/* I2: a phone whose controller page speaks a different pairing-protocol
+ * version must be loud on the host screen, not an indistinguishable
+ * "Reconnecting". The transport emits ControllerProtocolMismatch (it keeps
+ * the peer up -- the phone may reload into a matching page); the host must
+ * mark the seat with its own visible state and honest copy, demote the seat
+ * to neutral input, keep the room and the seat's lease intact, and never
+ * spin the C1 rebind heal loop over it (a rebind cannot fix a version
+ * gap and its "Phone input reconnected." copy would be a lie). A genuine
+ * ControllerConnected -- the phone reloaded into a matching version -- is
+ * the recovery that clears the state. */
+void protocolMismatchMarksSeatLoudlyWithoutRebindLoop() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {phone}));
+    host.service(1000u);
+
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1001u);
+    assert(host.view().controllers[0].direct);
+
+    /* The phone reloads into a page speaking a fake future protocol. */
+    MdkrPartyTransportEvent mismatch;
+    mismatch.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+    mismatch.controllerId = "phone-a";
+    mismatch.theirProtocol = 3u;
+    transport.events.push_back(mismatch);
+    const size_t callsBefore = transport.calls.size();
+    host.service(1002u);
+
+    assert(host.view().controllers[0].protocolMismatch);
+    assert(!host.view().controllers[0].direct);
+    assert(!host.view().controllers[0].haptics);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(host.view().message ==
+        "This phone's controller page is a different version. "
+        "Refresh the page on the phone.");
+    /* Not torn down: the room stays open, the seat keeps its lease, and the
+     * host issued no remove/reject command of its own. */
+    assert(host.view().phase == MdkrNativePartyPhase::Open);
+    assert(transport.calls.size() == callsBefore);
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* Ticks pass with no events: the heal loop must not resurrect the seat
+     * into a lying "Connected"/"Phone input reconnected." surface. */
+    host.service(1600u);
+    host.service(2200u);
+    assert(host.view().controllers[0].protocolMismatch);
+    assert(!host.view().controllers[0].needsRebind);
+    assert(!host.view().controllers[0].direct);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(host.view().message ==
+        "This phone's controller page is a different version. "
+        "Refresh the page on the phone.");
+
+    /* Its packets stay out of the sim while mismatched (direct is false, so
+     * the ControllerPacket arm refuses them; nothing reaches ingress). */
+    MdkrPartyTransportEvent packet;
+    packet.type = MdkrPartyTransportEventType::ControllerPacket;
+    packet.controllerId = "phone-a";
+    packet.packet = padPacket(9u, 1u);
+    transport.events.push_back(packet);
+    host.service(2300u);
+    std::array<uint8_t, MDKR_PARTY_PAD_MAX_BYTES> output{};
+    assert(mdkr_native_remote_pad_pop(
+        0u, (4u << 3u) | 1u, 9u, output.data(), output.size()) == 0u);
+
+    /* Recovery: the phone reloads into a matching page version and
+     * completes controller_ready for real. The honest state clears. */
+    MdkrPartyTransportEvent recovered;
+    recovered.type = MdkrPartyTransportEventType::ControllerConnected;
+    recovered.controllerId = "phone-a";
+    recovered.haptics = true;
+    transport.events.push_back(recovered);
+    host.service(2400u);
+    assert(!host.view().controllers[0].protocolMismatch);
+    assert(host.view().controllers[0].direct);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+}
+
 }  // namespace
 
 int main() {
@@ -536,6 +627,7 @@ int main() {
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
     expiryLatchesInHostsOwnClockDomain();
     terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
+    protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }

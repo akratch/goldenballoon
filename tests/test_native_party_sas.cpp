@@ -75,5 +75,59 @@ int main() {
             std::string(65u, 'x') + R"("})",
         oversized));
     assert(oversized.errorCode.empty());
+
+    /* I2: a controller_ready that declares any pairing-protocol version but
+     * this build's own must surface as ControllerProtocolMismatch instead of
+     * being dropped in silence (the pre-fix behavior: the phone looked
+     * healthy at the WebRTC layer while its seat sat in an
+     * indistinguishable "Reconnecting" forever). The peer identity checks
+     * still gate it: only a controller_ready addressed to this exact
+     * peer/connection produces any event at all. */
+    MdkrPartyTransportEvent mismatch;
+    assert(mdkr_party_controller_ready_event_for_test(
+        R"({"type":"controller_ready","protocol":3,"controllerId":"phone-a",)"
+        R"("connectionSequence":7})",
+        "phone-a", 7u, mismatch));
+    assert(mismatch.type ==
+        MdkrPartyTransportEventType::ControllerProtocolMismatch);
+    assert(mismatch.controllerId == "phone-a");
+    assert(mismatch.theirProtocol == 3u);
+
+    /* A declared-nothing page is a mismatch too, reported as version 0. */
+    MdkrPartyTransportEvent unversioned;
+    assert(mdkr_party_controller_ready_event_for_test(
+        R"({"type":"controller_ready","controllerId":"phone-a",)"
+        R"("connectionSequence":7})",
+        "phone-a", 7u, unversioned));
+    assert(unversioned.type ==
+        MdkrPartyTransportEventType::ControllerProtocolMismatch);
+    assert(unversioned.theirProtocol == 0u);
+
+    /* This build's own protocol still connects, capabilities intact. */
+    MdkrPartyTransportEvent connected;
+    assert(mdkr_party_controller_ready_event_for_test(
+        R"({"type":"controller_ready","protocol":1,"controllerId":"phone-a",)"
+        R"("connectionSequence":7,"capabilities":{"vibration":true}})",
+        "phone-a", 7u, connected));
+    assert(connected.type ==
+        MdkrPartyTransportEventType::ControllerConnected);
+    assert(connected.controllerId == "phone-a");
+    assert(connected.haptics);
+
+    /* Addressed to another peer or another connection epoch: no event,
+     * matched or mismatched protocol alike. */
+    MdkrPartyTransportEvent misaddressed;
+    assert(!mdkr_party_controller_ready_event_for_test(
+        R"({"type":"controller_ready","protocol":3,"controllerId":"phone-b",)"
+        R"("connectionSequence":7})",
+        "phone-a", 7u, misaddressed));
+    assert(!mdkr_party_controller_ready_event_for_test(
+        R"({"type":"controller_ready","protocol":1,"controllerId":"phone-a",)"
+        R"("connectionSequence":8})",
+        "phone-a", 7u, misaddressed));
+    assert(!mdkr_party_controller_ready_event_for_test(
+        R"({"type":"pong","protocol":3,"controllerId":"phone-a",)"
+        R"("connectionSequence":7})",
+        "phone-a", 7u, misaddressed));
     return 0;
 }
