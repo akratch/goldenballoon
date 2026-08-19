@@ -168,7 +168,7 @@ Options:
   --output PATH          Output .app path (default: <build-dir>/mdkr64.app)
   --arch ARCH            Build one architecture: native, arm64, or x86_64
                          (default: native)
-  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.4.0)
+  --version VER          CFBundleShortVersionString / MDKR_VERSION (default: 1.5.0)
   --build-stamp SHA      Source commit shown in the About panel (default: empty)
   --party-origin URL     Phone Party service origin compiled into the launcher
                          (-DMDKR_PARTY_ORIGIN; default: empty). Must be empty
@@ -198,7 +198,7 @@ BUILD_TYPE="Release"
 BUILD_DIR=""
 OUTPUT_APP=""
 ARCH="native"
-APP_VERSION="1.4.0"
+APP_VERSION="1.5.0"
 BUILD_STAMP=""
 # Empty by default: a local developer build has no deployed Phone Party
 # service to point at, and an empty origin is a legal (party-free) build.
