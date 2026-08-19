@@ -7,7 +7,7 @@ import {MATCH_LIMITS, type MatchCompatibilityV1,
   inviteRemainingMs, validCompatibility,
   validMatchCommandRequest} from "./match/protocol";
 import {allowedOrigin, base64Url, boundCredential, constantTimeEqual, digest,
-  fromBase64Url, json, normalizeName, readJson,
+  fallbackCode, fromBase64Url, json, normalizeName, readJson,
   randomToken, validBoundCredential, validPartyOrigin} from "./security";
 import {LIMITS, partyInviteRemainingMs, type Env} from "./types";
 import {internalRequest} from "./internal-api";
@@ -20,11 +20,6 @@ function numericId(bytes: Uint8Array): string {
   let value = 0n;
   for (const byte of bytes.slice(0, 8)) value = (value << 8n) | BigInt(byte);
   return (value || 1n).toString();
-}
-
-function fallbackCode(): string {
-  return String(crypto.getRandomValues(new Uint32Array(1))[0]! % 1_000_000)
-    .padStart(6, "0");
 }
 
 function validPublicKey(value: unknown): value is string {

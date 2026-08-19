@@ -1,6 +1,7 @@
 import {env} from "cloudflare:workers";
 import {describe, expect, it} from "vitest";
-import {allowedOrigin, boundCredential, normalizeName, readJson, readRequestBytes, utf8Exceeds,
+import {allowedOrigin, boundCredential, fallbackCode, normalizeName, readJson,
+  readRequestBytes, utf8Exceeds,
   validBoundCredential, validPartyOrigin} from "../src/security";
 import type {Env} from "../src/types";
 
@@ -132,6 +133,48 @@ describe("room-bound credentials", () => {
         expect((error as Response).status).toBe(415);
         expect(await (error as Response).text()).toBe("unsupported_media_type");
       }
+    }
+  });
+});
+
+describe("fallback code sampling", () => {
+  /* 4_294_000_000 is the largest multiple of 1_000_000 that fits in a
+   * Uint32Array slot. A plain modulo folds the 967_296 values above it back
+   * onto codes 000000-967295, making those codes ~0.02% likelier; the sampler
+   * must reroll every draw at or beyond the bound instead. */
+  const bound = 4_294_000_000;
+
+  function feeding(values: number[]): {draws: () => number; taken: () => number} {
+    let index = 0;
+    return {
+      draws: () => {
+        if (index >= values.length) throw new Error("sampler drew past the feed");
+        return values[index++]!;
+      },
+      taken: () => index,
+    };
+  }
+
+  it("rerolls every draw at or above the rejection bound", () => {
+    const feed = feeding([bound, 4_294_967_295, 4_293_123_456]);
+    expect(fallbackCode(feed.draws)).toBe("123456");
+    expect(feed.taken()).toBe(3);
+  });
+
+  it("keeps the draw just below the bound without rerolling", () => {
+    const feed = feeding([bound - 1]);
+    expect(fallbackCode(feed.draws)).toBe("999999");
+    expect(feed.taken()).toBe(1);
+  });
+
+  it("zero-pads small draws to exactly six digits", () => {
+    expect(fallbackCode(() => 0)).toBe("000000");
+    expect(fallbackCode(() => 1_000_007)).toBe("000007");
+  });
+
+  it("draws six decimal digits from the default RNG", () => {
+    for (let round = 0; round < 64; round++) {
+      expect(fallbackCode()).toMatch(/^\d{6}$/);
     }
   });
 });

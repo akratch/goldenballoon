@@ -205,8 +205,48 @@ option(MDKR_NATIVE_PHONE_PARTY
        "Build the native WSS/WebRTC Phone Party transport" ON)
 set(MDKR_PARTY_ORIGIN "" CACHE STRING
     "Production HTTPS origin for browser phone controllers")
-if(MDKR_PARTY_ORIGIN AND NOT MDKR_PARTY_ORIGIN MATCHES "^https://")
-    message(FATAL_ERROR "MDKR_PARTY_ORIGIN must be empty or begin with https://")
+# M2: the value is compiled into the launcher, interpolated into invite URLs
+# and compared byte-for-byte against the service's PARTY_ORIGIN. It must be
+# one canonical origin -- https:// + lowercase host + at most one explicit
+# port -- and nothing else. The launcher refuses a non-canonical origin at
+# runtime too (mdkr_party_canonical_https_origin,
+# platform/party/native_party_host.h); failing here names the mistake at
+# configure time instead of shipping a build whose Phone Party surface only
+# fails closed when opened.
+if(MDKR_PARTY_ORIGIN)
+    if(NOT MDKR_PARTY_ORIGIN MATCHES "^https://")
+        message(FATAL_ERROR "MDKR_PARTY_ORIGIN must be empty or an https://"
+            " origin, got '${MDKR_PARTY_ORIGIN}'")
+    endif()
+    string(REGEX REPLACE "^https://" "" _mdkr_party_authority
+        "${MDKR_PARTY_ORIGIN}")
+    if(_mdkr_party_authority MATCHES "@")
+        message(FATAL_ERROR "MDKR_PARTY_ORIGIN must not carry userinfo"
+            " ('@' in '${MDKR_PARTY_ORIGIN}'): RFC 3986 would read the part"
+            " after the '@' as the real host")
+    endif()
+    if(_mdkr_party_authority MATCHES "[/?#]")
+        message(FATAL_ERROR "MDKR_PARTY_ORIGIN must be scheme + host with an"
+            " optional port only; remove the path, query, fragment or"
+            " trailing slash from '${MDKR_PARTY_ORIGIN}'")
+    endif()
+    # Six or more digits is checked textually because an absurdly long port
+    # must not depend on integer-overflow behaviour in GREATER.
+    if(_mdkr_party_authority MATCHES ":[0-9][0-9][0-9][0-9][0-9][0-9]"
+       OR (MDKR_PARTY_ORIGIN MATCHES ":([0-9]+)$"
+           AND CMAKE_MATCH_1 GREATER 65535))
+        message(FATAL_ERROR "MDKR_PARTY_ORIGIN port must be 1-65535,"
+            " got '${MDKR_PARTY_ORIGIN}'")
+    endif()
+    if(NOT MDKR_PARTY_ORIGIN MATCHES
+            "^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[1-9][0-9]*)?$"
+       OR _mdkr_party_authority MATCHES "\\.\\.|\\.-|-\\.")
+        message(FATAL_ERROR "MDKR_PARTY_ORIGIN must be a canonical origin:"
+            " https:// + lowercase DNS host + optional :port (no leading-zero"
+            " or empty port, no empty or '-'-edged host labels, no trailing"
+            " dot), got '${MDKR_PARTY_ORIGIN}'")
+    endif()
+    unset(_mdkr_party_authority)
 endif()
 set(MDKR_PARTY_COMPILED_ORIGIN "")
 if(MDKR_NATIVE_PHONE_PARTY)

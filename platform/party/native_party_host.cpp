@@ -116,8 +116,12 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
             "Phone controllers are not included in this build."));
         return false;
     }
+    /* M2: not merely "starts with https://" -- the compiled origin must be
+     * the one canonical scheme+host[:port] shape. A value carrying a path,
+     * query, fragment, userinfo or trailing slash is a misconfigured build
+     * and fails closed here, before any transport bootstrap. */
     if (serviceOrigin.size() > kMaxUrl ||
-        (serviceOrigin.rfind("https://", 0u) != 0u &&
+        (!mdkr_party_canonical_https_origin(serviceOrigin) &&
          !mdkr_party_loopback_test_url_allowed(serviceOrigin))) {
         setError("Phone controllers require the configured secure Party service.");
         return false;

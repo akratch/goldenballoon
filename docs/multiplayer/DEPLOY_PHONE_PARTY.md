@@ -208,6 +208,13 @@ never report the rule as verified. Like `tests/check_party_production_config.py`
 for the origin, this is the deploy-time assertion for the edge rule: run them
 side by side before promoting.
 
+In the same pass, run `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh`
+to assert the deployed `/controller/` page still serves every reviewed
+`dist/web/_headers` security header (the CSP first among them) — static-host
+header config is exactly as silent as a hand-applied zone rule when it stops
+arriving, and it too exits `2` rather than claim success when the origin is
+unset or unreachable.
+
 Deploying without the rule is safe but unprotected: the Worker's own $0
 admission budget still fails closed, so the service cannot generate a bill —
 it will simply refuse new rooms sooner under abuse, and each address is held

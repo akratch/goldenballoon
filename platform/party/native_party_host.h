@@ -218,6 +218,69 @@ inline bool mdkr_party_loopback_test_url_allowed(const std::string &url) {
     return false;
 }
 
+/*
+ * M2 canonical-origin gate for the compiled Party service origin: exactly
+ * `https://` + lowercase host + one optional explicit `:port`, nothing else.
+ * The value is interpolated into invite URLs and compared byte-for-byte
+ * against the service's PARTY_ORIGIN, so a path, query, fragment, trailing
+ * slash or userinfo is a misconfiguration, not a softer origin. The
+ * character-by-character walk matches the loopback gate above: the allowed
+ * host alphabet excludes '@', so RFC 3986's
+ * "https://host:@evil.example/..." userinfo reading (userinfo "host:" at
+ * host evil.example) can never smuggle a different authority past the
+ * check, and the digits-only port rule refuses a second ':' the same way.
+ * Host labels follow DNS shape -- non-empty, [a-z0-9-], no leading or
+ * trailing '-', joined by single dots, no trailing dot -- which keeps
+ * IDN punycode ("xn--...") accepted while "..", uppercase and bracketed
+ * IPv6 literals stay refused. CMakeLists.txt enforces the same rule at
+ * configure time (MDKR_PARTY_ORIGIN); this is the runtime twin for the
+ * value the build actually compiled in. Inline for the same reason as the
+ * loopback gate: the host model and the transport link in different
+ * combinations across test binaries.
+ */
+inline bool mdkr_party_canonical_https_origin(const std::string &origin) {
+    static const char kScheme[] = "https://";
+    const size_t schemeLength = sizeof(kScheme) - 1u;
+    if (origin.size() <= schemeLength ||
+        origin.compare(0u, schemeLength, kScheme) != 0) {
+        return false;
+    }
+    size_t index = schemeLength;
+    size_t labelLength = 0u;
+    char previous = '\0';
+    while (index < origin.size() && origin[index] != ':') {
+        const char byte = origin[index];
+        if (byte >= 'a' && byte <= 'z') {
+            labelLength++;
+        } else if (byte >= '0' && byte <= '9') {
+            labelLength++;
+        } else if (byte == '-') {
+            if (labelLength == 0u) return false;  /* label starts with '-' */
+            labelLength++;
+        } else if (byte == '.') {
+            if (labelLength == 0u || previous == '-') return false;
+            labelLength = 0u;
+        } else {
+            return false;  /* '/', '?', '#', '@', uppercase, anything else */
+        }
+        previous = byte;
+        index++;
+    }
+    if (labelLength == 0u || previous == '-') return false;
+    if (index == origin.size()) return true;  /* https://host */
+    /* One explicit port: 1-65535, digits only, no leading zero. */
+    index++;  /* the ':' */
+    if (index == origin.size() || origin[index] == '0') return false;
+    unsigned port = 0u;
+    for (; index < origin.size(); index++) {
+        const char byte = origin[index];
+        if (byte < '0' || byte > '9') return false;
+        port = port * 10u + static_cast<unsigned>(byte - '0');
+        if (port > 65535u) return false;
+    }
+    return true;
+}
+
 class MdkrNativePartyHost {
 public:
     explicit MdkrNativePartyHost(MdkrPartyTransport &transport);

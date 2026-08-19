@@ -1,6 +1,6 @@
 import {DurableObject} from "cloudflare:workers";
 import {applyRoomCommand} from "./room-model";
-import {base64Url, constantTimeEqual, digest, fromBase64Url, json,
+import {base64Url, constantTimeEqual, digest, fallbackCode, fromBase64Url, json,
   readJson, utf8Exceeds, validPartyOrigin} from "./security";
 import {internalRequest, rejectUnsupportedInternalApi} from "./internal-api";
 import {LIMITS, type CreateRoomInput, type Env, type RedeemInput,
@@ -234,11 +234,6 @@ function decodeNativeBootstrap(value: string): Uint8Array | null {
       "===".slice((value.length + 3) % 4));
     return Uint8Array.from(binary, character => character.charCodeAt(0));
   } catch { return null; }
-}
-
-function fallbackCode(): string {
-  return String(crypto.getRandomValues(new Uint32Array(1))[0]! % 1_000_000)
-    .padStart(6, "0");
 }
 
 export function admitSignalMessage(attachment: SocketAttachment,

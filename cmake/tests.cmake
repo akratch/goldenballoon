@@ -1967,6 +1967,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_party_production_config.py)
     add_test(
+        NAME party_cmake_origin_gate
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_party_cmake_origin_gate.py)
+    add_test(
         NAME party_binary_surface
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_party_binary_surface.py
