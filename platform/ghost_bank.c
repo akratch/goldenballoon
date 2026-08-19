@@ -806,12 +806,16 @@ static int load_image(const char *path, uint8_t *image, size_t capacity,
     FILE *file = mdkr_fopen_utf8(path, "rb");
     size_t got;
     int trailing;
+    int read_error;
     if (file == NULL) {
         return 0;
     }
     got = fread(image, 1, capacity, file);
     trailing = fgetc(file);
-    if (ferror(file) != 0 || fclose(file) != 0 || trailing != EOF) {
+    /* Sample ferror before fclose, but close unconditionally: a leaked
+     * handle would block this same file's quarantine rename on Windows. */
+    read_error = ferror(file) != 0;
+    if (fclose(file) != 0 || read_error || trailing != EOF) {
         return -1;
     }
     *size = got;
