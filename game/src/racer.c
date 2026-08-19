@@ -228,19 +228,52 @@ static void racer_camera_note_mode_cut(Object_Racer *racer) {
 }
 
 /*
- * Task 9: the finish/post-race spectate cameras (CAMERA_FINISH_RACE,
- * CAMERA_FINISH_CHALLENGE) hop between trackside objects a note alone
- * cannot fully cover -- see presentation_snapshot_set_camera_excluded's
- * header comment for why a standing exclusion exists beside the mode-cut
- * note above rather than instead of it.
+ * Task 9 legacy, default OFF since issue #44 (a).
+ * MDKR_TEST_FINISH_CAMERA_EXCLUDE=1 restores the pre-2026-08-19 standing
+ * exclusion for A/B (same idiom as MDKR_WORLD_STATIC_VERTEX_BLEND).
  *
- * Recomputed every tick from the CURRENT authored mode, not latched once:
- * entering either mode excludes the viewport, and leaving it (mode returns
- * to CAMERA_CAR/CAMERA_PLANE/etc. -- practically only via a stage reset,
- * which already clears every exclusion, but this stays correct even if a
- * future caller finds another way out) un-excludes it in the same tick,
- * with no separate call and no reliance on that reset running first.
+ * The standing exclusion held the finish/post-race viewport discontinuous
+ * on EVERY capture of CAMERA_FINISH_RACE / CAMERA_FINISH_CHALLENGE -- dwell
+ * ticks included, by design. But the dwell ticks are exactly where those
+ * cameras rotate to track the finished racer (update_camera_finish_race's
+ * atan2 re-aim; the challenge boom's 0x200/tick orbit): smooth authored
+ * motion that a held camera turns into a 30 Hz step while OBJECT_ROOT keeps
+ * blending. The subject the camera is actively re-centering drifts for the
+ * interpolated presents of every tick and snaps back on each endpoint --
+ * the "racer flickers as soon as the perspective switches" report, win and
+ * lose alike (measured on the coverage gate's adventure route: 0 of 1,358
+ * post-race dwell ticks blended, camexcluded=1389).
+ *
+ * The cuts the exclusion also covered remain covered without it:
+ *   - entry into FINISH_RACE / FINISH_CHALLENGE / FIXED -> the mode-change
+ *     note above (racer_camera_note_mode_cut);
+ *   - every spectate hop -> the explicit note in update_camera_finish_race;
+ *   - the no-spectate fallback -> the next-tick mode note (see the comment
+ *     at that early return);
+ *   - any future un-noted large re-aim -> the automatic clauses (2000-unit
+ *     teleport, 67.5 deg view angle, 20 deg FOV, region, camera_id).
+ * A future sub-threshold mid-dwell re-aim -- the hypothetical the standing
+ * exclusion existed for -- is smooth-motion-sized by definition, and
+ * blending it is the feature, not a risk.
+ *
+ * The seam itself (presentation_snapshot_set_camera_excluded) stays, with
+ * its unit coverage, for callers that really do need a standing hold. This
+ * caller still runs every tick so the A/B toggle keeps the original
+ * recompute-every-tick semantics, and so the default path actively clears
+ * anything a toggled build may have left set.
  */
+static s32 sRacerFinishCameraExcludeLegacy = -1;
+
+static bool racer_finish_camera_exclude_legacy(void) {
+    if (sRacerFinishCameraExcludeLegacy < 0) {
+        const char *value = getenv("MDKR_TEST_FINISH_CAMERA_EXCLUDE");
+        sRacerFinishCameraExcludeLegacy =
+            value != NULL &&
+            (strcmp(value, "1") == 0 || strcmp(value, "on") == 0);
+    }
+    return sRacerFinishCameraExcludeLegacy != 0;
+}
+
 static void racer_camera_apply_finish_exclusion(Object_Racer *racer) {
     if (gCameraObject == NULL || racer->playerIndex < PLAYER_ONE ||
         racer->playerIndex > PLAYER_FOUR) {
@@ -248,8 +281,9 @@ static void racer_camera_apply_finish_exclusion(Object_Racer *racer) {
     }
     presentation_snapshot_set_camera_excluded(
         racer->playerIndex,
-        gCameraObject->mode == CAMERA_FINISH_RACE ||
-            gCameraObject->mode == CAMERA_FINISH_CHALLENGE);
+        racer_finish_camera_exclude_legacy() &&
+            (gCameraObject->mode == CAMERA_FINISH_RACE ||
+             gCameraObject->mode == CAMERA_FINISH_CHALLENGE));
 }
 
 /*

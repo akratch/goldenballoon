@@ -408,11 +408,21 @@ void presentation_snapshot_note_camera_cut(int viewport_index);
  * regardless of what the pose says or whether anything noted a cut this
  * tick, so it can never enter resolve_camera_pair as a blend candidate.
  *
- * The caller re-asserts this every tick the excluded mode is active (see
- * update_player_camera) rather than latching once, so leaving the mode
- * un-excludes the viewport with no separate call needed and no reliance on
- * a stage reset. Also cleared by presentation_snapshot_stage_reset and
- * _shutdown. No-op unless the seam is enabled.
+ * A caller should re-assert this every tick the excluded mode is active
+ * rather than latching once, so leaving the mode un-excludes the viewport
+ * with no separate call needed and no reliance on a stage reset. Also
+ * cleared by presentation_snapshot_stage_reset and _shutdown. No-op unless
+ * the seam is enabled.
+ *
+ * Issue #44 (a): the original caller — racer.c's finish/post-race camera —
+ * no longer asserts this by default. The dwell ticks the exclusion held are
+ * exactly where the finish camera smoothly tracks the finished racer, so
+ * the hold stepped the shot at the authored rate against a blending
+ * subject; the hops and mode changes it also covered stay covered by the
+ * one-shot notes plus the automatic capture clauses.
+ * MDKR_TEST_FINISH_CAMERA_EXCLUDE=1 restores that caller for A/B. The seam
+ * and its unit coverage remain for future callers that need a standing
+ * hold.
  */
 void presentation_snapshot_set_camera_excluded(int viewport_index,
                                                bool excluded);

@@ -62,6 +62,25 @@ ADVENTURE_ROUTE = (
     ";12:E5:E0"
 )
 ADVENTURE_LEVELS = (0, 12, 5)   # hub, world lobby, race — each entered by door
+# Issue #44 (a): between its spectate hops, the post-race finish camera DWELLS
+# on one trackside point and rotates to track the racer — smooth authored
+# motion that must BLEND. The Task 9 standing exclusion used to hold every
+# such dwell tick discontinuous (measured on this exact route: 0 of 1,358
+# dwell ticks between the first and last hop blended, camexcluded=1389),
+# stepping the camera at the authored rate for the whole post-race sequence
+# while OBJECT_ROOT kept blending: the racer flicker of issue #44. The hops
+# themselves must STAY refused — that is classify_cuts' blended-cut check,
+# unchanged — so this floor is only about the dwell ticks between them.
+# Measured post-fix: 1,356 of 1,358 blended. The floor sits far below that
+# on purpose: the dwell count is budget-shaped (the loss route spends its
+# remaining frames in the post-race sequence), so a physics or timing change
+# that legitimately shortens the window must not fail the gate — while the
+# defect value is exactly zero.
+POSTRACE_DWELL_BLEND_FLOOR = 80
+POSTRACE_MIN_HOPS = 2           # measured 17; below 2 the window is vacuous
+ADVENTURE_LOAD_FRAME_RE = re.compile(
+    r"level_load: levelId=(\d+) numPlayers=-?\d+ entrance=-?\d+ "
+    r"vehicle=-?\d+ cutscene=(-?\d+) @frame~(\d+)")
 # Issue #44 (b): the same route WON instead of lost, with the level-12 step
 # list ending in a SECOND E5 — after the win the kart drives back into the
 # now-cleared Ancient Lake door, and menu_adventure_track_init opens
@@ -732,6 +751,54 @@ def run_adventure_arm(binary: Path, rom: Path, root: Path, timeout: int,
     return output
 
 
+def postrace_dwell_blend(output: str) -> tuple[int, int, int] | None:
+    """(hops, dwell candidates, dwell ticks blended) in the post-race window.
+
+    The window opens at the levelId=5 race load and runs to the end of the
+    trace: this arm's loss route spends its whole remaining budget in the
+    race level's post-race sequence (the return to the lobby is the race-loop
+    check's business, not this gate's). A hop is a consecutive same-slot
+    capture pair that moved further than CUT_MOVE_UNITS — during the race
+    itself that never happens (legitimate camera motion tops out at 63.6
+    units/tick; see CUT_MOVE_UNITS' calibration), so the hops in this window
+    are exactly the finish camera changing spectate point. Dwell candidates
+    are the consecutive, same-camera, same-region, sub-threshold rows
+    between the first and last hop, i.e. exactly the rows no cut class
+    claims.
+    """
+    race_frame = None
+    for match in ADVENTURE_LOAD_FRAME_RE.finditer(output):
+        if int(match.group(1)) == 5:
+            race_frame = int(match.group(3))
+            break
+    if race_frame is None:
+        return None
+    rows = [row for row in parse_camera_journal(output)
+            if int(row.get("vp", -1)) == 0 and
+            race_frame / 2 < row["tick"]]
+    rows.sort(key=lambda row: row["tick"])
+    hops: list[float] = []
+    dwell: list[dict[str, float]] = []
+    previous: dict[str, float] | None = None
+    for row in rows:
+        if (previous is not None and row["tick"] == previous["tick"] + 1.0 and
+                row["cam"] == previous["cam"] and
+                row["region"] == previous["region"]):
+            moved = math.dist(
+                (row["x"], row["y"], row["z"]),
+                (previous["x"], previous["y"], previous["z"]))
+            if moved > CUT_MOVE_UNITS:
+                hops.append(row["tick"])
+            else:
+                dwell.append(row)
+        previous = row
+    if len(hops) < 2:
+        return len(hops), 0, 0
+    window = [row for row in dwell if hops[0] <= row["tick"] <= hops[-1]]
+    blended = sum(1 for row in window if row.get("blend", 0.0) != 0.0)
+    return len(hops), len(window), blended
+
+
 def check_adventure_arm(output: str) -> tuple[list[str], str]:
     name = "adventure-doors-postrace"
     failures: list[str] = []
@@ -823,6 +890,33 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         name, output,
         {"viewport-entry": 6, "camera-bank-switch": 1, "camera-jump": 12})
     failures.extend(cut_failures)
+    # Issue #44 (a): the other half of the post-race property. The hops must
+    # refuse to pair (asserted just above, via the classified-cut check),
+    # AND the dwell ticks between them must blend — a camera that holds its
+    # authored pose on every dwell tick steps at 30 Hz while the racer it is
+    # re-centering interpolates past it, which is the reported flicker.
+    dwell = postrace_dwell_blend(output)
+    if dwell is None:
+        failures.append(
+            f"{name}: could not bound the post-race window (race load or "
+            "cutscene-100 lobby return missing from the trace)")
+        dwell_note = "post-race window unbounded"
+    else:
+        hops, candidates, blended = dwell
+        dwell_note = (f"post-race hops {hops}, dwell blended "
+                      f"{blended}/{candidates}")
+        if hops < POSTRACE_MIN_HOPS:
+            failures.append(
+                f"{name}: only {hops} post-race spectate hops were observed "
+                f"(want >= {POSTRACE_MIN_HOPS}); the dwell floor below is "
+                "vacuous without a bounded hop window")
+        elif blended < POSTRACE_DWELL_BLEND_FLOOR:
+            failures.append(
+                f"{name}: only {blended}/{candidates} post-race dwell ticks "
+                f"blended (want >= {POSTRACE_DWELL_BLEND_FLOOR}) — the "
+                "finish camera is stepping at the authored rate between "
+                "spectate hops while the racer keeps interpolating "
+                "(issue #44 a)")
     return failures, (
         f"{name}: levels {sorted(loaded)} entered; cut notes "
         f"{snapshot.get('camcutconsumed')}/{snapshot.get('camcutnote')} "
@@ -832,7 +926,7 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         + ", ".join(
             f"{surface}={smooth.get(surface, {}).get('heldpermille')}"
             for surface in held_ceilings)
-        + f"; {cut_note}")
+        + f"; {dwell_note}; {cut_note}")
 
 
 def run_preview_arm(binary: Path, rom: Path, root: Path, timeout: int,
