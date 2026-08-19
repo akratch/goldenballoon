@@ -39,11 +39,18 @@ set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
 set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+# DOWNLOAD_EXTRACT_TIMESTAMP exists only in CMake >= 3.24; older CMake folds
+# the unknown keyword into URL_HASH and fails configure (Ubuntu 22.04 ships
+# 3.22). Older CMake keeps archive timestamps, which mbedtls tolerates.
+set(MDKR_MBEDTLS_EXTRACT_ARGS "")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    set(MDKR_MBEDTLS_EXTRACT_ARGS DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+endif()
 FetchContent_Declare(mdkr_mbedtls
     URL
       "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MDKR_MBEDTLS_VERSION}/mbedtls-${MDKR_MBEDTLS_VERSION}.tar.bz2"
     URL_HASH "SHA256=${MDKR_MBEDTLS_SHA256}"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    ${MDKR_MBEDTLS_EXTRACT_ARGS})
 FetchContent_MakeAvailable(mdkr_mbedtls)
 if(NOT TARGET MbedTLS::MbedTLS)
     # libdatachannel uses the package-style aggregate name while Mbed TLS's
