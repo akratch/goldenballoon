@@ -43,8 +43,11 @@ constexpr size_t kMaxControlBytes = 4096u;
  * (controller_ready/host_ready/ping/pong/rumble). This is a SEPARATE
  * namespace from the HTTP redemption "pairing protocol" (room-model.ts,
  * now 2 = SAS v2) and from the Worker-internal x-mdkr-internal-api header
- * version; the three share only the protocol_update_required refusal
- * token. SAS v2 changed no channel message shape, so this stays 1.
+ * version. The pairing protocol and the internal header gate share the
+ * protocol_update_required refusal token; a channel mismatch instead sets
+ * the protocolMismatch latch and shows kMdkrPartyProtocolMismatchCopy
+ * (native_party_host.h). SAS v2 changed no channel message shape, so this
+ * stays 1.
  */
 constexpr unsigned kProtocol = 1u;
 
