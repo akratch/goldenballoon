@@ -63,18 +63,38 @@ function exactKeysWithOptionalName(value: Record<string, unknown>,
  * refusal is the cheapest state to drive a room into. Charging at the last
  * point where refusal is still free — the end of shape and credential
  * validation — is the conservative anti-abuse boundary.
+ *
+ * Create operations additionally carry the requester's pseudonymous source
+ * digest (I-2): the budget object holds each address to a bounded daily
+ * create allowance so one distributed abuser cannot drain the shared global
+ * reserve and deny pairing to everyone until UTC midnight. A throttled
+ * create is refused before anything is charged.
  */
 async function budget(env: Env, kind: "pairing" | "control",
-                      units: number, operation: BudgetOperation): Promise<Response> {
+                      units: number, operation: BudgetOperation,
+                      sourceDigest = ""): Promise<Response> {
   const day = new Date().toISOString().slice(0, 10);
   const id = env.PARTY_BUDGETS.idFromName(day);
   const response = await env.PARTY_BUDGETS.get(id).fetch(
-    `https://budget/admit?kind=${kind}&units=${units}&operation=${operation}`,
+    `https://budget/admit?kind=${kind}&units=${units}&operation=${operation}` +
+    (sourceDigest ? `&source=${sourceDigest}` : ""),
     internalRequest({method: "POST"}));
   // The Budget object carries internal reserve accounting. External callers
-  // receive one stable refusal enum, never its implementation fields or a
+  // receive two stable refusal enums — the per-address create throttle and
+  // the global reserve — never its implementation fields or a
   // provider-shaped response that the launcher would have to understand.
+  if (response.status === 429) return json({error: "create_rate_limited"}, 429);
   return response.ok ? response : json({error: "service_budget_safe"}, 503);
+}
+
+/** One pseudonymous daily create bucket per connecting address. Reuses the
+ * short-code directory's requester idiom (party-code-directory.ts): the raw
+ * address is hashed and never stored or forwarded, and a missing header
+ * (local development and tests) collapses to one shared bucket, which fails
+ * safe — shared and throttled — rather than open. */
+function createSource(request: Request, env: Env): Promise<string> {
+  return digest(env, "create-source",
+    request.headers.get("cf-connecting-ip") || "local-test");
 }
 
 async function operationsStatus(request: Request, env: Env,
@@ -119,7 +139,8 @@ async function createMatch(request: Request, env: Env): Promise<Response> {
   }
   /* Budget + eight hashed-code collision attempts + room initialize, charged
    * once the body is known to be a well-formed create request. */
-  const admission = await budget(env, "pairing", 10, "matchCreate");
+  const admission = await budget(env, "pairing", 10, "matchCreate",
+    await createSource(request, env));
   if (!admission.ok) return admission;
   const roomBytes = crypto.getRandomValues(new Uint8Array(16));
   const inviteBytes = new Uint8Array(32);
@@ -361,12 +382,14 @@ async function registerCode(env: Env, code: string, roomId: string,
 }
 
 async function createRoomForKey(hostPublicKey: string, env: Env,
-                                pairingReserved = false): Promise<Response> {
+                                pairingReserved = false,
+                                sourceDigest = ""): Promise<Response> {
   /* Budget the worst collision path: budget DO + eight directory attempts +
    * one room initialize. Unused reservation is intentional $0 headroom. */
   if (!validPublicKey(hostPublicKey)) return json({error: "invalid_host_key"}, 400);
   if (!pairingReserved) {
-    const admission = await budget(env, "pairing", 10, "partyCreate");
+    const admission = await budget(env, "pairing", 10, "partyCreate",
+      sourceDigest);
     if (!admission.ok) return admission;
   }
   const roomBytes = crypto.getRandomValues(new Uint8Array(16));
@@ -408,7 +431,8 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
   if (!exactKeys(body, ["hostPublicKey"]) || !validPublicKey(body.hostPublicKey)) {
     return json({error: "invalid_host_key"}, 400);
   }
-  return createRoomForKey(body.hostPublicKey, env);
+  return createRoomForKey(body.hostPublicKey, env, false,
+    await createSource(request, env));
 }
 
 async function redeemToRoom(body: Record<string, unknown>, env: Env, roomId: string,
@@ -616,7 +640,8 @@ async function nativeCreateSocket(request: Request, env: Env,
                                   hostPublicKey: string): Promise<Response> {
   /* Reuse the public create/connect contracts exactly while giving native one
    * WSS dependency instead of introducing a second portable HTTP stack. */
-  const pairing = await budget(env, "pairing", 10, "partyCreate");
+  const pairing = await budget(env, "pairing", 10, "partyCreate",
+    await createSource(request, env));
   if (!pairing.ok) return pairing;
   /* Reserve the full socket lifetime before creating durable room state. A
    * closed control reserve therefore cannot leave an unreachable orphan. */
