@@ -380,6 +380,65 @@ void typedCommandErrorSurfacesHonestCopyPerController() {
         "That controller action did not complete. Try again.");
 }
 
+/* Task-1 residual CLOSED: the worker now echoes the failed command's
+ * identity on every host_command_result failure, so no rejection has to be
+ * treated as room-wide any more. Two in-flight commands on different
+ * controllers plus a room-level rotate in flight: a rotate failure (command
+ * name, no controller) clears only the room-level busy flag and leaves both
+ * controllers' genuinely in-flight commands pending; a failure that names
+ * its controller clears only that controller's pending flag; and only an
+ * identity-less event (a sender older than the echo contract) still falls
+ * back to the conservative room-wide clear. */
+void echoedIdentityScopesRejectionCleanupToItsOwnCommand() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 5000u, {pending("phone-a"), pending("phone-b")}));
+    host.service(1u);
+    assert(host.approve("phone-a", 1u));
+    assert(host.approve("phone-b", 2u));
+    assert(host.rotateInvite());
+    assert(host.view().controllers[0].commandPending);
+    assert(host.view().controllers[1].commandPending);
+    assert(host.view().busy);
+
+    /* The rotate fails. Rotation was never any one phone's action: only the
+     * busy flag was waiting on it. */
+    MdkrPartyTransportEvent staleRotate;
+    staleRotate.type = MdkrPartyTransportEventType::CommandRejected;
+    staleRotate.command = "rotate";
+    staleRotate.errorCode = "invalid_state";
+    staleRotate.message = "That controller action did not complete. Try again.";
+    transport.events.push_back(staleRotate);
+    host.service(2u);
+    assert(!host.view().busy);
+    assert(host.view().controllers[0].commandPending);  // untouched
+    assert(host.view().controllers[1].commandPending);  // untouched
+
+    /* One of the two in-flight commands fails with its identity: only that
+     * controller's pending clears. */
+    MdkrPartyTransportEvent full;
+    full.type = MdkrPartyTransportEventType::CommandRejected;
+    full.command = "approve";
+    full.controllerId = "phone-b";
+    full.errorCode = "room_full";
+    transport.events.push_back(full);
+    host.service(3u);
+    assert(host.view().controllers[0].commandPending);   // phone-a: untouched
+    assert(!host.view().controllers[1].commandPending);  // phone-b: its own
+    assert(host.view().message == "No free phone slot.");
+
+    /* An event with no identity at all keeps the pre-echo conservative
+     * room-wide behavior, so a stale worker can still never wedge the UI. */
+    MdkrPartyTransportEvent legacy;
+    legacy.type = MdkrPartyTransportEventType::CommandRejected;
+    transport.events.push_back(legacy);
+    host.service(4u);
+    assert(!host.view().controllers[0].commandPending);
+}
+
 /* I5 sweep: a room_state controller entry with no seat assigned yet (the
  * wire's "seat" key absent entirely, not merely null -- a phone that has
  * paired but has not been approved to a seat) must reach the host as an
@@ -999,6 +1058,7 @@ int main() {
     commandRejectionAndRemovalStayRecoverable();
     giveUpClearsOnlyItsOwnControllersCommandPending();
     typedCommandErrorSurfacesHonestCopyPerController();
+    echoedIdentityScopesRejectionCleanupToItsOwnCommand();
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
     expiryLatchesInHostsOwnClockDomain();
     terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();

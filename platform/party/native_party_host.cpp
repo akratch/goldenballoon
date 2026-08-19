@@ -464,13 +464,23 @@ void MdkrNativePartyHost::applyEvent(
             return;
         }
         case MdkrPartyTransportEventType::CommandRejected: {
-            if (event.controllerId.empty()) {
-                /* No controller identity: a genuine host-command rejection
-                 * (approve/reject/rotate/dismiss/close all funnel into the
-                 * same undifferentiated host_command_result path today) is
-                 * really room-wide -- the one pending action just failed,
-                 * so every commandPending and the room-level busy flag
-                 * clear exactly as before. */
+            if (event.controllerId.empty() &&
+                (event.command == "rotate" || event.command == "revoke" ||
+                 event.command == "close")) {
+                /* Residual CLOSED: the worker echoes the failed command's
+                 * identity on every host_command_result failure it emits
+                 * (party-room.ts commandIdentity), so a room-level command
+                 * failure -- rotate/dismiss/close, named by the echo but
+                 * naming no controller because it never targeted one --
+                 * clears only the room-level busy flag that was waiting on
+                 * it. No controller's genuinely in-flight command is
+                 * touched any more. */
+                view_.busy = false;
+            } else if (event.controllerId.empty()) {
+                /* No identity at all: a sender older than the identity
+                 * echo (or not the worker). Keep the pre-echo conservative
+                 * room-wide clear so a stale service can still never leave
+                 * commandPending or busy wedged forever. */
                 for (MdkrNativePartyController &candidate : view_.controllers) {
                     candidate.commandPending = false;
                 }

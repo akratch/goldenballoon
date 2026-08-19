@@ -154,8 +154,12 @@ describe("Party Worker local workerd adapter", () => {
       value.type === "host_command_result");
     socket.send(JSON.stringify({type: "host_command", action: "approve",
       controllerId: controller.controllerId, seat: 2, diagnostics: true}));
+    /* Every failure echoes the command's identity so the native host can
+     * scope its pending-command cleanup to exactly the command that failed
+     * instead of clearing the whole room (Task 1 residual). */
     expect(await invalidCommand).toEqual({type: "host_command_result", ok: false,
-      error: "invalid_command"});
+      error: "invalid_command", command: "approve",
+      controllerId: controller.controllerId});
     expect(await admittedControlUnits()).toBe(controlBeforeCommands);
 
     const approvedState = nextMessageMatching(socket, value =>
@@ -186,8 +190,10 @@ describe("Party Worker local workerd adapter", () => {
       value.type === "host_command_result");
     socket.send(JSON.stringify({type: "host_command", action: "rotate",
       expectedInviteGeneration: 1}));
+    /* A room-level command failure names the command but no controller:
+     * rotation was never any one phone's action. */
     expect(await staleRotation).toEqual({type: "host_command_result", ok: false,
-      error: "invalid_state"});
+      error: "invalid_state", command: "rotate"});
 
     const revokedState = nextMessageMatching(socket, value =>
       value.type === "room_state" && value.transitionId === 6);

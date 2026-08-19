@@ -170,6 +170,13 @@ constexpr size_t kMaxErrorCodeBytes = 64u;
  * code rather than rejecting the event -- an unrecognized future code must
  * never hide the failure itself -- and the generic prose stays on the
  * event as exactly that fallback.
+ *
+ * The worker also echoes the failed command's identity (party-room.ts
+ * commandIdentity): the command name always, the controller id when the
+ * command targeted one. Both ride the event verbatim so the host can scope
+ * its cleanup to exactly the command that failed instead of clearing the
+ * whole room. Identity degrades to absent under the same rule as the code:
+ * it must never hide the failure itself.
  */
 bool commandRejectionFromSignal(const Json &value,
                                 MdkrPartyTransportEvent &event) {
@@ -183,6 +190,16 @@ bool commandRejectionFromSignal(const Json &value,
     if (safeString(value, "error", code, kMaxErrorCodeBytes,
                    /*required=*/false)) {
         event.errorCode = std::move(code);
+    }
+    std::string command;
+    if (safeString(value, "command", command, kMaxErrorCodeBytes,
+                   /*required=*/false)) {
+        event.command = std::move(command);
+    }
+    std::string controllerId;
+    if (safeString(value, "controllerId", controllerId, 64u,
+                   /*required=*/false)) {
+        event.controllerId = std::move(controllerId);
     }
     return true;
 }

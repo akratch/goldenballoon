@@ -157,6 +157,40 @@ int main() {
         oversized));
     assert(oversized.errorCode.empty());
 
+    /* Task-1 residual closure: the worker echoes the failed command's
+     * identity -- the command name always, the controller id when the
+     * command targeted one -- and the parser carries both into the event
+     * verbatim so the host can scope its cleanup to exactly the command
+     * that failed. */
+    MdkrPartyTransportEvent scoped;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false,"error":"room_full",)"
+        R"("command":"approve","controllerId":"phone-b"})", scoped));
+    assert(scoped.command == "approve");
+    assert(scoped.controllerId == "phone-b");
+    assert(scoped.errorCode == "room_full");
+    MdkrPartyTransportEvent roomLevel;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false,"error":"invalid_state",)"
+        R"("command":"rotate"})", roomLevel));
+    assert(roomLevel.command == "rotate");
+    assert(roomLevel.controllerId.empty());
+    /* Malformed or oversized identity degrades to absent exactly like the
+     * error code -- identity must never hide the failure itself. */
+    MdkrPartyTransportEvent malformedIdentity;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false,"error":"invalid_state",)"
+        R"("command":7,"controllerId":9})", malformedIdentity));
+    assert(malformedIdentity.command.empty());
+    assert(malformedIdentity.controllerId.empty());
+    MdkrPartyTransportEvent oversizedIdentity;
+    assert(mdkr_party_host_command_rejection_for_test(
+        std::string(R"({"type":"host_command_result","ok":false,)"
+        R"("error":"room_full","controllerId":")") +
+            std::string(65u, 'c') + R"("})",
+        oversizedIdentity));
+    assert(oversizedIdentity.controllerId.empty());
+
     /* I2: a controller_ready that declares any pairing-protocol version but
      * this build's own must surface as ControllerProtocolMismatch instead of
      * being dropped in silence (the pre-fix behavior: the phone looked

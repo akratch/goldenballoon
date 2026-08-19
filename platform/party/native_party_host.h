@@ -136,6 +136,15 @@ struct MdkrPartyTransportEvent {
      * code, verbatim (services/party/src/party-room.ts commandError).
      * Empty means unknown; the host then keeps its generic copy. */
     std::string errorCode;
+    /* CommandRejected only: the worker's echoed name of the command that
+     * failed ("approve", "rotate", ...). Together with controllerId this is
+     * the failed command's identity (party-room.ts commandIdentity): it lets
+     * the host clear exactly the state that was waiting on that command --
+     * one controller's pending flag, or the room-level busy flag for
+     * rotate/revoke/close -- instead of clearing the whole room. Empty means
+     * the sender predates the identity echo; the host then falls back to its
+     * conservative room-wide cleanup. */
+    std::string command;
     /* ControllerProtocolMismatch only: the protocol version the phone's
      * controller_ready declared. Zero means it declared none at all. */
     unsigned theirProtocol = 0u;
