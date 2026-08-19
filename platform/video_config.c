@@ -737,7 +737,7 @@ int mdkr_video_key_is_player_comfort(MdkrVideoKey key) {
      * and switching presentation mode to compare two looks must not silently
      * undo it. Without this exemption every preset switch would re-pin them to
      * the preset table's zero row, which for Enhancements.DrawDistance is not
-     * even inside its own 100..400 range.
+     * even inside its own 100..1600 range.
      *
      * The speech keys join them for a stronger version of the same reason: an
      * accessibility choice is not art direction, and a player who switched the
@@ -1038,7 +1038,7 @@ void mdkr_video_config_defaults(MdkrVideoConfig *config) {
 
     /*
      * Enhancements default to the authored game. DrawDistance is seeded
-     * explicitly because its 100..400 range does not contain the zero the
+     * explicitly because its 100..1600 range does not contain the zero the
      * preset table would otherwise leave here, and a value outside its own
      * schema range is exactly the kind of quiet invalid state that survives
      * until something far away divides by it.

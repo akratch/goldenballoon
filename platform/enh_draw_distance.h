@@ -62,7 +62,7 @@ enum {
 void mdkr_enh_draw_distance_begin_frame(void);
 
 /* The latched multiplier on the authored draw distance: exactly 1.0f at the
- * authored default, up to 4.0f. Callers compare against 1.0f to take the
+ * authored default, up to 16.0f. Callers compare against 1.0f to take the
  * authored path unchanged. */
 float mdkr_enh_draw_distance_scale(void);
 

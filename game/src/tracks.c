@@ -3814,8 +3814,8 @@ static s32 scene_object_wide_draw_range(Object *obj, s32 *outOpacity,
  *
  * Nothing in here writes to an Object, to obj->opacity or to the route cache,
  * and it calls no *_tick. That is the whole claim: the set of objects that
- * EXIST, and every value the simulation reads back, are identical at 100% and
- * at 400%; only the set that is DRAWN moves.
+ * EXIST, and every value the simulation reads back, are identical at every
+ * setting from 100% to 1600% (Maximum); only the set that is DRAWN moves.
  */
 static s32 scene_wide_draw_route(Object *obj, MdkrViewportRoutePass pass,
                                  const u8 *segmentVisible, s32 visibleFlags,

@@ -443,6 +443,29 @@ def main() -> int:
                 summaries.append(
                     f"drawn@{DD_CAPTURE}(1600)={extreme_at.drawn}")
 
+            # Over the whole route, not just the captured frame — the same
+            # rigor as the dd100/dd400 route-wide check above.
+            extreme_authored = [row.authored for row in extreme.census]
+            if near_authored != extreme_authored:
+                differing = sum(1 for a, b in zip(near_authored,
+                                                   extreme_authored)
+                                if a != b)
+                failures.append(
+                    f"dd1600: the per-frame AUTHORED draw count differs from "
+                    f"dd100 on {differing} frame(s) of "
+                    f"{len(near_authored)}. The widened ceiling is "
+                    f"re-deciding the fixed tick's routes instead of "
+                    f"extending them.")
+            extreme_total_extended = sum(row.extended for row in extreme.census)
+            if extreme_total_extended < total_extended:
+                failures.append(
+                    f"dd1600: extended draws over the route "
+                    f"({extreme_total_extended}) are FEWER than dd400's "
+                    f"({total_extended}). Raising the ceiling must never draw "
+                    f"less than a lower setting did over the whole route.")
+            summaries.append(
+                f"extendedDrawsOverRoute(1600)={extreme_total_extended}")
+
             compare_state(near, extreme, failures)
 
             # 6. split100/split400 — the TWO-player fixture issue #47 was
