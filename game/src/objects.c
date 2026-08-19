@@ -7,6 +7,7 @@
 #include "asset_subentry.h"
 #include "mdkr_adventure.h"
 #include "asset_swap.h"
+#include "ghost_bank.h"
 #include "mdkr_challenge.h"
 #include "mdkr_taj.h"
 #include "taj_mod.h"
@@ -10846,6 +10847,14 @@ s32 timetrial_init_player_ghost(s32 playerID) {
     s32 ghostMapID;
 
     ghostMapID = timetrial_map_id();
+#ifdef NATIVE_PORT
+    /* Issue #46: give this (level, vehicle) pair a live slot in the six-slot
+     * DKRACING-GHOSTS window before the authored load looks for it, swapping
+     * the least-recently-used pair out to its host-side bank file if the
+     * window is full. Best-effort: on any failure the authored path below
+     * sees the pak exactly as it was. See platform/ghost_bank.h. */
+    (void) mdkr_ghost_bank_select(playerID, level_id(), gPrevTimeTrialVehicle);
+#endif
     if (level_id() != ghostMapID || gTimeTrialVehicle != gPrevTimeTrialVehicle) {
         cpakStatus = timetrial_load_player_ghost(playerID, level_id(), gPrevTimeTrialVehicle, &characterID, &time);
         if (cpakStatus == CONTROLLER_PAK_GOOD) {
@@ -10868,6 +10877,10 @@ SIDeviceStatus timetrial_save_player_ghost(s32 controllerIndex) {
         taj_physics_trace_record_suppressed(NULL);
         return CONTROLLER_PAK_BAD_DATA;
     }
+    /* Issue #46: make sure this pair has its own or an empty window slot
+     * before the authored write, so CONTROLLER_PAK_NO_ROOM_FOR_GHOSTS only
+     * remains reachable for genuine device failures. */
+    (void) mdkr_ghost_bank_select(controllerIndex, timetrial_map_id(), gTimeTrialVehicle);
 #endif
     return timetrial_write_player_ghost(controllerIndex, timetrial_map_id(), gTimeTrialVehicle, gTimeTrialCharacter,
                                         gTimeTrialTime);
