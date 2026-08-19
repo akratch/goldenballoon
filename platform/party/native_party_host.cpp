@@ -80,6 +80,21 @@ MdkrNativePartyHost::MdkrNativePartyHost(MdkrPartyTransport &transport)
     : transport_(transport) {}
 
 MdkrNativePartyHost::~MdkrNativePartyHost() {
+    /* M4: quitting the app with a live room must tell the phones goodbye.
+     * The transport's closeRoom sends the worker the `close` command --
+     * relayed to every controller as host_closed
+     * (services/party/src/party-room.ts) -- and flushes it, bounded by
+     * kMdkrPartyCloseFlushDeadlineMs, before the shutdown below hangs up,
+     * so the phones read "the host ended the session" instead of misreading
+     * a silent socket drop as a network fault. Closed and the terminal
+     * phases are excluded: their transports are already shut down
+     * (closeRoom / setTerminal), so there is no live socket to say goodbye
+     * on and no room left listening for one. */
+    if (view_.phase != MdkrNativePartyPhase::Closed &&
+        view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded) {
+        (void)transport_.closeRoom();
+    }
     releaseAll();
     transport_.shutdown();
 }

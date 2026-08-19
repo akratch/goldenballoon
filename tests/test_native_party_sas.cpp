@@ -6,6 +6,8 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 int main() {
@@ -129,5 +131,64 @@ int main() {
         R"({"type":"pong","protocol":3,"controllerId":"phone-a",)"
         R"("connectionSequence":7})",
         "phone-a", 7u, misaddressed));
+
+    /* M4: quitting must say goodbye without hanging the app. closeRoom()
+     * queues the `close` command (the worker relays it to every phone as
+     * host_closed) and then waits, bounded, for the socket write to flush
+     * before the caller tears the socket down. The seam runs the transport's
+     * exact wait loop against an injectable clock/buffer/sleep, so the
+     * 250 ms cap is proven here without a socket. */
+    {
+        /* A socket that never drains: the full cap and not one millisecond
+         * of quit-blocking more. */
+        uint64_t fakeNowMs = 0u;
+        const uint64_t waited = mdkr_party_close_flush_wait_for_test(
+            [&fakeNowMs]() { return fakeNowMs; },
+            []() -> size_t { return 64u; },
+            [&fakeNowMs](uint64_t ms) { fakeNowMs += ms; });
+        assert(kMdkrPartyCloseFlushDeadlineMs == 250u);
+        assert(waited == kMdkrPartyCloseFlushDeadlineMs);
+        assert(fakeNowMs == 250u);
+    }
+    {
+        /* Already flushed: quit pays nothing at all. */
+        uint64_t fakeNowMs = 0u;
+        const uint64_t waited = mdkr_party_close_flush_wait_for_test(
+            [&fakeNowMs]() { return fakeNowMs; },
+            []() -> size_t { return 0u; },
+            [&fakeNowMs](uint64_t ms) { fakeNowMs += ms; });
+        assert(waited == 0u);
+        assert(fakeNowMs == 0u);
+    }
+    {
+        /* Drains partway through: the wait ends the moment the write
+         * completes (three 5 ms polls saw bytes, the fourth saw none). */
+        uint64_t fakeNowMs = 0u;
+        unsigned polls = 0u;
+        const uint64_t waited = mdkr_party_close_flush_wait_for_test(
+            [&fakeNowMs]() { return fakeNowMs; },
+            [&polls]() -> size_t { return ++polls <= 3u ? 64u : 0u; },
+            [&fakeNowMs](uint64_t ms) { fakeNowMs += ms; });
+        assert(waited == 15u);
+        assert(fakeNowMs == 15u);
+    }
+    {
+        /* An oversleeping host (every requested 5 ms nap really costs 50):
+         * the cap is on the observed WALL clock, not the sum of requests,
+         * so the loop still exits at 250 ms elapsed even though only 25 ms
+         * of sleep was ever asked for. */
+        uint64_t fakeNowMs = 0u;
+        uint64_t requestedMs = 0u;
+        const uint64_t waited = mdkr_party_close_flush_wait_for_test(
+            [&fakeNowMs]() { return fakeNowMs; },
+            []() -> size_t { return 64u; },
+            [&fakeNowMs, &requestedMs](uint64_t ms) {
+                requestedMs += ms;
+                fakeNowMs += ms * 10u;
+            });
+        assert(waited == 25u);
+        assert(requestedMs == 25u);
+        assert(fakeNowMs == 250u);
+    }
     return 0;
 }

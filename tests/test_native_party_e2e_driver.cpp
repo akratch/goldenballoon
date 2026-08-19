@@ -257,8 +257,25 @@ int main(int argc, char **argv) {
                 static_cast<unsigned long long>(nonNeutral),
                 static_cast<unsigned long long>(totalPackets));
             std::fflush(stdout);
+            /* M4 real-transport guard: the goodbye's flush is capped at
+             * 250 ms (kMdkrPartyCloseFlushDeadlineMs); the rest of this
+             * call is libdatachannel's own socket/peer close calls. Quit
+             * hanging here is exactly the defect the bound exists for, so
+             * a full second is already an architecture failure, never a
+             * slow network. */
+            const uint64_t closeStartedMs = nowMs();
             host.closeRoom();
+            const uint64_t closeTookMs = nowMs() - closeStartedMs;
+            std::printf("[E2E] close_ms=%llu\n",
+                static_cast<unsigned long long>(closeTookMs));
+            std::fflush(stdout);
             mdkr_native_remote_pad_reset_all();
+            if (closeTookMs > 1000u) {
+                std::printf("[E2E] result=close_blocked ms=%llu\n",
+                    static_cast<unsigned long long>(closeTookMs));
+                std::fflush(stdout);
+                return 4;
+            }
             return 0;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));

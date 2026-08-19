@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -24,6 +25,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -76,6 +78,44 @@ std::string signalingUrl(const std::string &origin, const std::string &path) {
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         Clock::now().time_since_epoch()).count());
+}
+
+/* M4 goodbye flush. closeRoom()'s send only QUEUES the close command:
+ * rtc::WebSocket::send hands the frame to libdatachannel's writer and
+ * returns, and the caller (the host model's closeRoom() and destructor
+ * both) tears the socket down right after. Completion signal, verified
+ * against the pinned dep (mdkr_libdatachannel-src): rtc::Channel::
+ * bufferedAmount() is the "total size buffered to send"
+ * (include/rtc/channel.hpp:34); for a WebSocket it is wired to the TCP
+ * layer (src/impl/websocket.cpp:235, onBufferedAmount ->
+ * triggerBufferedAmount), which adds each message on send
+ * (src/impl/tcptransport.cpp:134) and subtracts only as bytes actually
+ * reach the OS socket (src/impl/tcptransport.cpp:315,320). So
+ * bufferedAmount()==0 after our send means every queued byte -- the close
+ * frame included -- has left the process; there is no per-send completion
+ * callback in this API, so a short poll against that counter is the whole
+ * mechanism. The loop is bounded twice over: by the total sleep it
+ * requests AND by the observed wall clock (an oversleeping OS cannot
+ * stretch it), because quit must never block past the deadline.
+ * tests/test_native_party_sas.cpp drives this exact loop through
+ * mdkr_party_close_flush_wait_for_test with a fake clock. */
+constexpr uint64_t kCloseFlushPollMs = 5u;
+
+uint64_t closeFlushWait(const std::function<uint64_t()> &nowMs,
+                        const std::function<size_t()> &bufferedBytes,
+                        const std::function<void(uint64_t)> &sleepMs) {
+    constexpr uint64_t deadline = kMdkrPartyCloseFlushDeadlineMs;
+    uint64_t slept = 0u;
+    const uint64_t start = nowMs();
+    while (bufferedBytes() > 0u && slept < deadline) {
+        const uint64_t elapsed = nowMs() - start;
+        if (elapsed >= deadline) break;
+        const uint64_t nap = std::min(
+            kCloseFlushPollMs, std::min(deadline - slept, deadline - elapsed));
+        sleepMs(nap);
+        slept += nap;
+    }
+    return slept;
 }
 
 uint64_t wallExpiryToSteady(uint64_t expiresAtMs) {
@@ -401,6 +441,32 @@ public:
         if (encoded.size() > kMaxControlBytes) return false;
         try { return socket->send(encoded); }
         catch (...) { return false; }
+    }
+
+    /* M4: bounded flush of the just-queued close command -- see
+     * closeFlushWait above for the completion signal and both bounds. Runs
+     * on the launcher thread, only on the explicit close/quit path. */
+    void flushCloseCommand() {
+        std::shared_ptr<rtc::WebSocket> socket;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (shuttingDown_ || !socket_) return;
+            socket = socket_;
+        }
+        closeFlushWait(
+            []() { return steadyNowMs(); },
+            [&socket]() -> size_t {
+                /* A socket that dies mid-wait can never drain; report empty
+                 * so quit stops paying for it. */
+                try {
+                    return socket->isOpen() ? socket->bufferedAmount() : 0u;
+                } catch (...) {
+                    return 0u;
+                }
+            },
+            [](uint64_t ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            });
     }
 
     bool sendRumble(const std::string &id, uint16_t strength) {
@@ -1354,7 +1420,13 @@ public:
         return sendHostCommand("revoke", "");
     }
     bool closeRoom() override {
-        return sendHostCommand("close", "");
+        /* M4: the send only queued the goodbye; give it its bounded
+         * (kMdkrPartyCloseFlushDeadlineMs) chance to reach the wire before
+         * the caller hangs up, so the worker can relay host_closed to the
+         * phones instead of them meeting a silent socket drop. */
+        if (!sendHostCommand("close", "")) return false;
+        if (state_) state_->flushCloseCommand();
+        return true;
     }
     bool sendRumble(const std::string &id, uint16_t strength) override {
         return state_ && state_->sendRumble(id, strength);
@@ -1399,6 +1471,13 @@ bool mdkr_party_sas_phrase_for_test(
     if (!identity.loadPrivateForTest(privateScalar)) return false;
     hostPublicKey = identity.publicKey();
     return identity.phrase(controllerPublicKey, roomId, phrase);
+}
+
+uint64_t mdkr_party_close_flush_wait_for_test(
+    const std::function<uint64_t()> &nowMs,
+    const std::function<size_t()> &bufferedBytes,
+    const std::function<void(uint64_t)> &sleepMs) {
+    return closeFlushWait(nowMs, bufferedBytes, sleepMs);
 }
 
 bool mdkr_party_host_command_rejection_for_test(

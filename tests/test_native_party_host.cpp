@@ -752,6 +752,84 @@ void roomGoneForGoodEndsTheRoomInsteadOfRetryingForever() {
     assert(openCalls() == 2u);
 }
 
+/* M4: quitting the app while a room is live must tell the phones goodbye.
+ * Destroying the host is the quit path; it must issue the transport's close
+ * command -- the worker relays it to every controller as host_closed
+ * (services/party/src/party-room.ts) -- BEFORE shutting the transport down.
+ * Before this fix the destructor only shut the socket, and the phones
+ * misread the silent drop as a network fault they should wait out. The
+ * bounded (250 ms cap) flush that keeps quit from blocking lives in the
+ * real transport and is proven with a fake clock in
+ * tests/test_native_party_sas.cpp; this fake transport is instantaneous,
+ * so the order is the whole contract here. */
+void destructionWithLiveRoomSaysGoodbyeBeforeHangingUp() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    {
+        MdkrNativePartyHost host(transport);
+        assert(host.open("https://party.example"));
+        transport.events.push_back(roomEvent(
+            1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+        host.service(1000u);
+        assert(host.view().phase == MdkrNativePartyPhase::Open);
+    }
+    /* The goodbye precedes the hangup, and the hangup still happens. */
+    assert(transport.calls.size() >= 2u);
+    assert(transport.calls[transport.calls.size() - 2u] == "close");
+    assert(transport.calls.back() == "shutdown");
+    /* And the seat still went back to local play on the way out. */
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
+/* M4 boundary: with no live room there is no one to say goodbye to. A
+ * never-opened, an explicitly closed, and a terminal (RoomEnded) host must
+ * all destroy with a plain hangup and no close command -- the closed and
+ * terminal transports are already shut down (closeRoom / setTerminal), so
+ * a goodbye there would be a command fired into a dead socket. */
+void destructionWithoutLiveRoomHangsUpWithoutAGoodbye() {
+    mdkr_native_remote_pad_reset_all();
+    {   /* Never opened: the destructor's own shutdown and nothing else. */
+        FakeTransport transport;
+        { MdkrNativePartyHost host(transport); }
+        assert((transport.calls == std::vector<std::string>{"shutdown"}));
+    }
+    {   /* Terminal: the room is gone for good, transport already down. */
+        FakeTransport transport;
+        size_t callsAtDestruction = 0u;
+        {
+            MdkrNativePartyHost host(transport);
+            assert(host.open("https://party.example"));
+            transport.events.push_back(roomEvent(1u, 1u, 121000u, {}));
+            host.service(1000u);
+            MdkrPartyTransportEvent gone;
+            gone.type = MdkrPartyTransportEventType::RoomGone;
+            transport.events.push_back(gone);
+            host.service(1001u);
+            assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+            callsAtDestruction = transport.calls.size();
+        }
+        assert(transport.calls.size() == callsAtDestruction + 1u);
+        assert(transport.calls.back() == "shutdown");
+    }
+    {   /* Explicitly closed: closeRoom() already said the goodbye itself. */
+        FakeTransport transport;
+        size_t callsAtDestruction = 0u;
+        {
+            MdkrNativePartyHost host(transport);
+            assert(host.open("https://party.example"));
+            transport.events.push_back(roomEvent(1u, 1u, 121000u, {}));
+            host.service(1000u);
+            assert(host.closeRoom());
+            assert(host.view().phase == MdkrNativePartyPhase::Closed);
+            callsAtDestruction = transport.calls.size();
+        }
+        assert(transport.calls.size() == callsAtDestruction + 1u);
+        assert(transport.calls.back() == "shutdown");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -768,6 +846,8 @@ int main() {
     protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
     giveUpForMismatchedSeatKeepsTheHonestRoomCopy();
     roomGoneForGoodEndsTheRoomInsteadOfRetryingForever();
+    destructionWithLiveRoomSaysGoodbyeBeforeHangingUp();
+    destructionWithoutLiveRoomHangsUpWithoutAGoodbye();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
