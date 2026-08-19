@@ -115,6 +115,20 @@ void rebindAndRumble() {
     assert(mdkr_native_remote_pad_take_rumble(2u, 5u, 3u, &strength));
     assert(strength == 321u);
     assert(!mdkr_native_remote_pad_take_rumble(2u, 5u, 3u, &strength));
+
+    /* M5 sustained rumble: peek is take's read-only twin. The magnitude
+     * persists after the take -- the engine posts CHANGES, while the
+     * launcher must keep re-sending a phone's 250 ms one-shot for as long
+     * as the engine still wants the motor on -- but never for the wrong
+     * identity, and never once haptics are gone (a disconnect clears it, so
+     * a stale channel cannot keep reporting strength). */
+    assert(mdkr_native_remote_pad_peek_rumble(2u, 5u, 3u, &strength));
+    assert(strength == 321u);
+    assert(!mdkr_native_remote_pad_peek_rumble(2u, 5u, 2u, &strength));
+    assert(strength == 0u);
+    assert(mdkr_native_remote_pad_set_haptics(2u, 5u, 3u, false));
+    assert(mdkr_native_remote_pad_peek_rumble(2u, 5u, 3u, &strength));
+    assert(strength == 0u);
 }
 
 void concurrentProducerConsumer() {

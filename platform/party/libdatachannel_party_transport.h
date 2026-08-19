@@ -7,7 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport();
 
@@ -72,5 +74,16 @@ bool mdkr_party_host_command_rejection_for_test(
 bool mdkr_party_controller_ready_event_for_test(
     const std::string &text, const std::string &controllerId,
     uint32_t connectionSequence, MdkrPartyTransportEvent &event);
+
+/* M3 bounded-growth prune, shared by the transport's room_state handler and
+ * its direct test. `signaled` records which phones have said
+ * controller_hello; a hello is only meaningful while its controller is in
+ * the roster (a returning phone says hello again), so each room_state
+ * shrinks the set to exactly the roster's ids. Without this the set grew by
+ * one entry per phone for the room's whole 24 h life and was cleared only
+ * at shutdown. Returns how many ids were dropped. */
+size_t mdkr_party_prune_signaled_ids(
+    std::set<std::string> &signaled,
+    const std::map<std::string, MdkrNativePartyController> &roster);
 
 #endif /* MDKR_LIBDATACHANNEL_PARTY_TRANSPORT_H */

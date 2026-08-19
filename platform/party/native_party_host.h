@@ -314,7 +314,12 @@ private:
 
     MdkrPartyTransport &transport_;
     MdkrNativePartyView view_;
-    std::array<uint16_t, 4> lastRumble_{};
+    /* M5 sustained rumble: per-seat timestamp (service()'s own nowMs clock)
+     * of the last rumble command actually sent, rate-limiting the 200 ms
+     * refresh loop. Timestamps only, never strengths -- each refresh
+     * re-reads the engine mailbox, so nothing the host remembers can keep a
+     * motor running that the engine has stopped. */
+    std::array<uint64_t, 4> lastRumbleSentMs_{};
 };
 
 #endif /* MDKR_NATIVE_PARTY_HOST_H */

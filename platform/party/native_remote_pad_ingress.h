@@ -70,6 +70,20 @@ bool mdkr_native_remote_pad_request_rumble(
 bool mdkr_native_remote_pad_take_rumble(
     unsigned port, uint64_t owner, uint32_t connection_sequence,
     uint16_t *out_strength);
+/*
+ * Read-only twin of take (M5 sustained rumble): reports the mailbox's
+ * current magnitude without consuming the pending flag. The magnitude
+ * persists after a take because the engine only posts CHANGES (start /
+ * stop), while a phone's rumble command is a deliberate 250 ms one-shot --
+ * so this is how the launcher's refresh loop asks "does the engine still
+ * want this motor on?" between posts. Identity-checked like every other
+ * crossing, and a rebind, release, or haptics loss zeroes the magnitude
+ * (clearPayload / set_haptics), so a stale channel can never keep
+ * reporting strength.
+ */
+bool mdkr_native_remote_pad_peek_rumble(
+    unsigned port, uint64_t owner, uint32_t connection_sequence,
+    uint16_t *out_strength);
 
 void mdkr_native_remote_pad_stats(
     unsigned port, MdkrNativeRemotePadIngressStats *out_stats);

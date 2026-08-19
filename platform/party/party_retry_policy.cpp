@@ -15,6 +15,9 @@ constexpr unsigned kResumeBaseDelayMs = 300u;
 constexpr unsigned kResumeMaxDelayMs = 8000u;
 constexpr unsigned kResumeRejectionLimit = 3u;
 constexpr uint64_t kResumeTerminalFloorMs = 30000u;
+/* M7: recycle the host socket 32 messages short of the Worker's 512
+ * lifetime-message hard close (party-room.ts SIGNAL_LIFETIME_MESSAGES). */
+constexpr unsigned kSocketCycleAtMessages = 480u;
 
 }  // namespace
 
@@ -80,4 +83,11 @@ MdkrPartyResumeDecision mdkr_party_resume_decide(
     decision.delayMs = kResumeBaseDelayMs << exponent;
     if (decision.delayMs > kResumeMaxDelayMs) decision.delayMs = kResumeMaxDelayMs;
     return decision;
+}
+
+bool mdkr_party_socket_cycle_due(unsigned messagesSentOnSocket) {
+    /* Edge-shaped on purpose -- see the header: exactly once per socket,
+     * however a late send races the close; the per-socket counter reset is
+     * what re-arms it. */
+    return messagesSentOnSocket == kSocketCycleAtMessages;
 }

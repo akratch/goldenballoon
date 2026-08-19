@@ -20,6 +20,11 @@ constexpr size_t kMaxMessage = 240u;
 /* C1 self-heal: at most one rebind attempt per controller per this window,
  * so a phone that keeps overflowing the queue cannot make service() spin. */
 constexpr uint64_t kRebindRateLimitMs = 500u;
+/* M5 sustained rumble: re-send cadence while the engine mailbox holds a
+ * strength above zero. Under the transport's 250 ms one-shot on purpose --
+ * a healthy channel refreshes before the previous pulse expires, a broken
+ * one goes silent within 250 ms. */
+constexpr uint64_t kRumbleRefreshMs = 200u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -282,7 +287,7 @@ void MdkrNativePartyHost::releaseAll() {
     for (const MdkrNativePartyController &candidate : view_.controllers) {
         releaseController(candidate);
     }
-    lastRumble_.fill(0u);
+    lastRumbleSentMs_.fill(0u);
 }
 
 void MdkrNativePartyHost::applyRoomState(
@@ -657,12 +662,32 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
         }
         uint16_t strength = 0u;
         const uint64_t owner = ownerFor(candidate);
-        if (mdkr_native_remote_pad_take_rumble(
-                candidate.seat - 1u, owner, candidate.connectionSequence,
-                &strength)) {
-            if (transport_.sendRumble(candidate.id, strength)) {
-                lastRumble_[candidate.seat - 1u] = strength;
-            }
+        const unsigned port = candidate.seat - 1u;
+        /* A fresh engine post always goes out immediately -- stops
+         * (strength zero) included, which must never wait out a refresh
+         * window. */
+        bool send = mdkr_native_remote_pad_take_rumble(
+            port, owner, candidate.connectionSequence, &strength);
+        /* M5 sustained rumble: the engine posts CHANGES (its SDL path then
+         * sustains the motor on a 60 s safety duration), but the phone's
+         * rumble command is a deliberate 250 ms one-shot -- kept that way
+         * so a lost refresh fails silent-off, never stuck-on. Sustaining is
+         * therefore this loop's job: while the mailbox still holds a
+         * strength above zero, re-send it every kRumbleRefreshMs -- inside
+         * the one-shot's 250 ms, so a healthy channel never gaps. The
+         * strength is re-read from the mailbox every time, never from host
+         * memory, so a rebind or disconnect (both zero the mailbox) ends
+         * the refreshes on its own; the direct/haptics gate above is the
+         * same cutoff one layer up. */
+        if (!send &&
+            mdkr_native_remote_pad_peek_rumble(
+                port, owner, candidate.connectionSequence, &strength) &&
+            strength > 0u && nowMs >= lastRumbleSentMs_[port] &&
+            nowMs - lastRumbleSentMs_[port] >= kRumbleRefreshMs) {
+            send = true;
+        }
+        if (send && transport_.sendRumble(candidate.id, strength)) {
+            lastRumbleSentMs_[port] = nowMs;
         }
     }
 }

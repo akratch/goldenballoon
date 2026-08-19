@@ -8,6 +8,8 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <map>
+#include <set>
 #include <string>
 
 int main() {
@@ -302,6 +304,35 @@ int main() {
         assert(waited == 25u);
         assert(requestedMs == 25u);
         assert(fakeNowMs == 250u);
+    }
+
+    /* M3: signaled_ (which phones have said controller_hello) previously
+     * only ever grew -- cleared at shutdown, never while the room lived. A
+     * hello is only meaningful while its controller is in the roster (a
+     * returning phone says hello again), so every room_state prunes the set
+     * down to the roster through this exact helper. A hundred add/remove
+     * cycles must leave the set bounded by the roster, never by history. */
+    {
+        std::set<std::string> signaled;
+        for (unsigned cycle = 0u; cycle < 100u; cycle++) {
+            const std::string id = "phone-" + std::to_string(cycle);
+            signaled.insert(id);  /* controller_hello */
+            std::map<std::string, MdkrNativePartyController> roster;
+            roster[id].id = id;   /* room_state: this phone is the roster */
+            assert(mdkr_party_prune_signaled_ids(signaled, roster) == 0u);
+            assert(signaled.size() == 1u);
+            assert(signaled.count(id) == 1u);
+            roster.clear();       /* room_state: the phone was removed */
+            assert(mdkr_party_prune_signaled_ids(signaled, roster) == 1u);
+            assert(signaled.empty());
+        }
+        /* Hellos that never made the roster at all (a phone that redeemed
+         * and vanished before its room update) are pruned the same way. */
+        signaled = {"ghost-1", "ghost-2", "kept"};
+        std::map<std::string, MdkrNativePartyController> roster;
+        roster["kept"].id = "kept";
+        assert(mdkr_party_prune_signaled_ids(signaled, roster) == 2u);
+        assert(signaled == std::set<std::string>{"kept"});
     }
     return 0;
 }

@@ -393,7 +393,30 @@ void drawCloseRoom(MdkrNativePartyHost &host) {
     }
 }
 
+/* M3: g_seatChoices remembers each pending phone's chosen slot by
+ * controller id, and previously only ever grew -- decline a hundred phones
+ * over a long party evening and all hundred choices stayed resident for the
+ * process's life. A choice is only meaningful while its controller is in
+ * the roster, so drop the rest here; a phone that pairs again arrives under
+ * a fresh id and simply gets a fresh default slot. (No UI test harness
+ * exists to pin this; the transport-side twin of this prune is pinned by
+ * tests/test_native_party_sas.cpp.) */
+void pruneSeatChoices(const MdkrNativePartyView &view) {
+    for (auto iterator = g_seatChoices.begin();
+         iterator != g_seatChoices.end();) {
+        const std::string &id = iterator->first;
+        const bool present = std::any_of(
+            view.controllers.begin(), view.controllers.end(),
+            [&id](const MdkrNativePartyController &controller) {
+                return controller.id == id;
+            });
+        if (present) ++iterator;
+        else iterator = g_seatChoices.erase(iterator);
+    }
+}
+
 void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
+    pruneSeatChoices(host.view());
     announceState(host.view());
     if (host.view().phase == MdkrNativePartyPhase::Closed) {
         drawOpenButton(host, serviceOrigin);

@@ -99,7 +99,7 @@ bool mdkr_party_pad_encode(
     size_t *out_length) {
     const size_t length = packet != NULL
         ? mdkr_party_pad_encoded_size(packet->edge_count) : 0u;
-    size_t offset = 21u;
+    size_t offset;
     uint8_t index;
     if (out_length != NULL) *out_length = 0u;
     if (output == NULL || length == 0u || capacity < length ||

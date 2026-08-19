@@ -145,4 +145,27 @@ MdkrPartyResumeDecision mdkr_party_resume_decide(
     unsigned consecutiveResumeRejections,
     uint64_t nowMs, uint64_t firstRejectedMs);
 
+/*
+ * Proactive host-socket recycling (M7). The Party Worker closes any one
+ * signaling socket for good after 512 lifetime messages
+ * (services/party/src/party-room.ts, SIGNAL_LIFETIME_MESSAGES) -- a quota,
+ * not a fault, so riding it to the cap turns a planned limit into a
+ * surprise disconnect mid-command. The transport counts the messages it
+ * sends on the current host socket and, when this returns true, recycles
+ * the socket through the SAME resume ladder a network drop uses: close it,
+ * let socketClosed() schedule the reconnect, let the fresh upgrade resume
+ * the room.
+ *
+ * Values are contractual (update this comment and the test together with
+ * any change): true at exactly 480 sends -- 32 messages of headroom for
+ * anything in flight -- and false everywhere else. The edge shape is the
+ * once-per-socket guarantee: a send that races the close lands at 481+ and
+ * can never fire a second cycle; the counter resets to zero with the
+ * replacement socket, which is what re-arms it. A proactive cycle is a
+ * clean close, never a refusal, so it must not touch the I4 refusal streak
+ * (the transport keeps resumeRejected false for it) -- pinned directly
+ * against mdkr_party_resume_decide by the test.
+ */
+bool mdkr_party_socket_cycle_due(unsigned messagesSentOnSocket);
+
 #endif /* MDKR_PARTY_RETRY_POLICY_H */

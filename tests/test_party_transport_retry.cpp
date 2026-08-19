@@ -255,6 +255,54 @@ void networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak() {
     }
 }
 
+/* ---- mdkr_party_socket_cycle_due: proactive host-socket recycling (M7).
+ * The Worker closes any one signaling socket for good at 512 lifetime
+ * messages (services/party/src/party-room.ts SIGNAL_LIFETIME_MESSAGES) -- a
+ * quota, not a fault. The transport counts its own outbound sends per
+ * socket and recycles at 480, leaving 32 messages of headroom, through the
+ * exact resume ladder a network drop uses. ---- */
+
+/* (10) The trigger is edge-shaped: false all the way up to the threshold,
+ * true at exactly 480, and false for every count above it -- so however a
+ * late send races the close, only ONE cycle can ever fire per socket. The
+ * replacement socket resets the count to zero, which is what re-arms it. */
+void socketCycleFiresExactlyOnceAtTheHeadroomThreshold() {
+    for (unsigned socketLife = 0u; socketLife < 2u; socketLife++) {
+        for (unsigned sent = 0u; sent < 480u; sent++) {
+            assert(!mdkr_party_socket_cycle_due(sent));
+        }
+        assert(mdkr_party_socket_cycle_due(480u));
+        /* Sends that raced the close on this same socket: never a second
+         * cycle, all the way past the Worker's own 512 hard cap. */
+        for (unsigned sent = 481u; sent <= 600u; sent++) {
+            assert(!mdkr_party_socket_cycle_due(sent));
+        }
+    }
+}
+
+/* (11) A proactive cycle is a CLEAN close, not a refusal: the transport
+ * feeds socketClosed() resumeRejected=false for it, so it rides the prompt
+ * first-attempt rung of the ladder and must never advance -- let alone
+ * complete -- the I4 refusal streak, even when one is already standing at
+ * terminal depth and age. */
+void proactiveCycleRidesTheLadderWithoutTouchingTheRefusalStreak() {
+    const MdkrPartyResumeDecision fresh = mdkr_party_resume_decide(
+        /*reconnectAttempt=*/1u, /*resumeRejected=*/false,
+        /*consecutiveResumeRejections=*/0u,
+        /*nowMs=*/1000u, /*firstRejectedMs=*/0u);
+    assert(fresh.retry);
+    assert(!fresh.terminal);
+    assert(fresh.delayMs == 300u);
+    /* Atop a stale streak that satisfies both terminal gates: still just a
+     * retry, because a clean close proves nothing about the room. */
+    const MdkrPartyResumeDecision amidStreak = mdkr_party_resume_decide(
+        /*reconnectAttempt=*/4u, /*resumeRejected=*/false,
+        /*consecutiveResumeRejections=*/3u,
+        /*nowMs=*/1000u + kTerminalFloorMs, /*firstRejectedMs=*/1000u);
+    assert(amidStreak.retry);
+    assert(!amidStreak.terminal);
+}
+
 }  // namespace
 
 int main() {
@@ -271,5 +319,7 @@ int main() {
     rapidRefusalStreakInsideTheFloorKeepsRetrying();
     refusalsSpanningTheFloorAreTerminal();
     networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak();
+    socketCycleFiresExactlyOnceAtTheHeadroomThreshold();
+    proactiveCycleRidesTheLadderWithoutTouchingTheRefusalStreak();
     return 0;
 }

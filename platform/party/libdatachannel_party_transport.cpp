@@ -563,8 +563,30 @@ public:
         }
         const std::string encoded = message.dump();
         if (encoded.size() > kMaxControlBytes) return false;
-        try { return socket->send(encoded); }
+        bool sent = false;
+        try { sent = socket->send(encoded); }
         catch (...) { return false; }
+        if (!sent) return false;
+        /* M7 socket-cap headroom: every message the Worker receives on this
+         * socket counts toward its 512-lifetime-message hard close
+         * (party-room.ts SIGNAL_LIFETIME_MESSAGES), and this is the one
+         * choke point where the host sends any. Count per socket and, 32
+         * messages short of the cap, ask tick() to recycle the socket
+         * through the same resume ladder a network drop uses. Only latched
+         * for a resumable socket (credential_ set): the short-lived create
+         * socket has no resume path to cycle through. The latch is consumed
+         * on the launcher thread, not here -- command() may be running
+         * inside a libdatachannel callback, where closing the very socket
+         * that is calling back invites a deadlock. */
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (socket == socket_ && !shuttingDown_) {
+            socketSentMessages_++;
+            if (!credential_.empty() &&
+                mdkr_party_socket_cycle_due(socketSentMessages_)) {
+                socketCyclePending_ = true;
+            }
+        }
+        return true;
     }
 
     /* M4: bounded flush of the just-queued close command -- see
@@ -675,6 +697,11 @@ private:
             generation = ++generation_;
             socket_ = socket;
             creating_ = create;
+            /* M7: the Worker's 512-message lifetime cap is per socket, so
+             * the replacement starts a fresh count -- which is also what
+             * re-arms the edge-shaped cycle trigger. */
+            socketSentMessages_ = 0u;
+            socketCyclePending_ = false;
         }
         const std::weak_ptr<TransportState> weak = shared_from_this();
         socket->onOpen([weak, generation]() {
@@ -835,6 +862,7 @@ private:
 
     void tick() {
         bool reconnect = false;
+        std::shared_ptr<rtc::WebSocket> cycleSocket;
         std::vector<std::shared_ptr<Peer>> ping;
         std::vector<std::shared_ptr<Peer>> expired;
         std::vector<std::shared_ptr<Peer>> timedOut;
@@ -852,6 +880,16 @@ private:
                 !credential_.empty() &&
                 reconnectAt_ != Clock::time_point{} && now >= reconnectAt_;
             if (reconnect) reconnectAt_ = Clock::time_point{};
+            /* M7: consume the proactive-recycle latch command() set at the
+             * headroom threshold. Consumed exactly once (the flag drops
+             * here whatever happens next), on this thread, outside any
+             * libdatachannel callback. */
+            if (socketCyclePending_) {
+                socketCyclePending_ = false;
+                if (!shuttingDown_ && !roomGone_ && socket_) {
+                    cycleSocket = socket_;
+                }
+            }
             for (const auto &entry : peers_) {
                 const std::shared_ptr<Peer> &peer = entry.second;
                 if (peer->failed) continue;
@@ -892,6 +930,16 @@ private:
                     ping.push_back(peer);
                 }
             }
+        }
+        /* M7: the proactive recycle IS the network-drop path from here on:
+         * this close fires the socket's own onClosed, and socketClosed()'s
+         * existing ladder schedules the resume that opens the replacement.
+         * A clean close is not a refusal -- socketError never ran, so the
+         * I4 refusal streak (resumeRejected_/resumeRejections_) is exactly
+         * as untouched as it is for any live-socket drop; the policy side
+         * of that is pinned in test_party_transport_retry.cpp. */
+        if (cycleSocket) {
+            try { cycleSocket->close(); } catch (...) {}
         }
         if (reconnect) (void)connect(false);
         for (const auto &peer : timedOut) {
@@ -1103,6 +1151,12 @@ private:
                     ++iterator;
                 }
             }
+            /* M3: retire this roster's hellos along with its peers --
+             * signaled_ otherwise grows by one id per phone for the room's
+             * whole life (it was cleared only at shutdown). An id outside
+             * the roster has nothing left to vouch for: a phone that
+             * returns says controller_hello again. */
+            (void)mdkr_party_prune_signaled_ids(signaled_, controllers_);
         }
         for (const auto &peer : retired) {
             if (peer->connection) peer->connection->close();
@@ -1565,6 +1619,14 @@ private:
     unsigned resumeRejections_ = 0u;
     uint64_t firstResumeRejectedMs_ = 0u;
     bool roomGone_ = false;
+    /* M7 socket-cap headroom: outbound messages sent on the CURRENT host
+     * socket (the Worker hard-closes a socket at 512 lifetime messages,
+     * party-room.ts SIGNAL_LIFETIME_MESSAGES), and the recycle latch
+     * command() sets at mdkr_party_socket_cycle_due's 480 threshold.
+     * Consumed by tick() on the launcher thread; both reset with each new
+     * socket in connect(). */
+    unsigned socketSentMessages_ = 0u;
+    bool socketCyclePending_ = false;
     bool creating_ = false;
     bool shuttingDown_ = false;
 };
@@ -1688,4 +1750,19 @@ bool mdkr_party_controller_ready_event_for_test(
         return controllerReadyEventFromControl(
             value, controllerId, connectionSequence, event);
     } catch (...) { return false; }
+}
+
+size_t mdkr_party_prune_signaled_ids(
+    std::set<std::string> &signaled,
+    const std::map<std::string, MdkrNativePartyController> &roster) {
+    size_t pruned = 0u;
+    for (auto iterator = signaled.begin(); iterator != signaled.end();) {
+        if (roster.count(*iterator) == 0u) {
+            iterator = signaled.erase(iterator);
+            pruned++;
+        } else {
+            ++iterator;
+        }
+    }
+    return pruned;
 }

@@ -1048,6 +1048,114 @@ void phraseArrivesAtConnectionAndSurvivesRoomUpdates() {
     assert(host.view().controllers[0].pairingPhrase.empty());
 }
 
+size_t rumbleSendCount(const FakeTransport &transport) {
+    size_t count = 0u;
+    for (const std::string &call : transport.calls) {
+        if (call.rfind("rumble:", 0u) == 0u) count++;
+    }
+    return count;
+}
+
+/* One connected, haptics-capable phone on seat 2 (ingress port 1), ready
+ * for the M5 sustained-rumble scenarios below. */
+void connectHapticPhone(FakeTransport &transport, MdkrNativePartyHost &host) {
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 300000u, {approved("phone-a", 2u, 4u, 9u)}));
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1000u);
+    assert(host.view().controllers[0].direct);
+    assert(host.view().controllers[0].haptics);
+}
+
+/* M5 sustained rumble. The engine's SDL path sustains an effect by letting
+ * the motor run on a 60 s safety duration (platform_sdl_min.c), but the
+ * phone path's rumble command is a deliberate 250 ms one-shot -- so a
+ * sustained effect must be KEPT alive by the host re-sending the command
+ * every 200 ms for as long as the engine mailbox still holds a strength
+ * above zero. The one-shot stays: a lost refresh fails silent-off, never
+ * stuck-on. */
+void sustainedRumbleRefreshesWhileTheMailboxHoldsStrength() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    connectHapticPhone(transport, host);
+
+    /* The engine starts a sustained effect: sent immediately, once. */
+    assert(mdkr_native_remote_pad_request_rumble(1u, 1234u));
+    host.service(2000u);
+    assert(rumbleSendCount(transport) == 1u);
+    assert(transport.calls.back() == "rumble:phone-a:1234");
+
+    /* Inside the 200 ms refresh interval: silence -- the phone's own
+     * 250 ms one-shot is still running. */
+    host.service(2100u);
+    assert(rumbleSendCount(transport) == 1u);
+
+    /* Held to 200 ms: the host re-sends unprompted, same strength -- the
+     * engine posted nothing new, the mailbox simply still says "on". */
+    host.service(2200u);
+    assert(rumbleSendCount(transport) == 2u);
+    assert(transport.calls.back() == "rumble:phone-a:1234");
+
+    /* And keeps that cadence while the effect holds. */
+    host.service(2350u);
+    assert(rumbleSendCount(transport) == 2u);
+    host.service(2450u);
+    assert(rumbleSendCount(transport) == 3u);
+
+    /* The engine stops the effect: the stop goes out immediately (never
+     * rate-limited -- a stop must not wait out a refresh window), and then
+     * nothing, ever -- strength zero is not a sustained effect. */
+    assert(mdkr_native_remote_pad_request_rumble(1u, 0u));
+    host.service(2500u);
+    assert(rumbleSendCount(transport) == 4u);
+    assert(transport.calls.back() == "rumble:phone-a:0");
+    host.service(2750u);
+    host.service(3000u);
+    host.service(60000u);
+    assert(rumbleSendCount(transport) == 4u);
+}
+
+/* M5 guard rail: a seat that stops being a live direct channel -- the
+ * phone dropped, or its page turned out to speak the wrong protocol
+ * version -- gets NO refreshes, however long the engine's last "on" would
+ * otherwise have been sustained. The transport's 250 ms one-shot then ends
+ * the motor on its own: fail silent-off. */
+void mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes() {
+    const MdkrPartyTransportEventType interruptions[] = {
+        MdkrPartyTransportEventType::ControllerProtocolMismatch,
+        MdkrPartyTransportEventType::ControllerDisconnected,
+    };
+    for (const MdkrPartyTransportEventType type : interruptions) {
+        mdkr_native_remote_pad_reset_all();
+        FakeTransport transport;
+        MdkrNativePartyHost host(transport);
+        connectHapticPhone(transport, host);
+
+        assert(mdkr_native_remote_pad_request_rumble(1u, 900u));
+        host.service(2000u);
+        assert(rumbleSendCount(transport) == 1u);
+
+        MdkrPartyTransportEvent interruption;
+        interruption.type = type;
+        interruption.controllerId = "phone-a";
+        transport.events.push_back(interruption);
+        host.service(2010u);
+        assert(!host.view().controllers[0].direct);
+
+        /* Past one refresh window, past many: not one more send. */
+        host.service(2300u);
+        host.service(2600u);
+        host.service(60000u);
+        assert(rumbleSendCount(transport) == 1u);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1070,6 +1178,8 @@ int main() {
     destructionDuringOpeningAttemptsGoodbyeButNeverWaits();
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     phraseArrivesAtConnectionAndSurvivesRoomUpdates();
+    sustainedRumbleRefreshesWhileTheMailboxHoldsStrength();
+    mismatchedOrDisconnectedSeatsGetNoRumbleRefreshes();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
