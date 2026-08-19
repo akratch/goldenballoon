@@ -757,14 +757,17 @@ def postrace_dwell_blend(output: str) -> tuple[int, int, int] | None:
     The window opens at the levelId=5 race load and runs to the end of the
     trace: this arm's loss route spends its whole remaining budget in the
     race level's post-race sequence (the return to the lobby is the race-loop
-    check's business, not this gate's). A hop is a consecutive same-slot
-    capture pair that moved further than CUT_MOVE_UNITS — during the race
-    itself that never happens (legitimate camera motion tops out at 63.6
-    units/tick; see CUT_MOVE_UNITS' calibration), so the hops in this window
-    are exactly the finish camera changing spectate point. Dwell candidates
-    are the consecutive, same-camera, same-region, sub-threshold rows
-    between the first and last hop, i.e. exactly the rows no cut class
-    claims.
+    check's business, not this gate's). A hop is a consecutive same-slot,
+    same-camera, same-region capture pair that moved further than
+    CUT_MOVE_UNITS — during the race itself that never happens (legitimate
+    camera motion tops out at 63.6 units/tick; see CUT_MOVE_UNITS'
+    calibration), so every hop counted here is the finish camera changing
+    spectate point. The converse does not hold: a spectate hop that also
+    crosses a camera bank or draw region is skipped by the same-cam/region
+    requirement, which can only SHRINK the first-to-last-hop window —
+    conservative in the safe direction. Dwell candidates are the
+    consecutive, same-camera, same-region, sub-threshold rows between the
+    first and last counted hop, i.e. exactly the rows no cut class claims.
     """
     race_frame = None
     for match in ADVENTURE_LOAD_FRAME_RE.finditer(output):
@@ -898,8 +901,8 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
     dwell = postrace_dwell_blend(output)
     if dwell is None:
         failures.append(
-            f"{name}: could not bound the post-race window (race load or "
-            "cutscene-100 lobby return missing from the trace)")
+            f"{name}: could not bound the post-race window (no levelId=5 "
+            "race load in the trace)")
         dwell_note = "post-race window unbounded"
     else:
         hops, candidates, blended = dwell
