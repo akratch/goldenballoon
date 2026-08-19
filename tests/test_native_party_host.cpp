@@ -19,6 +19,18 @@ class FakeTransport final : public MdkrPartyTransport {
 public:
     bool availableValue = true;
     bool commandResult = true;
+    /* M4 fix round 1 seam: models the real transport's no-open-socket gate
+     * (libdatachannel_party_transport.cpp command(): shuttingDown_ ||
+     * !socket_ || !socket_->isOpen() refuses the send synchronously, and
+     * closeRoom() then returns before flushCloseCommand() ever runs).
+     * Consulted by closeRoom() only -- the one command whose refusal shape
+     * the destructor boundary tests must see. Defaults to open so every
+     * pre-existing test keeps its exact behavior. closeFlushWaits counts
+     * entries into the bounded goodbye flush, mirroring the real
+     * closeRoom()'s flush-only-after-a-successful-send order; the no-socket
+     * tests pin it at zero (quit never waits on a goodbye it cannot send). */
+    bool socketOpen = true;
+    size_t closeFlushWaits = 0u;
     std::string reason;
     std::deque<MdkrPartyTransportEvent> events;
     std::vector<std::string> calls;
@@ -46,7 +58,13 @@ public:
         calls.push_back("revoke"); return commandResult;
     }
     bool closeRoom() override {
-        calls.push_back("close"); return commandResult;
+        if (!socketOpen) {
+            calls.push_back("close-refused:no-socket");
+            return false;
+        }
+        calls.push_back("close");
+        if (commandResult) closeFlushWaits++;
+        return commandResult;
     }
     bool sendRumble(const std::string &id, uint16_t strength) override {
         calls.push_back("rumble:" + id + ":" + std::to_string(strength));
@@ -830,6 +848,64 @@ void destructionWithoutLiveRoomHangsUpWithoutAGoodbye() {
     }
 }
 
+/* M4 fix round 1: the review's uncovered boundary -- destruction while the
+ * room exists but NO socket is open. Opening (open() called, no room_state
+ * yet) and Recovering (socket down mid-reconnect) are live phases, so the
+ * destructor still attempts the goodbye; but the real transport has no
+ * open socket to carry it, refuses the send synchronously at command()'s
+ * gate, and skips the bounded flush entirely
+ * (libdatachannel_party_transport.cpp closeRoom() returns before
+ * flushCloseCommand()) -- quit pays zero wait for a goodbye it cannot
+ * send. The fake models exactly that gate via socketOpen, and its
+ * closeFlushWaits counter is the fake clock here: it must stay at zero. */
+void destructionDuringOpeningAttemptsGoodbyeButNeverWaits() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    {
+        MdkrNativePartyHost host(transport);
+        assert(host.open("https://party.example"));
+        assert(host.view().phase == MdkrNativePartyPhase::Opening);
+        /* The signaling socket has not completed its handshake yet. */
+        transport.socketOpen = false;
+    }
+    /* The attempt was made, refused for want of a socket, no flush wait
+     * was consumed -- and the hangup still happened, in order. */
+    assert(transport.calls.size() >= 2u);
+    assert(transport.calls[transport.calls.size() - 2u] ==
+           "close-refused:no-socket");
+    assert(transport.calls.back() == "shutdown");
+    assert(transport.closeFlushWaits == 0u);
+}
+
+void destructionDuringRecoveringAttemptsGoodbyeButNeverWaits() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    {
+        MdkrNativePartyHost host(transport);
+        assert(host.open("https://party.example"));
+        transport.events.push_back(roomEvent(
+            1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+        host.service(1000u);
+        assert(host.view().phase == MdkrNativePartyPhase::Open);
+        MdkrPartyTransportEvent recovering;
+        recovering.type = MdkrPartyTransportEventType::Recovering;
+        transport.events.push_back(recovering);
+        host.service(2000u);
+        assert(host.view().phase == MdkrNativePartyPhase::Recovering);
+        /* Mid-reconnect: the old socket is gone, the new one is not up. */
+        transport.socketOpen = false;
+    }
+    assert(transport.calls.size() >= 2u);
+    assert(transport.calls[transport.calls.size() - 2u] ==
+           "close-refused:no-socket");
+    assert(transport.calls.back() == "shutdown");
+    assert(transport.closeFlushWaits == 0u);
+    /* The seat still went back to local play on the way out. */
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+}
+
 }  // namespace
 
 int main() {
@@ -848,6 +924,8 @@ int main() {
     roomGoneForGoodEndsTheRoomInsteadOfRetryingForever();
     destructionWithLiveRoomSaysGoodbyeBeforeHangingUp();
     destructionWithoutLiveRoomHangsUpWithoutAGoodbye();
+    destructionDuringOpeningAttemptsGoodbyeButNeverWaits();
+    destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
