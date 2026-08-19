@@ -55,6 +55,9 @@ CAPTURE_RE = re.compile(
     r"^\[overlay-input\] game input (captured by the overlay|released to the "
     r"game) at tick (\d+)$", re.MULTILINE
 )
+CURSOR_RE = re.compile(
+    r"^\[app-cursor\] (hidden|shown) at tick (\d+)$", re.MULTILINE
+)
 
 # The handoff arm below. Opening travels a real SDL key event, exactly as the
 # pad's menu button does; closing runs from the render callback, exactly as the
@@ -288,6 +291,37 @@ def main() -> int:
         )
     if any(int(row[2]) <= 0 for row in boundaries):
         return fail(f"pause did not replace a live nonzero rate: {boundaries}", output)
+
+    # Issue #45: the OS cursor is hidden throughout ordinary racing and shown
+    # only while something mouse-interactive -- here, the pause overlay -- is
+    # on screen to hit. The marker is edge-triggered, so a clean run produces
+    # exactly this hidden/shown/hidden sequence: hidden from startup through
+    # ordinary racing, shown across the scripted open, hidden again once the
+    # scripted close returns to ordinary racing.
+    cursor_events = [(state, int(tick)) for state, tick in CURSOR_RE.findall(output)]
+    if [state for state, _tick in cursor_events] != ["hidden", "shown", "hidden"]:
+        return fail(
+            f"expected a hidden/shown/hidden cursor sequence, got {cursor_events}",
+            output,
+        )
+    cursor_hidden_before, cursor_shown, cursor_hidden_after = (
+        tick for _state, tick in cursor_events
+    )
+    if cursor_hidden_before >= OPEN_FRAME:
+        return fail(
+            f"cursor was not already hidden before the overlay opened "
+            f"(hidden at tick {cursor_hidden_before})", output
+        )
+    if cursor_shown < OPEN_FRAME:
+        return fail(
+            f"cursor was shown before the overlay opened (tick {cursor_shown})",
+            output,
+        )
+    if cursor_hidden_after <= CLOSE_FRAME:
+        return fail(
+            f"cursor did not stay shown through the overlay's close at tick "
+            f"{CLOSE_FRAME} (hidden again at tick {cursor_hidden_after})", output
+        )
 
     hashes = {int(tick): digest for tick, _objects, digest in HASH_RE.findall(output)}
     held_hashes = [hashes.get(tick) for tick in range(pause_tick, resume_tick)]

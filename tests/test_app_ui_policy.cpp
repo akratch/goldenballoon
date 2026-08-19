@@ -344,6 +344,16 @@ int main() {
     expect(dpi.atlasGeneration == 3,
            "1x to 2x to 1x produces two, non-compounding rebuilds");
 
+    // --- Cursor visibility (issue #45) --------------------------------------
+    expect(!AppUi_cursorVisible(false, false),
+           "cursor stays hidden during ordinary racing");
+    expect(AppUi_cursorVisible(true, false),
+           "cursor is shown while the pause overlay is open");
+    expect(AppUi_cursorVisible(false, true),
+           "cursor is shown while a dev-tool window is open");
+    expect(AppUi_cursorVisible(true, true),
+           "cursor is shown while both the overlay and a dev tool are open");
+
     unsigned zeroDrawableAttempts = 0;
     unsigned occludedAttempts = 0;
     unsigned elapsed = 0;

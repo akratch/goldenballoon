@@ -61,6 +61,10 @@ bool AppUi_deferredCommit(bool previewChanged, bool deactivated, bool *dirty) {
     return deactivated && *dirty;
 }
 
+bool AppUi_cursorVisible(bool overlayOpen, bool anyDevToolOpen) {
+    return overlayOpen || anyDevToolOpen;
+}
+
 AppUiIdleDecision AppUi_idleDecision(bool drawableAvailable, bool occluded) {
     if (!drawableAvailable) return {false, 25};
     if (occluded) return {true, 25};

@@ -718,6 +718,41 @@ void drawOverlay() {
     ImGui::End();
 }
 
+bool anyDevToolOpen() {
+    for (int id = 0; id < MDKR_TOOL_COUNT; ++id) {
+        if (DevTools_isOpen(static_cast<MdkrDevToolId>(id))) return true;
+    }
+    return false;
+}
+
+// Issue #45: the OS cursor is entirely delegated to ImGui's SDL2 backend
+// (imgui_impl_sdl2.cpp's UpdateMouseCursor(), called from NewFrame()), which
+// only runs on a frame onRender() actually builds -- something ordinary
+// racing skips outright, so nothing ever calls SDL_ShowCursor and the pointer
+// sits in SDL's default-visible state for the whole race. onRender() is the
+// one choke point both render backends funnel through, so it is the one place
+// that needs to own SDL_ShowCursor, overriding whatever ImGui decided this
+// frame: NewFrame() unconditionally re-shows the cursor whenever it wants any
+// shape (the default Arrow included), so this must run after beginImGuiFrame()
+// in the frame-built branch or a pre-emptive hide would be immediately undone.
+//
+// The SDL call itself runs every frame a decision is possible; the stderr
+// marker is edge-triggered so a race's worth of steady frames does not spam
+// the log -- the same shape as the [overlay-input] capture/release marker in
+// platform_sdl_min.c's overlay_capture_sync().
+void syncCursorVisibility() {
+    const bool wanted = AppUi_cursorVisible(g_overlay.open, anyDevToolOpen());
+    static bool visible = true;  // SDL's real default before this ever runs
+    static bool announced = false;
+    SDL_ShowCursor(wanted ? SDL_ENABLE : SDL_DISABLE);
+    if (!announced || wanted != visible) {
+        std::fprintf(stderr, "[app-cursor] %s at tick %d\n",
+                     wanted ? "shown" : "hidden", g_simTickCounter);
+        visible = wanted;
+        announced = true;
+    }
+}
+
 /* C linkage, same reason as the input hooks above. */
 extern "C" {
 
@@ -749,6 +784,9 @@ static int onRender(void) {
         io.ClearEventsQueue();
         io.ClearInputKeys();
         io.ClearInputMouse();
+        // Nothing ran ImGui's cursor logic this frame, so nothing else will
+        // hide the OS cursor either.
+        syncCursorVisibility();
         return 1;
     }
 
@@ -759,6 +797,12 @@ static int onRender(void) {
     // player is operating. Self-gating on Tools.Enabled: this call is a no-op
     // and costs one comparison in every normal session.
     DevTools_draw();
+    // After beginImGuiFrame() and DevTools_draw(): ImGui's own cursor logic
+    // already ran this frame (possibly re-showing the cursor for the FPS
+    // readout or a Tools.Enabled session with nothing open), and a hotkey
+    // inside DevTools_draw() may have just opened or closed a tool window.
+    // This call is the one that gets the final say.
+    syncCursorVisibility();
     return endImGuiFrame() ? 1 : 0;
 }
 
