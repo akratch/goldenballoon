@@ -35,6 +35,7 @@ extern int g_frameCounter;
 #include "object_functions.h"
 #include "object_models.h"
 #include "objects.h"
+#include "presentation_snapshot.h" /* authored-camera borrow scope (issue #44b) */
 #include "PR/os_cont.h"
 #include "PR/os_convert.h"
 #include "PR/os_system.h"
@@ -16216,7 +16217,21 @@ void menu_camera_centre(void) {
     cam->trans.z_position = -32.0f;
 
     update_envmap_position(0, 0, -1);
+#ifdef NATIVE_PORT
+    /* Issue #44 (b): viewport_main below runs camSetProjMtx under the
+     * borrowed pose written above. When a live level scene owns viewport 0
+     * this tick — the cleared-track preview flyby, Tracks-mode track select
+     * — that second latch used to CONFLICT the tick's authored-camera set:
+     * zero cameras published, the whole flyby stepping at the authored
+     * rate. Declare the borrow so this latch never files and the scene's
+     * record stays the sole author; the pose restore below already returns
+     * the camera itself. One bracket here covers every caller. */
+    presentation_snapshot_authored_camera_borrow_begin();
+#endif
     viewport_main(&sMenuCurrDisplayList, &sMenuCurrHudMat);
+#ifdef NATIVE_PORT
+    presentation_snapshot_authored_camera_borrow_end();
+#endif
 
     cam->trans.rotation.y_rotation = angleY;
     cam->trans.rotation.x_rotation = angleX;

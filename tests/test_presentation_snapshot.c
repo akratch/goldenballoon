@@ -1155,6 +1155,110 @@ static void test_camera_finish_exclusion_never_pairs(void) {
 }
 
 /*
+ * Issue #44 defect (b): menu_camera_centre borrows the ACTIVE camera for one
+ * overlay pass every menu tick, and its viewport_main call runs camSetProjMtx
+ * — a SECOND authored record for the same viewport in the same tick, with
+ * different bytes. The conflict rule rightly fails the whole set closed,
+ * which silently unsmoothed every cleared-track preview flyby (zero cameras
+ * published, one conflict per tick).
+ *
+ * The borrow scope is the fix's seam: while a caller declares its latch is a
+ * borrowed lens, presentation_snapshot_authored_camera_record refuses (and
+ * counts) instead of filing, so the scene's own record stays the sole
+ * author. The conflict rule itself is deliberately NOT weakened: two
+ * different recipes outside any borrow still fail the set closed.
+ */
+static void test_authored_camera_borrow_scope(void) {
+    PresentationCameraEntry cameras[4];
+    PresentationCameraEntry scene = make_camera(4, 10.0f, 20.0f, 30.0f);
+    PresentationCameraEntry borrowed = make_camera(4, -32.0f, -32.0f, -32.0f);
+    PresentationSnapshotStats stats;
+
+    scene.viewport_index = 0;
+    borrowed.viewport_index = 0;
+
+    begin();
+    expect(!presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: inactive until someone opens it");
+
+    /* The preview tick: the scene latches first (render_scene), then the
+     * menu overlay latches its borrowed lens. The borrowed latch must not
+     * file, must not conflict, and must leave the scene's exact bytes as
+     * the sole authored recipe. */
+    presentation_snapshot_authored_cameras_begin(60u);
+    expect(presentation_snapshot_authored_camera_record(&scene),
+           "borrow scope: the scene's own record files as usual");
+    presentation_snapshot_authored_camera_borrow_begin();
+    expect(presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: active inside the bracket");
+    expect(!presentation_snapshot_authored_camera_record(&borrowed),
+           "borrow scope: a borrowed-lens latch refuses to file");
+    presentation_snapshot_authored_camera_borrow_end();
+    expect(!presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: closed again after the bracket");
+    expect(presentation_snapshot_authored_cameras_copy(
+               60u, cameras, 4u) == 1u &&
+               cameras[0].camera_id == 4 &&
+               bits_equal(cameras[0].position[0], 10.0f),
+           "borrow scope: the scene's exact record survives as the sole "
+           "author");
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_conflicts == 0 && stats.camera_borrow_skips == 1,
+           "borrow scope: the refusal is counted as a borrow skip, not a "
+           "conflict");
+
+    /* The pure-menu tick (no scene rendered): the borrowed latch alone must
+     * leave ZERO records — today's fail-closed authored rendering, kept. */
+    presentation_snapshot_authored_cameras_begin(61u);
+    presentation_snapshot_authored_camera_borrow_begin();
+    expect(!presentation_snapshot_authored_camera_record(&borrowed),
+           "borrow scope: a pure-menu borrowed latch still refuses");
+    presentation_snapshot_authored_camera_borrow_end();
+    expect(presentation_snapshot_authored_cameras_copy(
+               61u, cameras, 4u) == 0u,
+           "borrow scope: a tick with only a borrowed latch keeps zero "
+           "records (fail closed, unchanged)");
+
+    /* Nesting: the scope is a depth count, not a flag; a stray end is inert
+     * and can never wrap negative and reopen a closed scope. */
+    presentation_snapshot_authored_camera_borrow_begin();
+    presentation_snapshot_authored_camera_borrow_begin();
+    presentation_snapshot_authored_camera_borrow_end();
+    expect(presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: one end does not close two begins");
+    presentation_snapshot_authored_camera_borrow_end();
+    expect(!presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: balanced ends close the scope");
+    presentation_snapshot_authored_camera_borrow_end();
+    expect(!presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: a stray end stays closed");
+    presentation_snapshot_authored_cameras_begin(62u);
+    expect(presentation_snapshot_authored_camera_record(&scene) &&
+               presentation_snapshot_authored_cameras_copy(
+                   62u, cameras, 4u) == 1u,
+           "borrow scope: recording works normally after a stray end");
+
+    /* The conflict rule is NOT weakened: outside any borrow, a genuinely
+     * different second recipe still fails the set closed and counts. */
+    presentation_snapshot_authored_cameras_begin(63u);
+    expect(presentation_snapshot_authored_camera_record(&scene) &&
+               !presentation_snapshot_authored_camera_record(&borrowed) &&
+               presentation_snapshot_authored_cameras_copy(
+                   63u, cameras, 4u) == 0u,
+           "borrow scope: outside the bracket the conflict rule is intact");
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_conflicts == 1 && stats.camera_borrow_skips == 2,
+           "borrow scope: conflict and borrow censuses stay distinct");
+
+    /* A scope left open by a crashed caller does not survive the module's
+     * own teardown. */
+    presentation_snapshot_authored_camera_borrow_begin();
+    begin();
+    expect(!presentation_snapshot_authored_camera_borrow_active(),
+           "borrow scope: shutdown closes an abandoned scope");
+}
+
+/*
  * A lifecycle spawn the identity table cannot register fails the NEXT commit
  * whole instead of returning silently.
  *
@@ -1206,6 +1310,7 @@ static void test_authored_camera_latch(void) {
     PresentationCameraEntry camera0 = make_camera(4, 10.0f, 20.0f, 30.0f);
     PresentationCameraEntry camera1 = make_camera(5, 40.0f, 50.0f, 60.0f);
     PresentationCameraEntry conflicting;
+    PresentationSnapshotStats stats;
     size_t count;
 
     memset(cameras, 0, sizeof(cameras));
@@ -1244,6 +1349,17 @@ static void test_authored_camera_latch(void) {
                    43u, cameras, 4u) == 0u,
            "camera latch: sparse viewport ownership fails closed");
 
+    /* The idempotent re-record above is NOT a conflict: nothing may have
+     * counted one yet. Only a genuinely different recipe for an already-
+     * owned viewport is. The census is the only external witness that the
+     * fail-closed branch ran at all — the copy() zero it produces is
+     * indistinguishable from "no scene rendered this tick" (issue #44's
+     * track preview was exactly this, silent, one conflict per tick). */
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_conflicts == 0,
+           "camera latch: neither idempotent re-records nor sparse "
+           "ownership count as conflicts");
+
     presentation_snapshot_authored_cameras_begin(44u);
     camera0.camera_id = 0;
     conflicting = camera0;
@@ -1253,6 +1369,9 @@ static void test_authored_camera_latch(void) {
                presentation_snapshot_authored_cameras_copy(
                    44u, cameras, 4u) == 0u,
            "camera latch: conflicting recipes fail closed");
+    presentation_snapshot_get_stats(&stats);
+    expect(stats.camera_conflicts == 1,
+           "camera latch: the refused second recipe is counted, not silent");
 }
 
 static void test_authored_tick_pair(void) {
@@ -1583,6 +1702,7 @@ int main(void) {
     test_camera_cut_clauses_quiet_on_ordinary_pan();
     test_camera_cut_note_viewport_space();
     test_camera_finish_exclusion_never_pairs();
+    test_authored_camera_borrow_scope();
     test_identity_insert_failure_fails_closed();
     test_authored_camera_latch();
     test_authored_tick_pair();

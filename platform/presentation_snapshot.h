@@ -266,6 +266,25 @@ typedef struct PresentationSnapshotStats {
      * camera_cut_notes/consumed/unconsumed already document for the one-shot
      * note path above. */
     uint64_t camera_excluded_captures;
+    /*
+     * Authored-camera latch refusals: a record arrived for a viewport that
+     * already latched a DIFFERENT recipe this tick, so the whole tick's
+     * camera set fails closed (presentation_snapshot_authored_camera_record)
+     * and capture_cameras publishes ZERO cameras. A sustained nonzero rate
+     * is therefore a scene rendering with no camera interpolation at all —
+     * exactly issue #44's cleared-track preview, where menu_camera_centre's
+     * borrowed lens re-latched viewport 0 every tick against the flyby
+     * scene's own record. That failure was invisible to every existing
+     * counter (cam0..7 simply stop advancing, which also reads as "no scene
+     * this tick"); this one names it.
+     */
+    uint64_t camera_conflicts;
+    /* Records refused because the caller declared a borrow scope
+     * (presentation_snapshot_authored_camera_borrow_begin): deliberate,
+     * healthy refusals, counted apart so camera_conflicts stays a pure
+     * defect signal — and so a route gate can prove the scope actually
+     * armed on the ticks it was meant to cover. */
+    uint64_t camera_borrow_skips;
     /* Lifecycle spawn notes that could not register an identity. Each one
      * fails the next commit whole (see note_spawn); nonzero means the identity
      * table ran out of slots, not that anything was mis-blended. */
@@ -513,6 +532,29 @@ bool presentation_snapshot_authored_camera_record(
     const PresentationCameraEntry *sample);
 size_t presentation_snapshot_authored_cameras_copy(
     uint64_t authored_tick, PresentationCameraEntry *out, size_t capacity);
+
+/*
+ * Issue #44 (b): declare a PRESENTATION BORROW — the caller is about to run
+ * the viewport/projection path under a temporarily rewritten ("borrowed")
+ * camera whose lens describes menu overlay content, not the scene. While the
+ * scope is open, presentation_snapshot_authored_camera_record() refuses to
+ * file (counted in stats.camera_borrow_skips), so a borrowing overlay can
+ * never register a second, conflicting authored recipe against the scene
+ * that legitimately owns the viewport this tick. menu_camera_centre over a
+ * live track-preview scene was exactly that: one conflict per tick, zero
+ * published cameras, and the whole flyby stepped at the authored rate.
+ *
+ * Depth-counted so nested borrows compose; a stray end is inert (never wraps
+ * negative). The conflict rule itself is untouched: two different recipes
+ * outside any borrow still fail the tick's whole camera set closed.
+ * cam_build_view_basis also reads the scope (via _active) so matrices
+ * registered under a borrowed lens are never interpolated view-projection
+ * substitution targets — menu content drawn with the borrowed lens renders
+ * authored, which is correct for static menu-space content.
+ */
+void presentation_snapshot_authored_camera_borrow_begin(void);
+void presentation_snapshot_authored_camera_borrow_end(void);
+bool presentation_snapshot_authored_camera_borrow_active(void);
 
 /* ---- published pair ---------------------------------------------------- */
 

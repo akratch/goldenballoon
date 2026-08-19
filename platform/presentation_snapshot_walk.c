@@ -167,18 +167,26 @@ static void capture_cameras(uint64_t authored_tick) {
      * gCameras[] before this boundary, so they deliberately keep their authored
      * view-projection. A loaded LEVEL SCENE under the menu shell is different:
      * render_scene owns its cameras for the full pass, even though the shell
-     * runs it under GAMEMODE_MENU. That covers both cutscene levels (bank-4
-     * cinematic cameras) and the title attract's live race demos, which stay
+     * runs it under GAMEMODE_MENU. That covers cutscene levels (bank-4
+     * cinematic cameras), the title attract's live race demos, which stay
      * RACETYPE_DEFAULT (menu.c loads them with player count 0, not the
      * cutscene sentinel) — restricting this to the cutscene race types left
      * every attract demo with ZERO captured cameras, so its flyby camera and
      * terrain stepped at the authored tick rate while the racers blended
      * (measured as the "characters jitter on the title animation" report,
-     * 2026-08-17). The borrow hazard the gate exists for cannot slip through
-     * the wider test: a borrowing menu never runs camSetProjMtx for a level
-     * scene, so presentation_snapshot_authored_cameras_copy() below returns
-     * zero entries unless a real scene latched a complete, conflict-free
-     * authored record this tick. */
+     * 2026-08-17) — and the cleared-track preview flybys (loaded with the
+     * ZERO_PLAYERS sentinel, RACETYPE_CUTSCENE_1). The borrow hazard the gate
+     * exists for cannot slip through the wider test, but NOT for the reason an
+     * earlier version of this comment gave ("a borrowing menu never runs
+     * camSetProjMtx for a level scene" — false: menu_camera_centre runs it
+     * every tick of a track preview, IN ADDITION to the scene, which conflicted
+     * the set and unsmoothed the whole flyby, issue #44b). The real guarantee:
+     * a borrowing latch declares itself via
+     * presentation_snapshot_authored_camera_borrow_begin and never files, so
+     * presentation_snapshot_authored_cameras_copy() below returns entries only
+     * when a real scene latched a complete, conflict-free authored record this
+     * tick — and a genuinely ambiguous double-lens tick still fails closed via
+     * the conflict rule, which is unchanged. */
     if (gameMode != GAMEMODE_INGAME && gameMode != GAMEMODE_MENU) {
         return;
     }

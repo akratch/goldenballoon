@@ -581,6 +581,12 @@ const void *presentation_snapshot_external_transform_at(size_t index) {
 }
 
 
+/* Issue #44 (b): >0 while a caller runs the projection path under a borrowed
+ * lens (see the header). Not part of AuthoredCameraSet on purpose — the
+ * bracket spans one render call, while the set is rebuilt per authored tick,
+ * and cameras_begin's memset must never close a caller's open scope. */
+static int s_authored_camera_borrow_depth;
+
 void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick) {
     memset(&s_authored_cameras, 0, sizeof(s_authored_cameras));
     if (!presentation_snapshot_enabled()) {
@@ -590,12 +596,37 @@ void presentation_snapshot_authored_cameras_begin(uint64_t authored_tick) {
     s_authored_cameras.active = true;
 }
 
+void presentation_snapshot_authored_camera_borrow_begin(void) {
+    s_authored_camera_borrow_depth++;
+}
+
+void presentation_snapshot_authored_camera_borrow_end(void) {
+    /* A stray end is inert: wrapping negative would let the NEXT begin/end
+     * pair leave the scope open forever. */
+    if (s_authored_camera_borrow_depth > 0) {
+        s_authored_camera_borrow_depth--;
+    }
+}
+
+bool presentation_snapshot_authored_camera_borrow_active(void) {
+    return s_authored_camera_borrow_depth > 0;
+}
+
 bool presentation_snapshot_authored_camera_record(
     const PresentationCameraEntry *sample) {
     uint8_t viewport_mask;
     int viewport_index;
 
     if (!s_authored_cameras.active || sample == NULL) {
+        return false;
+    }
+    if (s_authored_camera_borrow_depth > 0) {
+        /* A borrowed lens is not an author. The scene that latched (or will
+         * latch) this viewport's real recipe stays the sole author; a tick
+         * with only borrowed latches keeps zero records and fails closed
+         * exactly as before. Counted apart from conflicts: this refusal is
+         * the mechanism working, not a defect. */
+        s_stats.camera_borrow_skips++;
         return false;
     }
     viewport_index = sample->viewport_index;
@@ -612,6 +643,7 @@ bool presentation_snapshot_authored_camera_record(
         /* One replayed viewport cannot safely substitute two camera recipes.
          * Preserve the first recipe and make the whole set fail closed. */
         s_authored_cameras.conflict_mask |= viewport_mask;
+        s_stats.camera_conflicts++;
         return false;
     }
     s_authored_cameras.samples[viewport_index] = *sample;
@@ -1262,6 +1294,7 @@ void presentation_snapshot_shutdown(void) {
     s_generation_serial = 0;
     s_camera_cut_pending = 0u;
     s_camera_excluded = 0u;
+    s_authored_camera_borrow_depth = 0;
     s_identity_insert_failed = false;
 }
 
@@ -1276,7 +1309,7 @@ static void presentation_snapshot_report(void) {
            "rotarccheck=%llu rotarcsnap=%llu rotarcviolation=%llu "
            "disconthold=%llu discontblend=%llu "
            "camcutnote=%llu camcutconsumed=%llu camcutunconsumed=%llu "
-           "camexcluded=%llu "
+           "camexcluded=%llu camconflict=%llu camborrowskips=%llu "
            "identityinsertfail=%llu "
            "externalpeak=%llu externalcaptures=%llu "
            "uvauth_arms=%llu uvauth_reg=%llu uvauth_overlap=%llu "
@@ -1313,6 +1346,8 @@ static void presentation_snapshot_report(void) {
            (unsigned long long)s_stats.camera_cut_consumed,
            (unsigned long long)s_stats.camera_cut_unconsumed,
            (unsigned long long)s_stats.camera_excluded_captures,
+           (unsigned long long)s_stats.camera_conflicts,
+           (unsigned long long)s_stats.camera_borrow_skips,
            (unsigned long long)s_stats.identity_insert_failures,
            (unsigned long long)s_stats.external_peak,
            (unsigned long long)s_stats.external_captures,

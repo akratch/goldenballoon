@@ -45,6 +45,7 @@ SCRIPT_2P = ROOT / "tests/input_scripts/race_2p_split.txt"
 SCRIPT_3P_TT = ROOT / "tests/input_scripts/race_3p_tt_camera.txt"
 SCRIPT_CUTSCENE = ROOT / "tests/input_scripts/adventure_hub_drive.txt"
 SCRIPT_ADVENTURE = ROOT / "tests/input_scripts/adventure_race_loop.txt"
+SCRIPT_PREVIEW = ROOT / "tests/input_scripts/adventure_preview_reentry.txt"
 PRESENTS = 6400
 TICKS = PRESENTS // 2
 DUMP_FROM = 6320
@@ -61,6 +62,29 @@ ADVENTURE_ROUTE = (
     ";12:E5:E0"
 )
 ADVENTURE_LEVELS = (0, 12, 5)   # hub, world lobby, race — each entered by door
+# Issue #44 (b): the same route WON instead of lost, with the level-12 step
+# list ending in a SECOND E5 — after the win the kart drives back into the
+# now-cleared Ancient Lake door, and menu_adventure_track_init opens
+# ADVENTURESETUP_VEHICLE with the track loaded live behind the menu
+# (load_level_for_menu(mapId, -1, 1)): the flyby preview. Nothing presses a
+# button after the door (see the input script), so the preview stays open
+# from its load (measured @frame~16024) to the end of the budget — a
+# ~1,450-tick measurement window.
+PREVIEW_PRESENTS = 19000
+PREVIEW_ROUTE = (
+    "0:200,500:-1004,946:-1858,1099:B10:-3381,1946:-3948,2180:E12"
+    ":-3381,1946:-2519,1516:-1858,1099"
+    ";12:E5:E5"
+)
+# The preview's own load line: the ZERO_PLAYERS sentinel (-1) with the menu
+# loader's cutscene=1, which no other levelId=5 load on this route carries.
+PREVIEW_LOAD_RE = re.compile(
+    r"level_load: levelId=5 numPlayers=-1 .*cutscene=1 @frame~(\d+)")
+PREVIEW_LOAD_MAX_FRAME = 17400  # measured 16024; must leave a real window
+# Ticks to skip after the preview load before the window opens: the load
+# itself is a stage reset plus a fade, and the first captured tick is a
+# legitimate viewport entry.
+PREVIEW_SETTLE_TICKS = 30
 
 SNAPSHOT_RE = re.compile(r"\[SNAPSHOT\] (.+)")
 CAMERA_CUT_RE = re.compile(r"\[CAMERA-CUT\] (.+)")
@@ -811,6 +835,135 @@ def check_adventure_arm(output: str) -> tuple[list[str], str]:
         + f"; {cut_note}")
 
 
+def run_preview_arm(binary: Path, rom: Path, root: Path, timeout: int,
+                    verbose: bool) -> str:
+    """Win the race, then drive back into the cleared door (issue #44 b).
+
+    The only fixture that reaches a CLEARED-track preview: a live level scene
+    rendered under the menu shell while menu_camera_centre borrows the active
+    camera for its overlay pass every tick. Before the borrow scope existed,
+    that second latch conflicted the tick's authored-camera set — zero
+    cameras published for the whole preview (camconflict=1781 on this exact
+    route, one per menu tick with a live scene; the [CAMERA-CUT] journal
+    emitted NOTHING after the preview load), so the flyby stepped at the
+    authored rate. No PPM witness: the journal plus the census are the
+    assertion, exactly as in the adventure arm.
+    """
+    run_dir = root / "adventure-preview-reentry"
+    save_dir = run_dir / "save"
+    save_dir.mkdir(parents=True)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MDKR", "GE007_"))}
+    env.update(
+        LC_ALL="C",
+        MDKR_AUDIO="0",
+        MDKR_SIMULATION_CADENCE="original",
+        MDKR_SYNTH_FIELDS="2",
+        MDKR_TRACE="1",
+        MDKR_AUTOPILOT="1",
+        MDKR_DRIVE_ROUTE=PREVIEW_ROUTE,
+        # A WIN is load-bearing here: only a win sets RACE_CLEARED, and only
+        # a cleared track re-opens as the live vehicle-select preview.
+        MDKR_ADVENTURE_WIN="1",
+        # Deterministic post-race selection, same as
+        # check_adventure_race_loop.py (a first-place finish normally skips
+        # the menu entirely; this pins the path if that ever changes).
+        MDKR_TEST_POSTRACE_OPTION="1",
+        MDKR_RENDERER="gl",
+        MDKR_PRESENT_RATE="60",
+        MDKR_PRESENT_SMOOTHING="interpolate",
+        MDKR_PRESENT_SCHED_TRACE="1",
+        MDKR_PRESENT_SNAPSHOT="1",
+        MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
+        MDKR_TEST_CAMERA_CUT_TRACE="1",
+        MDKR_SAVE_DIR=str(save_dir),
+    )
+    command = [
+        str(binary), "--headless-frames", str(PREVIEW_PRESENTS),
+        "--window-size", "320x240", "--input-script", str(SCRIPT_PREVIEW),
+        "--rom", str(rom),
+    ]
+    if verbose:
+        print(f"$ (adventure-preview-reentry) {' '.join(command)}", flush=True)
+    process = subprocess.run(
+        command, cwd=run_dir, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        timeout=timeout, check=False,
+    )
+    output = process.stdout or ""
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"adventure-preview-reentry: exit {process.returncode}\n"
+            f"{output[-3000:]}")
+    for marker in ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:"):
+        if marker in output:
+            raise RuntimeError(
+                f"adventure-preview-reentry: fatal marker {marker}")
+    return output
+
+
+def check_preview_arm(output: str) -> tuple[list[str], str]:
+    name = "adventure-preview-reentry"
+    failures: list[str] = []
+    load = None
+    for match in PREVIEW_LOAD_RE.finditer(output):
+        load = int(match.group(1))
+    if load is None:
+        return [f"{name}: the cleared-track preview never loaded (no "
+                "levelId=5 numPlayers=-1 cutscene=1 load) — the route did "
+                "not re-enter the door after the win"], ""
+    if load > PREVIEW_LOAD_MAX_FRAME:
+        failures.append(
+            f"{name}: preview loaded at frame {load} (measured 16024, limit "
+            f"{PREVIEW_LOAD_MAX_FRAME}) — not enough window left to measure")
+    try:
+        snapshot = parse_fields(output, SNAPSHOT_RE, "SNAPSHOT")
+    except RuntimeError as error:
+        return failures + [f"{name}: {error}"], ""
+    if snapshot.get("overflows") != 0:
+        failures.append(
+            f"{name}: snapshot overflows={snapshot.get('overflows')}")
+    # THE defect signal. One conflict per preview tick was completely silent
+    # before this counter existed; zero is what "the scene is the sole
+    # author" means. Absent counts as failure, not as zero.
+    if snapshot.get("camconflict", -1) != 0:
+        failures.append(
+            f"{name}: camconflict={snapshot.get('camconflict')} — an "
+            "authored-camera recipe was refused as CONFLICTING, so every "
+            "such tick published zero cameras and rendered fail-closed at "
+            "the authored rate")
+    # Non-vacuity for the fix itself: the borrow scope must actually have
+    # armed on this route (menu_camera_centre runs every preview tick).
+    if snapshot.get("camborrowskips", 0) <= 0:
+        failures.append(
+            f"{name}: camborrowskips={snapshot.get('camborrowskips')} — the "
+            "menu overlay's borrowed-lens latch never declared itself, so "
+            "either the bracket is gone or the route missed the preview")
+    # The flyby must actually be captured and blended INSIDE the preview
+    # window, not somewhere earlier on the route (the opening cinematic also
+    # drives bank 4). Floors sit well under the measured 1457/1457 so a
+    # timing drift up to PREVIEW_LOAD_MAX_FRAME still passes.
+    window_start = load // 2 + PREVIEW_SETTLE_TICKS
+    rows = [row for row in parse_camera_journal(output)
+            if row.get("tick", 0) > window_start]
+    flyby = [row for row in rows if row.get("cam") == 4]
+    blended = sum(1 for row in flyby if row.get("blend", 0.0) != 0.0)
+    if len(flyby) < 600:
+        failures.append(
+            f"{name}: only {len(flyby)} bank-4 camera entries were published "
+            f"in the preview window after tick {window_start} (measured "
+            "1457, want >= 600) — zero here is exactly the conflict defect")
+    if blended < 500:
+        failures.append(
+            f"{name}: only {blended}/{len(flyby)} preview-window camera "
+            "entries were pairable for blending (measured 1457, want >= "
+            "500) — the flyby is captured but still refuses to interpolate")
+    return failures, (
+        f"{name}: preview loaded @frame~{load}; window rows {len(flyby)} "
+        f"(blend {blended}); camconflict={snapshot.get('camconflict')} "
+        f"camborrowskips={snapshot.get('camborrowskips')}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -822,7 +975,7 @@ def main() -> int:
     binary = Path(os.path.abspath(resolve_binary(args.build)))
     rom = Path(os.path.abspath(args.rom))
     for path in (binary, rom, SCRIPT_2P, SCRIPT_3P_TT, SCRIPT_CUTSCENE,
-                 SCRIPT_ADVENTURE):
+                 SCRIPT_ADVENTURE, SCRIPT_PREVIEW):
         if not path.is_file():
             print(f"check_camera_snapshot_coverage: FAIL\n  - missing {path}")
             return 1
@@ -857,6 +1010,16 @@ def main() -> int:
             output = run_adventure_arm(
                 binary, rom, root, args.timeout, args.verbose)
             arm_failures, note = check_adventure_arm(output)
+            failures.extend(arm_failures)
+            if note:
+                notes.append(note)
+        except (OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+            failures.append(str(error))
+
+        try:
+            output = run_preview_arm(
+                binary, rom, root, args.timeout, args.verbose)
+            arm_failures, note = check_preview_arm(output)
             failures.extend(arm_failures)
             if note:
                 notes.append(note)
