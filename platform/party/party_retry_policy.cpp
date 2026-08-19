@@ -5,6 +5,12 @@ namespace {
 /* Contractual policy numbers -- see party_retry_policy.h. */
 constexpr uint64_t kUnauthenticatedDeadlineMs = 20000u;
 constexpr unsigned kMaxOfferAttempts = 3u;
+/* I4 resume ladder: the same 300 ms-doubling-to-8 s ladder the transport
+ * always ran, now decided here; and the terminal limit -- the third
+ * consecutive service-refused resume ends the room for good. */
+constexpr unsigned kResumeBaseDelayMs = 300u;
+constexpr unsigned kResumeMaxDelayMs = 8000u;
+constexpr unsigned kResumeRejectionLimit = 3u;
 
 }  // namespace
 
@@ -36,5 +42,29 @@ MdkrPartyRetryDecision mdkr_party_retry_decide(
 
     if (offerAttempts >= kMaxOfferAttempts) decision.giveUp = true;
     else decision.recreatePeer = true;
+    return decision;
+}
+
+MdkrPartyResumeDecision mdkr_party_resume_decide(
+    unsigned reconnectAttempt, bool resumeRejected,
+    unsigned consecutiveResumeRejections) {
+    MdkrPartyResumeDecision decision;
+
+    /* Terminal only on an ACTUAL refusal that completes the streak: a
+     * network-level failure carrying a stale streak proved nothing about
+     * the room, so it can never be the deciding strike. */
+    if (resumeRejected && consecutiveResumeRejections >= kResumeRejectionLimit) {
+        decision.terminal = true;
+        return decision;
+    }
+
+    /* The pre-existing bounded ladder, verbatim: 300 ms doubling per
+     * attempt, capped at 8 s. Attempt is 1-based; treat a caller's 0 as the
+     * first attempt rather than shifting by an unsigned wraparound. */
+    const unsigned attempt = reconnectAttempt == 0u ? 1u : reconnectAttempt;
+    const unsigned exponent = attempt - 1u < 5u ? attempt - 1u : 5u;
+    decision.retry = true;
+    decision.delayMs = kResumeBaseDelayMs << exponent;
+    if (decision.delayMs > kResumeMaxDelayMs) decision.delayMs = kResumeMaxDelayMs;
     return decision;
 }

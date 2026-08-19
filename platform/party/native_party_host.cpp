@@ -85,8 +85,12 @@ MdkrNativePartyHost::~MdkrNativePartyHost() {
 }
 
 bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
+    /* I4: RoomEnded joins Closed and Error as a from-scratch start. The
+     * ended room's copy names exactly this call as the way forward; the
+     * fresh open creates a brand-new room, never resumes the dead one. */
     if (view_.phase != MdkrNativePartyPhase::Closed &&
-        view_.phase != MdkrNativePartyPhase::Error) {
+        view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded) {
         return false;
     }
     releaseAll();
@@ -465,6 +469,18 @@ void MdkrNativePartyHost::applyEvent(
                 event.message,
                 "Phone controllers are unavailable. Local controllers still work."));
             return;
+        case MdkrPartyTransportEventType::RoomGone:
+            /* I4: the service refused to resume this room for good -- its
+             * 24 h life ended or it was deleted outright; no ladder rung
+             * can bring it back. Same fail-neutral teardown as a terminal
+             * error, but a distinct phase and sentence: nothing broke, the
+             * session is simply over, and a NEW invite (a fresh open())
+             * is the one honest way forward. The copy is the host's own,
+             * not the event's: this surface must never depend on prose
+             * arriving over the wire. */
+            setTerminal(MdkrNativePartyPhase::RoomEnded,
+                        kMdkrPartyRoomEndedCopy);
+            return;
         case MdkrPartyTransportEventType::Closed:
             releaseAll();
             view_ = MdkrNativePartyView{};
@@ -474,16 +490,24 @@ void MdkrNativePartyHost::applyEvent(
 }
 
 void MdkrNativePartyHost::setError(const std::string &message) {
+    setTerminal(MdkrNativePartyPhase::Error, message);
+}
+
+/* One teardown for every terminal room state (Error, and I4's RoomEnded):
+ * seats go back to local play, the transport is shut down and stays down,
+ * and the surface shows exactly one sentence for the state it is in. */
+void MdkrNativePartyHost::setTerminal(
+    MdkrNativePartyPhase phase, const std::string &message) {
     releaseAll();
     transport_.shutdown();
     /* Review fix: a controller left needsRebind from a push failure earlier
-     * in this same drain cycle must not survive into the Error room --
+     * in this same drain cycle must not survive into the terminal room --
      * releaseAll() above already revoked its seat's custody, so the next
      * service() heal loop must never see a reason to touch it again. */
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.needsRebind = false;
     }
-    view_.phase = MdkrNativePartyPhase::Error;
+    view_.phase = phase;
     view_.busy = false;
     view_.inviteVisible = false;
     view_.controllerUrl.clear();
@@ -511,12 +535,14 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
      * again -- reassert it ourselves from the controller's own remembered
      * capability, the same call ControllerConnected makes.
      *
-     * Review fix: also gate the whole loop on the room not being Error or
-     * Closed. setError() already clears needsRebind on its way out (belt),
-     * but a terminal or closed room must never re-bind a seat regardless of
-     * how a flag got left standing (suspenders).
+     * Review fix: also gate the whole loop on the room not being terminal
+     * (Error, I4's RoomEnded) or Closed. setTerminal() already clears
+     * needsRebind on its way out (belt), but a terminal or closed room must
+     * never re-bind a seat regardless of how a flag got left standing
+     * (suspenders).
      */
     if (view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded &&
         view_.phase != MdkrNativePartyPhase::Closed) {
         for (MdkrNativePartyController &candidate : view_.controllers) {
             /* I2: a version-mismatched seat is excluded outright. A fresh

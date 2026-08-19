@@ -52,6 +52,7 @@ const char *hostPhaseName(MdkrNativePartyPhase phase) {
         case MdkrNativePartyPhase::InviteRevoked: return "invite_revoked";
         case MdkrNativePartyPhase::Recovering: return "recovering";
         case MdkrNativePartyPhase::Error: return "error";
+        case MdkrNativePartyPhase::RoomEnded: return "room_ended";
     }
     return "unknown";
 }

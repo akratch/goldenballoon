@@ -24,6 +24,7 @@ bool isDroppable(MdkrPartyTransportEventType type) {
         case MdkrPartyTransportEventType::CommandRejected:
         case MdkrPartyTransportEventType::Recovering:
         case MdkrPartyTransportEventType::Error:
+        case MdkrPartyTransportEventType::RoomGone:
         case MdkrPartyTransportEventType::Closed:
             droppable = false;
             break;

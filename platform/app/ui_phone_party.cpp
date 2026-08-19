@@ -42,6 +42,7 @@ const char *partyPhaseName(MdkrNativePartyPhase phase) {
         case MdkrNativePartyPhase::InviteRevoked: return "invite-revoked";
         case MdkrNativePartyPhase::Recovering: return "recovering";
         case MdkrNativePartyPhase::Error: return "error";
+        case MdkrNativePartyPhase::RoomEnded: return "room-ended";
     }
     return "unknown";
 }
@@ -324,6 +325,12 @@ void drawRoom(MdkrNativePartyHost &host) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("%s", view.message.c_str());
         ImGui::PopStyleColor();
+    } else if (view.phase == MdkrNativePartyPhase::RoomEnded) {
+        /* I4 terminal state: the room is over, not broken -- plain text,
+         * not the error color. The one sentence (view.message, set from
+         * kMdkrPartyRoomEndedCopy) names the way forward; drawFull puts the
+         * Create New Invite button right under it. */
+        ImGui::TextWrapped("%s", view.message.c_str());
     } else {
         if (!view.message.empty()) ui::TextSubtleWrapped("%s", view.message.c_str());
         drawInvite(host);
@@ -335,10 +342,11 @@ void drawRoom(MdkrNativePartyHost &host) {
     }
 }
 
-void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin) {
+void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin,
+                    const char *label = "Add Phone Controllers") {
     const bool configured = serviceOrigin != nullptr && serviceOrigin[0] != '\0';
     if (!configured) ImGui::BeginDisabled();
-    if (ui::PrimaryButton("Add Phone Controllers", ui::kBtnWide())) {
+    if (ui::PrimaryButton(label, ui::kBtnWide())) {
         host.open(serviceOrigin);
     }
     if (!configured) ImGui::EndDisabled();
@@ -377,6 +385,13 @@ void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
         drawRoom(host);
         ui::Gap(ui::kGapS);
         drawOpenButton(host, serviceOrigin);
+    } else if (host.view().phase == MdkrNativePartyPhase::RoomEnded) {
+        /* I4: the ended room's copy promises exactly this button. It is the
+         * same fresh open() the Error surface offers, labeled with the
+         * remedy the sentence names. */
+        drawRoom(host);
+        ui::Gap(ui::kGapS);
+        drawOpenButton(host, serviceOrigin, "Create New Invite");
     } else {
         drawRoom(host);
     }

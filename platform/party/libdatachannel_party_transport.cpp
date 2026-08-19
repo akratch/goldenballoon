@@ -518,6 +518,11 @@ private:
             if (generation != generation_ || shuttingDown_) return;
             reconnectAttempt_ = 0u;
             reconnectAt_ = Clock::time_point{};
+            /* I4: a completed upgrade is the service saying yes -- the only
+             * thing that ever resets the consecutive-refusal streak the
+             * resume policy counts toward its terminal verdict. */
+            resumeRejected_ = false;
+            resumeRejections_ = 0u;
             /* C3: the socket just (re)opened. Any still-unauthenticated
              * peer with an outstanding offer may have had that offer
              * dropped by the Worker while the socket was down -- resend it
@@ -537,12 +542,30 @@ private:
         for (const auto &peer : pendingOffers) resendOffer(peer);
     }
 
-    void socketError(uint64_t generation, const std::string &) {
+    void socketError(uint64_t generation, const std::string &reason) {
         bool fatal = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (generation != generation_ || shuttingDown_) return;
             fatal = creating_ && credential_.empty();
+            /* I4 classification. libdatachannel folds EVERY HTTP-refused
+             * WebSocket upgrade -- the Worker/room's 404 not_found for a
+             * deleted or expired room, its 401 for a credential that can
+             * never re-validate, alike -- into this one onError string; the
+             * actual status code is logged and swallowed (wshandshake.cpp
+             * throws on any non-101, wstransport.cpp catches it and fails
+             * the handshake, websocket.cpp maps that state to this exact
+             * text). Network-level failures arrive as different strings
+             * ("TCP connection failed", "TLS connection failed",
+             * "Connection timed out") and typed close frames lose their
+             * code and reason entirely, so "the service itself refused this
+             * resume handshake" is precisely -- and only -- this string on
+             * a non-create socket. socketClosed(), which libdatachannel
+             * fires right after this callback, feeds the latch to
+             * mdkr_party_resume_decide. */
+            if (!creating_ && reason == "WebSocket connection failed") {
+                resumeRejected_ = true;
+            }
         }
         if (fatal) {
             MdkrPartyTransportEvent event;
@@ -554,23 +577,52 @@ private:
 
     void socketClosed(uint64_t generation) {
         bool recover = false;
+        bool gone = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (generation != generation_ || shuttingDown_) return;
             socket_.reset();
-            recover = !credential_.empty();
-            if (recover) {
+            /* I4: once the terminal verdict is in, later stray closes have
+             * nothing to add -- and must not enqueue a Recovering/Error
+             * that would overwrite the host's RoomEnded surface. */
+            if (roomGone_) return;
+            /* Consume the per-attempt refusal latch socketError set just
+             * before this callback, and let the pure resume policy
+             * (party_retry_policy.h) decide between the existing bounded
+             * ladder and the terminal verdict. A network-level failure
+             * (rejected == false) neither advances nor resets the streak:
+             * it proved nothing about the room. roomGone_ latches so a
+             * terminal room can never re-enter the ladder, whatever late
+             * callbacks still fire. */
+            const bool rejected = resumeRejected_;
+            resumeRejected_ = false;
+            if (!credential_.empty()) {
+                if (rejected) resumeRejections_++;
                 reconnectAttempt_ = std::min(reconnectAttempt_ + 1u, 6u);
-                const unsigned delay = std::min(8000u,
-                    300u * (1u << std::min(reconnectAttempt_ - 1u, 5u)));
-                reconnectAt_ = Clock::now() + std::chrono::milliseconds(delay);
+                const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+                    reconnectAttempt_, rejected, resumeRejections_);
+                if (decision.terminal) {
+                    roomGone_ = true;
+                    reconnectAt_ = Clock::time_point{};
+                    gone = true;
+                } else if (decision.retry) {
+                    reconnectAt_ = Clock::now() +
+                        std::chrono::milliseconds(decision.delayMs);
+                    recover = true;
+                }
             }
         }
         MdkrPartyTransportEvent event;
-        event.type = recover ? MdkrPartyTransportEventType::Recovering
-                             : MdkrPartyTransportEventType::Error;
-        event.message = recover ? "Controller room reconnecting."
-                                : "Phone controller room closed before it was ready.";
+        if (gone) {
+            event.type = MdkrPartyTransportEventType::RoomGone;
+            event.message = kMdkrPartyRoomEndedCopy;
+        } else {
+            event.type = recover ? MdkrPartyTransportEventType::Recovering
+                                 : MdkrPartyTransportEventType::Error;
+            event.message = recover
+                ? "Controller room reconnecting."
+                : "Phone controller room closed before it was ready.";
+        }
         enqueue(std::move(event));
     }
 
@@ -586,7 +638,11 @@ private:
                 now.time_since_epoch()).count());
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            reconnect = !shuttingDown_ && !socket_ && !credential_.empty() &&
+            /* I4: !roomGone_ is belt-and-suspenders -- the terminal verdict
+             * already cleared reconnectAt_ -- so a gone room can never open
+             * another socket from here no matter what else runs. */
+            reconnect = !shuttingDown_ && !roomGone_ && !socket_ &&
+                !credential_.empty() &&
                 reconnectAt_ != Clock::time_point{} && now >= reconnectAt_;
             if (reconnect) reconnectAt_ = Clock::time_point{};
             for (const auto &entry : peers_) {
@@ -1234,6 +1290,14 @@ private:
     uint32_t peerGeneration_ = 0u;
     unsigned reconnectAttempt_ = 0u;
     Clock::time_point reconnectAt_{};
+    /* I4 resume classification (mdkr_party_resume_decide): the per-attempt
+     * "the service refused this upgrade" latch socketError sets and
+     * socketClosed consumes; the consecutive-refusal streak a successful
+     * open resets; and the terminal latch after which this transport never
+     * opens another socket. */
+    bool resumeRejected_ = false;
+    unsigned resumeRejections_ = 0u;
+    bool roomGone_ = false;
     bool creating_ = false;
     bool shuttingDown_ = false;
 };

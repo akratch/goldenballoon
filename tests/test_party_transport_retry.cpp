@@ -136,6 +136,77 @@ void noOutstandingOfferDoesNothing() {
         /*socketOpen=*/true));
 }
 
+/* ---- mdkr_party_resume_decide: the signaling-socket resume ladder (I4).
+ * Same pure-decision seam as the offer policy above; the transport's
+ * socketClosed() supplies the inputs and applies the verdict. See
+ * party_retry_policy.h for the classification writeup (what a refused
+ * resume looks like through libdatachannel, and why three consecutive
+ * refusals mean the room is gone for good). ---- */
+
+/* (5) Regression: a transient close -- a live socket dropping, or any
+ * network-level failure (TCP/TLS/timeout) -- keeps the existing bounded
+ * ladder exactly: every attempt schedules another resume, the delay starts
+ * at 300 ms, never shrinks, and never exceeds 8 s. Never terminal. */
+void transientClosesKeepTheBoundedLadderUnderEightSeconds() {
+    unsigned previousDelay = 0u;
+    for (unsigned attempt = 1u; attempt <= 12u; attempt++) {
+        const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+            attempt, /*resumeRejected=*/false,
+            /*consecutiveResumeRejections=*/0u);
+        assert(decision.retry);
+        assert(!decision.terminal);
+        assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
+        assert(decision.delayMs >= previousDelay);
+        previousDelay = decision.delayMs;
+    }
+    assert(mdkr_party_resume_decide(1u, false, 0u).delayMs == 300u);
+    assert(mdkr_party_resume_decide(6u, false, 0u).delayMs == 8000u);
+}
+
+/* (6) One or two refused resumes could still be a service blip mid-deploy;
+ * the ladder keeps going, on its usual bounded delays. */
+void rejectedResumesBelowTheLimitStillRetry() {
+    for (unsigned rejections = 1u; rejections <= 2u; rejections++) {
+        const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+            /*reconnectAttempt=*/rejections, /*resumeRejected=*/true,
+            /*consecutiveResumeRejections=*/rejections);
+        assert(decision.retry);
+        assert(!decision.terminal);
+        assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
+    }
+}
+
+/* (7) The third consecutive refused resume is the terminal verdict: the
+ * service has now answered "no" to three separate fresh handshakes, which
+ * is a deleted/expired room (or an equally unrecoverable credential), not
+ * weather. No next delay -- the ladder ends here. */
+void thirdConsecutiveRejectedResumeIsTerminal() {
+    const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+        /*reconnectAttempt=*/3u, /*resumeRejected=*/true,
+        /*consecutiveResumeRejections=*/3u);
+    assert(decision.terminal);
+    assert(!decision.retry);
+    assert(decision.delayMs == 0u);
+    /* And past the limit, in case a caller's count ever overshoots. */
+    assert(mdkr_party_resume_decide(9u, true, 7u).terminal);
+}
+
+/* (8) A network-level failure is never terminal, even when it lands on top
+ * of a standing rejection streak: this attempt never reached the service,
+ * so it proved nothing about the room. Only an actual refusal may be the
+ * third strike. */
+void networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak() {
+    const unsigned staleStreaks[] = {2u, 3u, 7u};
+    for (const unsigned staleStreak : staleStreaks) {
+        const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+            /*reconnectAttempt=*/8u, /*resumeRejected=*/false,
+            staleStreak);
+        assert(decision.retry);
+        assert(!decision.terminal);
+        assert(decision.delayMs > 0u && decision.delayMs <= 8000u);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -147,5 +218,9 @@ int main() {
     youngOffersDoNothing();
     wrongVersionPeersAreNeverRetriedResentOrGivenUpOn();
     noOutstandingOfferDoesNothing();
+    transientClosesKeepTheBoundedLadderUnderEightSeconds();
+    rejectedResumesBelowTheLimitStillRetry();
+    thirdConsecutiveRejectedResumeIsTerminal();
+    networkFailuresNeverGoTerminalEvenWithAStaleRejectionStreak();
     return 0;
 }

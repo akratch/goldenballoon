@@ -16,6 +16,13 @@ enum class MdkrNativePartyPhase {
     InviteRevoked,
     Recovering,
     Error,
+    /* I4: the service says this room can never come back (deleted, expired,
+     * or refusing every resume for good). Terminal: the transport is shut
+     * down and never reopened for this room; the only way forward is a
+     * fresh open() into a brand-new room, which the UI offers as Create New
+     * Invite. Distinct from Error so the surface reads as "this session is
+     * over", not "something broke". */
+    RoomEnded,
 };
 
 enum class MdkrNativePartyControllerPhase {
@@ -63,6 +70,15 @@ inline constexpr char kMdkrPartyProtocolMismatchCopy[] =
     "This phone's controller page is a different version. "
     "Refresh the page on the phone.";
 
+/* I4: the one terminal sentence for a room that is gone for good -- set by
+ * MdkrNativePartyHost::applyEvent on RoomGone and carried on the transport's
+ * event for any other listener. Its remedy must stay in lockstep with the
+ * UI's RoomEnded surface (ui_phone_party.cpp offers Create New Invite, a
+ * fresh open() into a brand-new room); tests/test_native_party_host.cpp
+ * pins the sentence itself. */
+inline constexpr char kMdkrPartyRoomEndedCopy[] =
+    "This controller room has ended. Create a new invite to keep playing.";
+
 struct MdkrNativePartyView {
     MdkrNativePartyPhase phase = MdkrNativePartyPhase::Closed;
     std::string controllerUrl;
@@ -86,6 +102,11 @@ enum class MdkrPartyTransportEventType {
     CommandRejected,
     Recovering,
     Error,
+    /* I4: the service refused to resume this room for good (see
+     * mdkr_party_resume_decide in party_retry_policy.h for the exact
+     * classification). Emitted at most once per room; the transport opens
+     * no further sockets after it. */
+    RoomGone,
     Closed,
 };
 
@@ -217,6 +238,7 @@ private:
     void releaseController(const MdkrNativePartyController &controller);
     void releaseAll();
     void setError(const std::string &message);
+    void setTerminal(MdkrNativePartyPhase phase, const std::string &message);
 
     MdkrPartyTransport &transport_;
     MdkrNativePartyView view_;

@@ -679,6 +679,79 @@ void giveUpForMismatchedSeatKeepsTheHonestRoomCopy() {
         "That controller slot was just taken. Choose another.");
 }
 
+/* I4: a room the service will never bring back (deleted by its 24 h alarm,
+ * expired, or otherwise refusing every resume for good) must end in an
+ * explicit terminal state, not today's silent forever-ladder. The transport
+ * classifies the refusals and emits one RoomGone event; the host must land
+ * in phase RoomEnded with the exact terminal sentence, release every seat,
+ * shut the transport down, and -- terminal means terminal -- never open the
+ * transport again on its own. The named way forward, creating a new invite,
+ * is a fresh open() into a brand-new room, and must still work. */
+void roomGoneForGoodEndsTheRoomInsteadOfRetryingForever() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    const auto openCalls = [&transport]() {
+        size_t opens = 0u;
+        for (const std::string &call : transport.calls) {
+            if (call.rfind("open:", 0u) == 0u) opens++;
+        }
+        return opens;
+    };
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(1000u);
+    MdkrPartyTransportEvent connected;
+    connected.type = MdkrPartyTransportEventType::ControllerConnected;
+    connected.controllerId = "phone-a";
+    connected.haptics = true;
+    transport.events.push_back(connected);
+    host.service(1001u);
+    assert(host.view().controllers[0].direct);
+
+    MdkrPartyTransportEvent gone;
+    gone.type = MdkrPartyTransportEventType::RoomGone;
+    transport.events.push_back(gone);
+    host.service(2000u);
+
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message ==
+        "This controller room has ended. Create a new invite to keep playing.");
+    assert(!host.view().busy);
+    assert(!host.view().inviteVisible);
+    assert(host.view().controllerUrl.empty());
+    assert(host.view().fallbackCode.empty());
+    assert(transport.calls.back() == "shutdown");
+    /* The seat went back to local play, fail-neutral. */
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
+
+    /* Zero further transport opens -- and no other traffic on the dead
+     * room -- no matter how many ticks pass. */
+    assert(openCalls() == 1u);
+    const size_t callsBefore = transport.calls.size();
+    for (int tick = 0; tick < 32; ++tick) {
+        host.service(2100u + static_cast<uint64_t>(tick));
+    }
+    assert(transport.calls.size() == callsBefore);
+    assert(openCalls() == 1u);
+    assert(host.view().phase == MdkrNativePartyPhase::RoomEnded);
+    assert(host.view().message ==
+        "This controller room has ended. Create a new invite to keep playing.");
+
+    /* A dead room cannot rotate an invite back into existence. */
+    assert(!host.rotateInvite());
+    assert(openCalls() == 1u);
+
+    /* The copy's remedy must actually work: a fresh open() starts a brand
+     * new room. That is the ONE way another open ever happens. */
+    assert(host.open("https://party.example"));
+    assert(host.view().phase == MdkrNativePartyPhase::Opening);
+    assert(openCalls() == 2u);
+}
+
 }  // namespace
 
 int main() {
@@ -694,6 +767,7 @@ int main() {
     terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();
     protocolMismatchMarksSeatLoudlyWithoutRebindLoop();
     giveUpForMismatchedSeatKeepsTheHonestRoomCopy();
+    roomGoneForGoodEndsTheRoomInsteadOfRetryingForever();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }
