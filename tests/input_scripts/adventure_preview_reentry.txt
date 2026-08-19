@@ -1,0 +1,55 @@
+# DKR regression fixture -- CLEARED-TRACK PREVIEW RE-ENTRY (issue #44 defect b).
+#
+#   Timber's Island -> Dino Domain lobby -> ANCIENT LAKE (3 laps, WON)
+#                   -> back to the lobby -> back INTO the now-cleared door
+#                   -> the live track-preview flyby (ADVENTURESETUP_VEHICLE).
+#
+# Derived from adventure_race_loop.txt: the frontend navigation and the
+# post-race handling are identical, and the steering is the same
+# MDKR_DRIVE_ROUTE mechanism -- the only route difference is that the level-12
+# step list ends with a SECOND E5 instead of E0, so after the win the kart
+# drives straight back into the Ancient Lake door. menu_adventure_track_init
+# then sees RACE_CLEARED and opens ADVENTURESETUP_VEHICLE with the track
+# loaded live behind the menu (load_level_for_menu(mapId, -1, 1)): the flyby
+# camera preview this fixture exists to hold open.
+#
+# Two deliberate differences from adventure_race_loop.txt:
+#
+#   1. This run is a WIN (MDKR_ADVENTURE_WIN=1), because only a win sets
+#      RACE_CLEARED and only a cleared track re-opens as the live preview.
+#      A first-place finish takes objects.c's race_finish_adventure() branch
+#      (balloon ceremony, returns to the lobby on its own), so the post-race
+#      DOWN/A option pairs below are usually idle -- they are kept, trimmed,
+#      as insurance for the menu path.
+#
+#   2. The DOWN/A retry pairs STOP at 13710. adventure_race_loop.txt retries
+#      them until 16460, but ADVENTURESETUP_VEHICLE is a live menu waiting on
+#      edge-detected input: one stray A after the preview opens would confirm
+#      a vehicle and tear the preview down into a second race. Nothing may
+#      press anything once the door is re-entered, so the preview stays open
+#      from its load until the frame budget runs out -- that window is the
+#      measurement.
+
+# --- Frontend navigation ---
+1250 START 4
+1330 START 4
+1450 A 4
+1540 A 4
+1750 A 4
+1900 A 4
+2050 A 4
+2100 A 4
+2130 A 4
+2160 A 4
+2200 A 4
+
+# --- Post-race: clear POSTRACE_STAGE_BEGIN (menu path only; a win skips it) ---
+12750 A 6
+
+# --- Post-race: step DOWN to RETURN TO LOBBY and confirm (menu path only) ---
+13200 DOWN 6
+13210 A 6
+13450 DOWN 6
+13460 A 6
+13700 DOWN 6
+13710 A 6

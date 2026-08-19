@@ -2374,9 +2374,15 @@ void cam_build_view_basis(void) {
     mtxf_mul(&gViewMatrixF, &gPerspectiveMatrixF, &gViewProjMatrixF);
     /* From here until something else overwrites gViewProjMatrixF, every
      * registered matrix belongs to this viewport's gameplay camera and is a
-     * legal target for an interpolated view-projection (Wave B). */
+     * legal target for an interpolated view-projection (Wave B) — UNLESS
+     * this basis was built under a presentation borrow (menu_camera_centre
+     * rewriting the active camera for one overlay pass, issue #44b).
+     * Content drawn under a borrowed lens is menu-space: substituting the
+     * scene's interpolated lens beneath it would warp it, so borrowed-lens
+     * matrices are never substitution targets and render authored. */
     sShadowRegisterViewport = registerViewport;
-    sShadowRegisterGameplayVp = 1;
+    sShadowRegisterGameplayVp =
+        presentation_snapshot_authored_camera_borrow_active() ? 0 : 1;
 
     gCameraTransform.rotation.y_rotation = -0x8000 - activeCamera->trans.rotation.y_rotation;
     gCameraTransform.rotation.x_rotation =
