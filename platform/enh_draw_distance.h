@@ -38,9 +38,17 @@ extern "C" {
 #endif
 
 /* The schema's range for Enhancements.DrawDistance, as a percentage of the
- * authored per-object distance; see platform/video_config.c. */
+ * authored per-object distance; see platform/video_config.c. 1600 is the
+ * schema's "Maximum" notch: CAMERA_FAR (game/src/camera.h) is 15000, and the
+ * only multiplayer reduction halves the authored distance in the
+ * four-player layout (game/src/tracks.c). The worst case needing saturation
+ * is the smallest finite header distance (2000) taking that halving --
+ * 1000 effective units -- which needs scale >= 15000/1000 = 1500% to reach
+ * the far plane. 1600% clears that bound with headroom and keeps the s32
+ * arithmetic in check_if_in_draw_range_impl trivially safe (6000 * 16 =
+ * 96000). */
 #define MDKR_DRAW_DISTANCE_MIN_PERCENT 100
-#define MDKR_DRAW_DISTANCE_MAX_PERCENT 400
+#define MDKR_DRAW_DISTANCE_MAX_PERCENT 1600
 
 /* The values Enhancements.LodBias takes. */
 enum {

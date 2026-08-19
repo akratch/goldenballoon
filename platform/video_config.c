@@ -122,10 +122,12 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
     },
     [MDKR_ENH_DRAW_DISTANCE] = {
         "Enhancements.DrawDistance", "MDKR_ENH_DRAW_DISTANCE",
-        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 100.0f, 400.0f,
+        MDKR_VIDEO_TYPE_INT, MDKR_VIDEO_SCOPE_LIVE, 100.0f, 1600.0f,
         "Draw distance",
-        "How far ahead scenery is drawn, as a percentage of the authored "
-        "distance. Changes only how the game looks.",
+        "How far ahead scenery and pickups (bananas, coins, balloons) are "
+        "drawn, as a percentage of the authored distance. 1600 is Maximum and "
+        "removes distance pop-in entirely -- recommended for split-screen "
+        "coin challenges. Changes only how the game looks.",
         MDKR_VIDEO_CAT_FIDELITY
     },
     [MDKR_ENH_LOD_BIAS] = {

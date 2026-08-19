@@ -15,11 +15,12 @@ static const MdkrEnhancement s_enhancements[] = {
     {
         MDKR_ENH_DRAW_DISTANCE,
         "Draw distance",
-        "Draws scenery further ahead so the track stops popping in near the "
-        "horizon.",
+        "Draws scenery and pickups (bananas, coins, balloons) further ahead "
+        "so they stop popping in near the horizon. Maximum removes distance "
+        "pop-in entirely -- recommended for split-screen coin challenges.",
         MDKR_ENH_PRESENTATION,
         MDKR_ENH_CAT_DISPLAY,
-        "400", /* the far end of the 100..400 range */
+        "400", /* the old top of the range; still valid now that it's 100..1600 */
     },
     {
         MDKR_ENH_LOD_BIAS,

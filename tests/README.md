@@ -4829,6 +4829,15 @@ a separate read-only predicate that writes nothing and only *adds* draws.
 extended. The gate also requires the **authored** count to be identical on every
 frame, proving the setting extends rather than re-decides.
 
+Issue #47 added two more arms to the same file. `split100`/`split400` run the
+100%/400% pair on `race_2p_split.txt` instead of Time Trial: the only
+multiplayer draw-distance reduction is a 0.5x halving that applies solely to
+the four-player layout, so this pair proves the setting also reaches the draw
+in two-player split-screen, which takes no such reduction. `dd1600` is a third
+value on the original Time Trial pair, proving the schema's "Maximum" notch
+(1600%, up from 400%) reaches `scale=16.0` at the cull rather than being
+silently rejected or re-clamped to the old ceiling.
+
 The LOD arms run on a 4-player split, not Time Trial: a Time Trial has one
 racer already at model 0, so the bias has nothing to hold. The census counts
 choices the bias actually *changed* after clamping, so a route that stops

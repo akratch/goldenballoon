@@ -33,7 +33,18 @@ The arms
 Draw distance, on the deterministic single-player Time Trial route:
 
   dd100   `Enhancements.DrawDistance=100` — the authored distance
-  dd400   `=400` — the far end of the schema's range
+  dd400   `=400` — the previous top of the schema's range
+  dd1600  `=1600` — the schema's "Maximum" notch (issue #47)
+
+Draw distance, on the TWO-player split-screen route — the fixture the issue
+actually reports against ("Joint Venture" runs 2P). `game/src/tracks.c`'s only
+multiplayer draw-distance reduction (a 0.5x halving) applies solely to the
+FOUR-player layout, so this pair exists to prove the setting also reaches the
+draw in a layout that takes no such reduction, with the same purity invariants
+as the single-player pair above:
+
+  split100  `Enhancements.DrawDistance=100` on `race_2p_split.txt`
+  split400  `=400` on `race_2p_split.txt`
 
 Model detail, on the FOUR-player split-screen route. The racer LOD ladder is the
 port's only distance-driven model selection, and the route has to be one where
@@ -73,6 +84,19 @@ What it asserts
    clamped, not choices it was consulted about, so a bias that is read and then
    erased by the clamp reads as the zero it is.
 
+6. `split400` admits extra objects (`extended > 0`) at the captured frame of the
+   two-player race, the AUTHORED count is identical to `split100`'s there and
+   over the whole route, and the two arms' `[SIMHASH]` v3 streams and live
+   object counts are identical — the same shape as (1)-(4), reproduced on the
+   fixture issue #47 was actually filed against, so a 2P-specific gap (the
+   issue's hypothesis) cannot pass silently.
+
+7. `dd1600` reaches a `scale` of 16.0 (not silently re-clamped to `dd400`'s 4.0)
+   and draws at least as many objects at the capture frame as `dd400` does,
+   while remaining an authored-count-identical, `[SIMHASH]`-identical extension
+   of `dd100` — proving the schema's new top notch is still purely a render-side
+   widening, not a new policy surface.
+
 Vacuity guards, checked before anything else: an arm with no `[SIMHASH]` rows or
 no `[DRAWDIST]` rows fails, because both instruments are opt-in and a run where
 one did not arm would let every comparison below pass by comparing nothing.
@@ -105,6 +129,21 @@ ROOT = Path(__file__).resolve().parent.parent
 DD_SCRIPT = ROOT / "tests" / "input_scripts" / "race_drive_time_trial.txt"
 DD_CAPTURE = 2910
 DD_FRAMES = 2960
+
+# Draw distance, maximum: the schema's new top notch (issue #47). Reuses the
+# single-player Time Trial fixture and capture frame above, so dd1600 is a
+# strict continuation of the dd100/dd400 pair rather than a new fixture.
+DD_MAX_PERCENT = 1600
+
+# Draw distance, split-screen: the TWO-player race the issue was filed against.
+# `level_load` lands around frame 2471 and the race clock starts around 2662
+# (see tests/check_race_2p_split.py); frame 3300 is mid-race and is a measured
+# choice — this is the exact by-hand A/B from the issue-47 investigation
+# (scale=4.00 authored=30 extended=8 drawn=38 at 400%), reproduced here as a
+# registered gate arm instead of a one-off manual run.
+SPLIT_SCRIPT = ROOT / "tests" / "input_scripts" / "race_2p_split.txt"
+SPLIT_CAPTURE = 3300
+SPLIT_FRAMES = 3400
 
 # Model detail: the four-player split-screen route. Its band table is the one
 # that selects reduced models, so it is the only cheap fixture where a setting
@@ -364,6 +403,118 @@ def main() -> int:
 
             # 2 and 3.
             compare_state(near, far, failures)
+
+            # 7. dd1600 — the schema's "Maximum" notch (issue #47). A strict
+            # continuation of the dd100/dd400 pair: same route, same capture
+            # frame, one more value. Before the schema's range was widened past
+            # 400, `--video-set` rejects an out-of-range value outright (see
+            # mdkr_video_config_set in platform/video_config.c) rather than
+            # clamping it, so this arm is RED against that code — it observes
+            # the authored default (scale=1.0), not even the old 400% ceiling.
+            extreme = run_arm(binary, rom, work, "dd1600", DD_SCRIPT, DD_FRAMES,
+                              DD_CAPTURE,
+                              f"Enhancements.DrawDistance={DD_MAX_PERCENT}",
+                              args.timeout, args.verbose)
+            extreme_at = census_at(extreme, DD_CAPTURE)
+            if extreme_at is None:
+                failures.append(
+                    f"dd1600: frame {DD_CAPTURE} has no [DRAWDIST] row, so "
+                    f"the captured frame is not one the census covers")
+            else:
+                if extreme_at.scale != 16.0:
+                    failures.append(
+                        f"dd1600: the census reports scale={extreme_at.scale}"
+                        f", not 16.0 — the schema's Maximum notch did not "
+                        f"reach the cull (rejected as out-of-range, or "
+                        f"re-clamped to a lower ceiling?)")
+                if far_at is not None and extreme_at.drawn < far_at.drawn:
+                    failures.append(
+                        f"dd1600: drawn={extreme_at.drawn} at frame "
+                        f"{DD_CAPTURE} is FEWER than dd400's {far_at.drawn}. "
+                        f"Raising the ceiling must never draw less than a "
+                        f"lower setting did.")
+                if extreme_at.authored != near_at.authored:
+                    failures.append(
+                        f"dd1600: the AUTHORED draw count at frame "
+                        f"{DD_CAPTURE} is {extreme_at.authored} against "
+                        f"dd100's {near_at.authored}. The setting is supposed "
+                        f"to add draws, not change which objects the fixed "
+                        f"tick routed.")
+                summaries.append(
+                    f"drawn@{DD_CAPTURE}(1600)={extreme_at.drawn}")
+
+            compare_state(near, extreme, failures)
+
+            # 6. split100/split400 — the TWO-player fixture issue #47 was
+            # filed against. Same shape as the dd100/dd400 pair above, on
+            # race_2p_split.txt instead of the single-player route.
+            split_near = run_arm(binary, rom, work, "split100", SPLIT_SCRIPT,
+                                 SPLIT_FRAMES, SPLIT_CAPTURE,
+                                 "Enhancements.DrawDistance=100", args.timeout,
+                                 args.verbose)
+            split_far = run_arm(binary, rom, work, "split400", SPLIT_SCRIPT,
+                                SPLIT_FRAMES, SPLIT_CAPTURE,
+                                "Enhancements.DrawDistance=400", args.timeout,
+                                args.verbose)
+
+            split_near_at = census_at(split_near, SPLIT_CAPTURE)
+            split_far_at = census_at(split_far, SPLIT_CAPTURE)
+            if split_near_at is None or split_far_at is None:
+                failures.append(
+                    f"split: frame {SPLIT_CAPTURE} has no [DRAWDIST] row in "
+                    f"{'split100' if split_near_at is None else 'split400'}, "
+                    f"so the captured frame is not one the census covers")
+            else:
+                if split_near_at.scale != 1.0 or split_near_at.extended != 0:
+                    failures.append(
+                        f"split100: the authored arm reports scale="
+                        f"{split_near_at.scale} and {split_near_at.extended} "
+                        f"extended draw(s); at 100% the setting must be inert")
+                if split_far_at.scale != 4.0:
+                    failures.append(
+                        f"split400: the census reports scale="
+                        f"{split_far_at.scale}, not 4.0 — the setting did not "
+                        f"reach the cull")
+                if split_far_at.extended <= 0:
+                    failures.append(
+                        f"split400: the widened distance admitted no extra "
+                        f"objects at frame {SPLIT_CAPTURE} in the two-player "
+                        f"split-screen race, so this capture cannot show the "
+                        f"setting working there. Pick a frame the [DRAWDIST] "
+                        f"census says has extended draws.")
+                if split_far_at.authored != split_near_at.authored:
+                    failures.append(
+                        f"split400: the AUTHORED draw count at frame "
+                        f"{SPLIT_CAPTURE} is {split_far_at.authored} against "
+                        f"split100's {split_near_at.authored}. The setting is "
+                        f"supposed to add draws in split-screen too, not "
+                        f"change which objects the fixed tick routed.")
+                summaries.append(
+                    f"split@{SPLIT_CAPTURE}={split_near_at.drawn}->"
+                    f"{split_far_at.drawn} (+{split_far_at.extended} "
+                    f"extended)")
+
+            split_near_authored = [row.authored for row in split_near.census]
+            split_far_authored = [row.authored for row in split_far.census]
+            if split_near_authored != split_far_authored:
+                differing = sum(1 for a, b in zip(split_near_authored,
+                                                   split_far_authored)
+                                if a != b)
+                failures.append(
+                    f"split400: the per-frame AUTHORED draw count differs "
+                    f"from split100 on {differing} frame(s) of "
+                    f"{len(split_near_authored)} in the two-player race. The "
+                    f"widened distance is re-deciding the fixed tick's routes "
+                    f"instead of extending them.")
+            split_total_extended = sum(row.extended for row in split_far.census)
+            if split_total_extended <= 0:
+                failures.append(
+                    "split400: the widened distance admitted no extra object "
+                    "on any frame of the two-player race; the setting does "
+                    "nothing there")
+            summaries.append(f"splitExtendedOverRoute={split_total_extended}")
+
+            compare_state(split_near, split_far, failures)
 
             detail_off = run_arm(binary, rom, work, "lod0", LOD_SCRIPT,
                                  LOD_FRAMES, LOD_CAPTURE,
