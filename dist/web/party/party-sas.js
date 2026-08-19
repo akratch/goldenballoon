@@ -34,14 +34,53 @@
       publicKey: base64Url(publicBytes)});
   }
 
+  /* Fingerprint canonicalization, agreed byte-for-byte with the native
+   * transport: the value after a line BEGINNING with "a=fingerprint:",
+   * tokens re-joined with a single space, algorithm token verbatim, hex
+   * uppercased, e.g. "sha-256 AB:CD:…". A line that begins with the
+   * attribute but does not parse, or two lines that disagree, refuse the
+   * whole description. Refusal is the empty string: no fingerprint can
+   * only ever mean no phrase. */
+  function canonicalFingerprintValue(line) {
+    const tokens = line.split(/[ \t]+/).filter(Boolean);
+    if (tokens.length !== 2) return "";
+    const [algorithm, value] = tokens;
+    if (algorithm.length > 32 || value.length > 512 ||
+        !/^[A-Za-z0-9-]+$/.test(algorithm) ||
+        !/^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2})*$/.test(value)) return "";
+    return algorithm + " " + value.toUpperCase();
+  }
+
+  function sdpFingerprint(sdp) {
+    let canonical = "";
+    for (const rawLine of String(sdp || "").split("\n")) {
+      const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+      if (!line.startsWith("a=fingerprint:")) continue;
+      const value = canonicalFingerprintValue(line.slice(14));
+      if (!value || (canonical && canonical !== value)) return "";
+      canonical = value;
+    }
+    return canonical;
+  }
+
+  /* SAS v2: the phrase commits to both DTLS fingerprints, so a relay that
+   * substituted either certificate moves the words on one screen. Missing
+   * fingerprints refuse outright — there is no v1 transcript to fall back
+   * to, so "no fingerprint" can only ever mean "no phrase" (fail closed). */
   async function phrase(privateKey, peerPublicKey, transcript) {
+    const hostFingerprint = String(transcript.hostFingerprint || "");
+    const controllerFingerprint = String(transcript.controllerFingerprint || "");
+    if (!hostFingerprint || !controllerFingerprint) {
+      throw new Error("missing_party_fingerprint");
+    }
     const peer = await crypto.subtle.importKey("raw", decode(peerPublicKey),
       {name: "ECDH", namedCurve: "P-256"}, false, []);
     const secret = new Uint8Array(await crypto.subtle.deriveBits(
       {name: "ECDH", public: peer}, privateKey, 256));
     const context = encoder.encode([
-      "golden-balloon-party-sas-v1", transcript.roomId,
+      "golden-balloon-party-sas-v2", transcript.roomId,
       transcript.hostPublicKey, transcript.controllerPublicKey,
+      hostFingerprint, controllerFingerprint,
     ].join("\0"));
     const material = new Uint8Array(secret.byteLength + context.byteLength);
     material.set(secret); material.set(context, secret.byteLength);
@@ -55,5 +94,5 @@
       `${LEFT[(value >>> 5) & 31]}-${RIGHT[value & 31]}`;
   }
 
-  root.MDKRPartySas = Object.freeze({createIdentity, phrase});
+  root.MDKRPartySas = Object.freeze({createIdentity, phrase, sdpFingerprint});
 })(typeof globalThis !== "undefined" ? globalThis : this);

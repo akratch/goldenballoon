@@ -13,10 +13,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -24,6 +26,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -35,6 +38,17 @@ using Clock = std::chrono::steady_clock;
 constexpr size_t kMaxQueuedEvents = 128u;
 constexpr size_t kMaxSignalBytes = 64u * 1024u;
 constexpr size_t kMaxControlBytes = 4096u;
+/*
+ * Channel protocol: the version tag inside the direct data-channel messages
+ * (controller_ready/host_ready/ping/pong/rumble). This is a SEPARATE
+ * namespace from the HTTP redemption "pairing protocol" (room-model.ts,
+ * now 2 = SAS v2) and from the Worker-internal x-mdkr-internal-api header
+ * version. The pairing protocol and the internal header gate share the
+ * protocol_update_required refusal token; a channel mismatch instead sets
+ * the protocolMismatch latch and shows kMdkrPartyProtocolMismatchCopy
+ * (native_party_host.h). SAS v2 changed no channel message shape, so this
+ * stays 1.
+ */
 constexpr unsigned kProtocol = 1u;
 
 const std::array<const char *, 32> kLeft = {{
@@ -78,6 +92,44 @@ uint64_t steadyNowMs() {
         Clock::now().time_since_epoch()).count());
 }
 
+/* M4 goodbye flush. closeRoom()'s send only QUEUES the close command:
+ * rtc::WebSocket::send hands the frame to libdatachannel's writer and
+ * returns, and the caller (the host model's closeRoom() and destructor
+ * both) tears the socket down right after. Completion signal, verified
+ * against the pinned dep (mdkr_libdatachannel-src): rtc::Channel::
+ * bufferedAmount() is the "total size buffered to send"
+ * (include/rtc/channel.hpp:34); for a WebSocket it is wired to the TCP
+ * layer (src/impl/websocket.cpp:235, onBufferedAmount ->
+ * triggerBufferedAmount), which adds each message on send
+ * (src/impl/tcptransport.cpp:134) and subtracts only as bytes actually
+ * reach the OS socket (src/impl/tcptransport.cpp:315,320). So
+ * bufferedAmount()==0 after our send means every queued byte -- the close
+ * frame included -- has left the process; there is no per-send completion
+ * callback in this API, so a short poll against that counter is the whole
+ * mechanism. The loop is bounded twice over: by the total sleep it
+ * requests AND by the observed wall clock (an oversleeping OS cannot
+ * stretch it), because quit must never block past the deadline.
+ * tests/test_native_party_sas.cpp drives this exact loop through
+ * mdkr_party_close_flush_wait_for_test with a fake clock. */
+constexpr uint64_t kCloseFlushPollMs = 5u;
+
+uint64_t closeFlushWait(const std::function<uint64_t()> &nowMs,
+                        const std::function<size_t()> &bufferedBytes,
+                        const std::function<void(uint64_t)> &sleepMs) {
+    constexpr uint64_t deadline = kMdkrPartyCloseFlushDeadlineMs;
+    uint64_t slept = 0u;
+    const uint64_t start = nowMs();
+    while (bufferedBytes() > 0u && slept < deadline) {
+        const uint64_t elapsed = nowMs() - start;
+        if (elapsed >= deadline) break;
+        const uint64_t nap = std::min(
+            kCloseFlushPollMs, std::min(deadline - slept, deadline - elapsed));
+        sleepMs(nap);
+        slept += nap;
+    }
+    return slept;
+}
+
 uint64_t wallExpiryToSteady(uint64_t expiresAtMs) {
     const uint64_t wall = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -101,6 +153,167 @@ bool uintValue(const Json &object, const char *key, uint64_t &output,
     if (found == object.end() || !found->is_number_unsigned()) return false;
     output = found->get<uint64_t>();
     return output <= maximum;
+}
+
+/* I3: bound for the worker's typed host_command_result error code. The
+ * longest real code today (services/party/src/types.ts) is well under this;
+ * anything larger is not a code the host could ever map to copy anyway. */
+constexpr size_t kMaxErrorCodeBytes = 64u;
+
+/*
+ * host_command_result{ok:false} -> CommandRejected. Returns false when the
+ * message is not a failed host_command_result at all (successes never send
+ * a result event; the room_state transition is the acknowledgement). The
+ * worker's `error` field is a typed code (party-room.ts commandError), not
+ * prose: it rides errorCode VERBATIM for the host's per-code copy table. A
+ * missing, non-string, or oversized code degrades to the empty "unknown"
+ * code rather than rejecting the event -- an unrecognized future code must
+ * never hide the failure itself -- and the generic prose stays on the
+ * event as exactly that fallback.
+ *
+ * The worker also echoes the failed command's identity (party-room.ts
+ * commandIdentity): the command name always, the controller id when the
+ * command targeted one. Both ride the event verbatim so the host can scope
+ * its cleanup to exactly the command that failed instead of clearing the
+ * whole room. Identity degrades to absent under the same rule as the code:
+ * it must never hide the failure itself.
+ */
+bool commandRejectionFromSignal(const Json &value,
+                                MdkrPartyTransportEvent &event) {
+    if (value.value("type", std::string{}) != "host_command_result" ||
+        value.value("ok", true) != false) {
+        return false;
+    }
+    event.type = MdkrPartyTransportEventType::CommandRejected;
+    event.message = "That controller action did not complete. Try again.";
+    std::string code;
+    if (safeString(value, "error", code, kMaxErrorCodeBytes,
+                   /*required=*/false)) {
+        event.errorCode = std::move(code);
+    }
+    std::string command;
+    if (safeString(value, "command", command, kMaxErrorCodeBytes,
+                   /*required=*/false)) {
+        event.command = std::move(command);
+    }
+    std::string controllerId;
+    if (safeString(value, "controllerId", controllerId, 64u,
+                   /*required=*/false)) {
+        event.controllerId = std::move(controllerId);
+    }
+    return true;
+}
+
+/*
+ * controller_ready classification, shared by the live control channel
+ * (controlMessage below) and the mdkr_party_controller_ready_event_for_test
+ * seam. Only a controller_ready addressed to this exact peer -- matching
+ * controllerId AND connectionSequence -- produces an event at all; anything
+ * else stays ignored exactly as before. A matching peer that declares any
+ * channel-protocol version but kProtocol becomes ControllerProtocolMismatch
+ * (I2) rather than the pre-fix silent drop, which left the phone healthy at
+ * the WebRTC layer while its seat sat in an indistinguishable
+ * "Reconnecting" forever. May throw on malformed JSON field types; both
+ * callers already run it under a catch-all.
+ */
+bool controllerReadyEventFromControl(const Json &value,
+                                     const std::string &peerId,
+                                     uint32_t connectionSequence,
+                                     MdkrPartyTransportEvent &event) {
+    if (value.value("type", std::string{}) != "controller_ready" ||
+        value.value("controllerId", std::string{}) != peerId ||
+        value.value("connectionSequence", 0u) != connectionSequence) {
+        return false;
+    }
+    const unsigned theirProtocol = value.value("protocol", 0u);
+    if (theirProtocol != kProtocol) {
+        event.type = MdkrPartyTransportEventType::ControllerProtocolMismatch;
+        event.controllerId = peerId;
+        event.theirProtocol = theirProtocol;
+        return true;
+    }
+    event.type = MdkrPartyTransportEventType::ControllerConnected;
+    event.controllerId = peerId;
+    event.haptics = value.contains("capabilities") &&
+        value["capabilities"].is_object() &&
+        value["capabilities"].value("vibration", false);
+    return true;
+}
+
+/*
+ * SAS v2 fingerprint capture (I-1). Canonical form, agreed byte-for-byte
+ * with the controller page: the value string after "a=fingerprint:" with
+ * single spaces, algorithm token verbatim, hex uppercased -- e.g.
+ * "sha-256 AB:CD:...". Only lines that BEGIN with the attribute count; a
+ * line that begins with it but does not parse, or two lines that disagree,
+ * refuse the whole description. Refusal is the empty string, which every
+ * caller treats as "no phrase" -- the fail-closed arm; a description this
+ * parser cannot vouch for must never anchor a verification phrase.
+ */
+bool canonicalFingerprintValue(const std::string &line, std::string &output) {
+    std::vector<std::string> tokens;
+    std::string token;
+    for (const char byte : line) {
+        if (byte == ' ' || byte == '\t') {
+            if (!token.empty()) {
+                tokens.push_back(token);
+                token.clear();
+            }
+        } else {
+            token.push_back(byte);
+        }
+    }
+    if (!token.empty()) tokens.push_back(token);
+    if (tokens.size() != 2u) return false;
+    const std::string &algorithm = tokens[0];
+    std::string value = tokens[1];
+    if (algorithm.size() > 32u || value.size() > 512u) return false;
+    for (const char byte : algorithm) {
+        if (std::isalnum(static_cast<unsigned char>(byte)) == 0 &&
+            byte != '-') {
+            return false;
+        }
+    }
+    /* The fingerprint itself: hex pairs separated by single colons. */
+    if (value.size() < 2u || (value.size() + 1u) % 3u != 0u) return false;
+    for (size_t index = 0u; index < value.size(); index++) {
+        if ((index + 1u) % 3u == 0u) {
+            if (value[index] != ':') return false;
+        } else {
+            const unsigned char byte = static_cast<unsigned char>(value[index]);
+            if (std::isxdigit(byte) == 0) return false;
+            value[index] = static_cast<char>(std::toupper(byte));
+        }
+    }
+    output = algorithm + ' ' + value;
+    return true;
+}
+
+std::string canonicalSdpFingerprint(const std::string &sdp) {
+    static constexpr char kPrefix[] = "a=fingerprint:";
+    constexpr size_t kPrefixLength = sizeof(kPrefix) - 1u;
+    std::string canonical;
+    size_t start = 0u;
+    for (;;) {
+        size_t end = sdp.find('\n', start);
+        if (end == std::string::npos) end = sdp.size();
+        size_t stop = end;
+        if (stop > start && sdp[stop - 1u] == '\r') stop--;
+        if (stop - start >= kPrefixLength &&
+            sdp.compare(start, kPrefixLength, kPrefix) == 0) {
+            std::string value;
+            if (!canonicalFingerprintValue(
+                    sdp.substr(start + kPrefixLength,
+                               stop - start - kPrefixLength), value)) {
+                return std::string{};
+            }
+            if (!canonical.empty() && canonical != value) return std::string{};
+            canonical = std::move(value);
+        }
+        if (end >= sdp.size()) break;
+        start = end + 1u;
+    }
+    return canonical;
 }
 
 std::string base64Url(const uint8_t *bytes, size_t length) {
@@ -220,8 +433,26 @@ public:
 
     const std::string &publicKey() const { return encodedPublicKey_; }
 
+    /*
+     * SAS v2 (I-1): the phrase commits to the DTLS channel itself, not just
+     * the signaling identities, so a relay that substituted either
+     * certificate moves the words on one screen. Transcript layout (pinned
+     * byte-for-byte against the controller page's derivation by
+     * tests/test_native_party_sas.cpp):
+     *   ECDH_secret ‖ label ‖ 0x00 ‖ roomId ‖ 0x00 ‖ hostPublicKey ‖ 0x00 ‖
+     *   controllerPublicKey ‖ 0x00 ‖ hostFingerprint ‖ 0x00 ‖
+     *   controllerFingerprint
+     * A missing fingerprint refuses outright: there is no v1 transcript
+     * left in this build to fall back to, so "no fingerprint" can only ever
+     * mean "no phrase" (fail closed).
+     */
     bool phrase(const std::string &peerEncoded, const std::string &roomId,
+                const std::string &hostFingerprint,
+                const std::string &controllerFingerprint,
                 std::string &result) {
+        if (hostFingerprint.empty() || controllerFingerprint.empty()) {
+            return false;
+        }
         std::array<uint8_t, 65> peerBytes{};
         if (!decodePublicKey(peerEncoded, peerBytes)) return false;
         mbedtls_ecp_point peer;
@@ -240,8 +471,9 @@ public:
         mbedtls_ecp_point_free(&peer);
         if (!wrote) return false;
 
-        const std::string context = std::string("golden-balloon-party-sas-v1") +
-            '\0' + roomId + '\0' + encodedPublicKey_ + '\0' + peerEncoded;
+        const std::string context = std::string("golden-balloon-party-sas-v2") +
+            '\0' + roomId + '\0' + encodedPublicKey_ + '\0' + peerEncoded +
+            '\0' + hostFingerprint + '\0' + controllerFingerprint;
         std::array<uint8_t, 32> digest{};
         mbedtls_sha256_context hash;
         mbedtls_sha256_init(&hash);
@@ -282,6 +514,14 @@ struct Peer {
     uint32_t peerGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
+    /* I2: this peer's controller_ready declared a different channel-protocol
+     * version. It is connected-but-wrong-version, not stranded: the C3
+     * unanswered-offer ladder must leave it alone (no recreate, no resend,
+     * no give-up -- none of those can close a version gap). Cleared only by
+     * a later controller_ready that matches on this same channel; the usual
+     * recovery -- the phone reloading into a matching page -- arrives as a
+     * fresh peer (createPeer / room-state retirement), flag clear. */
+    bool protocolMismatch = false;
     uint32_t pingNonce = 0u;
     Clock::time_point nextPingAt{};
     Clock::time_point pingOutstandingAt{};
@@ -323,8 +563,56 @@ public:
         }
         const std::string encoded = message.dump();
         if (encoded.size() > kMaxControlBytes) return false;
-        try { return socket->send(encoded); }
+        bool sent = false;
+        try { sent = socket->send(encoded); }
         catch (...) { return false; }
+        if (!sent) return false;
+        /* M7 socket-cap headroom: every message the Worker receives on this
+         * socket counts toward its 512-lifetime-message hard close
+         * (party-room.ts SIGNAL_LIFETIME_MESSAGES), and this is the one
+         * choke point where the host sends any. Count per socket and, 32
+         * messages short of the cap, ask tick() to recycle the socket
+         * through the same resume ladder a network drop uses. Only latched
+         * for a resumable socket (credential_ set): the short-lived create
+         * socket has no resume path to cycle through. The latch is consumed
+         * on the launcher thread, not here -- command() may be running
+         * inside a libdatachannel callback, where closing the very socket
+         * that is calling back invites a deadlock. */
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (socket == socket_ && !shuttingDown_) {
+            socketSentMessages_++;
+            if (!credential_.empty() &&
+                mdkr_party_socket_cycle_due(socketSentMessages_)) {
+                socketCyclePending_ = true;
+            }
+        }
+        return true;
+    }
+
+    /* M4: bounded flush of the just-queued close command -- see
+     * closeFlushWait above for the completion signal and both bounds. Runs
+     * on the launcher thread, only on the explicit close/quit path. */
+    void flushCloseCommand() {
+        std::shared_ptr<rtc::WebSocket> socket;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (shuttingDown_ || !socket_) return;
+            socket = socket_;
+        }
+        closeFlushWait(
+            []() { return steadyNowMs(); },
+            [&socket]() -> size_t {
+                /* A socket that dies mid-wait can never drain; report empty
+                 * so quit stops paying for it. */
+                try {
+                    return socket->isOpen() ? socket->bufferedAmount() : 0u;
+                } catch (...) {
+                    return 0u;
+                }
+            },
+            [](uint64_t ms) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+            });
     }
 
     bool sendRumble(const std::string &id, uint16_t strength) {
@@ -409,6 +697,11 @@ private:
             generation = ++generation_;
             socket_ = socket;
             creating_ = create;
+            /* M7: the Worker's 512-message lifetime cap is per socket, so
+             * the replacement starts a fresh count -- which is also what
+             * re-arms the edge-shaped cycle trigger. */
+            socketSentMessages_ = 0u;
+            socketCyclePending_ = false;
         }
         const std::weak_ptr<TransportState> weak = shared_from_this();
         socket->onOpen([weak, generation]() {
@@ -442,6 +735,13 @@ private:
             if (generation != generation_ || shuttingDown_) return;
             reconnectAttempt_ = 0u;
             reconnectAt_ = Clock::time_point{};
+            /* I4: a completed upgrade is the service saying yes -- the only
+             * thing that ever resets the consecutive-refusal streak (and
+             * its first-refusal timestamp) the resume policy weighs toward
+             * its terminal verdict. */
+            resumeRejected_ = false;
+            resumeRejections_ = 0u;
+            firstResumeRejectedMs_ = 0u;
             /* C3: the socket just (re)opened. Any still-unauthenticated
              * peer with an outstanding offer may have had that offer
              * dropped by the Worker while the socket was down -- resend it
@@ -453,19 +753,43 @@ private:
                 if (peer->failed || peer->gaveUp) continue;
                 const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
                     steadyNowMs(), peer->offerSentMs, peer->offerAttempts,
-                    peer->authenticated, /*socketOpen=*/true);
+                    peer->authenticated, peer->protocolMismatch,
+                    /*socketOpen=*/true);
                 if (decision.resendOffer) pendingOffers.push_back(peer);
             }
         }
         for (const auto &peer : pendingOffers) resendOffer(peer);
     }
 
-    void socketError(uint64_t generation, const std::string &) {
+    void socketError(uint64_t generation, const std::string &reason) {
         bool fatal = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (generation != generation_ || shuttingDown_) return;
             fatal = creating_ && credential_.empty();
+            /* I4 classification. libdatachannel folds EVERY HTTP-refused
+             * WebSocket upgrade -- the Worker/room's 404 not_found for a
+             * deleted or expired room, its 401 for a credential that can
+             * never re-validate, alike -- into this one onError string; the
+             * actual status code is logged and swallowed (wshandshake.cpp
+             * throws on any non-101, wstransport.cpp catches it and fails
+             * the handshake, websocket.cpp maps that state to this exact
+             * text). Network-level failures arrive as different strings
+             * ("TCP connection failed", "TLS connection failed",
+             * "Connection timed out") and typed close frames lose their
+             * code and reason entirely, so "the service itself refused this
+             * resume handshake" is precisely -- and only -- this string on
+             * a non-create socket. socketClosed(), which libdatachannel
+             * fires right after this callback, feeds the latch to
+             * mdkr_party_resume_decide. The load-bearing literals -- this
+             * one and the network-level trio -- are pinned at configure
+             * time against the dependency's own source
+             * (cmake/datachannel.cmake), so a libdatachannel bump that
+             * rewords them fails the build instead of silently reverting
+             * gone-room detection to always-retry. */
+            if (!creating_ && reason == "WebSocket connection failed") {
+                resumeRejected_ = true;
+            }
         }
         if (fatal) {
             MdkrPartyTransportEvent event;
@@ -477,28 +801,68 @@ private:
 
     void socketClosed(uint64_t generation) {
         bool recover = false;
+        bool gone = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (generation != generation_ || shuttingDown_) return;
             socket_.reset();
-            recover = !credential_.empty();
-            if (recover) {
+            /* I4: once the terminal verdict is in, later stray closes have
+             * nothing to add -- and must not enqueue a Recovering/Error
+             * that would overwrite the host's RoomEnded surface. */
+            if (roomGone_) return;
+            /* Consume the per-attempt refusal latch socketError set just
+             * before this callback, and let the pure resume policy
+             * (party_retry_policy.h) decide between the existing bounded
+             * ladder and the terminal verdict. A network-level failure
+             * (rejected == false) neither advances nor resets the streak:
+             * it proved nothing about the room. roomGone_ latches so a
+             * terminal room can never re-enter the ladder, whatever late
+             * callbacks still fire. */
+            const bool rejected = resumeRejected_;
+            resumeRejected_ = false;
+            if (!credential_.empty()) {
+                const uint64_t nowSteadyMs = steadyNowMs();
+                if (rejected) {
+                    resumeRejections_++;
+                    /* I-1: the streak's first refusal starts the 30 s
+                     * wall-clock floor the terminal verdict must also
+                     * clear. Same steady clock as everything else here. */
+                    if (firstResumeRejectedMs_ == 0u) {
+                        firstResumeRejectedMs_ = nowSteadyMs;
+                    }
+                }
                 reconnectAttempt_ = std::min(reconnectAttempt_ + 1u, 6u);
-                const unsigned delay = std::min(8000u,
-                    300u * (1u << std::min(reconnectAttempt_ - 1u, 5u)));
-                reconnectAt_ = Clock::now() + std::chrono::milliseconds(delay);
+                const MdkrPartyResumeDecision decision = mdkr_party_resume_decide(
+                    reconnectAttempt_, rejected, resumeRejections_,
+                    nowSteadyMs, firstResumeRejectedMs_);
+                if (decision.terminal) {
+                    roomGone_ = true;
+                    reconnectAt_ = Clock::time_point{};
+                    gone = true;
+                } else if (decision.retry) {
+                    reconnectAt_ = Clock::now() +
+                        std::chrono::milliseconds(decision.delayMs);
+                    recover = true;
+                }
             }
         }
         MdkrPartyTransportEvent event;
-        event.type = recover ? MdkrPartyTransportEventType::Recovering
-                             : MdkrPartyTransportEventType::Error;
-        event.message = recover ? "Controller room reconnecting."
-                                : "Phone controller room closed before it was ready.";
+        if (gone) {
+            event.type = MdkrPartyTransportEventType::RoomGone;
+            event.message = kMdkrPartyRoomEndedCopy;
+        } else {
+            event.type = recover ? MdkrPartyTransportEventType::Recovering
+                                 : MdkrPartyTransportEventType::Error;
+            event.message = recover
+                ? "Controller room reconnecting."
+                : "Phone controller room closed before it was ready.";
+        }
         enqueue(std::move(event));
     }
 
     void tick() {
         bool reconnect = false;
+        std::shared_ptr<rtc::WebSocket> cycleSocket;
         std::vector<std::shared_ptr<Peer>> ping;
         std::vector<std::shared_ptr<Peer>> expired;
         std::vector<std::shared_ptr<Peer>> timedOut;
@@ -509,9 +873,23 @@ private:
                 now.time_since_epoch()).count());
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            reconnect = !shuttingDown_ && !socket_ && !credential_.empty() &&
+            /* I4: !roomGone_ is belt-and-suspenders -- the terminal verdict
+             * already cleared reconnectAt_ -- so a gone room can never open
+             * another socket from here no matter what else runs. */
+            reconnect = !shuttingDown_ && !roomGone_ && !socket_ &&
+                !credential_.empty() &&
                 reconnectAt_ != Clock::time_point{} && now >= reconnectAt_;
             if (reconnect) reconnectAt_ = Clock::time_point{};
+            /* M7: consume the proactive-recycle latch command() set at the
+             * headroom threshold. Consumed exactly once (the flag drops
+             * here whatever happens next), on this thread, outside any
+             * libdatachannel callback. */
+            if (socketCyclePending_) {
+                socketCyclePending_ = false;
+                if (!shuttingDown_ && !roomGone_ && socket_) {
+                    cycleSocket = socket_;
+                }
+            }
             for (const auto &entry : peers_) {
                 const std::shared_ptr<Peer> &peer = entry.second;
                 if (peer->failed) continue;
@@ -525,7 +903,8 @@ private:
                     if (!peer->gaveUp) {
                         const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
                             nowMs, peer->offerSentMs, peer->offerAttempts,
-                            /*authenticated=*/false, /*socketOpen=*/false);
+                            /*authenticated=*/false, peer->protocolMismatch,
+                            /*socketOpen=*/false);
                         if (decision.giveUp) {
                             peer->gaveUp = true;
                             timedOut.push_back(peer);
@@ -551,6 +930,16 @@ private:
                     ping.push_back(peer);
                 }
             }
+        }
+        /* M7: the proactive recycle IS the network-drop path from here on:
+         * this close fires the socket's own onClosed, and socketClosed()'s
+         * existing ladder schedules the resume that opens the replacement.
+         * A clean close is not a refusal -- socketError never ran, so the
+         * I4 refusal streak (resumeRejected_/resumeRejections_) is exactly
+         * as untouched as it is for any live-socket drop; the policy side
+         * of that is pinned in test_party_transport_retry.cpp. */
+        if (cycleSocket) {
+            try { cycleSocket->close(); } catch (...) {}
         }
         if (reconnect) (void)connect(false);
         for (const auto &peer : timedOut) {
@@ -598,12 +987,11 @@ private:
             else if (type == "controller_hello") handleHello(value);
             else if (type == "webrtc_answer") handleAnswer(value);
             else if (type == "webrtc_ice") handleIce(value);
-            else if (type == "host_command_result" &&
-                     value.value("ok", true) == false) {
+            else if (type == "host_command_result") {
                 MdkrPartyTransportEvent event;
-                event.type = MdkrPartyTransportEventType::CommandRejected;
-                event.message = "That controller action did not complete. Try again.";
-                enqueue(std::move(event));
+                if (commandRejectionFromSignal(value, event)) {
+                    enqueue(std::move(event));
+                }
             }
         } catch (...) {
             MdkrPartyTransportEvent event;
@@ -714,14 +1102,14 @@ private:
             controller.seat = static_cast<unsigned>(seat);
             controller.leaseGeneration = static_cast<uint32_t>(lease);
             controller.connectionSequence = static_cast<uint32_t>(connection);
-            std::string phrase;
-            std::string currentRoom;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                currentRoom = roomId_;
-            }
-            if (!identity_.phrase(controller.publicKey, currentRoom, phrase)) return false;
-            controller.pairingPhrase = std::move(phrase);
+            /* SAS v2: no phrase here. It binds both DTLS fingerprints,
+             * which do not exist until this controller's WebRTC
+             * descriptions are exchanged -- emitPhrase (from handleAnswer)
+             * is the one derivation site. The key itself is still validated
+             * as a curve point so a malformed room update fails closed
+             * exactly as it always has. */
+            std::array<uint8_t, 65> keyBytes{};
+            if (!decodePublicKey(controller.publicKey, keyBytes)) return false;
             room.controllers.push_back(std::move(controller));
         }
         const uint64_t nowSteady = steadyNowMs();
@@ -763,6 +1151,12 @@ private:
                     ++iterator;
                 }
             }
+            /* M3: retire this roster's hellos along with its peers --
+             * signaled_ otherwise grows by one id per phone for the room's
+             * whole life (it was cleared only at shutdown). An id outside
+             * the roster has nothing left to vouch for: a phone that
+             * returns says controller_hello again. */
+            (void)mdkr_party_prune_signaled_ids(signaled_, controllers_);
         }
         for (const auto &peer : retired) {
             if (peer->connection) peer->connection->close();
@@ -995,28 +1389,37 @@ private:
         Json value = Json::parse(text, nullptr, false);
         if (value.is_discarded() || !value.is_object()) return;
         try {
-            if (value.value("type", std::string{}) == "controller_ready" &&
-                value.value("protocol", 0u) == kProtocol &&
-                value.value("controllerId", std::string{}) == peer->id &&
-                value.value("connectionSequence", 0u) == peer->connectionSequence) {
-                const bool haptics = value.contains("capabilities") &&
-                    value["capabilities"].is_object() &&
-                    value["capabilities"].value("vibration", false);
-                MdkrPartyTransportEvent event;
-                event.type = MdkrPartyTransportEventType::ControllerConnected;
-                event.controllerId = peer->id;
-                event.haptics = haptics;
-                enqueue(std::move(event));
+            MdkrPartyTransportEvent ready;
+            if (controllerReadyEventFromControl(
+                    value, peer->id, peer->connectionSequence, ready)) {
+                const bool matched = ready.type ==
+                    MdkrPartyTransportEventType::ControllerConnected;
+                enqueue(std::move(ready));
                 {
                     std::lock_guard<std::mutex> lock(mutex_);
                     const auto found = peers_.find(peer->id);
                     if (found != peers_.end() && found->second == peer) {
-                        peer->authenticated = true;
-                        peer->pingOutstandingAt = Clock::time_point{};
-                        peer->nextPingAt = Clock::now() + std::chrono::seconds(5);
+                        peer->protocolMismatch = !matched;
+                        if (matched) {
+                            peer->authenticated = true;
+                            peer->pingOutstandingAt = Clock::time_point{};
+                            peer->nextPingAt =
+                                Clock::now() + std::chrono::seconds(5);
+                        }
                     }
                 }
-                peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
+                if (matched) {
+                    peer->control->send(Json{{"type", "controller_ready_ack"}}.dump());
+                }
+                /* I2 mismatch: no ack and no authentication, but the peer is
+                 * left standing for the mismatch's whole lifetime -- the
+                 * protocolMismatch latch keeps the C3 unanswered-offer
+                 * ladder (tick()/socketOpened via mdkr_party_retry_decide)
+                 * from recreating or giving up on it, since its offer WAS
+                 * answered and no retry can close a version gap. The phone
+                 * may simply reload into a page version that matches and
+                 * complete controller_ready then, arriving as a fresh
+                 * peer. */
             } else if (value.value("type", std::string{}) == "input_test" &&
                        value.contains("nonce") &&
                        value["nonce"].is_number_unsigned()) {
@@ -1060,7 +1463,65 @@ private:
             peer = found->second;
         }
         try { peer->connection->setRemoteDescription(rtc::Description(sdp, type)); }
-        catch (...) { peerDisconnected(peer, true); }
+        catch (...) {
+            peerDisconnected(peer, true);
+            return;
+        }
+        emitPhrase(peer, sdp);
+    }
+
+    /*
+     * SAS v2 derivation site -- the capture point. Both descriptions are set
+     * exactly here: the local offer existed before this answer could arrive
+     * (createDataChannel set it, onLocalDescription sent it), and
+     * handleAnswer just applied the remote one, so this is the earliest
+     * moment both DTLS fingerprints exist. The controller fingerprint is
+     * read from the answer's own SDP text (the very bytes just applied),
+     * the host fingerprint from the connection's local description. Any
+     * missing or ambiguous piece means NO ControllerPhrase event at all:
+     * the seat simply never shows a phrase (fail closed -- the v1
+     * derivation no longer exists in this build to fall back to). A
+     * reconnect re-enters through a fresh answer and re-emits with the new
+     * channel's fingerprints.
+     */
+    void emitPhrase(const std::shared_ptr<Peer> &peer,
+                    const std::string &answerSdp) {
+        const std::string controllerFingerprint =
+            canonicalSdpFingerprint(answerSdp);
+        std::string hostSdp;
+        try {
+            const std::optional<rtc::Description> description =
+                peer->connection->localDescription();
+            if (description) hostSdp = std::string(*description);
+        } catch (...) {
+            return;
+        }
+        const std::string hostFingerprint = canonicalSdpFingerprint(hostSdp);
+        std::string controllerKey;
+        std::string room;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = controllers_.find(peer->id);
+            if (found != controllers_.end()) {
+                controllerKey = found->second.publicKey;
+            }
+            room = roomId_;
+        }
+        std::string phrase;
+        /* room.empty() is unreachable today -- an answer presupposes the
+         * bootstrap that set roomId_ -- but a transcript with a vacant
+         * field must stay impossible by construction, not by call order. */
+        if (controllerFingerprint.empty() || hostFingerprint.empty() ||
+            controllerKey.empty() || room.empty() ||
+            !identity_.phrase(controllerKey, room, hostFingerprint,
+                              controllerFingerprint, phrase)) {
+            return;
+        }
+        MdkrPartyTransportEvent event;
+        event.type = MdkrPartyTransportEventType::ControllerPhrase;
+        event.controllerId = peer->id;
+        event.message = std::move(phrase);
+        enqueue(std::move(event));
     }
 
     void handleIce(const Json &value) {
@@ -1148,6 +1609,24 @@ private:
     uint32_t peerGeneration_ = 0u;
     unsigned reconnectAttempt_ = 0u;
     Clock::time_point reconnectAt_{};
+    /* I4 resume classification (mdkr_party_resume_decide): the per-attempt
+     * "the service refused this upgrade" latch socketError sets and
+     * socketClosed consumes; the consecutive-refusal streak and its
+     * first-refusal timestamp (steadyNowMs domain, 0 = none standing) that
+     * only a successful open resets; and the terminal latch after which
+     * this transport never opens another socket. */
+    bool resumeRejected_ = false;
+    unsigned resumeRejections_ = 0u;
+    uint64_t firstResumeRejectedMs_ = 0u;
+    bool roomGone_ = false;
+    /* M7 socket-cap headroom: outbound messages sent on the CURRENT host
+     * socket (the Worker hard-closes a socket at 512 lifetime messages,
+     * party-room.ts SIGNAL_LIFETIME_MESSAGES), and the recycle latch
+     * command() sets at mdkr_party_socket_cycle_due's 480 threshold.
+     * Consumed by tick() on the launcher thread; both reset with each new
+     * socket in connect(). */
+    unsigned socketSentMessages_ = 0u;
+    bool socketCyclePending_ = false;
     bool creating_ = false;
     bool shuttingDown_ = false;
 };
@@ -1185,7 +1664,13 @@ public:
         return sendHostCommand("revoke", "");
     }
     bool closeRoom() override {
-        return sendHostCommand("close", "");
+        /* M4: the send only queued the goodbye; give it its bounded
+         * (kMdkrPartyCloseFlushDeadlineMs) chance to reach the wire before
+         * the caller hangs up, so the worker can relay host_closed to the
+         * phones instead of them meeting a silent socket drop. */
+        if (!sendHostCommand("close", "")) return false;
+        if (state_) state_->flushCloseCommand();
+        return true;
     }
     bool sendRumble(const std::string &id, uint16_t strength) override {
         return state_ && state_->sendRumble(id, strength);
@@ -1224,10 +1709,60 @@ std::string mdkr_party_signaling_url_for_test(
 
 bool mdkr_party_sas_phrase_for_test(
     const uint8_t privateScalar[32], const std::string &roomId,
-    const std::string &controllerPublicKey, std::string &hostPublicKey,
-    std::string &phrase) {
+    const std::string &controllerPublicKey,
+    const std::string &hostFingerprint,
+    const std::string &controllerFingerprint,
+    std::string &hostPublicKey, std::string &phrase) {
     PartyIdentity identity;
     if (!identity.loadPrivateForTest(privateScalar)) return false;
     hostPublicKey = identity.publicKey();
-    return identity.phrase(controllerPublicKey, roomId, phrase);
+    return identity.phrase(controllerPublicKey, roomId, hostFingerprint,
+                           controllerFingerprint, phrase);
+}
+
+std::string mdkr_party_sdp_fingerprint_for_test(const std::string &sdp) {
+    return canonicalSdpFingerprint(sdp);
+}
+
+uint64_t mdkr_party_close_flush_wait_for_test(
+    const std::function<uint64_t()> &nowMs,
+    const std::function<size_t()> &bufferedBytes,
+    const std::function<void(uint64_t)> &sleepMs) {
+    return closeFlushWait(nowMs, bufferedBytes, sleepMs);
+}
+
+bool mdkr_party_host_command_rejection_for_test(
+    const std::string &text, MdkrPartyTransportEvent &event) {
+    const Json value = Json::parse(text, nullptr, false);
+    if (value.is_discarded() || !value.is_object()) return false;
+    /* Same guard the socket path's outer try gives the shared parser. */
+    try { return commandRejectionFromSignal(value, event); }
+    catch (...) { return false; }
+}
+
+bool mdkr_party_controller_ready_event_for_test(
+    const std::string &text, const std::string &controllerId,
+    uint32_t connectionSequence, MdkrPartyTransportEvent &event) {
+    const Json value = Json::parse(text, nullptr, false);
+    if (value.is_discarded() || !value.is_object()) return false;
+    /* Same guard the control channel's outer try gives the shared parser. */
+    try {
+        return controllerReadyEventFromControl(
+            value, controllerId, connectionSequence, event);
+    } catch (...) { return false; }
+}
+
+size_t mdkr_party_prune_signaled_ids(
+    std::set<std::string> &signaled,
+    const std::map<std::string, MdkrNativePartyController> &roster) {
+    size_t pruned = 0u;
+    for (auto iterator = signaled.begin(); iterator != signaled.end();) {
+        if (roster.count(*iterator) == 0u) {
+            iterator = signaled.erase(iterator);
+            pruned++;
+        } else {
+            ++iterator;
+        }
+    }
+    return pruned;
 }

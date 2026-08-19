@@ -50,7 +50,6 @@
   let removeReturnFocus = null;
   let removeControllerId = "";
   const pairingPhrases = new Map();
-  const phraseTasks = new Map();
   const peers = new Map();
   const pageBoundRequests = new Set();
   let peerGeneration = 0;
@@ -413,6 +412,9 @@
       try { peer.pc.close(); } catch (_) {}
     }
     peers.delete(controllerId);
+    // The phrase vouched for that exact channel. A legitimate reconnect
+    // re-derives fresh words from its own answer; a refused one shows none.
+    pairingPhrases.delete(controllerId);
     const controller = controllerById(controllerId) || peer?.controller;
     if (controller?.seat) {
       const pad = remotePads[controller.seat - 1];
@@ -669,6 +671,8 @@
           JSON.stringify(message.sdp).length <= 60 * 1024) {
         await peer.pc.setRemoteDescription(message.sdp);
         peer.remoteReady = true;
+        void bindPairingPhrase(controllerId, peer,
+          String(message.sdp?.sdp || ""));
       } else if (message.type === "webrtc_ice" && message.candidate &&
                  JSON.stringify(message.candidate).length <= 4096) {
         await peer.pc.addIceCandidate(message.candidate);
@@ -763,23 +767,43 @@
     return {label, select};
   }
 
-  function ensurePhrase(controller) {
-    if (!hostIdentity || !controller.controllerPublicKey ||
-        pairingPhrases.has(controller.controllerId) ||
-        phraseTasks.has(controller.controllerId) || !room?.roomId) return;
-    const task = globalThis.MDKRPartySas.phrase(
-      hostIdentity.privateKey, controller.controllerPublicKey, {
-        roomId: room.roomId, hostPublicKey: hostIdentity.publicKey,
-        controllerPublicKey: controller.controllerPublicKey,
-      }).then((value) => {
-        pairingPhrases.set(controller.controllerId, value);
-        phraseTasks.delete(controller.controllerId);
-        if (room) renderRoomState({...room, transitionId: room.transitionId});
-      }).catch(() => {
-        phraseTasks.delete(controller.controllerId);
-        announce("A phone sent an invalid pairing key. Decline it and scan again.");
-      });
-    phraseTasks.set(controller.controllerId, task);
+  /* SAS v2: the pairing phrase binds the direct channel itself — this
+   * host's fingerprint from the offer it sent, the phone's from the answer
+   * just applied — so it can only be derived once both descriptions are
+   * set, never at redemption. A description whose fingerprints cannot be
+   * canonicalized derives nothing: the seat shows no words rather than
+   * words that vouch for a channel they do not bind. */
+  async function bindPairingPhrase(controllerId, peer, answerSdp) {
+    const controller = controllerById(controllerId) || peer.controller;
+    if (!hostIdentity || !room?.roomId || !controller?.controllerPublicKey) return;
+    const hostFingerprint = globalThis.MDKRPartySas.sdpFingerprint(
+      peer.pc.localDescription?.sdp);
+    const controllerFingerprint = globalThis.MDKRPartySas.sdpFingerprint(answerSdp);
+    if (!hostFingerprint || !controllerFingerprint) {
+      // Same stale-peer guard as the success arm: a retired peer's late
+      // refusal must not delete or announce against its successor's state.
+      if (peers.get(controllerId) !== peer || peer.retired) return;
+      pairingPhrases.delete(controllerId);
+      if (room) renderRoomState({...room, transitionId: room.transitionId});
+      announce("A phone connection could not be verified. It shows no pairing phrase; remove the phone if one is expected.");
+      return;
+    }
+    try {
+      const value = await globalThis.MDKRPartySas.phrase(
+        hostIdentity.privateKey, controller.controllerPublicKey, {
+          roomId: room.roomId, hostPublicKey: hostIdentity.publicKey,
+          controllerPublicKey: controller.controllerPublicKey,
+          hostFingerprint, controllerFingerprint,
+        });
+      if (peers.get(controllerId) !== peer || peer.retired) return;
+      pairingPhrases.set(controllerId, value);
+      if (room) renderRoomState({...room, transitionId: room.transitionId});
+    } catch (_) {
+      if (peers.get(controllerId) !== peer || peer.retired) return;
+      pairingPhrases.delete(controllerId);
+      if (room) renderRoomState({...room, transitionId: room.transitionId});
+      announce("A phone sent an invalid pairing key. Remove it and pair again.");
+    }
   }
 
   const controllerPhases = new Set([
@@ -890,25 +914,22 @@
     pendingList.replaceChildren();
     $("party-pending-empty").hidden = pending.length !== 0;
     // The phrase-comparison instruction is the host half of the MITM defense:
-    // showing the phrase is decorative unless the operator is told to compare
-    // it and approve only on an exact match. Mirrors the native launcher.
+    // it teaches the v2 ritual — approve, let the phone connect, then compare
+    // the channel-bound phrase on both screens. Mirrors the native launcher.
     $("party-pending-instruction").hidden = pending.length === 0;
     for (const controller of pending) {
-      ensurePhrase(controller);
-      const verifiedPhrase = pairingPhrases.get(controller.controllerId) ||
-        controller.phrase || "Verifying…";
       const item = document.createElement("li");
       const copy = document.createElement("span");
       const name = document.createElement("strong");
       name.textContent = controller.name || "Phone controller";
       const phrase = document.createElement("small");
-      phrase.textContent = `Pairing phrase: ${verifiedPhrase}`;
+      phrase.textContent = "Phrase appears when the phone connects.";
       copy.append(name, phrase);
       const picker = seatPicker(controllers);
       item.append(copy,
         picker.label,
         button("Approve", "btn btn-primary", "approve", controller.controllerId,
-          verifiedPhrase === "Verifying…" || !picker.select.value,
+          !picker.select.value,
           () => ({seat: Number(picker.select.value)})),
         button("Decline", "btn btn-ghost", "reject", controller.controllerId));
       pendingList.append(item);
@@ -922,8 +943,14 @@
       const source = controller ? null : sources[seat - 1];
       tile.dataset.ready = controller || source ? "true" : "false";
       tile.querySelector("strong").textContent = controller?.name || `Controller ${seat}`;
+      const seatPhrase = controller &&
+        pairingPhrases.get(controller.controllerId);
       tile.querySelector("small").textContent = controller
-        ? (remotePads[seat - 1].active ? "Phone connected" : "Phone reconnecting — neutral")
+        ? (remotePads[seat - 1].active
+          ? (seatPhrase
+            ? `Phone connected — compare on both screens: ${seatPhrase}`
+            : "Phone connected")
+          : "Phone reconnecting — neutral")
         : (source || "Available");
       const remove = tile.querySelector(".party-seat-remove");
       remove.hidden = !controller;
@@ -1014,7 +1041,6 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
-    phraseTasks.clear();
     hostIdentity = null;
     setOverlayOpen(false);
     const expired = reason === "room_expired";
@@ -1155,11 +1181,9 @@
 
   async function control(action, controllerId, source, value = null) {
     if (!room) return;
-    if (action === "approve" && !pairingPhrases.has(controllerId) &&
-        !controllerById(controllerId)?.phrase) {
-      announce("Wait for the pairing phrase before approving this phone.");
-      return;
-    }
+    // No phrase gate on approve: the v2 phrase binds the direct channel,
+    // which only opens after approval. The ritual is approve, connect,
+    // then compare the phrase on both screens (mirrors the native host).
     if (source) source.disabled = true;
     try {
       await request(`/api/party/${room.roomId}/${action}`, {
@@ -1266,7 +1290,6 @@
     resetRemotePads();
     signaledControllers.clear();
     pairingPhrases.clear();
-    phraseTasks.clear();
     hostIdentity = null;
     if (ending) {
       void request(`/api/party/${ending.roomId}/close`, {

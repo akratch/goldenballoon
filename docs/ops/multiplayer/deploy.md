@@ -175,6 +175,17 @@ lifecycle change; this is why additive class migrations are isolated.
     10-second mitigation, require recovery, inspect shared-NAT false positives,
     then promote the identical rule. If the zone already uses its one free rule,
     stop for an explicit owner decision—do not delete or merge it implicitly.
+    After promotion, assert the rule is live with
+    `services/party/ops/verify-edge-rate-limit.sh` (environment-provided
+    `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID`; without credentials it exits 2
+    and refuses to claim success). Run it beside the
+    `tests/check_party_production_config.py` origin assertion on every
+    subsequent deploy: the rule is hand-applied zone state, not Worker code,
+    so nothing else notices when it silently disappears. In the same pass run
+    `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh` and require
+    `PASS`: the controller page's CSP is static-host header state that is just
+    as silent when it stops arriving, and without a reachable origin the probe
+    exits 2 rather than claim success.
 
 ## Promote and verify
 

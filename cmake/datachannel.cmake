@@ -112,6 +112,37 @@ if(WIN32)
     endif()
 endif()
 
+# The native Phone Party gone-room classifier (I4,
+# platform/party/libdatachannel_party_transport.cpp socketError) keys on the
+# exact onError strings this library emits: "WebSocket connection failed" is
+# the ONLY string a service-refused upgrade (the room DO's 404 for a
+# deleted/expired room, the Worker's 401) can produce, and the distinct
+# network-level strings are what keep genuinely transient failures on the
+# bounded reconnect ladder instead. A dependency bump that rewords any of
+# them would silently revert gone-room detection to always-retry with no
+# failing test, so pin the literals at configure time, same as the patch
+# checks above.
+file(READ "${mdkr_libdatachannel_SOURCE_DIR}/src/impl/websocket.cpp"
+    MDKR_LIBDATACHANNEL_ERROR_STRINGS_SOURCE)
+foreach(MDKR_PARTY_CLASSIFIER_LITERAL
+        "\"WebSocket connection failed\""
+        "\"TCP connection failed\""
+        "\"TLS connection failed\""
+        "\"Connection timed out\"")
+    string(FIND "${MDKR_LIBDATACHANNEL_ERROR_STRINGS_SOURCE}"
+        "${MDKR_PARTY_CLASSIFIER_LITERAL}" MDKR_PARTY_CLASSIFIER_LITERAL_AT)
+    if(MDKR_PARTY_CLASSIFIER_LITERAL_AT EQUAL -1)
+        message(FATAL_ERROR
+            "libdatachannel websocket.cpp no longer contains the literal "
+            "${MDKR_PARTY_CLASSIFIER_LITERAL} that the Phone Party gone-room "
+            "classifier (libdatachannel_party_transport.cpp socketError, I4) "
+            "keys on. Re-verify the library's onError strings and update the "
+            "classifier and this pin together.")
+    endif()
+endforeach()
+unset(MDKR_LIBDATACHANNEL_ERROR_STRINGS_SOURCE)
+unset(MDKR_PARTY_CLASSIFIER_LITERAL_AT)
+
 # The shallow tag keeps transitive clone size bounded. Verify its immutable
 # object id immediately, so a retagged upstream release fails configuration.
 execute_process(

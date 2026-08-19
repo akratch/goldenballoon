@@ -213,6 +213,18 @@ extern "C" bool mdkr_native_remote_pad_take_rumble(
     return true;
 }
 
+extern "C" bool mdkr_native_remote_pad_peek_rumble(
+    unsigned index, uint64_t owner, uint32_t connectionSequence,
+    uint16_t *outStrength) {
+    Port *port = portAt(index);
+    if (outStrength != nullptr) *outStrength = 0u;
+    if (port == nullptr || outStrength == nullptr) return false;
+    std::lock_guard<std::mutex> lock(port->mutex);
+    if (!sameBinding(*port, owner, connectionSequence)) return false;
+    *outStrength = port->rumbleStrength;
+    return true;
+}
+
 extern "C" void mdkr_native_remote_pad_stats(
     unsigned index, MdkrNativeRemotePadIngressStats *outStats) {
     if (outStats == nullptr) return;

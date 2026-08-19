@@ -42,6 +42,7 @@ const char *partyPhaseName(MdkrNativePartyPhase phase) {
         case MdkrNativePartyPhase::InviteRevoked: return "invite-revoked";
         case MdkrNativePartyPhase::Recovering: return "recovering";
         case MdkrNativePartyPhase::Error: return "error";
+        case MdkrNativePartyPhase::RoomEnded: return "room-ended";
     }
     return "unknown";
 }
@@ -79,7 +80,8 @@ void announceState(const MdkrNativePartyView &view) {
     char message[MDKR_A11Y_TEXT_MAX] = {};
     if (pending != 0u) {
         std::snprintf(message, sizeof(message),
-            "%u phone%s waiting for approval. Compare the pairing phrase on both screens.",
+            "%u phone%s waiting for approval. The pairing phrase appears on "
+            "both screens when the phone connects.",
             pending, pending == 1u ? " is" : "s are");
     } else {
         std::snprintf(message, sizeof(message), "%s",
@@ -92,6 +94,11 @@ void announceState(const MdkrNativePartyView &view) {
 
 const char *statusText(const MdkrNativePartyController &controller) {
     if (controller.commandPending) return "Updating…";
+    /* I2: a version-mismatched phone must never read as the "Reconnecting"
+     * its Leased phase would otherwise show -- reconnecting is a promise the
+     * transport keeps, while this state only the player can fix. Same
+     * sentence as the room message, from the one shared constant. */
+    if (controller.protocolMismatch) return kMdkrPartyProtocolMismatchCopy;
     switch (controller.phase) {
         case MdkrNativePartyControllerPhase::Pending: return "Waiting for approval";
         case MdkrNativePartyControllerPhase::Approved: return "Approved";
@@ -215,11 +222,11 @@ void drawPending(MdkrNativePartyHost &host,
                       AppTheme::accent(), 0.0f)) {
         ImGui::TextWrapped("%s", controller.name.empty()
             ? "Phone controller" : controller.name.c_str());
-        ui::TextSubtle("Compare on both screens:");
-        ImGui::PushFont(AppTheme::fonts().title);
-        ImGui::TextUnformatted(controller.pairingPhrase.empty()
-            ? "Verifying…" : controller.pairingPhrase.c_str());
-        ImGui::PopFont();
+        /* SAS v2: the pairing phrase binds the phone's direct connection, so
+         * it cannot exist before that connection does. The compare surface
+         * moved to the seat row (drawControllers below); this card only says
+         * when to expect it. */
+        ui::TextSubtleWrapped("Phrase appears when the phone connects.");
         unsigned &choice = g_seatChoices[controller.id];
         if (choice < 1u || choice > 4u || seatOccupied(view, choice)) {
             choice = firstFreeSeat(view);
@@ -247,15 +254,14 @@ void drawPending(MdkrNativePartyHost &host,
             "Choose which local controller slot this phone will use.");
         ui::TextSubtleWrapped(
             "The phone takes this numbered slot. Any keyboard, gamepad, or touch source there moves out of the way; other slots are unchanged.");
-        const bool disabled = controller.commandPending ||
-            controller.pairingPhrase.empty() || choice == 0u;
+        const bool disabled = controller.commandPending || choice == 0u;
         if (disabled) ImGui::BeginDisabled();
         if (ui::PrimaryButton("Approve Matching Phone", ui::kBtnWide())) {
             host.approve(controller.id, choice);
         }
-        ui::SpeakFocusedItem("Approve Matching Phone",
-            controller.pairingPhrase.c_str(),
-            "Approve only when this phrase matches the phone exactly.");
+        ui::SpeakFocusedItem("Approve Matching Phone", nullptr,
+            "The pairing phrase appears on both screens when the phone "
+            "connects. Remove the phone if the phrases differ.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
         ui::SpeakFocusedItem("Decline", nullptr,
@@ -276,6 +282,16 @@ void drawControllers(MdkrNativePartyHost &host) {
         ImGui::Text("Controller %u  %s", controller.seat,
                     controller.name.empty() ? "Phone" : controller.name.c_str());
         ui::TextSubtle("%s", statusText(controller));
+        /* SAS v2: the phrase arrives once the phone's direct connection is
+         * up and it names that exact connection, so this seat row is the
+         * compare surface. No phrase yet simply shows nothing -- an
+         * unverifiable channel never gets words to vouch for it. */
+        if (!controller.pairingPhrase.empty()) {
+            ui::TextSubtle("Compare on both screens:");
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(controller.pairingPhrase.c_str());
+            ImGui::PopFont();
+        }
         if (ImGui::Button("Remove Phone", ui::kBtnSecondary())) {
             g_removeController = controller.id;
             g_removeName = controller.name.empty() ? "this phone" : controller.name;
@@ -319,6 +335,12 @@ void drawRoom(MdkrNativePartyHost &host) {
         ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
         ImGui::TextWrapped("%s", view.message.c_str());
         ImGui::PopStyleColor();
+    } else if (view.phase == MdkrNativePartyPhase::RoomEnded) {
+        /* I4 terminal state: the room is over, not broken -- plain text,
+         * not the error color. The one sentence (view.message, set from
+         * kMdkrPartyRoomEndedCopy) names the way forward; drawFull puts the
+         * Create New Invite button right under it. */
+        ImGui::TextWrapped("%s", view.message.c_str());
     } else {
         if (!view.message.empty()) ui::TextSubtleWrapped("%s", view.message.c_str());
         drawInvite(host);
@@ -330,10 +352,11 @@ void drawRoom(MdkrNativePartyHost &host) {
     }
 }
 
-void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin) {
+void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin,
+                    const char *label = "Add Phone Controllers") {
     const bool configured = serviceOrigin != nullptr && serviceOrigin[0] != '\0';
     if (!configured) ImGui::BeginDisabled();
-    if (ui::PrimaryButton("Add Phone Controllers", ui::kBtnWide())) {
+    if (ui::PrimaryButton(label, ui::kBtnWide())) {
         host.open(serviceOrigin);
     }
     if (!configured) ImGui::EndDisabled();
@@ -344,7 +367,13 @@ void drawOpenButton(MdkrNativePartyHost &host, const char *serviceOrigin) {
 }
 
 void drawCloseRoom(MdkrNativePartyHost &host) {
-    if (host.view().phase == MdkrNativePartyPhase::Closed) return;
+    /* An ended room (I4) is already over -- a close button beside "Create
+     * New Invite" would offer a second way to do nothing. Only the fresh
+     * invite moves forward from RoomEnded. */
+    if (host.view().phase == MdkrNativePartyPhase::Closed ||
+        host.view().phase == MdkrNativePartyPhase::RoomEnded) {
+        return;
+    }
     ui::Gap(ui::kGapM);
     if (ImGui::Button("Close Phone Controller Room", ui::kBtnSecondary())) {
         ImGui::OpenPopup("Close phone controller room?");
@@ -364,7 +393,30 @@ void drawCloseRoom(MdkrNativePartyHost &host) {
     }
 }
 
+/* M3: g_seatChoices remembers each pending phone's chosen slot by
+ * controller id, and previously only ever grew -- decline a hundred phones
+ * over a long party evening and all hundred choices stayed resident for the
+ * process's life. A choice is only meaningful while its controller is in
+ * the roster, so drop the rest here; a phone that pairs again arrives under
+ * a fresh id and simply gets a fresh default slot. (No UI test harness
+ * exists to pin this; the transport-side twin of this prune is pinned by
+ * tests/test_native_party_sas.cpp.) */
+void pruneSeatChoices(const MdkrNativePartyView &view) {
+    for (auto iterator = g_seatChoices.begin();
+         iterator != g_seatChoices.end();) {
+        const std::string &id = iterator->first;
+        const bool present = std::any_of(
+            view.controllers.begin(), view.controllers.end(),
+            [&id](const MdkrNativePartyController &controller) {
+                return controller.id == id;
+            });
+        if (present) ++iterator;
+        else iterator = g_seatChoices.erase(iterator);
+    }
+}
+
 void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
+    pruneSeatChoices(host.view());
     announceState(host.view());
     if (host.view().phase == MdkrNativePartyPhase::Closed) {
         drawOpenButton(host, serviceOrigin);
@@ -372,6 +424,13 @@ void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
         drawRoom(host);
         ui::Gap(ui::kGapS);
         drawOpenButton(host, serviceOrigin);
+    } else if (host.view().phase == MdkrNativePartyPhase::RoomEnded) {
+        /* I4: the ended room's copy promises exactly this button. It is the
+         * same fresh open() the Error surface offers, labeled with the
+         * remedy the sentence names. */
+        drawRoom(host);
+        ui::Gap(ui::kGapS);
+        drawOpenButton(host, serviceOrigin, "Create New Invite");
     } else {
         drawRoom(host);
     }
@@ -391,8 +450,9 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
     ui::Gap(ui::kGapM);
     ui::SectionHeader("Use a Phone as a Controller",
         "Scan the code with any phone to play with it — just you, or up to four "
-        "players on this screen. Compare the pairing phrase, approve the phone, "
-        "and it becomes Controller 1 (or the next open slot).");
+        "players on this screen. Approve the phone and it becomes Controller 1 "
+        "(or the next open slot); when it connects, compare the pairing phrase "
+        "on both screens.");
     drawFull(host, serviceOrigin);
     partyTraceEmitOnce(host, serviceOrigin);
 }

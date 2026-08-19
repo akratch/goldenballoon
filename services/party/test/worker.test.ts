@@ -141,7 +141,7 @@ describe("Party Worker local workerd adapter", () => {
     const pendingState = nextMessageMatching(socket, value =>
       value.type === "room_state" && value.transitionId === 2);
     const redeemed = await post("/api/controller/redeem", {
-      capability, protocol: 1, name: "Native guest", controllerPublicKey,
+      capability, protocol: 2, name: "Native guest", controllerPublicKey,
     });
     expect(redeemed.status).toBe(201);
     const controller = await redeemed.json() as Record<string, string>;
@@ -154,8 +154,12 @@ describe("Party Worker local workerd adapter", () => {
       value.type === "host_command_result");
     socket.send(JSON.stringify({type: "host_command", action: "approve",
       controllerId: controller.controllerId, seat: 2, diagnostics: true}));
+    /* Every failure echoes the command's identity so the native host can
+     * scope its pending-command cleanup to exactly the command that failed
+     * instead of clearing the whole room (Task 1 residual). */
     expect(await invalidCommand).toEqual({type: "host_command_result", ok: false,
-      error: "invalid_command"});
+      error: "invalid_command", command: "approve",
+      controllerId: controller.controllerId});
     expect(await admittedControlUnits()).toBe(controlBeforeCommands);
 
     const approvedState = nextMessageMatching(socket, value =>
@@ -186,8 +190,10 @@ describe("Party Worker local workerd adapter", () => {
       value.type === "host_command_result");
     socket.send(JSON.stringify({type: "host_command", action: "rotate",
       expectedInviteGeneration: 1}));
+    /* A room-level command failure names the command but no controller:
+     * rotation was never any one phone's action. */
     expect(await staleRotation).toEqual({type: "host_command_result", ok: false,
-      error: "invalid_state"});
+      error: "invalid_state", command: "rotate"});
 
     const revokedState = nextMessageMatching(socket, value =>
       value.type === "room_state" && value.transitionId === 6);
@@ -282,7 +288,7 @@ describe("Party Worker local workerd adapter", () => {
     expect(capability).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
     const redeemed = await post("/api/controller/redeem", {
-      capability, protocol: 1, name: "Test phone", controllerPublicKey,
+      capability, protocol: 2, name: "Test phone", controllerPublicKey,
     });
     expect(redeemed.status).toBe(201);
     const controller = await redeemed.json() as Record<string, string>;
@@ -307,11 +313,29 @@ describe("Party Worker local workerd adapter", () => {
     expect(directoryKeys).not.toContain(room.fallbackCode!);
 
     const codeRedeemed = await post("/api/controller/code", {
-      code: room.fallbackCode, protocol: 1, name: "Code phone", controllerPublicKey,
+      code: room.fallbackCode, protocol: 2, name: "Code phone", controllerPublicKey,
     });
     expect(codeRedeemed.status).toBe(201);
     expect(await codeRedeemed.json()).toMatchObject({roomId: room.roomId,
-      protocol: 1});
+      protocol: 2});
+  });
+
+  it("refuses pairing protocol 1 with 409 protocol_update_required", async () => {
+    const created = await post("/api/party/create", {hostPublicKey});
+    const room = await created.json() as Record<string, string>;
+    const capability = new URL(room.controllerUrl!).hash.slice(1);
+
+    const redeemed = await post("/api/controller/redeem", {
+      capability, protocol: 1, name: "Old phone", controllerPublicKey,
+    });
+    expect(redeemed.status).toBe(409);
+    expect(await redeemed.json()).toEqual({error: "protocol_update_required"});
+
+    const codeRedeemed = await post("/api/controller/code", {
+      code: room.fallbackCode, protocol: 1, name: "Old phone", controllerPublicKey,
+    });
+    expect(codeRedeemed.status).toBe(409);
+    expect(await codeRedeemed.json()).toEqual({error: "protocol_update_required"});
   });
 
   it("serializes competing seat approvals without split ownership", async () => {
@@ -320,7 +344,7 @@ describe("Party Worker local workerd adapter", () => {
     const capability = new URL(room.controllerUrl!).hash.slice(1);
     const redeem = async (name: string, key: string) => {
       const response = await post("/api/controller/redeem", {
-        capability, protocol: 1, name, controllerPublicKey: key.repeat(87),
+        capability, protocol: 2, name, controllerPublicKey: key.repeat(87),
       });
       expect(response.status).toBe(201);
       return response.json() as Promise<Record<string, string>>;
@@ -379,11 +403,11 @@ describe("Party Worker local workerd adapter", () => {
     expect(next.controllerUrl).not.toBe(room.controllerUrl);
     expect(next.fallbackCode).toMatch(/^\d{6}$/);
     const replay = await post("/api/controller/redeem",
-      {capability: originalCapability, protocol: 1, controllerPublicKey});
+      {capability: originalCapability, protocol: 2, controllerPublicKey});
     expect(replay.status).toBe(409);
     expect(await replay.json()).toEqual({error: "invite_rotated"});
     const codeReplay = await post("/api/controller/code",
-      {code: originalCode, protocol: 1, controllerPublicKey});
+      {code: originalCode, protocol: 2, controllerPublicKey});
     expect(codeReplay.status).toBe(409);
     expect(await codeReplay.json()).toEqual({error: "invite_rotated"});
 
@@ -411,7 +435,7 @@ describe("Party Worker local workerd adapter", () => {
     const room = await created.json() as Record<string, string>;
     const capability = new URL(room.controllerUrl!).hash.slice(1);
     const unknownRedeem = await post("/api/controller/redeem", {
-      capability, protocol: 1, controllerPublicKey, diagnostics: true,
+      capability, protocol: 2, controllerPublicKey, diagnostics: true,
     });
     expect(unknownRedeem.status).toBe(400);
     expect(await unknownRedeem.json()).toEqual({error: "invalid_invite"});
@@ -423,7 +447,7 @@ describe("Party Worker local workerd adapter", () => {
     expect(await unknownRevoke.json()).toEqual({error: "invalid_request"});
 
     const stillRedeemable = await post("/api/controller/redeem",
-      {capability, protocol: 1, controllerPublicKey});
+      {capability, protocol: 2, controllerPublicKey});
     expect(stillRedeemable.status).toBe(201);
   });
 
@@ -467,7 +491,7 @@ describe("Party Worker local workerd adapter", () => {
     const capability = new URL(room.controllerUrl!).hash.slice(1);
     const redeem = async (name: string, key: string) => {
       const response = await post("/api/controller/redeem", {
-        capability, protocol: 1, name, controllerPublicKey: key.repeat(87),
+        capability, protocol: 2, name, controllerPublicKey: key.repeat(87),
       });
       expect(response.status).toBe(201);
       return response.json() as Promise<Record<string, string>>;
@@ -556,7 +580,7 @@ describe("Party Worker local workerd adapter", () => {
     expect(await revoked.clone().json()).toEqual({ok: true, transitionId: 2,
       inviteGeneration: 2});
     const replay = await post("/api/controller/redeem",
-      {capability, protocol: 1, controllerPublicKey});
+      {capability, protocol: 2, controllerPublicKey});
     expect(replay.status).toBe(409);
     expect(await replay.json()).toEqual({error: "invite_expired"});
     const lateRotate = await post(`/api/party/${room.roomId}/rotate`,
@@ -596,8 +620,8 @@ describe("Party Worker local workerd adapter", () => {
       () => post("/api/match/code", {code: "abc", compatibility, seatCount: 1}),
       () => post("/api/controller/redeem", {}),
       () => post("/api/controller/redeem",
-        {capability: "x".repeat(43), protocol: 1, controllerPublicKey: "short"}),
-      () => post("/api/controller/code", {code: "12", protocol: 1, controllerPublicKey}),
+        {capability: "x".repeat(43), protocol: 2, controllerPublicKey: "short"}),
+      () => post("/api/controller/code", {code: "12", protocol: 2, controllerPublicKey}),
       () => post(`/api/match/${match.roomId}/state`, {}),
       () => post(`/api/party/${room.roomId}/revoke`, {}),
       () => post(`/api/match/${match.roomId}/state`, {diagnostics: true}, matchAuth),
@@ -647,12 +671,12 @@ describe("Party Worker local workerd adapter", () => {
   it("rate-limits fallback guessing per pseudonymous requester", async () => {
     for (let attempt = 0; attempt < 12; attempt++) {
       const response = await post("/api/controller/code",
-        {code: "999999", protocol: 1, controllerPublicKey},
+        {code: "999999", protocol: 2, controllerPublicKey},
         {"cf-connecting-ip": "192.0.2.44"});
       expect(response.status).toBe(404);
     }
     const limited = await post("/api/controller/code",
-      {code: "999999", protocol: 1, controllerPublicKey},
+      {code: "999999", protocol: 2, controllerPublicKey},
       {"cf-connecting-ip": "192.0.2.44"});
     expect(limited.status).toBe(429);
     expect(await limited.json()).toEqual({error: "rate_limited"});

@@ -193,9 +193,33 @@ entry-point ruleset through the Rulesets API with a least-privilege
   Do not delete, merge or overwrite it. That is an owner decision about which
   protection the zone gets, and the deep runbook treats it as a hard stop.
 
+After applying the rule (and on every later deploy), assert it is actually
+live — a hand-applied rule is exactly the kind that silently is not there:
+
+```sh
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ZONE_ID=… \
+    services/party/ops/verify-edge-rate-limit.sh
+```
+
+It requires the rule to exist on the zone's `http_ratelimit` entry point,
+enabled, byte-matching the reviewed payload. Run without credentials it exits
+`2` and says so — it refuses to claim success, so a credential-less CI run can
+never report the rule as verified. Like `tests/check_party_production_config.py`
+for the origin, this is the deploy-time assertion for the edge rule: run them
+side by side before promoting.
+
+In the same pass, run `PARTY_DOMAIN=… services/party/ops/verify-controller-csp.sh`
+to assert the deployed `/controller/` page still serves every reviewed
+`dist/web/_headers` security header (the CSP first among them) — static-host
+header config is exactly as silent as a hand-applied zone rule when it stops
+arriving, and it too exits `2` rather than claim success when the origin is
+unset or unreachable.
+
 Deploying without the rule is safe but unprotected: the Worker's own $0
 admission budget still fails closed, so the service cannot generate a bill —
-it will simply refuse new rooms sooner under abuse. The rule keeps abusive
+it will simply refuse new rooms sooner under abuse, and each address is held
+to its own daily room allowance in Worker code (`create_rate_limited`) so one
+abuser cannot spend the whole day's budget. The rule keeps abusive
 `/api/` traffic from consuming that budget at all. It never touches `/`,
 `/controller/`, `/room/` or any static asset, and
 `tools/verify_party_deploy.py` proves that by bursting the controller page

@@ -1268,6 +1268,14 @@ with `--self-test`, a synthetic fixture) for the real WSS/WebRTC Phone Party
 transport rather than the stub and for the compiled service origin, so a build
 that dropped the transport or shipped an empty origin fails before release.
 
+`tests/check_party_cmake_origin_gate.py` pins the configure-time
+canonical-origin gate on `MDKR_PARTY_ORIGIN`: it replays the gate's own
+regexes, extracted from `CMakeLists.txt`, over an accept/reject matrix
+(path, query, fragment, userinfo, trailing slash, uppercase, malformed host
+labels and ports refused; bare host and host:port accepted) and requires the
+runtime twin `mdkr_party_canonical_https_origin` to stay wired in the native
+host. Its self-test proves the matrix still rejects a weakened gate.
+
 `tests/check_release_party_origin.py` requires every workflow that packages
 *and* uploads a distributable to gate on `vars.MDKR_PARTY_ORIGIN` (or the
 deliberate `MDKR_ALLOW_PARTYLESS_RELEASE=1` escape hatch) and to thread the

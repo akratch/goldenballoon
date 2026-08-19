@@ -20,6 +20,11 @@ constexpr size_t kMaxMessage = 240u;
 /* C1 self-heal: at most one rebind attempt per controller per this window,
  * so a phone that keeps overflowing the queue cannot make service() spin. */
 constexpr uint64_t kRebindRateLimitMs = 500u;
+/* M5 sustained rumble: re-send cadence while the engine mailbox holds a
+ * strength above zero. Under the transport's 250 ms one-shot on purpose --
+ * a healthy channel refreshes before the previous pulse expires, a broken
+ * one goes silent within 250 ms. */
+constexpr uint64_t kRumbleRefreshMs = 200u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -56,19 +61,56 @@ std::string safeMessage(const std::string &value, const char *fallback) {
     return printable(value, kMaxMessage) && !value.empty() ? value : fallback;
 }
 
+/* I3: the worker's typed host_command_result codes, mapped to honest
+ * player-facing copy (services/party/src/party-room.ts commandError and
+ * room-model.ts supply the codes). An unmapped code returns nullptr and the
+ * caller keeps the generic copy exactly as before -- a future code can
+ * never crash the launcher or lie to the player, it is just not yet
+ * specific. */
+const char *typedCommandErrorCopy(const std::string &code) {
+    if (code == "service_budget_safe") {
+        return "The controller service has reached today's limit. "
+               "Try again after midnight UTC.";
+    }
+    if (code == "invite_rotated") {
+        return "That invite was replaced. Use the newest code.";
+    }
+    if (code == "room_full") return "No free phone slot.";
+    return nullptr;
+}
+
 }  // namespace
 
 MdkrNativePartyHost::MdkrNativePartyHost(MdkrPartyTransport &transport)
     : transport_(transport) {}
 
 MdkrNativePartyHost::~MdkrNativePartyHost() {
+    /* M4: quitting the app with a live room must tell the phones goodbye.
+     * The transport's closeRoom sends the worker the `close` command --
+     * relayed to every controller as host_closed
+     * (services/party/src/party-room.ts) -- and flushes it, bounded by
+     * kMdkrPartyCloseFlushDeadlineMs, before the shutdown below hangs up,
+     * so the phones read "the host ended the session" instead of misreading
+     * a silent socket drop as a network fault. Closed and the terminal
+     * phases are excluded: their transports are already shut down
+     * (closeRoom / setTerminal), so there is no live socket to say goodbye
+     * on and no room left listening for one. */
+    if (view_.phase != MdkrNativePartyPhase::Closed &&
+        view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded) {
+        (void)transport_.closeRoom();
+    }
     releaseAll();
     transport_.shutdown();
 }
 
 bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
+    /* I4: RoomEnded joins Closed and Error as a from-scratch start. The
+     * ended room's copy names exactly this call as the way forward; the
+     * fresh open creates a brand-new room, never resumes the dead one. */
     if (view_.phase != MdkrNativePartyPhase::Closed &&
-        view_.phase != MdkrNativePartyPhase::Error) {
+        view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded) {
         return false;
     }
     releaseAll();
@@ -79,8 +121,12 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
             "Phone controllers are not included in this build."));
         return false;
     }
+    /* M2: not merely "starts with https://" -- the compiled origin must be
+     * the one canonical scheme+host[:port] shape. A value carrying a path,
+     * query, fragment, userinfo or trailing slash is a misconfigured build
+     * and fails closed here, before any transport bootstrap. */
     if (serviceOrigin.size() > kMaxUrl ||
-        (serviceOrigin.rfind("https://", 0u) != 0u &&
+        (!mdkr_party_canonical_https_origin(serviceOrigin) &&
          !mdkr_party_loopback_test_url_allowed(serviceOrigin))) {
         setError("Phone controllers require the configured secure Party service.");
         return false;
@@ -117,10 +163,14 @@ const MdkrNativePartyController *MdkrNativePartyHost::controller(
 
 bool MdkrNativePartyHost::approve(
     const std::string &controllerId, unsigned seat) {
+    /* SAS v2: no phrase gate here. The phrase commits to both DTLS
+     * fingerprints, so it cannot exist until after approval starts the
+     * WebRTC exchange -- it arrives as a ControllerPhrase event once the
+     * phone connects, and the player verifies it on the seat row then. */
     MdkrNativePartyController *candidate = controller(controllerId);
     if (candidate == nullptr || candidate->commandPending ||
         candidate->phase != MdkrNativePartyControllerPhase::Pending ||
-        candidate->pairingPhrase.empty() || seat < 1u || seat > 4u) {
+        seat < 1u || seat > 4u) {
         return false;
     }
     const bool occupied = std::any_of(
@@ -237,7 +287,7 @@ void MdkrNativePartyHost::releaseAll() {
     for (const MdkrNativePartyController &candidate : view_.controllers) {
         releaseController(candidate);
     }
-    lastRumble_.fill(0u);
+    lastRumbleSentMs_.fill(0u);
 }
 
 void MdkrNativePartyHost::applyRoomState(
@@ -266,9 +316,29 @@ void MdkrNativePartyHost::applyRoomState(
         }
     }
 
+    /* SAS v2: room updates never carry a phrase -- it arrives on its own
+     * ControllerPhrase event once the phone's WebRTC descriptions are set.
+     * Carry a seat's verified phrase across a room transition only while
+     * the update still describes the same channel: same phone, same key,
+     * same connectionSequence. A new sequence is a new channel whose phrase
+     * has not arrived yet, and the old words must not vouch for it. */
+    const std::vector<MdkrNativePartyController> previous =
+        std::move(view_.controllers);
     view_.controllers = room.controllers;
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.commandPending = false;
+        if (candidate.pairingPhrase.empty()) {
+            const auto former = std::find_if(
+                previous.begin(), previous.end(),
+                [&candidate](const MdkrNativePartyController &other) {
+                    return other.id == candidate.id;
+                });
+            if (former != previous.end() &&
+                former->connectionSequence == candidate.connectionSequence &&
+                former->publicKey == candidate.publicKey) {
+                candidate.pairingPhrase = former->pairingPhrase;
+            }
+        }
         const uint64_t owner = ownerFor(candidate);
         if (owner != 0u && candidate.connectionSequence != 0u) {
             if (!mdkr_native_remote_pad_bind(
@@ -313,6 +383,9 @@ void MdkrNativePartyHost::applyEvent(
             candidate->phase = MdkrNativePartyControllerPhase::Connected;
             candidate->direct = true;
             candidate->haptics = event.haptics;
+            /* I2 recovery: a genuine controller_ready at this build's own
+             * protocol means the phone reloaded into a matching page. */
+            candidate->protocolMismatch = false;
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, event.haptics);
@@ -324,6 +397,13 @@ void MdkrNativePartyHost::applyEvent(
             if (candidate == nullptr || !occupiesSeat(*candidate)) return;
             candidate->direct = false;
             candidate->haptics = false;
+            /* SAS v2: the phrase vouched for the channel that just ended,
+             * so it ends here too. A legitimate reconnect re-derives fresh
+             * words from its own answer; a reconnect whose fingerprints the
+             * transport REFUSES derives none -- and without this clear that
+             * refusal would leave the old channel's words standing
+             * indefinitely against a live channel they do not bind. */
+            candidate->pairingPhrase.clear();
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);
@@ -367,14 +447,49 @@ void MdkrNativePartyHost::applyEvent(
             }
             return;
         }
-        case MdkrPartyTransportEventType::CommandRejected:
-            if (event.controllerId.empty()) {
-                /* No controller identity: a genuine host-command rejection
-                 * (approve/reject/rotate/dismiss/close all funnel into the
-                 * same undifferentiated host_command_result path today) is
-                 * really room-wide -- the one pending action just failed,
-                 * so every commandPending and the room-level busy flag
-                 * clear exactly as before. */
+        case MdkrPartyTransportEventType::ControllerProtocolMismatch: {
+            MdkrNativePartyController *candidate = controller(event.controllerId);
+            if (candidate == nullptr || !occupiesSeat(*candidate)) return;
+            /* I2: the phone's page completed the handshake but speaks a
+             * different channel-protocol version. Say so, visibly distinct
+             * from "Reconnecting", and demote the seat to neutral input.
+             * The room and the seat's lease stay intact -- the transport
+             * kept the peer up, and the phone reloading into a matching
+             * page version (ControllerConnected) is the recovery. Clear
+             * needsRebind: the C1 heal loop's fresh bind cannot fix a
+             * version gap, and its "Phone input reconnected." copy would
+             * paper over this honest state with a lie. */
+            candidate->protocolMismatch = true;
+            candidate->needsRebind = false;
+            candidate->direct = false;
+            candidate->haptics = false;
+            (void)mdkr_native_remote_pad_set_haptics(
+                candidate->seat - 1u, ownerFor(*candidate),
+                candidate->connectionSequence, false);
+            if (candidate->phase == MdkrNativePartyControllerPhase::Connected) {
+                candidate->phase = MdkrNativePartyControllerPhase::Leased;
+            }
+            view_.message = kMdkrPartyProtocolMismatchCopy;
+            return;
+        }
+        case MdkrPartyTransportEventType::CommandRejected: {
+            if (event.controllerId.empty() &&
+                (event.command == "rotate" || event.command == "revoke" ||
+                 event.command == "close")) {
+                /* Residual CLOSED: the worker echoes the failed command's
+                 * identity on every host_command_result failure it emits
+                 * (party-room.ts commandIdentity), so a room-level command
+                 * failure -- rotate/dismiss/close, named by the echo but
+                 * naming no controller because it never targeted one --
+                 * clears only the room-level busy flag that was waiting on
+                 * it. No controller's genuinely in-flight command is
+                 * touched any more. */
+                view_.busy = false;
+            } else if (event.controllerId.empty()) {
+                /* No identity at all: a sender older than the identity
+                 * echo (or not the worker). Keep the pre-echo conservative
+                 * room-wide clear so a stale service can still never leave
+                 * commandPending or busy wedged forever. */
                 for (MdkrNativePartyController &candidate : view_.controllers) {
                     candidate.commandPending = false;
                 }
@@ -387,11 +502,28 @@ void MdkrNativePartyHost::applyEvent(
                  * room-level invite actions, not any one controller, so it
                  * is left untouched here. */
                 MdkrNativePartyController *candidate = controller(event.controllerId);
-                if (candidate != nullptr) candidate->commandPending = false;
+                if (candidate != nullptr) {
+                    candidate->commandPending = false;
+                    /* I2 review fix: a version-mismatched seat keeps the
+                     * honest room copy. The transport's ladder no longer
+                     * gives up on such a peer at the source, but any
+                     * rejection that still names a mismatched controller
+                     * -- the give-up shape included -- would recommend
+                     * the wrong remedy ("remove it and pair again" cannot
+                     * fix a page version) right beside the seat row's
+                     * correct one. Bookkeeping above still happened; only
+                     * the message overwrite is suppressed. */
+                    if (candidate->protocolMismatch) return;
+                }
             }
-            view_.message = safeMessage(
+            /* I3: a recognized typed code wins over whatever prose the
+             * transport attached; an unknown or absent code keeps the
+             * pre-existing generic surface untouched. */
+            const char *typedCopy = typedCommandErrorCopy(event.errorCode);
+            view_.message = typedCopy != nullptr ? typedCopy : safeMessage(
                 event.message, "That controller action did not complete. Try again.");
             return;
+        }
         case MdkrPartyTransportEventType::Recovering:
             view_.phase = MdkrNativePartyPhase::Recovering;
             view_.busy = true;
@@ -402,6 +534,18 @@ void MdkrNativePartyHost::applyEvent(
                 event.message,
                 "Phone controllers are unavailable. Local controllers still work."));
             return;
+        case MdkrPartyTransportEventType::RoomGone:
+            /* I4: the service refused to resume this room for good -- its
+             * 24 h life ended or it was deleted outright; no ladder rung
+             * can bring it back. Same fail-neutral teardown as a terminal
+             * error, but a distinct phase and sentence: nothing broke, the
+             * session is simply over, and a NEW invite (a fresh open())
+             * is the one honest way forward. The copy is the host's own,
+             * not the event's: this surface must never depend on prose
+             * arriving over the wire. */
+            setTerminal(MdkrNativePartyPhase::RoomEnded,
+                        kMdkrPartyRoomEndedCopy);
+            return;
         case MdkrPartyTransportEventType::Closed:
             releaseAll();
             view_ = MdkrNativePartyView{};
@@ -411,16 +555,24 @@ void MdkrNativePartyHost::applyEvent(
 }
 
 void MdkrNativePartyHost::setError(const std::string &message) {
+    setTerminal(MdkrNativePartyPhase::Error, message);
+}
+
+/* One teardown for every terminal room state (Error, and I4's RoomEnded):
+ * seats go back to local play, the transport is shut down and stays down,
+ * and the surface shows exactly one sentence for the state it is in. */
+void MdkrNativePartyHost::setTerminal(
+    MdkrNativePartyPhase phase, const std::string &message) {
     releaseAll();
     transport_.shutdown();
     /* Review fix: a controller left needsRebind from a push failure earlier
-     * in this same drain cycle must not survive into the Error room --
+     * in this same drain cycle must not survive into the terminal room --
      * releaseAll() above already revoked its seat's custody, so the next
      * service() heal loop must never see a reason to touch it again. */
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.needsRebind = false;
     }
-    view_.phase = MdkrNativePartyPhase::Error;
+    view_.phase = phase;
     view_.busy = false;
     view_.inviteVisible = false;
     view_.controllerUrl.clear();
@@ -448,16 +600,23 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
      * again -- reassert it ourselves from the controller's own remembered
      * capability, the same call ControllerConnected makes.
      *
-     * Review fix: also gate the whole loop on the room not being Error or
-     * Closed. setError() already clears needsRebind on its way out (belt),
-     * but a terminal or closed room must never re-bind a seat regardless of
-     * how a flag got left standing (suspenders).
+     * Review fix: also gate the whole loop on the room not being terminal
+     * (Error, I4's RoomEnded) or Closed. setTerminal() already clears
+     * needsRebind on its way out (belt), but a terminal or closed room must
+     * never re-bind a seat regardless of how a flag got left standing
+     * (suspenders).
      */
     if (view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::RoomEnded &&
         view_.phase != MdkrNativePartyPhase::Closed) {
         for (MdkrNativePartyController &candidate : view_.controllers) {
-            if (!candidate.needsRebind || !occupiesSeat(candidate) ||
-                candidate.connectionSequence == 0u) {
+            /* I2: a version-mismatched seat is excluded outright. A fresh
+             * bind cannot fix a protocol gap, and this loop's "Phone input
+             * reconnected." would overwrite the honest mismatch copy.
+             * applyEvent already clears needsRebind at the mismatch site
+             * (belt); this keeps the loop safe regardless (suspenders). */
+            if (candidate.protocolMismatch || !candidate.needsRebind ||
+                !occupiesSeat(candidate) || candidate.connectionSequence == 0u) {
                 continue;
             }
             if (candidate.lastRebindMs != 0u &&
@@ -503,12 +662,32 @@ void MdkrNativePartyHost::service(uint64_t nowMs) {
         }
         uint16_t strength = 0u;
         const uint64_t owner = ownerFor(candidate);
-        if (mdkr_native_remote_pad_take_rumble(
-                candidate.seat - 1u, owner, candidate.connectionSequence,
-                &strength)) {
-            if (transport_.sendRumble(candidate.id, strength)) {
-                lastRumble_[candidate.seat - 1u] = strength;
-            }
+        const unsigned port = candidate.seat - 1u;
+        /* A fresh engine post always goes out immediately -- stops
+         * (strength zero) included, which must never wait out a refresh
+         * window. */
+        bool send = mdkr_native_remote_pad_take_rumble(
+            port, owner, candidate.connectionSequence, &strength);
+        /* M5 sustained rumble: the engine posts CHANGES (its SDL path then
+         * sustains the motor on a 60 s safety duration), but the phone's
+         * rumble command is a deliberate 250 ms one-shot -- kept that way
+         * so a lost refresh fails silent-off, never stuck-on. Sustaining is
+         * therefore this loop's job: while the mailbox still holds a
+         * strength above zero, re-send it every kRumbleRefreshMs -- inside
+         * the one-shot's 250 ms, so a healthy channel never gaps. The
+         * strength is re-read from the mailbox every time, never from host
+         * memory, so a rebind or disconnect (both zero the mailbox) ends
+         * the refreshes on its own; the direct/haptics gate above is the
+         * same cutoff one layer up. */
+        if (!send &&
+            mdkr_native_remote_pad_peek_rumble(
+                port, owner, candidate.connectionSequence, &strength) &&
+            strength > 0u && nowMs >= lastRumbleSentMs_[port] &&
+            nowMs - lastRumbleSentMs_[port] >= kRumbleRefreshMs) {
+            send = true;
+        }
+        if (send && transport_.sendRumble(candidate.id, strength)) {
+            lastRumbleSentMs_[port] = nowMs;
         }
     }
 }

@@ -1,6 +1,6 @@
 import {DurableObject} from "cloudflare:workers";
 import {applyRoomCommand} from "./room-model";
-import {base64Url, constantTimeEqual, digest, fromBase64Url, json,
+import {base64Url, constantTimeEqual, digest, fallbackCode, fromBase64Url, json,
   readJson, utf8Exceeds, validPartyOrigin} from "./security";
 import {internalRequest, rejectUnsupportedInternalApi} from "./internal-api";
 import {LIMITS, type CreateRoomInput, type Env, type RedeemInput,
@@ -117,6 +117,25 @@ function normalizedPartySignal(value: unknown,
   return null;
 }
 
+const HOST_COMMAND_ACTIONS = new Set(
+  ["approve", "reject", "remove", "rotate", "revoke", "close"]);
+
+/** The identity a failed host_command_result echoes so the native host can
+ * scope its pending-command cleanup to exactly the command that failed
+ * instead of clearing the whole room. Only a known command name and a
+ * well-formed controller id are reflected; anything else stays absent, which
+ * the host reads as "no identity" and handles conservatively. */
+function commandIdentity(value: Record<string, unknown>): {
+  command?: string; controllerId?: string;
+} {
+  const command = typeof value.action === "string" &&
+    HOST_COMMAND_ACTIONS.has(value.action) ? value.action : "";
+  const controllerId = typeof value.controllerId === "string" &&
+    /^[A-Za-z0-9_-]{22}$/.test(value.controllerId) ? value.controllerId : "";
+  return {...(command ? {command} : {}),
+    ...(controllerId ? {controllerId} : {})};
+}
+
 function validNativeHostCommandShape(value: Record<string, unknown>): boolean {
   if (value.type !== "host_command" || typeof value.action !== "string") return false;
   if (value.action === "approve") {
@@ -215,11 +234,6 @@ function decodeNativeBootstrap(value: string): Uint8Array | null {
       "===".slice((value.length + 3) % 4));
     return Uint8Array.from(binary, character => character.charCodeAt(0));
   } catch { return null; }
-}
-
-function fallbackCode(): string {
-  return String(crypto.getRandomValues(new Uint32Array(1))[0]! % 1_000_000)
-    .padStart(6, "0");
 }
 
 export function admitSignalMessage(attachment: SocketAttachment,
@@ -545,9 +559,12 @@ export class PartyRoom extends DurableObject<Env> {
     return response.ok;
   }
 
-  private commandError(socket: WebSocket, error: string): void {
+  private commandError(socket: WebSocket, error: string,
+                       identity: {command?: string;
+                                  controllerId?: string} = {}): void {
     deliverPartySocketText(socket,
-      JSON.stringify({type: "host_command_result", ok: false, error}),
+      JSON.stringify({type: "host_command_result", ok: false, error,
+        ...identity}),
       "command_result_delivery_failed");
   }
 
@@ -562,7 +579,8 @@ export class PartyRoom extends DurableObject<Env> {
         try {
           await this.applyNativeHostCommand(socket, value);
         } catch {
-          this.commandError(socket, "service_unavailable");
+          this.commandError(socket, "service_unavailable",
+            commandIdentity(value));
         }
       }));
     this.nativeCommandTail = run;
@@ -590,13 +608,17 @@ export class PartyRoom extends DurableObject<Env> {
 
   private async applyNativeHostCommand(
       socket: WebSocket, value: Record<string, unknown>): Promise<void> {
+    /* Task-1 residual closure: every refusal below names the command it
+     * refuses, and the controller it targeted when it targeted one, so the
+     * launcher never has to guess which in-flight action just died. */
+    const identity = commandIdentity(value);
     const room = await this.room();
     if (!room || room.phase === "closed") {
-      this.commandError(socket, "not_found");
+      this.commandError(socket, "not_found", identity);
       return;
     }
     if (!validNativeHostCommandShape(value)) {
-      this.commandError(socket, "invalid_command");
+      this.commandError(socket, "invalid_command", identity);
       return;
     }
     const action = typeof value.action === "string" ? value.action : "";
@@ -605,7 +627,7 @@ export class PartyRoom extends DurableObject<Env> {
       const controllerId = typeof value.controllerId === "string"
         ? value.controllerId : "";
       if (!controllerId || controllerId.length > 64) {
-        this.commandError(socket, "invalid_controller"); return;
+        this.commandError(socket, "invalid_controller", identity); return;
       }
       const result = action === "approve"
         ? applyRoomCommand(room, {type: "approve", controllerId,
@@ -613,9 +635,9 @@ export class PartyRoom extends DurableObject<Env> {
         : action === "reject"
         ? applyRoomCommand(room, {type: "reject", controllerId, now})
         : applyRoomCommand(room, {type: "remove", controllerId, now});
-      if (!result.ok) { this.commandError(socket, result.error); return; }
+      if (!result.ok) { this.commandError(socket, result.error, identity); return; }
       if (!(await this.reserveNativeCommand(2, "partyControl"))) {
-        this.commandError(socket, "service_budget_safe"); return;
+        this.commandError(socket, "service_budget_safe", identity); return;
       }
       await this.save(room);
       this.broadcastHost(publicRoom(room));
@@ -628,9 +650,9 @@ export class PartyRoom extends DurableObject<Env> {
     }
     if (action === "revoke") {
       const result = applyRoomCommand(room, {type: "revoke", now});
-      if (!result.ok) { this.commandError(socket, result.error); return; }
+      if (!result.ok) { this.commandError(socket, result.error, identity); return; }
       if (!(await this.reserveNativeCommand(2, "partyControl"))) {
-        this.commandError(socket, "service_budget_safe"); return;
+        this.commandError(socket, "service_budget_safe", identity); return;
       }
       await this.save(room);
       this.broadcastHost(publicRoom(room));
@@ -639,9 +661,9 @@ export class PartyRoom extends DurableObject<Env> {
     if (action === "close") {
       const result = applyRoomCommand(room, {type: "close",
         reason: "host_closed", now});
-      if (!result.ok) { this.commandError(socket, result.error); return; }
+      if (!result.ok) { this.commandError(socket, result.error, identity); return; }
       if (!(await this.reserveNativeCommand(2, "partyControl"))) {
-        this.commandError(socket, "service_budget_safe"); return;
+        this.commandError(socket, "service_budget_safe", identity); return;
       }
       await this.save(room);
       this.closeSockets(4000, "host_closed");
@@ -651,17 +673,17 @@ export class PartyRoom extends DurableObject<Env> {
       const expected = Number(value.expectedInviteGeneration);
       const roomBytes = room.roomId ? fromBase64Url(room.roomId) : null;
       if (!validPartyOrigin(this.env.PARTY_ORIGIN)) {
-        this.commandError(socket, "service_unavailable"); return;
+        this.commandError(socket, "service_unavailable", identity); return;
       }
       if (!room.roomId || !roomBytes || roomBytes.byteLength !== 16 ||
           !Number.isInteger(expected) || expected < 1) {
-        this.commandError(socket, "invalid_invite_generation"); return;
+        this.commandError(socket, "invalid_invite_generation", identity); return;
       }
       if (expected !== room.inviteGeneration) {
-        this.commandError(socket, "invalid_state"); return;
+        this.commandError(socket, "invalid_state", identity); return;
       }
       if (!(await this.reserveNativeCommand(10, "partyRotate"))) {
-        this.commandError(socket, "service_budget_safe"); return;
+        this.commandError(socket, "service_budget_safe", identity); return;
       }
       for (let attempt = 0; attempt < 8; attempt++) {
         const capabilityBytes = new Uint8Array(32);
@@ -675,7 +697,7 @@ export class PartyRoom extends DurableObject<Env> {
           inviteDigest: await digest(this.env, "invite", capability),
           fallbackCodeDigest: await digest(this.env, "party-code", code),
           expectedInviteGeneration: expected, now});
-        if (!result.ok) { this.commandError(socket, result.error); return; }
+        if (!result.ok) { this.commandError(socket, result.error, identity); return; }
         await this.save(room);
         deliverPartySocketText(socket,
           JSON.stringify({...publicRoom(room), fallbackCode: code,
@@ -684,10 +706,10 @@ export class PartyRoom extends DurableObject<Env> {
         this.broadcastHost(publicRoom(room));
         return;
       }
-      this.commandError(socket, "invite_rotation_failed");
+      this.commandError(socket, "invite_rotation_failed", identity);
       return;
     }
-    this.commandError(socket, "invalid_command");
+    this.commandError(socket, "invalid_command", identity);
   }
 
   private broadcast(value: unknown): void {

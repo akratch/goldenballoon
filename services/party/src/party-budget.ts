@@ -40,6 +40,17 @@ interface Counters {
 const SAFE_EXTERNAL_OPERATIONS = 20_000;
 const BUDGET_RETENTION_MS = 32 * 24 * 60 * 60_000;
 
+/* I-2: the global reserve is a cost cap, not an availability control — one
+ * distributed abuser could drain the whole day's rooms and deny pairing to
+ * everyone until UTC midnight. Room creation therefore also carries a
+ * pseudonymous per-source daily allowance. The counters live in this same
+ * day-named shard, so they reset at UTC midnight with the reserve and are
+ * deleted by the same retention alarm. Refusal charges nothing anywhere:
+ * neither the reserve nor the source counter moves. */
+const CREATE_OPERATIONS: ReadonlySet<string> = new Set(
+  ["partyCreate", "matchCreate"]);
+const MAX_DAILY_CREATES_PER_SOURCE = 25;
+
 export function boundedSetting(value: string | undefined, fallback: number,
                                minimum: number, maximum: number): number {
   if (value === undefined || value.trim() === "") return fallback;
@@ -148,9 +159,32 @@ export class PartyBudget extends DurableObject<Env> {
         return json({error: "invalid_operation"}, 400);
       }
     }
+    /* Fail closed at the enforcement point: a create admission that lost its
+     * source identity must never bypass the per-source cap, and no other
+     * operation may smuggle one in. Legacy (pre-v1 Worker) requests never
+     * carry an operation, so they never reach the create branch. */
+    const source = url.searchParams.get("source");
+    const createOperation = CREATE_OPERATIONS.has(operation);
+    if (createOperation
+        ? source === null || !/^[A-Za-z0-9_-]{43}$/.test(source)
+        : source !== null) {
+      return json({error: "invalid_source"}, 400);
+    }
     return this.ctx.blockConcurrencyWhile(async () => {
       const counters = await this.ctx.storage.get<Counters>("counters") ||
         {pairing: 0, control: 0};
+      const sourceKey = `source:${source}`;
+      let sourceCreates = 0;
+      if (createOperation) {
+        const stored = await this.ctx.storage.get<number>(sourceKey);
+        /* A corrupt stored count refuses rather than admits. */
+        sourceCreates = stored === undefined ? 0
+          : Number.isSafeInteger(stored) && stored >= 0 ? stored
+          : MAX_DAILY_CREATES_PER_SOURCE;
+        if (sourceCreates + 1 > MAX_DAILY_CREATES_PER_SOURCE) {
+          return json({allowed: false, error: "create_rate_limited"}, 429);
+        }
+      }
       const maxAdmissions = boundedSetting(this.env.MAX_ADMISSIONS_PER_DAY,
         10_000, 0, 12_000);
       const controlReserve = boundedSetting(this.env.CONTROL_RESERVE_PER_DAY,
@@ -180,6 +214,13 @@ export class PartyBudget extends DurableObject<Env> {
       reservations[operation] = Math.min(19_900,
         (reservations[operation] || 0) + 1);
       counters.reservations = reservations;
+      /* Count the create against its source only once the global reserve has
+       * also admitted it, so a refusal of either kind consumes neither. The
+       * key count is bounded by the day's admitted creates, never by how
+       * many addresses attempt them. */
+      if (createOperation) {
+        await this.ctx.storage.put(sourceKey, sourceCreates + 1);
+      }
       await this.persist(counters, firstWrite);
       return json({allowed: true, remainingControlReserve:
         Math.max(0, SAFE_EXTERNAL_OPERATIONS - counters.pairing - counters.control)});

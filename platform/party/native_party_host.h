@@ -16,6 +16,13 @@ enum class MdkrNativePartyPhase {
     InviteRevoked,
     Recovering,
     Error,
+    /* I4: the service says this room can never come back (deleted, expired,
+     * or refusing every resume for good). Terminal: the transport is shut
+     * down and never reopened for this room; the only way forward is a
+     * fresh open() into a brand-new room, which the UI offers as Create New
+     * Invite. Distinct from Error so the surface reads as "this session is
+     * over", not "something broke". */
+    RoomEnded,
 };
 
 enum class MdkrNativePartyControllerPhase {
@@ -39,6 +46,13 @@ struct MdkrNativePartyController {
     bool direct = false;
     bool haptics = false;
     bool commandPending = false;
+    /* I2: the phone's controller page completed the WebRTC handshake but
+     * spoke a different pairing-protocol version, so its input can never be
+     * trusted. The seat keeps its lease (the room is not torn down) but must
+     * show this honestly instead of an indistinguishable "Reconnecting".
+     * Cleared by a genuine ControllerConnected -- the phone reloading into a
+     * matching page version is the recovery path. */
+    bool protocolMismatch = false;
     /* C1 self-heal: set when an ingress push failed (queue overflow revoked
      * the seat's custody) while otherwise healthy. service() clears it once
      * the seat has a fresh bind; lastRebindMs rate-limits repeated attempts
@@ -46,6 +60,24 @@ struct MdkrNativePartyController {
     bool needsRebind = false;
     uint64_t lastRebindMs = 0u;
 };
+
+/* I2: the one sentence every mismatch surface shows -- the room message
+ * MdkrNativePartyHost::applyEvent sets and the seat row ui_phone_party.cpp
+ * derives from protocolMismatch. Both screens were designed to give the
+ * same remedy, so the copy lives once, here, where the flag it narrates is
+ * declared; tests/test_native_party_host.cpp pins the sentence itself. */
+inline constexpr char kMdkrPartyProtocolMismatchCopy[] =
+    "This phone's controller page is a different version. "
+    "Refresh the page on the phone.";
+
+/* I4: the one terminal sentence for a room that is gone for good -- set by
+ * MdkrNativePartyHost::applyEvent on RoomGone and carried on the transport's
+ * event for any other listener. Its remedy must stay in lockstep with the
+ * UI's RoomEnded surface (ui_phone_party.cpp offers Create New Invite, a
+ * fresh open() into a brand-new room); tests/test_native_party_host.cpp
+ * pins the sentence itself. */
+inline constexpr char kMdkrPartyRoomEndedCopy[] =
+    "This controller room has ended. Create a new invite to keep playing.";
 
 struct MdkrNativePartyView {
     MdkrNativePartyPhase phase = MdkrNativePartyPhase::Closed;
@@ -66,9 +98,15 @@ enum class MdkrPartyTransportEventType {
     ControllerDisconnected,
     ControllerPacket,
     ControllerPhrase,
+    ControllerProtocolMismatch,
     CommandRejected,
     Recovering,
     Error,
+    /* I4: the service refused to resume this room for good (see
+     * mdkr_party_resume_decide in party_retry_policy.h for the exact
+     * classification). Emitted at most once per room; the transport opens
+     * no further sockets after it. */
+    RoomGone,
     Closed,
 };
 
@@ -94,6 +132,22 @@ struct MdkrPartyTransportEvent {
     MdkrPartyTransportRoomState room;
     std::string controllerId;
     std::string message;
+    /* CommandRejected only: the worker's typed host_command_result error
+     * code, verbatim (services/party/src/party-room.ts commandError).
+     * Empty means unknown; the host then keeps its generic copy. */
+    std::string errorCode;
+    /* CommandRejected only: the worker's echoed name of the command that
+     * failed ("approve", "rotate", ...). Together with controllerId this is
+     * the failed command's identity (party-room.ts commandIdentity): it lets
+     * the host clear exactly the state that was waiting on that command --
+     * one controller's pending flag, or the room-level busy flag for
+     * rotate/revoke/close -- instead of clearing the whole room. Empty means
+     * the sender predates the identity echo; the host then falls back to its
+     * conservative room-wide cleanup. */
+    std::string command;
+    /* ControllerProtocolMismatch only: the protocol version the phone's
+     * controller_ready declared. Zero means it declared none at all. */
+    unsigned theirProtocol = 0u;
     std::vector<uint8_t> packet;
     bool haptics = false;
 };
@@ -164,6 +218,69 @@ inline bool mdkr_party_loopback_test_url_allowed(const std::string &url) {
     return false;
 }
 
+/*
+ * M2 canonical-origin gate for the compiled Party service origin: exactly
+ * `https://` + lowercase host + one optional explicit `:port`, nothing else.
+ * The value is interpolated into invite URLs and compared byte-for-byte
+ * against the service's PARTY_ORIGIN, so a path, query, fragment, trailing
+ * slash or userinfo is a misconfiguration, not a softer origin. The
+ * character-by-character walk matches the loopback gate above: the allowed
+ * host alphabet excludes '@', so RFC 3986's
+ * "https://host:@evil.example/..." userinfo reading (userinfo "host:" at
+ * host evil.example) can never smuggle a different authority past the
+ * check, and the digits-only port rule refuses a second ':' the same way.
+ * Host labels follow DNS shape -- non-empty, [a-z0-9-], no leading or
+ * trailing '-', joined by single dots, no trailing dot -- which keeps
+ * IDN punycode ("xn--...") accepted while "..", uppercase and bracketed
+ * IPv6 literals stay refused. CMakeLists.txt enforces the same rule at
+ * configure time (MDKR_PARTY_ORIGIN); this is the runtime twin for the
+ * value the build actually compiled in. Inline for the same reason as the
+ * loopback gate: the host model and the transport link in different
+ * combinations across test binaries.
+ */
+inline bool mdkr_party_canonical_https_origin(const std::string &origin) {
+    static const char kScheme[] = "https://";
+    const size_t schemeLength = sizeof(kScheme) - 1u;
+    if (origin.size() <= schemeLength ||
+        origin.compare(0u, schemeLength, kScheme) != 0) {
+        return false;
+    }
+    size_t index = schemeLength;
+    size_t labelLength = 0u;
+    char previous = '\0';
+    while (index < origin.size() && origin[index] != ':') {
+        const char byte = origin[index];
+        if (byte >= 'a' && byte <= 'z') {
+            labelLength++;
+        } else if (byte >= '0' && byte <= '9') {
+            labelLength++;
+        } else if (byte == '-') {
+            if (labelLength == 0u) return false;  /* label starts with '-' */
+            labelLength++;
+        } else if (byte == '.') {
+            if (labelLength == 0u || previous == '-') return false;
+            labelLength = 0u;
+        } else {
+            return false;  /* '/', '?', '#', '@', uppercase, anything else */
+        }
+        previous = byte;
+        index++;
+    }
+    if (labelLength == 0u || previous == '-') return false;
+    if (index == origin.size()) return true;  /* https://host */
+    /* One explicit port: 1-65535, digits only, no leading zero. */
+    index++;  /* the ':' */
+    if (index == origin.size() || origin[index] == '0') return false;
+    unsigned port = 0u;
+    for (; index < origin.size(); index++) {
+        const char byte = origin[index];
+        if (byte < '0' || byte > '9') return false;
+        port = port * 10u + static_cast<unsigned>(byte - '0');
+        if (port > 65535u) return false;
+    }
+    return true;
+}
+
 class MdkrNativePartyHost {
 public:
     explicit MdkrNativePartyHost(MdkrPartyTransport &transport);
@@ -193,10 +310,16 @@ private:
     void releaseController(const MdkrNativePartyController &controller);
     void releaseAll();
     void setError(const std::string &message);
+    void setTerminal(MdkrNativePartyPhase phase, const std::string &message);
 
     MdkrPartyTransport &transport_;
     MdkrNativePartyView view_;
-    std::array<uint16_t, 4> lastRumble_{};
+    /* M5 sustained rumble: per-seat timestamp (service()'s own nowMs clock)
+     * of the last rumble command actually sent, rate-limiting the 200 ms
+     * refresh loop. Timestamps only, never strengths -- each refresh
+     * re-reads the engine mailbox, so nothing the host remembers can keep a
+     * motor running that the engine has stopped. */
+    std::array<uint64_t, 4> lastRumbleSentMs_{};
 };
 
 #endif /* MDKR_NATIVE_PARTY_HOST_H */

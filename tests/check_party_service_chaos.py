@@ -107,7 +107,7 @@ def create_room(origin: str) -> dict[str, Any]:
 
 def redeem(origin: str, capability: str, key: str, name: str) -> dict[str, Any]:
     status, _, body = request(origin, "/api/controller/redeem",
-                              {"capability": capability, "protocol": 1,
+                              {"capability": capability, "protocol": 2,
                                "name": name, "controllerPublicKey": key})
     require(status == 201, f"controller redeem failed for {name}: {status}, {body}")
     return body
@@ -456,7 +456,7 @@ def restart_proof(origin: str, boot: Callable[[int], None],
             f"{stale_status}, {stale}")
     replay_status, _, replay = request(origin, "/api/controller/redeem",
                                        {"capability": session["capability_v1"],
-                                        "protocol": 1,
+                                        "protocol": 2,
                                         "controllerPublicKey": CONTROLLER_KEYS["c"]})
     require(replay_status == 409 and replay == {"error": "invite_rotated"},
             f"a pre-restart capability still admitted a phone: "
@@ -494,7 +494,7 @@ def abuse_proof(origin: str, session: dict[str, Any]) -> dict[str, Any]:
     third = redeem(origin, other["capability"], CONTROLLER_KEYS["c"], "Phone C")
     approve(origin, other, third, 1)
 
-    oversize = json.dumps({"capability": "x" * 32768, "protocol": 1,
+    oversize = json.dumps({"capability": "x" * 32768, "protocol": 2,
                            "controllerPublicKey": CONTROLLER_KEYS["a"]}).encode()
     forged = "F" * 43
     shapes: list[tuple[str, Callable[[], tuple[int, Any]], int, Any]] = [
@@ -613,7 +613,7 @@ def abuse_proof(origin: str, session: dict[str, Any]) -> dict[str, Any]:
     # be bounded per requester and must never resolve a room.
     guess_before = admitted(origin)
     guesses = [request(origin, "/api/controller/code",
-                       {"code": "999999", "protocol": 1,
+                       {"code": "999999", "protocol": 2,
                         "controllerPublicKey": CONTROLLER_KEYS["a"]})
                for _ in range(13)]
     statuses = [status for status, _, _ in guesses]
@@ -656,10 +656,10 @@ def kill_switch_proof(origin: str, boot: Callable[[int], None],
 
     for path, value in (("/api/party/create", {"hostPublicKey": HOST_KEY}),
                         ("/api/controller/redeem",
-                         {"capability": room["capability"], "protocol": 1,
+                         {"capability": room["capability"], "protocol": 2,
                           "controllerPublicKey": CONTROLLER_KEYS["c"]}),
                         ("/api/controller/code",
-                         {"code": room["fallbackCode"], "protocol": 1,
+                         {"code": room["fallbackCode"], "protocol": 2,
                           "controllerPublicKey": CONTROLLER_KEYS["c"]})):
         status, headers, body = request(origin, path, value)
         require(status == 503 and body == {"error": "service_budget_safe"} and
@@ -735,10 +735,10 @@ def exhaustion_proof(origin: str, boot: Callable[[int], None],
                last["fallbackCode"], HOST_KEY, CONTROLLER_KEYS["a"]]
     for path, value in (("/api/party/create", {"hostPublicKey": HOST_KEY}),
                         ("/api/controller/redeem",
-                         {"capability": last["capability"], "protocol": 1,
+                         {"capability": last["capability"], "protocol": 2,
                           "controllerPublicKey": CONTROLLER_KEYS["c"]}),
                         ("/api/controller/code",
-                         {"code": last["fallbackCode"], "protocol": 1,
+                         {"code": last["fallbackCode"], "protocol": 2,
                           "controllerPublicKey": CONTROLLER_KEYS["c"]})):
         status, headers, body = request(origin, path, value)
         require(status == 503 and body == {"error": "service_budget_safe"},
@@ -763,7 +763,7 @@ def exhaustion_proof(origin: str, boot: Callable[[int], None],
         else:
             status, _, body = request(origin, "/api/controller/redeem",
                                       {"capability": last["capability"],
-                                       "protocol": 1,
+                                       "protocol": 2,
                                        "controllerPublicKey": CONTROLLER_KEYS["c"]})
         return status, body
 
@@ -803,6 +803,10 @@ def exhaustion_proof(origin: str, boot: Callable[[int], None],
     require('service_budget_safe: ["Phone pairing is full right now"'
             in controller_source,
             "the controller page no longer maps service_budget_safe to its copy")
+    require('protocol_update_required: ["This controller page is out of date",\n'
+            '      "Reload to update."]' in controller_source,
+            "the controller page no longer maps protocol_update_required "
+            "(room-model.ts's protocol refusal) to its copy")
     require("Keyboard, gamepads and this display’s touch controls still "
             "work offline." in controller_source,
             "the controller capacity copy lost its local-play recovery line")

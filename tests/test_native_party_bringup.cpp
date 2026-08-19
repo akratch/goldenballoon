@@ -187,6 +187,30 @@ void unsetOrInsecureOriginFailsClosed() {
         "wss://party.example.invalid",
         "party.example.invalid",
         "HTTPS://party.example.invalid",
+        /* M2: an HTTPS prefix is not enough. The compiled value is a
+         * canonical origin -- scheme + lowercase host + optional explicit
+         * port and NOTHING else -- because it is interpolated into invite
+         * URLs and compared byte-for-byte against the service's
+         * PARTY_ORIGIN. A path, query, fragment, userinfo, trailing slash
+         * or non-canonical host must fail closed before any bootstrap. */
+        "https://party.example.invalid/",
+        "https://party.example.invalid/controller",
+        "https://party.example.invalid/#",
+        "https://party.example.invalid?admin=1",
+        "https://party.example.invalid#fragment",
+        "https://user@party.example.invalid",
+        "https://party.example.invalid:@evil.example",
+        "https://party.example.invalid:8443@evil.example",
+        "https://Party.Example.Invalid",
+        "https://party.example.invalid.",
+        "https://party..example.invalid",
+        "https://-party.example.invalid",
+        "https://party.example.invalid-",
+        "https://party.example.invalid:",
+        "https://party.example.invalid:0",
+        "https://party.example.invalid:08443",
+        "https://party.example.invalid:65536",
+        "https://party.example.invalid:8443:8443",
     };
     for (const char *origin : refused) {
         RecordingTransport transport;
@@ -225,6 +249,21 @@ void unsetOrInsecureOriginFailsClosed() {
     assert(!refusedHost.open(kDefaultOrigin));
     assert(refusedHost.view().phase == MdkrNativePartyPhase::Error);
     assert(refusedOpen.openCalls() == 1u);
+
+    /* Regression pin for the canonical rule: a plain host and a host with
+     * one explicit port are exactly the two accepted shapes. */
+    const char *const accepted[] = {
+        kDefaultOrigin,
+        "https://party.example.invalid:8443",
+    };
+    for (const char *origin : accepted) {
+        RecordingTransport transport;
+        MdkrNativePartyHost host(transport);
+        assert(host.open(origin));
+        assert(host.view().phase == MdkrNativePartyPhase::Opening);
+        assert(transport.openCalls() == 1u);
+        assert(transport.calls.front() == std::string("open:") + origin);
+    }
 }
 
 /* The bootstrap must reach exactly the configured service origin, unedited. */
@@ -294,13 +333,14 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     const QrDigest other = encodeInvite(altered);
     assert(other.hash != digest.hash);
 
-    /* The pairing phrase the service derives for a joining phone is carried
-     * through to the surface a host reads aloud. */
+    /* SAS v2: a joining phone carries no phrase -- the transport can only
+     * derive one once both WebRTC descriptions are set, and it then arrives
+     * as a ControllerPhrase event, which is carried through to the surface
+     * a host reads aloud. */
     MdkrNativePartyController pending;
     pending.id = "phone-a";
     pending.name = "A friend's phone";
     pending.publicKey = std::string(87u, 'C');
-    pending.pairingPhrase = "Royal-Penguin Nimble-Comet";
     pending.connectionSequence = 1u;
     /* Superseding transitionId, applied at nowMs=1001: expiresInMs=119999
      * lands this second latch at 121000 too, so the later
@@ -312,8 +352,7 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     transport.events.push_back(std::move(joined));
     host.service(1001u);
     assert(host.view().controllers.size() == 1u);
-    assert(host.view().controllers[0].pairingPhrase ==
-           "Royal-Penguin Nimble-Comet");
+    assert(host.view().controllers[0].pairingPhrase.empty());
 
     MdkrPartyTransportEvent phrase;
     phrase.type = MdkrPartyTransportEventType::ControllerPhrase;

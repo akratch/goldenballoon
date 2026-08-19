@@ -102,7 +102,9 @@ MdkrNativePartyController approved(
     value.id = std::move(id);
     value.name = "A friend's phone";
     value.publicKey = std::string(87u, 'C');
-    value.pairingPhrase = "amber comet";
+    /* SAS v2: room updates never carry a phrase -- it arrives on its own
+     * ControllerPhrase event once the phone's WebRTC descriptions are set
+     * (establishConnectedPhone injects it from that source). */
     value.phase = MdkrNativePartyControllerPhase::Leased;
     value.seat = seat;
     value.leaseGeneration = lease;
@@ -241,6 +243,15 @@ void establishConnectedPhone(
     assert(host.view().inviteVisible);
     assert(host.view().controllers.size() == 1u);
 
+    /* SAS v2 provenance: the phrase arrives from the transport once the
+     * answer is applied -- just before the channel opens -- never inside a
+     * room update. The lifecycle snapshots below then prove a stable
+     * mid-race session keeps these exact words. */
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
     MdkrPartyTransportEvent connected;
     connected.type = MdkrPartyTransportEventType::ControllerConnected;
     connected.controllerId = "phone-a";

@@ -15,7 +15,7 @@ function room(): StoredRoom {
 function redeem(target: StoredRoom, id: string, now = 1) {
   return applyRoomCommand(target, {type: "redeem", value: {
     inviteDigest: "digest", fallbackCodeDigest: "", controllerId: id, credentialDigest: `credential-${id}`,
-    name: id, controllerPublicKey: "C".repeat(87), protocol: 1, now}});
+    name: id, controllerPublicKey: "C".repeat(87), protocol: 2, now}});
 }
 
 describe("Party room state model", () => {
@@ -43,6 +43,18 @@ describe("Party room state model", () => {
       expect(admitSignalMessage(lifetime, window * 10_000)).toBe(true);
     }
     expect(admitSignalMessage(lifetime, 50_000)).toBe(false);
+  });
+
+  it("refuses every pairing protocol except 2", () => {
+    const value = room();
+    for (const protocol of [0, 1, 3]) {
+      expect(applyRoomCommand(value, {type: "redeem", value: {
+        inviteDigest: "digest", fallbackCodeDigest: "", controllerId: "old",
+        credentialDigest: "credential-old", name: "old",
+        controllerPublicKey: "C".repeat(87), protocol, now: 1}}))
+        .toEqual({ok: false, error: "protocol_update_required"});
+    }
+    expect(value.controllers).toHaveLength(0);
   });
 
   it("redeems, approves unique seats, and generation-checks by construction", () => {

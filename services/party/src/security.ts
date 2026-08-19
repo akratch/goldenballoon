@@ -23,6 +23,26 @@ export function randomToken(bytes: number): string {
   return base64Url(value);
 }
 
+/** Largest multiple of 1_000_000 that fits in a Uint32Array slot (4294 × 1e6).
+ * A plain `draw % 1_000_000` folds the 967_296 values at or above this bound
+ * back onto codes 000000–967295, making those codes ~0.02% likelier than the
+ * rest. */
+const FALLBACK_CODE_REJECTION_BOUND = 4_294_000_000;
+
+/** One uniformly random six-digit pairing code. Rejection sampling: draws at
+ * or above the largest multiple of 1_000_000 below 2^32 are rerolled, so all
+ * million codes are exactly equally likely. Each draw is rejected with
+ * probability 967_296 / 2^32 (~0.02%), so the loop terminates immediately in
+ * practice. The RNG parameter exists for unit tests only; production callers
+ * use the crypto default. */
+export function fallbackCode(
+    random: () => number = () => crypto.getRandomValues(new Uint32Array(1))[0]!,
+): string {
+  let draw = random();
+  while (draw >= FALLBACK_CODE_REJECTION_BOUND) draw = random();
+  return String(draw % 1_000_000).padStart(6, "0");
+}
+
 export async function boundCredential(env: Env, purpose: string,
                                       roomId: string): Promise<string> {
   const nonce = crypto.getRandomValues(new Uint8Array(16));
