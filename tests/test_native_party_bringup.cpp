@@ -110,6 +110,21 @@ public:
     }
 };
 
+/* The loopback test gate reads MDKR_INTERNAL_TEST_TOKEN from the process
+ * environment; these cases must control it explicitly rather than inherit
+ * whatever the invoking shell happens to carry. */
+void setTestToken(const char *value) {
+#ifdef _WIN32
+    (void)_putenv_s("MDKR_INTERNAL_TEST_TOKEN", value == nullptr ? "" : value);
+#else
+    if (value == nullptr) {
+        (void)unsetenv("MDKR_INTERNAL_TEST_TOKEN");
+    } else {
+        (void)setenv("MDKR_INTERNAL_TEST_TOKEN", value, 1);
+    }
+#endif
+}
+
 std::string configuredOrigin() {
     const char *value = std::getenv("MDKR_PARTY_BRINGUP_ORIGIN");
     if (value == nullptr || value[0] == '\0') return kDefaultOrigin;
@@ -126,12 +141,12 @@ std::string inviteUrlFor(const std::string &origin) {
 }
 
 MdkrPartyTransportEvent inviteRoom(
-    const std::string &url, const std::string &code, uint64_t expiresAtMs) {
+    const std::string &url, const std::string &code, uint64_t expiresInMs) {
     MdkrPartyTransportEvent event;
     event.type = MdkrPartyTransportEventType::RoomState;
     event.room.transitionId = 1u;
     event.room.inviteGeneration = 1u;
-    event.room.inviteExpiresAtMs = expiresAtMs;
+    event.room.inviteExpiresInMs = expiresInMs;
     event.room.controllerUrl = url;
     event.room.fallbackCode = code;
     event.room.inviteActive = true;
@@ -239,7 +254,10 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     assert(host.open(origin));
 
     const std::string url = inviteUrlFor(origin);
-    transport.events.push_back(inviteRoom(url, "406913", 121000u));
+    /* Relative expiresInMs=120000 latched against nowMs=1000 (host's own
+     * clock) lands the deadline at exactly 121000, matching the original
+     * absolute fixture value this test was written against. */
+    transport.events.push_back(inviteRoom(url, "406913", 120000u));
     host.service(1000u);
 
     const MdkrNativePartyView &view = host.view();
@@ -284,7 +302,11 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     pending.publicKey = std::string(87u, 'C');
     pending.pairingPhrase = "Royal-Penguin Nimble-Comet";
     pending.connectionSequence = 1u;
-    MdkrPartyTransportEvent joined = inviteRoom(url, "406913", 121000u);
+    /* Superseding transitionId, applied at nowMs=1001: expiresInMs=119999
+     * lands this second latch at 121000 too, so the later
+     * host.service(121000u) expiry check below still fires exactly as it
+     * did against the original absolute fixture. */
+    MdkrPartyTransportEvent joined = inviteRoom(url, "406913", 119999u);
     joined.room.transitionId = 2u;
     joined.room.controllers.push_back(pending);
     transport.events.push_back(std::move(joined));
@@ -352,6 +374,80 @@ void malformedInvitesAreRefused(const std::string &origin) {
     }
 }
 
+/*
+ * The end-to-end lane's loopback gate. Without the internal test token a
+ * plain-HTTP loopback origin is refused exactly like any other insecure
+ * origin; with the token — and only for genuine loopback hosts — the host
+ * bootstraps and accepts a loopback controllerUrl in room state. The token
+ * must never widen anything beyond loopback.
+ */
+void loopbackTestTokenGatesLoopbackHttp() {
+    const char *const loopbackOrigins[] = {
+        "http://127.0.0.1:8787",
+        "http://localhost:8787",
+    };
+
+    /* Refused without the token. */
+    setTestToken(nullptr);
+    for (const char *origin : loopbackOrigins) {
+        mdkr_native_remote_pad_reset_all();
+        RecordingTransport transport;
+        MdkrNativePartyHost host(transport);
+        assert(!host.open(origin));
+        assert(host.view().phase == MdkrNativePartyPhase::Error);
+        assert(transport.openCalls() == 0u);
+    }
+
+    /* Refused with the wrong token value. */
+    setTestToken("mdkr64-party-e2e-v0");
+    {
+        mdkr_native_remote_pad_reset_all();
+        RecordingTransport transport;
+        MdkrNativePartyHost host(transport);
+        assert(!host.open("http://127.0.0.1:8787"));
+        assert(transport.openCalls() == 0u);
+    }
+
+    /* Accepted with the token: bootstrap proceeds and a loopback
+     * controllerUrl survives room-state validation. */
+    setTestToken("mdkr64-party-e2e-v1");
+    for (const char *origin : loopbackOrigins) {
+        mdkr_native_remote_pad_reset_all();
+        RecordingTransport transport;
+        MdkrNativePartyHost host(transport);
+        assert(host.open(origin));
+        assert(transport.openCalls() == 1u);
+        assert(host.view().phase == MdkrNativePartyPhase::Opening);
+        transport.events.push_back(inviteRoom(
+            std::string(origin) + "/controller/#" +
+                std::string(kCapabilityLength, 'A'),
+            "406913", 120000u));
+        host.service(1000u);
+        assert(host.view().phase == MdkrNativePartyPhase::Open);
+        assert(host.view().inviteVisible);
+    }
+
+    /* The token widens nothing beyond loopback: a public HTTP origin, a
+     * loopback-lookalike hostname, and userinfo smuggling — where RFC 3986
+     * reads the loopback text as userinfo and the real host follows the
+     * '@' — all stay refused even while it is set. */
+    const char *const stillRefused[] = {
+        "http://party.example.invalid",
+        "http://127.0.0.1.evil.example",
+        "http://localhost.evil.example",
+        "http://127.0.0.1:@evil.example",
+        "http://localhost:8080@evil.example",
+    };
+    for (const char *origin : stillRefused) {
+        mdkr_native_remote_pad_reset_all();
+        RecordingTransport transport;
+        MdkrNativePartyHost host(transport);
+        assert(!host.open(origin));
+        assert(transport.openCalls() == 0u);
+    }
+    setTestToken(nullptr);
+}
+
 /* Bind the native encoder to the browser encoder a phone camera reads. */
 void qrMatchesBrowserOracle() {
     const QrDigest digest = encodeInvite(inviteUrlFor(kDefaultOrigin));
@@ -365,10 +461,14 @@ void qrMatchesBrowserOracle() {
 int main() {
     const std::string origin = configuredOrigin();
 
+    /* Fail-closed cases run with no test token in the environment, so a lane
+     * that exports it cannot silently weaken them. */
+    setTestToken(nullptr);
     unsetOrInsecureOriginFailsClosed();
     bootstrapReachesConfiguredOrigin(origin);
     const QrDigest digest = inviteSurfaceIsPairable(origin);
     malformedInvitesAreRefused(origin);
+    loopbackTestTokenGatesLoopbackHttp();
     qrMatchesBrowserOracle();
     mdkr_native_remote_pad_reset_all();
 

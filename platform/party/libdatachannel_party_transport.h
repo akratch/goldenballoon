@@ -14,4 +14,9 @@ bool mdkr_party_sas_phrase_for_test(
     const std::string &controllerPublicKey, std::string &hostPublicKey,
     std::string &phrase);
 
+/* Signaling-URL seam: pins the https->wss and loopback http->ws scheme
+ * rewrites the sockets are actually opened with. */
+std::string mdkr_party_signaling_url_for_test(
+    const std::string &origin, const std::string &path);
+
 #endif /* MDKR_LIBDATACHANNEL_PARTY_TRANSPORT_H */

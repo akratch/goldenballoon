@@ -1,5 +1,7 @@
 #include "libdatachannel_party_transport.h"
 #include "mozilla_ca_bundle.h"
+#include "party_event_queue.h"
+#include "party_retry_policy.h"
 
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecp.h>
@@ -14,11 +16,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -48,6 +51,27 @@ const std::array<const char *, 32> kRight = {{
     "Dolphin", "Lantern", "Meteor", "Penguin", "Planet", "Raven", "Sunrise",
     "Thunder",
 }};
+
+/*
+ * Signaling URL construction, shared by the create and reconnect sockets and
+ * pinned by tests/test_native_party_sas.cpp through
+ * mdkr_party_signaling_url_for_test. An https origin becomes wss and the
+ * loopback test origin (gated in initialize() below) becomes plain ws. The
+ * previous in-place rewrite here replaced the first five characters with
+ * "wss:", which turned every https origin into "wss:://host/..." — a URL
+ * libdatachannel's RFC 3986 parser rejects outright, so the production
+ * socket could never even begin its handshake. Splitting on the exact
+ * scheme keeps both forms honest.
+ */
+std::string signalingUrl(const std::string &origin, const std::string &path) {
+    std::string url = origin;
+    if (url.rfind("https://", 0u) == 0u) {
+        url.replace(0u, 8u, "wss://");
+    } else {
+        url.replace(0u, 7u, "ws://");
+    }
+    return url + path;
+}
 
 uint64_t steadyNowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -261,6 +285,14 @@ struct Peer {
     uint32_t pingNonce = 0u;
     Clock::time_point nextPingAt{};
     Clock::time_point pingOutstandingAt{};
+    /* C3 signaling retry (party_retry_policy.h): steadyNowMs() the current
+     * offer was last (re)sent, 0 meaning none sent yet; how many distinct
+     * offers (not resends) have been sent so far; and whether this peer has
+     * already been reported connect_timeout so tick() stops re-evaluating
+     * and re-emitting it every pass. */
+    uint64_t offerSentMs = 0u;
+    unsigned offerAttempts = 0u;
+    bool gaveUp = false;
     std::shared_ptr<rtc::PeerConnection> connection;
     std::shared_ptr<rtc::DataChannel> state;
     std::shared_ptr<rtc::DataChannel> control;
@@ -272,6 +304,13 @@ public:
         if (!identity_.generate()) return false;
         origin_ = serviceOrigin;
         while (!origin_.empty() && origin_.back() == '/') origin_.pop_back();
+        /* The host has already refused anything that is not HTTPS or the
+         * token-gated loopback test origin; re-checking here keeps this
+         * transport fail-closed even if it is ever driven directly. */
+        if (origin_.rfind("https://", 0u) != 0u &&
+            !mdkr_party_loopback_test_url_allowed(origin_)) {
+            return false;
+        }
         return connect(true);
     }
 
@@ -307,9 +346,21 @@ public:
     bool poll(MdkrPartyTransportEvent &event) {
         tick();
         std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.empty()) return false;
-        event = std::move(events_.front());
-        events_.pop_front();
+        if (drainedIndex_ >= drained_.size()) {
+            drained_ = queue_.drain();
+            drainedIndex_ = 0u;
+            /* Log a burst only when its size changes, not once per drained
+             * event: a sustained flood must not itself become a stderr
+             * flood. */
+            const uint64_t dropped = queue_.droppedPadPackets();
+            if (dropped != loggedDroppedPadPackets_) {
+                std::fprintf(stderr, "[PARTY-QUEUE] dropped=%llu\n",
+                    static_cast<unsigned long long>(dropped));
+                loggedDroppedPadPackets_ = dropped;
+            }
+        }
+        if (drainedIndex_ >= drained_.size()) return false;
+        event = std::move(drained_[drainedIndex_++]);
         return true;
     }
 
@@ -334,17 +385,8 @@ public:
 private:
     void enqueue(MdkrPartyTransportEvent event) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (shuttingDown_ || overflowed_) return;
-        if (events_.size() >= kMaxQueuedEvents) {
-            events_.clear();
-            overflowed_ = true;
-            MdkrPartyTransportEvent error;
-            error.type = MdkrPartyTransportEventType::Error;
-            error.message = "Phone input paused because network updates overflowed safely.";
-            events_.push_back(std::move(error));
-            return;
-        }
-        events_.push_back(std::move(event));
+        if (shuttingDown_) return;
+        queue_.push(std::move(event));
     }
 
     bool connect(bool create) {
@@ -381,10 +423,9 @@ private:
         socket->onMessage([weak, generation](rtc::message_variant message) {
             if (auto state = weak.lock()) state->socketMessage(generation, message);
         });
-        std::string url = origin_;
-        url.replace(0u, 5u, "wss:");
-        url += create ? "/api/party/native-create"
-                      : "/api/party/" + roomId_ + "/connect";
+        const std::string url = signalingUrl(
+            origin_, create ? "/api/party/native-create"
+                            : "/api/party/" + roomId_ + "/connect");
         try {
             socket->open(url);
             return true;
@@ -395,10 +436,28 @@ private:
     }
 
     void socketOpened(uint64_t generation) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (generation != generation_ || shuttingDown_) return;
-        reconnectAttempt_ = 0u;
-        reconnectAt_ = Clock::time_point{};
+        std::vector<std::shared_ptr<Peer>> pendingOffers;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (generation != generation_ || shuttingDown_) return;
+            reconnectAttempt_ = 0u;
+            reconnectAt_ = Clock::time_point{};
+            /* C3: the socket just (re)opened. Any still-unauthenticated
+             * peer with an outstanding offer may have had that offer
+             * dropped by the Worker while the socket was down -- resend it
+             * now instead of waiting out the 20 s deadline. socketOpen=true
+             * is edge-triggered by construction here: this runs once per
+             * onOpen callback, never once per tick. */
+            for (const auto &entry : peers_) {
+                const std::shared_ptr<Peer> &peer = entry.second;
+                if (peer->failed || peer->gaveUp) continue;
+                const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
+                    steadyNowMs(), peer->offerSentMs, peer->offerAttempts,
+                    peer->authenticated, /*socketOpen=*/true);
+                if (decision.resendOffer) pendingOffers.push_back(peer);
+            }
+        }
+        for (const auto &peer : pendingOffers) resendOffer(peer);
     }
 
     void socketError(uint64_t generation, const std::string &) {
@@ -442,7 +501,10 @@ private:
         bool reconnect = false;
         std::vector<std::shared_ptr<Peer>> ping;
         std::vector<std::shared_ptr<Peer>> expired;
+        std::vector<std::shared_ptr<Peer>> timedOut;
+        std::vector<std::pair<MdkrNativePartyController, unsigned>> recreations;
         const Clock::time_point now = Clock::now();
+        const uint64_t nowMs = steadyNowMs();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             reconnect = !shuttingDown_ && !socket_ && !credential_.empty() &&
@@ -450,7 +512,31 @@ private:
             if (reconnect) reconnectAt_ = Clock::time_point{};
             for (const auto &entry : peers_) {
                 const std::shared_ptr<Peer> &peer = entry.second;
-                if (peer->failed || !peer->authenticated || !peer->control) continue;
+                if (peer->failed) continue;
+                if (!peer->authenticated) {
+                    /* C3: an unanswered offer never makes the PeerConnection
+                     * reach Failed (no ICE start without a remote
+                     * description), so this is the only place a silently
+                     * stranded peer is ever noticed. gaveUp latches once the
+                     * host has been told, so a given-up peer is never
+                     * re-evaluated or re-reported every tick. */
+                    if (!peer->gaveUp) {
+                        const MdkrPartyRetryDecision decision = mdkr_party_retry_decide(
+                            nowMs, peer->offerSentMs, peer->offerAttempts,
+                            /*authenticated=*/false, /*socketOpen=*/false);
+                        if (decision.giveUp) {
+                            peer->gaveUp = true;
+                            timedOut.push_back(peer);
+                        } else if (decision.recreatePeer) {
+                            const auto known = controllers_.find(peer->id);
+                            if (known != controllers_.end()) {
+                                recreations.emplace_back(known->second, peer->offerAttempts);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                if (!peer->control) continue;
                 if (peer->pingOutstandingAt != Clock::time_point{} &&
                     now - peer->pingOutstandingAt >= std::chrono::seconds(15)) {
                     expired.push_back(peer);
@@ -465,6 +551,22 @@ private:
             }
         }
         if (reconnect) (void)connect(false);
+        for (const auto &peer : timedOut) {
+            /* Fail-closed but scoped: this is an explicit per-controller
+             * error, not a room-wide one -- other peers and the room itself
+             * are untouched. Reused CommandRejected shape (reason:
+             * connect_timeout) rather than a new event type, since the host
+             * already renders CommandRejected.message without needing to
+             * know the controller it came from. */
+            MdkrPartyTransportEvent event;
+            event.type = MdkrPartyTransportEventType::CommandRejected;
+            event.controllerId = peer->id;
+            event.message = "This phone could not connect. Remove it and pair again.";
+            enqueue(std::move(event));
+        }
+        for (const auto &recreation : recreations) {
+            createPeer(recreation.first, /*forceRecreate=*/true, recreation.second);
+        }
         for (const auto &peer : expired) peerDisconnected(peer, true);
         for (const auto &peer : ping) {
             try {
@@ -519,7 +621,9 @@ private:
         if (!safeString(value, "roomId", room, 22u) || room.size() != 22u ||
             !safeString(value, "hostCredential", credential, 43u) ||
             credential.size() != 43u || !safeString(value, "controllerUrl", url, 2048u) ||
-            url.rfind("https://", 0u) != 0u || !safeString(value, "fallbackCode", code, 6u) ||
+            (url.rfind("https://", 0u) != 0u &&
+             !mdkr_party_loopback_test_url_allowed(url)) ||
+            !safeString(value, "fallbackCode", code, 6u) ||
             code.size() != 6u || !uintValue(value, "inviteGeneration", generation,
                 std::numeric_limits<unsigned>::max()) || generation == 0u ||
             !uintValue(value, "inviteExpiresInMs", expiresIn, 300000u) || expiresIn == 0u) {
@@ -551,15 +655,20 @@ private:
             value["controllers"].size() > 8u) return false;
         room.transitionId = transition;
         room.inviteGeneration = static_cast<unsigned>(generation);
-        room.inviteExpiresAtMs = wallExpiryToSteady(wallExpiry);
+        /* I1: kept in this function's own steady-clock domain
+         * (wallExpiryToSteady/steadyNowMs) throughout parsing -- only
+         * translated to a cross-domain-safe *relative* value
+         * (room.inviteExpiresInMs) once, right before returning, so the host
+         * can anchor it in its own clock instead of this transport's. */
+        uint64_t expiresAtSteadyMs = wallExpiryToSteady(wallExpiry);
         room.inviteActive = value.value("phase", std::string{}) == "open" &&
-            room.inviteExpiresAtMs > steadyNowMs();
+            expiresAtSteadyMs > steadyNowMs();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (room.inviteGeneration == inviteGeneration_) {
                 room.controllerUrl = inviteUrl_;
                 room.fallbackCode = fallbackCode_;
-                room.inviteExpiresAtMs = inviteExpiresAtMs_;
+                expiresAtSteadyMs = inviteExpiresAtMs_;
             }
         }
         if (safeString(value, "controllerUrl", room.controllerUrl, 2048u, false) &&
@@ -569,7 +678,7 @@ private:
                 inviteUrl_ = room.controllerUrl;
                 fallbackCode_ = room.fallbackCode;
                 inviteGeneration_ = room.inviteGeneration;
-                inviteExpiresAtMs_ = room.inviteExpiresAtMs;
+                inviteExpiresAtMs_ = expiresAtSteadyMs;
             }
         } else return false;
         for (const Json &item : value["controllers"]) {
@@ -586,7 +695,14 @@ private:
             else if (phase == "connected") controller.phase = MdkrNativePartyControllerPhase::Connected;
             else return false;
             uint64_t seat = 0u;
-            if (!item["seat"].is_null() && !uintValue(item, "seat", seat, 4u)) return false;
+            /* I5: a pending controller with no seat assigned yet may arrive
+             * with the "seat" key absent entirely, not merely null. nlohmann's
+             * const operator[] on a missing key is undefined behaviour under
+             * NDEBUG (an end-iterator dereference, not a catchable
+             * exception) -- contains() first, same as every other field in
+             * this function. */
+            if (item.contains("seat") && !item["seat"].is_null() &&
+                !uintValue(item, "seat", seat, 4u)) return false;
             uint64_t lease = 0u;
             uint64_t connection = 0u;
             if (!uintValue(item, "leaseGeneration", lease,
@@ -606,6 +722,9 @@ private:
             controller.pairingPhrase = std::move(phrase);
             room.controllers.push_back(std::move(controller));
         }
+        const uint64_t nowSteady = steadyNowMs();
+        room.inviteExpiresInMs =
+            expiresAtSteadyMs > nowSteady ? expiresAtSteadyMs - nowSteady : 0u;
         return true;
     }
 
@@ -679,16 +798,37 @@ private:
         }
     }
 
-    void createPeer(const MdkrNativePartyController &controller) {
+    /* forceRecreate/carriedOfferAttempts serve the C3 retry ladder only:
+     * tick() sets forceRecreate when mdkr_party_retry_decide() says an
+     * unauthenticated peer's offer has gone unanswered past the deadline,
+     * and carries its offerAttempts forward so a peer does not get an
+     * unbounded number of attempts just because each one recreates a brand
+     * new Peer object. Every other call site (handleRoomState, handleHello,
+     * peerDisconnected's existing reconnect-after-drop path) leaves both at
+     * their defaults, exactly as before this policy existed. */
+    void createPeer(const MdkrNativePartyController &controller,
+                    bool forceRecreate = false, unsigned carriedOfferAttempts = 0u) {
         uint32_t peerGeneration = 0u;
+        std::shared_ptr<rtc::PeerConnection> stale;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto found = peers_.find(controller.id);
-            if (found != peers_.end() && !found->second->failed) return;
-            if (found != peers_.end()) peers_.erase(found);
+            if (found != peers_.end() && !found->second->failed && !forceRecreate) return;
+            if (found != peers_.end()) {
+                /* A retry-driven recreation targets a peer that never
+                 * reached Failed -- that is the defect: an unanswered offer
+                 * leaves the PeerConnection sitting healthy forever, unlike
+                 * the already-failed path this early-return also serves,
+                 * whose connection is already closed at the RTC layer by
+                 * the time onStateChange got here. Close it explicitly
+                 * before the fresh one takes its place. */
+                if (!found->second->failed) stale = found->second->connection;
+                peers_.erase(found);
+            }
             peerGeneration = ++peerGeneration_;
             if (peerGeneration == 0u) peerGeneration = ++peerGeneration_;
         }
+        if (stale) stale->close();
         rtc::Configuration configuration;
         configuration.iceServers.emplace_back("stun:stun.cloudflare.com:3478");
         configuration.maxMessageSize = kMaxSignalBytes;
@@ -698,6 +838,7 @@ private:
         peer->leaseGeneration = controller.leaseGeneration;
         peer->connectionSequence = controller.connectionSequence;
         peer->peerGeneration = peerGeneration;
+        peer->offerAttempts = carriedOfferAttempts;
         try {
             peer->connection = std::make_shared<rtc::PeerConnection>(configuration);
         } catch (...) { return; }
@@ -705,11 +846,19 @@ private:
         const std::weak_ptr<Peer> weakPeer = peer;
         peer->connection->onLocalDescription([weak, weakPeer](rtc::Description description) {
             if (auto state = weak.lock()) {
-                if (auto current = weakPeer.lock()) state->sendPeerSignal(current,
-                    Json{{"type", "webrtc_offer"}, {"to", current->id},
-                        {"peerGeneration", current->peerGeneration},
-                        {"sdp", {{"type", description.typeString()},
-                            {"sdp", std::string(description)}}}});
+                if (auto current = weakPeer.lock()) {
+                    /* This is the offer going out for real (the first one,
+                     * or a fresh one from a retry-driven recreation) -- a
+                     * new attempt, so mark it as one. Resends of this same
+                     * description on socket reopen go through resendOffer()
+                     * instead and do not call onLocalDescription again. */
+                    state->markOfferSent(current, /*freshAttempt=*/true);
+                    state->sendPeerSignal(current,
+                        Json{{"type", "webrtc_offer"}, {"to", current->id},
+                            {"peerGeneration", current->peerGeneration},
+                            {"sdp", {{"type", description.typeString()},
+                                {"sdp", std::string(description)}}}});
+                }
             }
         });
         peer->connection->onLocalCandidate([weak, weakPeer](rtc::Candidate candidate) {
@@ -731,6 +880,23 @@ private:
                 }
             }
         });
+        /* The peer must be registered BEFORE the first createDataChannel:
+         * creating the channel is what makes libdatachannel set the local
+         * description, and onLocalDescription fires as soon as it does.
+         * markOfferSent and sendPeerSignal both look this peer up in peers_
+         * and silently return when it is absent, so registering only after
+         * the channels exist (as this function originally did) raced the
+         * callback -- the first offer was discarded unsent, offerSentMs
+         * stayed 0, and the retry ladder (which reads offerSentMs == 0 as
+         * "no offer to retry yet") could never rescue the stranded phone. */
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (shuttingDown_) {
+                peer->connection->close();
+                return;
+            }
+            peers_[peer->id] = peer;
+        }
         rtc::DataChannelInit stateConfiguration;
         stateConfiguration.reliability.unordered = true;
         stateConfiguration.reliability.maxRetransmits = 0u;
@@ -739,6 +905,13 @@ private:
                 "mdkr-pad-state-v1", stateConfiguration);
             peer->control = peer->connection->createDataChannel("mdkr-pad-control-v1");
         } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto found = peers_.find(peer->id);
+                if (found != peers_.end() && found->second == peer) {
+                    peers_.erase(found);
+                }
+            }
             peer->connection->close();
             return;
         }
@@ -767,10 +940,6 @@ private:
                 if (auto current = weakPeer.lock()) owner->peerDisconnected(current, true);
             }
         });
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!shuttingDown_) peers_[peer->id] = peer;
-        }
     }
 
     void peerDisconnected(const std::shared_ptr<Peer> &peer, bool failed) {
@@ -924,8 +1093,43 @@ private:
         (void)command(value);
     }
 
+    /* C3 retry bookkeeping. freshAttempt=true is a genuinely new offer (the
+     * first one, or one from a retry-driven recreation); false is a resend
+     * of the same description after the socket reopened, which restarts
+     * the 20 s deadline (it just went out again) but must not consume one
+     * of the 3 attempts. offerSentMs/offerAttempts are set unconditionally,
+     * even though command() inside sendPeerSignal may still fail if the
+     * socket happens to be down right now -- that is exactly the case
+     * resendOffer() exists to recover from once the socket comes back, so
+     * the record must survive a send that never reached the wire. */
+    void markOfferSent(const std::shared_ptr<Peer> &peer, bool freshAttempt) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto found = peers_.find(peer->id);
+        if (found == peers_.end() || found->second != peer) return;
+        peer->offerSentMs = steadyNowMs();
+        if (freshAttempt) peer->offerAttempts++;
+    }
+
+    /* Resends the peer's existing local description verbatim -- no
+     * createOffer(), no renegotiation, same peerGeneration -- because
+     * C3 is a Worker-relay drop, not anything wrong with the offer. */
+    void resendOffer(const std::shared_ptr<Peer> &peer) {
+        std::optional<rtc::Description> description;
+        try { description = peer->connection->localDescription(); }
+        catch (...) { return; }
+        if (!description) return;
+        markOfferSent(peer, /*freshAttempt=*/false);
+        sendPeerSignal(peer, Json{{"type", "webrtc_offer"}, {"to", peer->id},
+            {"peerGeneration", peer->peerGeneration},
+            {"sdp", {{"type", description->typeString()},
+                {"sdp", std::string(*description)}}}});
+    }
+
     std::mutex mutex_;
-    std::deque<MdkrPartyTransportEvent> events_;
+    MdkrPartyEventQueue queue_{kMaxQueuedEvents};
+    std::vector<MdkrPartyTransportEvent> drained_;
+    size_t drainedIndex_ = 0u;
+    uint64_t loggedDroppedPadPackets_ = 0u;
     std::shared_ptr<rtc::WebSocket> socket_;
     std::map<std::string, std::shared_ptr<Peer>> peers_;
     std::map<std::string, MdkrNativePartyController> controllers_;
@@ -944,7 +1148,6 @@ private:
     Clock::time_point reconnectAt_{};
     bool creating_ = false;
     bool shuttingDown_ = false;
-    bool overflowed_ = false;
 };
 
 class LibDatachannelPartyTransport final : public MdkrPartyTransport {
@@ -1010,6 +1213,11 @@ private:
 
 std::unique_ptr<MdkrPartyTransport> mdkr_create_native_party_transport() {
     return std::make_unique<LibDatachannelPartyTransport>();
+}
+
+std::string mdkr_party_signaling_url_for_test(
+    const std::string &origin, const std::string &path) {
+    return signalingUrl(origin, path);
 }
 
 bool mdkr_party_sas_phrase_for_test(

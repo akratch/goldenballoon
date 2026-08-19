@@ -17,6 +17,9 @@ constexpr size_t kMaxPhrase = 48u;
 constexpr size_t kPublicKeyLength = 87u;
 constexpr size_t kMaxUrl = 2048u;
 constexpr size_t kMaxMessage = 240u;
+/* C1 self-heal: at most one rebind attempt per controller per this window,
+ * so a phone that keeps overflowing the queue cannot make service() spin. */
+constexpr uint64_t kRebindRateLimitMs = 500u;
 
 bool printable(const std::string &value, size_t maximum) {
     if (value.size() > maximum) return false;
@@ -77,7 +80,8 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
         return false;
     }
     if (serviceOrigin.size() > kMaxUrl ||
-        serviceOrigin.rfind("https://", 0u) != 0u) {
+        (serviceOrigin.rfind("https://", 0u) != 0u &&
+         !mdkr_party_loopback_test_url_allowed(serviceOrigin))) {
         setError("Phone controllers require the configured secure Party service.");
         return false;
     }
@@ -181,7 +185,8 @@ bool MdkrNativePartyHost::roomStateValid(
         !printable(room.controllerUrl, kMaxUrl) ||
         !printable(room.fallbackCode, 12u) ||
         (room.inviteActive &&
-         (room.controllerUrl.rfind("https://", 0u) != 0u ||
+         ((room.controllerUrl.rfind("https://", 0u) != 0u &&
+           !mdkr_party_loopback_test_url_allowed(room.controllerUrl)) ||
           room.fallbackCode.size() != 6u ||
           !std::all_of(room.fallbackCode.begin(), room.fallbackCode.end(),
                        [](unsigned char byte) { return std::isdigit(byte) != 0; })))) {
@@ -277,10 +282,17 @@ void MdkrNativePartyHost::applyRoomState(
 
     view_.transitionId = room.transitionId;
     view_.inviteGeneration = room.inviteGeneration;
-    view_.inviteExpiresAtMs = room.inviteExpiresAtMs;
+    /* I1 fix: room.inviteExpiresInMs is relative (ms remaining as of the
+     * transport's parse), specifically so it can be anchored here in the
+     * HOST's own service clock (nowMs) rather than compared as if it were
+     * already an absolute instant in some other clock's domain. Every
+     * downstream read of view_.inviteExpiresAtMs (the tail of service()
+     * below, ui_phone_party.cpp's countdown) already compares it against
+     * this same nowMs domain, so latching it here is the entire fix. */
+    view_.inviteExpiresAtMs = nowMs + room.inviteExpiresInMs;
     view_.controllerUrl = room.inviteActive ? room.controllerUrl : std::string{};
     view_.fallbackCode = room.inviteActive ? room.fallbackCode : std::string{};
-    view_.inviteVisible = room.inviteActive && room.inviteExpiresAtMs > nowMs;
+    view_.inviteVisible = room.inviteActive && view_.inviteExpiresAtMs > nowMs;
     view_.phase = view_.inviteVisible ? MdkrNativePartyPhase::Open
                                      : MdkrNativePartyPhase::InviteRevoked;
     view_.busy = false;
@@ -333,8 +345,16 @@ void MdkrNativePartyHost::applyEvent(
                     candidate->connectionSequence,
                     event.packet.data(), event.packet.size())) {
                 candidate->direct = false;
-                candidate->haptics = false;
                 candidate->phase = MdkrNativePartyControllerPhase::Leased;
+                /* Queue exhaustion revoked custody at the ingress crossing,
+                 * but nothing here waits for a room transition to fix it --
+                 * a stable mid-race room never sends one. Flag it so
+                 * service() heals the seat on its own next tick. Leave
+                 * candidate->haptics untouched: it is the phone's known
+                 * hardware capability, not a liveness bit, and the healing
+                 * loop needs it to re-assert ingress haptics support once the
+                 * seat is rebound (a fresh bind always clears that bit). */
+                candidate->needsRebind = true;
                 view_.message =
                     "Phone input paused safely. Reconnecting…";
             }
@@ -348,10 +368,27 @@ void MdkrNativePartyHost::applyEvent(
             return;
         }
         case MdkrPartyTransportEventType::CommandRejected:
-            for (MdkrNativePartyController &candidate : view_.controllers) {
-                candidate.commandPending = false;
+            if (event.controllerId.empty()) {
+                /* No controller identity: a genuine host-command rejection
+                 * (approve/reject/rotate/dismiss/close all funnel into the
+                 * same undifferentiated host_command_result path today) is
+                 * really room-wide -- the one pending action just failed,
+                 * so every commandPending and the room-level busy flag
+                 * clear exactly as before. */
+                for (MdkrNativePartyController &candidate : view_.controllers) {
+                    candidate.commandPending = false;
+                }
+                view_.busy = false;
+            } else {
+                /* A controller-scoped rejection (C3's connect_timeout
+                 * give-up) must not clear an unrelated controller's
+                 * genuinely in-flight command -- only the named
+                 * controller's own commandPending is touched. busy tracks
+                 * room-level invite actions, not any one controller, so it
+                 * is left untouched here. */
+                MdkrNativePartyController *candidate = controller(event.controllerId);
+                if (candidate != nullptr) candidate->commandPending = false;
             }
-            view_.busy = false;
             view_.message = safeMessage(
                 event.message, "That controller action did not complete. Try again.");
             return;
@@ -376,6 +413,13 @@ void MdkrNativePartyHost::applyEvent(
 void MdkrNativePartyHost::setError(const std::string &message) {
     releaseAll();
     transport_.shutdown();
+    /* Review fix: a controller left needsRebind from a push failure earlier
+     * in this same drain cycle must not survive into the Error room --
+     * releaseAll() above already revoked its seat's custody, so the next
+     * service() heal loop must never see a reason to touch it again. */
+    for (MdkrNativePartyController &candidate : view_.controllers) {
+        candidate.needsRebind = false;
+    }
     view_.phase = MdkrNativePartyPhase::Error;
     view_.busy = false;
     view_.inviteVisible = false;
@@ -385,6 +429,60 @@ void MdkrNativePartyHost::setError(const std::string &message) {
 }
 
 void MdkrNativePartyHost::service(uint64_t nowMs) {
+    /* C1 self-heal. Ingress queue exhaustion revokes a seat's custody at the
+     * transport crossing (native_remote_pad_ingress.cpp) below the room state
+     * machine entirely -- the WebRTC channel and its 5 s pings never notice.
+     * The only other rebind site is applyRoomState, which runs solely on an
+     * advancing room transitionId; a stable mid-race room sends none, so
+     * without this loop "Reconnecting..." is a promise nothing fulfills. Heal
+     * it ourselves: re-issuing mdkr_native_remote_pad_bind with a fresh lease
+     * generation gives the seat a new owner identity (the same call
+     * applyRoomState makes for a real reconnect), and the engine-side rebind
+     * that a changed identity triggers publishes neutral before any packet
+     * from the new epoch can reach the sim -- the same fail-neutral path a
+     * genuine reconnect already relies on. Runs before events are drained so
+     * a fresh packet queued for this very tick lands on a live seat. A fresh
+     * bind always clears the ingress haptics bit (native_remote_pad_ingress.cpp
+     * clearPayload), and in this exact scenario the WebRTC channel never
+     * dropped, so no ControllerConnected event will ever come along to set it
+     * again -- reassert it ourselves from the controller's own remembered
+     * capability, the same call ControllerConnected makes.
+     *
+     * Review fix: also gate the whole loop on the room not being Error or
+     * Closed. setError() already clears needsRebind on its way out (belt),
+     * but a terminal or closed room must never re-bind a seat regardless of
+     * how a flag got left standing (suspenders).
+     */
+    if (view_.phase != MdkrNativePartyPhase::Error &&
+        view_.phase != MdkrNativePartyPhase::Closed) {
+        for (MdkrNativePartyController &candidate : view_.controllers) {
+            if (!candidate.needsRebind || !occupiesSeat(candidate) ||
+                candidate.connectionSequence == 0u) {
+                continue;
+            }
+            if (candidate.lastRebindMs != 0u &&
+                nowMs >= candidate.lastRebindMs &&
+                nowMs - candidate.lastRebindMs < kRebindRateLimitMs) {
+                continue;
+            }
+            candidate.lastRebindMs = nowMs;
+            candidate.leaseGeneration++;
+            const uint64_t owner = ownerFor(candidate);
+            if (owner == 0u ||
+                !mdkr_native_remote_pad_bind(
+                    candidate.seat - 1u, owner, candidate.connectionSequence)) {
+                continue;
+            }
+            candidate.needsRebind = false;
+            candidate.direct = true;
+            candidate.phase = MdkrNativePartyControllerPhase::Connected;
+            (void)mdkr_native_remote_pad_set_haptics(
+                candidate.seat - 1u, owner, candidate.connectionSequence,
+                candidate.haptics);
+            view_.message = "Phone input reconnected.";
+        }
+    }
+
     MdkrPartyTransportEvent event;
     size_t count = 0u;
     while (count < kMaxEventsPerService && transport_.poll(event)) {

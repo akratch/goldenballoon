@@ -1,0 +1,18 @@
+diff --git a/src/impl/dtlstransport.cpp b/src/impl/dtlstransport.cpp
+index 3a3a807..ddc5f46 100644
+--- a/src/impl/dtlstransport.cpp
++++ b/src/impl/dtlstransport.cpp
+@@ -660,7 +660,12 @@ int DtlsTransport::ReadCallback(void *ctx, unsigned char *buf, size_t len) {
+ 
+ 			auto bufMin = std::min(len, size_t(message->size()));
+ 			std::memcpy(buf, message->data(), bufMin);
+-			return int(len);
++			// Report exactly the bytes copied. Returning the buffer capacity
++			// instead makes Mbed TLS treat the rest of its input buffer as
++			// part of the received datagram, and the garbage "next record"
++			// after the real one aborts the handshake as an invalid record,
++			// so a browser's first DTLS flight could never complete.
++			return int(bufMin);
+ 		}
+ 
+ 		// Closed

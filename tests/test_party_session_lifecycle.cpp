@@ -117,7 +117,7 @@ MdkrPartyTransportEvent roomEvent(
     event.type = MdkrPartyTransportEventType::RoomState;
     event.room.transitionId = transition;
     event.room.inviteGeneration = generation;
-    event.room.inviteExpiresAtMs = expires;
+    event.room.inviteExpiresInMs = expires;
     event.room.controllerUrl = "https://party.example/controller/#secret";
     event.room.fallbackCode = "123456";
     event.room.inviteActive = true;
@@ -481,6 +481,74 @@ void boundedQueueOverflowIsObservableAndFailNeutral() {
     }
 }
 
+/*
+ * Stall injection (C1): the phone's transport stays perfectly healthy and
+ * keeps streaming pad packets across a host stall long enough to blow the
+ * 32-deep ingress queue. Overflow revokes custody exactly as designed above
+ * -- but no room transition ever follows a stall (a stable mid-race room
+ * sends none), so the only rebind site in applyRoomState never fires and the
+ * "Reconnecting..." promise has nothing behind it. The host must heal custody
+ * itself from service(): within two subsequent service() calls -- one that
+ * observes the overflow, one that heals and delivers -- a fresh live packet
+ * must reach the engine side of the ingress crossing again.
+ */
+void stall_with_live_packets_recovers_input() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    establishConnectedPhone(transport, host);
+    const uint64_t transitionBefore = host.view().transitionId;
+
+    /* A stall long enough to fill the queue (OS sleep, window drag, load
+     * hitch): the phone does not know service() stopped running and keeps
+     * streaming at its normal cadence, so packets pile up in the transport's
+     * own queue exactly as they would against the real one. */
+    const uint32_t flood = MDKR_NATIVE_REMOTE_PAD_QUEUE_CAPACITY + 8u;
+    uint32_t sequence = 3u;
+    for (uint32_t index = 0u; index < flood; ++index) {
+        queuePacket(transport, "phone-a", kConnection, ++sequence);
+    }
+    host.service(4000u);  // service() resumes after the gap and drains the flood.
+
+    MdkrNativeRemotePadIngressStats stats{};
+    mdkr_native_remote_pad_stats(kPort, &stats);
+    assert(stats.overflows == 1u);
+    uint64_t owner = 0u;
+    uint32_t connection = 0u;
+    assert(!mdkr_native_remote_pad_info(kPort, &owner, &connection));
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Leased);
+    assert(host.view().message == "Phone input paused safely. Reconnecting…");
+    /* No room transition happened: a stable room sends none mid-race. */
+    assert(host.view().transitionId == transitionBefore);
+    /* Ingress custody is gone, so haptics support reads false at that layer,
+     * but the host must still remember the phone had haptics before the
+     * stall -- the WebRTC channel never dropped, so nothing will ever tell
+     * it again. */
+    assert(!mdkr_native_remote_pad_haptics_supported(kPort));
+    assert(host.view().controllers[0].haptics);
+
+    /* The phone, unaware anything happened locally, keeps streaming at its
+     * normal cadence. One more service() call, still with no room_state
+     * anywhere, must both heal custody and deliver this fresh packet. */
+    queuePacket(transport, "phone-a", kConnection, ++sequence);
+    host.service(4100u);
+
+    assert(host.view().transitionId == transitionBefore);  // still no transition
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+    assert(mdkr_native_remote_pad_info(kPort, &owner, &connection));
+    assert(owner != 0u && connection == kConnection);
+    /* Rumble must work again on the healed seat without waiting for a real
+     * reconnect: the heal reasserts haptics support at the ingress layer from
+     * the controller's remembered capability. */
+    assert(mdkr_native_remote_pad_haptics_supported(kPort));
+
+    const std::vector<uint32_t> delivered = drainSeat(kPort, owner, kConnection);
+    assert(!delivered.empty());
+    assert(delivered.back() == sequence);
+}
+
 }  // namespace
 
 int main() {
@@ -489,12 +557,14 @@ int main() {
     rematchKeepsLauncherOwnedSeats();
     inviteExpiryDuringMinimizeKeepsSeatsAndSaysSo();
     boundedQueueOverflowIsObservableAndFailNeutral();
+    stall_with_live_packets_recovers_input();
     mdkr_native_remote_pad_reset_all();
     std::printf(
         "party_session_lifecycle: PASS — a live Phone Party session keeps its "
         "leases, seats, invite and input routing across a 30s minimize, the "
         "1/2/1 DPI re-layout and three rematch round trips, with the bounded "
-        "ingress queue and custody counters untripped and the documented "
-        "expiry/congestion copy intact\n");
+        "ingress queue and custody counters untripped, the documented "
+        "expiry/congestion copy intact, and a stalled phone's input self-heals "
+        "without waiting for a room transition\n");
     return 0;
 }
