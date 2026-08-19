@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -211,6 +212,82 @@ bool controllerReadyEventFromControl(const Json &value,
     return true;
 }
 
+/*
+ * SAS v2 fingerprint capture (I-1). Canonical form, agreed byte-for-byte
+ * with the controller page: the value string after "a=fingerprint:" with
+ * single spaces, algorithm token verbatim, hex uppercased -- e.g.
+ * "sha-256 AB:CD:...". Only lines that BEGIN with the attribute count; a
+ * line that begins with it but does not parse, or two lines that disagree,
+ * refuse the whole description. Refusal is the empty string, which every
+ * caller treats as "no phrase" -- the fail-closed arm; a description this
+ * parser cannot vouch for must never anchor a verification phrase.
+ */
+bool canonicalFingerprintValue(const std::string &line, std::string &output) {
+    std::vector<std::string> tokens;
+    std::string token;
+    for (const char byte : line) {
+        if (byte == ' ' || byte == '\t') {
+            if (!token.empty()) {
+                tokens.push_back(token);
+                token.clear();
+            }
+        } else {
+            token.push_back(byte);
+        }
+    }
+    if (!token.empty()) tokens.push_back(token);
+    if (tokens.size() != 2u) return false;
+    const std::string &algorithm = tokens[0];
+    std::string value = tokens[1];
+    if (algorithm.size() > 32u || value.size() > 512u) return false;
+    for (const char byte : algorithm) {
+        if (std::isalnum(static_cast<unsigned char>(byte)) == 0 &&
+            byte != '-') {
+            return false;
+        }
+    }
+    /* The fingerprint itself: hex pairs separated by single colons. */
+    if (value.size() < 2u || (value.size() + 1u) % 3u != 0u) return false;
+    for (size_t index = 0u; index < value.size(); index++) {
+        if ((index + 1u) % 3u == 0u) {
+            if (value[index] != ':') return false;
+        } else {
+            const unsigned char byte = static_cast<unsigned char>(value[index]);
+            if (std::isxdigit(byte) == 0) return false;
+            value[index] = static_cast<char>(std::toupper(byte));
+        }
+    }
+    output = algorithm + ' ' + value;
+    return true;
+}
+
+std::string canonicalSdpFingerprint(const std::string &sdp) {
+    static constexpr char kPrefix[] = "a=fingerprint:";
+    constexpr size_t kPrefixLength = sizeof(kPrefix) - 1u;
+    std::string canonical;
+    size_t start = 0u;
+    for (;;) {
+        size_t end = sdp.find('\n', start);
+        if (end == std::string::npos) end = sdp.size();
+        size_t stop = end;
+        if (stop > start && sdp[stop - 1u] == '\r') stop--;
+        if (stop - start >= kPrefixLength &&
+            sdp.compare(start, kPrefixLength, kPrefix) == 0) {
+            std::string value;
+            if (!canonicalFingerprintValue(
+                    sdp.substr(start + kPrefixLength,
+                               stop - start - kPrefixLength), value)) {
+                return std::string{};
+            }
+            if (!canonical.empty() && canonical != value) return std::string{};
+            canonical = std::move(value);
+        }
+        if (end >= sdp.size()) break;
+        start = end + 1u;
+    }
+    return canonical;
+}
+
 std::string base64Url(const uint8_t *bytes, size_t length) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -328,8 +405,26 @@ public:
 
     const std::string &publicKey() const { return encodedPublicKey_; }
 
+    /*
+     * SAS v2 (I-1): the phrase commits to the DTLS channel itself, not just
+     * the signaling identities, so a relay that substituted either
+     * certificate moves the words on one screen. Transcript layout (pinned
+     * byte-for-byte against the controller page's derivation by
+     * tests/test_native_party_sas.cpp):
+     *   ECDH_secret ‖ label ‖ 0x00 ‖ roomId ‖ 0x00 ‖ hostPublicKey ‖ 0x00 ‖
+     *   controllerPublicKey ‖ 0x00 ‖ hostFingerprint ‖ 0x00 ‖
+     *   controllerFingerprint
+     * A missing fingerprint refuses outright: there is no v1 transcript
+     * left in this build to fall back to, so "no fingerprint" can only ever
+     * mean "no phrase" (fail closed).
+     */
     bool phrase(const std::string &peerEncoded, const std::string &roomId,
+                const std::string &hostFingerprint,
+                const std::string &controllerFingerprint,
                 std::string &result) {
+        if (hostFingerprint.empty() || controllerFingerprint.empty()) {
+            return false;
+        }
         std::array<uint8_t, 65> peerBytes{};
         if (!decodePublicKey(peerEncoded, peerBytes)) return false;
         mbedtls_ecp_point peer;
@@ -348,8 +443,9 @@ public:
         mbedtls_ecp_point_free(&peer);
         if (!wrote) return false;
 
-        const std::string context = std::string("golden-balloon-party-sas-v1") +
-            '\0' + roomId + '\0' + encodedPublicKey_ + '\0' + peerEncoded;
+        const std::string context = std::string("golden-balloon-party-sas-v2") +
+            '\0' + roomId + '\0' + encodedPublicKey_ + '\0' + peerEncoded +
+            '\0' + hostFingerprint + '\0' + controllerFingerprint;
         std::array<uint8_t, 32> digest{};
         mbedtls_sha256_context hash;
         mbedtls_sha256_init(&hash);
@@ -930,14 +1026,14 @@ private:
             controller.seat = static_cast<unsigned>(seat);
             controller.leaseGeneration = static_cast<uint32_t>(lease);
             controller.connectionSequence = static_cast<uint32_t>(connection);
-            std::string phrase;
-            std::string currentRoom;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                currentRoom = roomId_;
-            }
-            if (!identity_.phrase(controller.publicKey, currentRoom, phrase)) return false;
-            controller.pairingPhrase = std::move(phrase);
+            /* SAS v2: no phrase here. It binds both DTLS fingerprints,
+             * which do not exist until this controller's WebRTC
+             * descriptions are exchanged -- emitPhrase (from handleAnswer)
+             * is the one derivation site. The key itself is still validated
+             * as a curve point so a malformed room update fails closed
+             * exactly as it always has. */
+            std::array<uint8_t, 65> keyBytes{};
+            if (!decodePublicKey(controller.publicKey, keyBytes)) return false;
             room.controllers.push_back(std::move(controller));
         }
         const uint64_t nowSteady = steadyNowMs();
@@ -1285,7 +1381,62 @@ private:
             peer = found->second;
         }
         try { peer->connection->setRemoteDescription(rtc::Description(sdp, type)); }
-        catch (...) { peerDisconnected(peer, true); }
+        catch (...) {
+            peerDisconnected(peer, true);
+            return;
+        }
+        emitPhrase(peer, sdp);
+    }
+
+    /*
+     * SAS v2 derivation site -- the capture point. Both descriptions are set
+     * exactly here: the local offer existed before this answer could arrive
+     * (createDataChannel set it, onLocalDescription sent it), and
+     * handleAnswer just applied the remote one, so this is the earliest
+     * moment both DTLS fingerprints exist. The controller fingerprint is
+     * read from the answer's own SDP text (the very bytes just applied),
+     * the host fingerprint from the connection's local description. Any
+     * missing or ambiguous piece means NO ControllerPhrase event at all:
+     * the seat simply never shows a phrase (fail closed -- the v1
+     * derivation no longer exists in this build to fall back to). A
+     * reconnect re-enters through a fresh answer and re-emits with the new
+     * channel's fingerprints.
+     */
+    void emitPhrase(const std::shared_ptr<Peer> &peer,
+                    const std::string &answerSdp) {
+        const std::string controllerFingerprint =
+            canonicalSdpFingerprint(answerSdp);
+        std::string hostSdp;
+        try {
+            const std::optional<rtc::Description> description =
+                peer->connection->localDescription();
+            if (description) hostSdp = std::string(*description);
+        } catch (...) {
+            return;
+        }
+        const std::string hostFingerprint = canonicalSdpFingerprint(hostSdp);
+        std::string controllerKey;
+        std::string room;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto found = controllers_.find(peer->id);
+            if (found != controllers_.end()) {
+                controllerKey = found->second.publicKey;
+            }
+            room = roomId_;
+        }
+        std::string phrase;
+        if (controllerFingerprint.empty() || hostFingerprint.empty() ||
+            controllerKey.empty() ||
+            !identity_.phrase(controllerKey, room, hostFingerprint,
+                              controllerFingerprint, phrase)) {
+            return;
+        }
+        MdkrPartyTransportEvent event;
+        event.type = MdkrPartyTransportEventType::ControllerPhrase;
+        event.controllerId = peer->id;
+        event.message = std::move(phrase);
+        enqueue(std::move(event));
     }
 
     void handleIce(const Json &value) {
@@ -1465,12 +1616,19 @@ std::string mdkr_party_signaling_url_for_test(
 
 bool mdkr_party_sas_phrase_for_test(
     const uint8_t privateScalar[32], const std::string &roomId,
-    const std::string &controllerPublicKey, std::string &hostPublicKey,
-    std::string &phrase) {
+    const std::string &controllerPublicKey,
+    const std::string &hostFingerprint,
+    const std::string &controllerFingerprint,
+    std::string &hostPublicKey, std::string &phrase) {
     PartyIdentity identity;
     if (!identity.loadPrivateForTest(privateScalar)) return false;
     hostPublicKey = identity.publicKey();
-    return identity.phrase(controllerPublicKey, roomId, phrase);
+    return identity.phrase(controllerPublicKey, roomId, hostFingerprint,
+                           controllerFingerprint, phrase);
+}
+
+std::string mdkr_party_sdp_fingerprint_for_test(const std::string &sdp) {
+    return canonicalSdpFingerprint(sdp);
 }
 
 uint64_t mdkr_party_close_flush_wait_for_test(

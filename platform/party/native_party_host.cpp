@@ -154,10 +154,14 @@ const MdkrNativePartyController *MdkrNativePartyHost::controller(
 
 bool MdkrNativePartyHost::approve(
     const std::string &controllerId, unsigned seat) {
+    /* SAS v2: no phrase gate here. The phrase commits to both DTLS
+     * fingerprints, so it cannot exist until after approval starts the
+     * WebRTC exchange -- it arrives as a ControllerPhrase event once the
+     * phone connects, and the player verifies it on the seat row then. */
     MdkrNativePartyController *candidate = controller(controllerId);
     if (candidate == nullptr || candidate->commandPending ||
         candidate->phase != MdkrNativePartyControllerPhase::Pending ||
-        candidate->pairingPhrase.empty() || seat < 1u || seat > 4u) {
+        seat < 1u || seat > 4u) {
         return false;
     }
     const bool occupied = std::any_of(
@@ -303,9 +307,29 @@ void MdkrNativePartyHost::applyRoomState(
         }
     }
 
+    /* SAS v2: room updates never carry a phrase -- it arrives on its own
+     * ControllerPhrase event once the phone's WebRTC descriptions are set.
+     * Carry a seat's verified phrase across a room transition only while
+     * the update still describes the same channel: same phone, same key,
+     * same connectionSequence. A new sequence is a new channel whose phrase
+     * has not arrived yet, and the old words must not vouch for it. */
+    const std::vector<MdkrNativePartyController> previous =
+        std::move(view_.controllers);
     view_.controllers = room.controllers;
     for (MdkrNativePartyController &candidate : view_.controllers) {
         candidate.commandPending = false;
+        if (candidate.pairingPhrase.empty()) {
+            const auto former = std::find_if(
+                previous.begin(), previous.end(),
+                [&candidate](const MdkrNativePartyController &other) {
+                    return other.id == candidate.id;
+                });
+            if (former != previous.end() &&
+                former->connectionSequence == candidate.connectionSequence &&
+                former->publicKey == candidate.publicKey) {
+                candidate.pairingPhrase = former->pairingPhrase;
+            }
+        }
         const uint64_t owner = ownerFor(candidate);
         if (owner != 0u && candidate.connectionSequence != 0u) {
             if (!mdkr_native_remote_pad_bind(

@@ -11,21 +11,100 @@
 #include <string>
 
 int main() {
+    /* SAS v2 interoperability vectors. Expected words come from the web
+     * page's own derivation (dist/web/party/party-sas.js run under Node with
+     * the transcript extended to the v2 layout), so a native transcript that
+     * drifted by even one separator byte cannot match. Transcript:
+     *   ECDH_secret ‖ "golden-balloon-party-sas-v2" ‖ 0x00 ‖ roomId ‖ 0x00 ‖
+     *   hostPublicKey ‖ 0x00 ‖ controllerPublicKey ‖ 0x00 ‖
+     *   hostFingerprint ‖ 0x00 ‖ controllerFingerprint
+     * The private scalar 1 puts the host key at the P-256 generator, so the
+     * ECDH secret is the controller key's own X coordinate. */
     std::array<uint8_t, 32> scalar{};
     scalar.back() = 1u;
     const std::string controllerKey =
         "BHzyexiNA09-ilI4AwS1GsPAiWnid_IbNaYLSPxHZpl4B3dVENuO0EApPZrGn3Qw27p9reY86YIpngS3nSJ4c9E";
+    const std::string hostFingerprint =
+        "sha-256 00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:"
+        "10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
+    const std::string controllerFingerprint =
+        "sha-256 E0:E1:E2:E3:E4:E5:E6:E7:E8:E9:EA:EB:EC:ED:EE:EF:"
+        "F0:F1:F2:F3:F4:F5:F6:F7:F8:F9:FA:FB:FC:FD:FE:FF";
     std::string hostKey;
     std::string phrase;
     assert(mdkr_party_sas_phrase_for_test(
         scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", controllerKey,
-        hostKey, phrase));
+        hostFingerprint, controllerFingerprint, hostKey, phrase));
     assert(hostKey ==
         "BGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU");
-    assert(phrase == "Royal-Penguin Nimble-Comet");
+    assert(phrase == "Gentle-Star Royal-Pilot");
+
+    /* Swapping the two fingerprints must move the words: the transcript
+     * binds each fingerprint to its role, not the pair as an unordered set,
+     * or a relay could cross-substitute certificates undetected. */
+    assert(mdkr_party_sas_phrase_for_test(
+        scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", controllerKey,
+        controllerFingerprint, hostFingerprint, hostKey, phrase));
+    assert(phrase == "Mighty-Kite Wild-Kite");
+
+    /* Fail closed: with either fingerprint missing there is NO phrase at
+     * all -- never a silent fall back to the v1 transcript, which is what a
+     * fingerprint-substituting relay would need. */
+    phrase = "sentinel";
+    assert(!mdkr_party_sas_phrase_for_test(
+        scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", controllerKey,
+        std::string{}, controllerFingerprint, hostKey, phrase));
+    assert(phrase == "sentinel");
+    assert(!mdkr_party_sas_phrase_for_test(
+        scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", controllerKey,
+        hostFingerprint, std::string{}, hostKey, phrase));
+    assert(phrase == "sentinel");
+
+    /* An invalid controller key is still refused outright. */
     assert(!mdkr_party_sas_phrase_for_test(
         scalar.data(), "AAAAAAAAAAAAAAAAAAAAAA", std::string(87u, 'C'),
-        hostKey, phrase));
+        hostFingerprint, controllerFingerprint, hostKey, phrase));
+
+    /* Canonical fingerprint capture from an SDP description: the value
+     * string after "a=fingerprint:", algorithm token verbatim, hex
+     * uppercased, single spaces. Anything else is refused as the empty
+     * string, which the transport treats as "no phrase" (fail closed). */
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "v=0\r\no=rtc 111 0 IN IP4 127.0.0.1\r\n"
+        "a=fingerprint:sha-256 ab:cd:ef:01:23:45:67:89:"
+        "ab:cd:ef:01:23:45:67:89\r\n"
+        "a=setup:actpass\r\n") ==
+        "sha-256 AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89");
+    /* Runs of blanks collapse to the single canonical space; bare-\n line
+     * endings parse the same as \r\n. */
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "v=0\na=fingerprint:sha-256 \t AB:CD\na=setup:actpass\n") ==
+        "sha-256 AB:CD");
+    /* A session-level and media-level repeat of the SAME fingerprint is one
+     * certificate and stays accepted. */
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 ab:cd\r\nm=application 9 UDP/DTLS/SCTP\r\n"
+        "a=fingerprint:sha-256 AB:CD\r\n") == "sha-256 AB:CD");
+    /* Two DIFFERENT fingerprints in one description are ambiguous: refused
+     * rather than guessed at. */
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 AB:CD\r\na=fingerprint:sha-256 AB:CE\r\n")
+        .empty());
+    /* Absent, malformed, or non-attribute-line shapes are all refused. */
+    assert(mdkr_party_sdp_fingerprint_for_test("v=0\r\na=setup:actpass\r\n")
+        .empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256\r\n").empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 AB:C\r\n").empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 AB::CD\r\n").empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 AB:CG\r\n").empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "a=fingerprint:sha-256 AB:CD extra\r\n").empty());
+    assert(mdkr_party_sdp_fingerprint_for_test(
+        "x=a=fingerprint:sha-256 AB:CD\r\n").empty());
 
     /* Signaling-URL pins. The https form matters because libdatachannel's
      * URL parser rejects anything else ("wss:://host" — the shape the old

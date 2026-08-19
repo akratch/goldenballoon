@@ -84,7 +84,10 @@ MdkrNativePartyController pending(std::string id) {
     value.id = std::move(id);
     value.name = "A friend's phone";
     value.publicKey = std::string(87u, 'C');
-    value.pairingPhrase = "amber comet";
+    /* SAS v2: the phrase commits to both DTLS fingerprints, so it cannot
+     * exist before the WebRTC descriptions are exchanged -- a pending phone
+     * has no phrase, and approval must not wait for one. */
+    value.pairingPhrase.clear();
     /* The service allocates the first signaling generation at redemption. */
     value.connectionSequence = 1u;
     return value;
@@ -906,6 +909,56 @@ void destructionDuringRecoveringAttemptsGoodbyeButNeverWaits() {
     assert(!mdkr_native_remote_pad_info(0u, &owner, &connection));
 }
 
+/* SAS v2 phrase lifecycle. The transport can only derive the phrase once
+ * both WebRTC descriptions are set, which is after approval, so: a pending
+ * phone with NO phrase must still be approvable; the late ControllerPhrase
+ * event attaches the phrase to its seat; and a later room update for the
+ * SAME connection (which carries no phrase -- the service never knows one)
+ * must not wipe it. A new connectionSequence is a new channel whose phrase
+ * has not arrived yet, so the old phrase must go rather than vouch for a
+ * channel it never described. */
+void phraseArrivesAtConnectionAndSurvivesRoomUpdates() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(1u, 1u, 121000u, {pending("phone-a")}));
+    host.service(1000u);
+    assert(host.view().controllers[0].pairingPhrase.empty());
+    /* Approval no longer waits for a phrase that cannot exist yet. */
+    assert(host.approve("phone-a", 1u));
+
+    transport.events.push_back(roomEvent(
+        2u, 1u, 121000u, {approved("phone-a", 1u, 4u, 9u)}));
+    host.service(1001u);
+    MdkrPartyTransportEvent phrase;
+    phrase.type = MdkrPartyTransportEventType::ControllerPhrase;
+    phrase.controllerId = "phone-a";
+    phrase.message = "Gentle-Star Royal-Pilot";
+    transport.events.push_back(phrase);
+    host.service(1002u);
+    assert(host.view().controllers[0].pairingPhrase ==
+           "Gentle-Star Royal-Pilot");
+
+    /* The connected-transition room update carries no phrase; the seat's
+     * verified phrase stays put. */
+    auto phone = approved("phone-a", 1u, 4u, 9u);
+    phone.phase = MdkrNativePartyControllerPhase::Connected;
+    transport.events.push_back(roomEvent(3u, 1u, 121000u, {phone}));
+    host.service(1003u);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+    assert(host.view().controllers[0].pairingPhrase ==
+           "Gentle-Star Royal-Pilot");
+
+    /* A fresh connectionSequence is a different channel: the stale phrase
+     * must not be shown for it. */
+    transport.events.push_back(roomEvent(
+        4u, 1u, 121000u, {approved("phone-a", 1u, 4u, 10u)}));
+    host.service(1004u);
+    assert(host.view().controllers[0].pairingPhrase.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -926,6 +979,7 @@ int main() {
     destructionWithoutLiveRoomHangsUpWithoutAGoodbye();
     destructionDuringOpeningAttemptsGoodbyeButNeverWaits();
     destructionDuringRecoveringAttemptsGoodbyeButNeverWaits();
+    phraseArrivesAtConnectionAndSurvivesRoomUpdates();
     mdkr_native_remote_pad_reset_all();
     return 0;
 }

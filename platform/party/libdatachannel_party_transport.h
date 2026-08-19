@@ -30,11 +30,25 @@ uint64_t mdkr_party_close_flush_wait_for_test(
     const std::function<size_t()> &bufferedBytes,
     const std::function<void(uint64_t)> &sleepMs);
 
-/* Deterministic interoperability seam; production identities remain random. */
+/* Deterministic interoperability seam; production identities remain random.
+ * SAS v2: the phrase also commits to both canonical DTLS fingerprints (see
+ * mdkr_party_sdp_fingerprint_for_test for the canonical form). Returns
+ * false -- no phrase, never a v1 fallback -- when either fingerprint is
+ * empty or the controller key is not a valid curve point. */
 bool mdkr_party_sas_phrase_for_test(
     const uint8_t privateScalar[32], const std::string &roomId,
-    const std::string &controllerPublicKey, std::string &hostPublicKey,
-    std::string &phrase);
+    const std::string &controllerPublicKey,
+    const std::string &hostFingerprint,
+    const std::string &controllerFingerprint,
+    std::string &hostPublicKey, std::string &phrase);
+
+/* Fingerprint-capture seam: runs the transport's exact defensive SDP parse.
+ * Canonical form is the value string after "a=fingerprint:" with single
+ * spaces, algorithm token verbatim, hex uppercased ("sha-256 AB:CD:...").
+ * Returns the empty string -- which the transport reads as "derive no
+ * phrase" -- for a description with no fingerprint, a malformed one, or two
+ * that disagree. */
+std::string mdkr_party_sdp_fingerprint_for_test(const std::string &sdp);
 
 /* Signaling-URL seam: pins the https->wss and loopback http->ws scheme
  * rewrites the sockets are actually opened with. */

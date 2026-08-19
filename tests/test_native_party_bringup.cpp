@@ -294,13 +294,14 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     const QrDigest other = encodeInvite(altered);
     assert(other.hash != digest.hash);
 
-    /* The pairing phrase the service derives for a joining phone is carried
-     * through to the surface a host reads aloud. */
+    /* SAS v2: a joining phone carries no phrase -- the transport can only
+     * derive one once both WebRTC descriptions are set, and it then arrives
+     * as a ControllerPhrase event, which is carried through to the surface
+     * a host reads aloud. */
     MdkrNativePartyController pending;
     pending.id = "phone-a";
     pending.name = "A friend's phone";
     pending.publicKey = std::string(87u, 'C');
-    pending.pairingPhrase = "Royal-Penguin Nimble-Comet";
     pending.connectionSequence = 1u;
     /* Superseding transitionId, applied at nowMs=1001: expiresInMs=119999
      * lands this second latch at 121000 too, so the later
@@ -312,8 +313,7 @@ QrDigest inviteSurfaceIsPairable(const std::string &origin) {
     transport.events.push_back(std::move(joined));
     host.service(1001u);
     assert(host.view().controllers.size() == 1u);
-    assert(host.view().controllers[0].pairingPhrase ==
-           "Royal-Penguin Nimble-Comet");
+    assert(host.view().controllers[0].pairingPhrase.empty());
 
     MdkrPartyTransportEvent phrase;
     phrase.type = MdkrPartyTransportEventType::ControllerPhrase;

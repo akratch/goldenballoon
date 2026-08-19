@@ -152,8 +152,11 @@ void echoView(const MdkrNativePartyView &view, std::string &lastPhase,
 void approveFirstPending(MdkrNativePartyHost &host) {
     for (const MdkrNativePartyController &controller :
          host.view().controllers) {
+        /* SAS v2: a pending phone never has a phrase yet -- it arrives once
+         * the approved phone's WebRTC descriptions are exchanged, and the
+         * check script matches it against the page after Connected. */
         if (controller.phase != MdkrNativePartyControllerPhase::Pending ||
-            controller.commandPending || controller.pairingPhrase.empty()) {
+            controller.commandPending) {
             continue;
         }
         if (host.approve(controller.id, 1u)) {

@@ -80,7 +80,8 @@ void announceState(const MdkrNativePartyView &view) {
     char message[MDKR_A11Y_TEXT_MAX] = {};
     if (pending != 0u) {
         std::snprintf(message, sizeof(message),
-            "%u phone%s waiting for approval. Compare the pairing phrase on both screens.",
+            "%u phone%s waiting for approval. The pairing phrase appears on "
+            "both screens when the phone connects.",
             pending, pending == 1u ? " is" : "s are");
     } else {
         std::snprintf(message, sizeof(message), "%s",
@@ -221,11 +222,11 @@ void drawPending(MdkrNativePartyHost &host,
                       AppTheme::accent(), 0.0f)) {
         ImGui::TextWrapped("%s", controller.name.empty()
             ? "Phone controller" : controller.name.c_str());
-        ui::TextSubtle("Compare on both screens:");
-        ImGui::PushFont(AppTheme::fonts().title);
-        ImGui::TextUnformatted(controller.pairingPhrase.empty()
-            ? "Verifying…" : controller.pairingPhrase.c_str());
-        ImGui::PopFont();
+        /* SAS v2: the pairing phrase binds the phone's direct connection, so
+         * it cannot exist before that connection does. The compare surface
+         * moved to the seat row (drawControllers below); this card only says
+         * when to expect it. */
+        ui::TextSubtleWrapped("Phrase appears when the phone connects.");
         unsigned &choice = g_seatChoices[controller.id];
         if (choice < 1u || choice > 4u || seatOccupied(view, choice)) {
             choice = firstFreeSeat(view);
@@ -253,15 +254,14 @@ void drawPending(MdkrNativePartyHost &host,
             "Choose which local controller slot this phone will use.");
         ui::TextSubtleWrapped(
             "The phone takes this numbered slot. Any keyboard, gamepad, or touch source there moves out of the way; other slots are unchanged.");
-        const bool disabled = controller.commandPending ||
-            controller.pairingPhrase.empty() || choice == 0u;
+        const bool disabled = controller.commandPending || choice == 0u;
         if (disabled) ImGui::BeginDisabled();
         if (ui::PrimaryButton("Approve Matching Phone", ui::kBtnWide())) {
             host.approve(controller.id, choice);
         }
-        ui::SpeakFocusedItem("Approve Matching Phone",
-            controller.pairingPhrase.c_str(),
-            "Approve only when this phrase matches the phone exactly.");
+        ui::SpeakFocusedItem("Approve Matching Phone", nullptr,
+            "The pairing phrase appears on both screens when the phone "
+            "connects. Remove the phone if the phrases differ.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
         ui::SpeakFocusedItem("Decline", nullptr,
@@ -282,6 +282,16 @@ void drawControllers(MdkrNativePartyHost &host) {
         ImGui::Text("Controller %u  %s", controller.seat,
                     controller.name.empty() ? "Phone" : controller.name.c_str());
         ui::TextSubtle("%s", statusText(controller));
+        /* SAS v2: the phrase arrives once the phone's direct connection is
+         * up and it names that exact connection, so this seat row is the
+         * compare surface. No phrase yet simply shows nothing -- an
+         * unverifiable channel never gets words to vouch for it. */
+        if (!controller.pairingPhrase.empty()) {
+            ui::TextSubtle("Compare on both screens:");
+            ImGui::PushFont(AppTheme::fonts().title);
+            ImGui::TextUnformatted(controller.pairingPhrase.c_str());
+            ImGui::PopFont();
+        }
         if (ImGui::Button("Remove Phone", ui::kBtnSecondary())) {
             g_removeController = controller.id;
             g_removeName = controller.name.empty() ? "this phone" : controller.name;
