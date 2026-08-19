@@ -1426,8 +1426,11 @@ private:
             room = roomId_;
         }
         std::string phrase;
+        /* room.empty() is unreachable today -- an answer presupposes the
+         * bootstrap that set roomId_ -- but a transcript with a vacant
+         * field must stay impossible by construction, not by call order. */
         if (controllerFingerprint.empty() || hostFingerprint.empty() ||
-            controllerKey.empty() ||
+            controllerKey.empty() || room.empty() ||
             !identity_.phrase(controllerKey, room, hostFingerprint,
                               controllerFingerprint, phrase)) {
             return;

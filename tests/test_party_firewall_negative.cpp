@@ -100,7 +100,9 @@ MdkrNativePartyController approved(
     value.id = std::move(id);
     value.name = "A friend's phone";
     value.publicKey = std::string(87u, 'C');
-    value.pairingPhrase = "amber comet";
+    /* SAS v2: room updates never carry a phrase; it arrives only as a
+     * ControllerPhrase event after the WebRTC descriptions are set, and
+     * nothing in this hostile-input battery depends on one existing. */
     value.phase = MdkrNativePartyControllerPhase::Leased;
     value.seat = seat;
     value.leaseGeneration = lease;

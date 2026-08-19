@@ -388,6 +388,13 @@ void MdkrNativePartyHost::applyEvent(
             if (candidate == nullptr || !occupiesSeat(*candidate)) return;
             candidate->direct = false;
             candidate->haptics = false;
+            /* SAS v2: the phrase vouched for the channel that just ended,
+             * so it ends here too. A legitimate reconnect re-derives fresh
+             * words from its own answer; a reconnect whose fingerprints the
+             * transport REFUSES derives none -- and without this clear that
+             * refusal would leave the old channel's words standing
+             * indefinitely against a live channel they do not bind. */
+            candidate->pairingPhrase.clear();
             (void)mdkr_native_remote_pad_set_haptics(
                 candidate->seat - 1u, ownerFor(*candidate),
                 candidate->connectionSequence, false);

@@ -957,6 +957,36 @@ void phraseArrivesAtConnectionAndSurvivesRoomUpdates() {
         4u, 1u, 121000u, {approved("phone-a", 1u, 4u, 10u)}));
     host.service(1004u);
     assert(host.view().controllers[0].pairingPhrase.empty());
+
+    /* A disconnect ends the channel the words vouched for, so the words go
+     * with it. The refused-reconnect shape matters most: if the fresh
+     * answer's fingerprints are refused, the transport derives NO new
+     * phrase, yet the channel still completes -- the seat must then show no
+     * words at all rather than the previous channel's. */
+    MdkrPartyTransportEvent rejoined;
+    rejoined.type = MdkrPartyTransportEventType::ControllerPhrase;
+    rejoined.controllerId = "phone-a";
+    rejoined.message = "Mighty-Kite Wild-Kite";
+    transport.events.push_back(rejoined);
+    host.service(1005u);
+    assert(host.view().controllers[0].pairingPhrase ==
+           "Mighty-Kite Wild-Kite");
+    MdkrPartyTransportEvent dropped;
+    dropped.type = MdkrPartyTransportEventType::ControllerDisconnected;
+    dropped.controllerId = "phone-a";
+    transport.events.push_back(dropped);
+    host.service(1006u);
+    assert(host.view().controllers[0].pairingPhrase.empty());
+    /* Reconnect completes WITHOUT a ControllerPhrase event (the transport
+     * refused the new answer's fingerprints): still no words. */
+    MdkrPartyTransportEvent reconnected;
+    reconnected.type = MdkrPartyTransportEventType::ControllerConnected;
+    reconnected.controllerId = "phone-a";
+    transport.events.push_back(reconnected);
+    host.service(1007u);
+    assert(host.view().controllers[0].phase ==
+           MdkrNativePartyControllerPhase::Connected);
+    assert(host.view().controllers[0].pairingPhrase.empty());
 }
 
 }  // namespace
