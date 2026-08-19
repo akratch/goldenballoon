@@ -19,6 +19,14 @@ The image is created only when the game first mutates the Pak. Saving a Time
 Trial ghost through the original post-race **Save Ghost** option writes the
 image; a later process loads the ghost through the original game path.
 
+Since 1.5.0 the host also keeps a per-track ghost library in
+`save/ghost-bank/`, one file per track and vehicle, and swaps the requested
+pair into the Pak's authored six-slot ghost note before the original load
+path runs (`platform/ghost_bank.c`). The Pak image format and every byte
+the original code reads are unchanged; the library is bookkeeping beside
+the Pak, not a change to it. Erasing stored data removes the library with
+the Paks.
+
 In the browser, **Download ghost Paks** creates one versioned
 `.mdkr-paks` JSON bundle containing every stored port image. **Import ghost
 Paks** treats the bundle as a complete replacement set: a stored port absent
