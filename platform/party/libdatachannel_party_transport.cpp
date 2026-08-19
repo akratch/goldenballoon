@@ -103,6 +103,38 @@ bool uintValue(const Json &object, const char *key, uint64_t &output,
     return output <= maximum;
 }
 
+/* I3: bound for the worker's typed host_command_result error code. The
+ * longest real code today (services/party/src/types.ts) is well under this;
+ * anything larger is not a code the host could ever map to copy anyway. */
+constexpr size_t kMaxErrorCodeBytes = 64u;
+
+/*
+ * host_command_result{ok:false} -> CommandRejected. Returns false when the
+ * message is not a failed host_command_result at all (successes never send
+ * a result event; the room_state transition is the acknowledgement). The
+ * worker's `error` field is a typed code (party-room.ts commandError), not
+ * prose: it rides errorCode VERBATIM for the host's per-code copy table. A
+ * missing, non-string, or oversized code degrades to the empty "unknown"
+ * code rather than rejecting the event -- an unrecognized future code must
+ * never hide the failure itself -- and the generic prose stays on the
+ * event as exactly that fallback.
+ */
+bool commandRejectionFromSignal(const Json &value,
+                                MdkrPartyTransportEvent &event) {
+    if (value.value("type", std::string{}) != "host_command_result" ||
+        value.value("ok", true) != false) {
+        return false;
+    }
+    event.type = MdkrPartyTransportEventType::CommandRejected;
+    event.message = "That controller action did not complete. Try again.";
+    std::string code;
+    if (safeString(value, "error", code, kMaxErrorCodeBytes,
+                   /*required=*/false)) {
+        event.errorCode = std::move(code);
+    }
+    return true;
+}
+
 std::string base64Url(const uint8_t *bytes, size_t length) {
     static constexpr char kAlphabet[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -598,12 +630,11 @@ private:
             else if (type == "controller_hello") handleHello(value);
             else if (type == "webrtc_answer") handleAnswer(value);
             else if (type == "webrtc_ice") handleIce(value);
-            else if (type == "host_command_result" &&
-                     value.value("ok", true) == false) {
+            else if (type == "host_command_result") {
                 MdkrPartyTransportEvent event;
-                event.type = MdkrPartyTransportEventType::CommandRejected;
-                event.message = "That controller action did not complete. Try again.";
-                enqueue(std::move(event));
+                if (commandRejectionFromSignal(value, event)) {
+                    enqueue(std::move(event));
+                }
             }
         } catch (...) {
             MdkrPartyTransportEvent event;
@@ -1230,4 +1261,13 @@ bool mdkr_party_sas_phrase_for_test(
     if (!identity.loadPrivateForTest(privateScalar)) return false;
     hostPublicKey = identity.publicKey();
     return identity.phrase(controllerPublicKey, roomId, phrase);
+}
+
+bool mdkr_party_host_command_rejection_for_test(
+    const std::string &text, MdkrPartyTransportEvent &event) {
+    const Json value = Json::parse(text, nullptr, false);
+    if (value.is_discarded() || !value.is_object()) return false;
+    /* Same guard the socket path's outer try gives the shared parser. */
+    try { return commandRejectionFromSignal(value, event); }
+    catch (...) { return false; }
 }

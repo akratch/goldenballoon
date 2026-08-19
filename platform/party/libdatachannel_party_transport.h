@@ -19,4 +19,11 @@ bool mdkr_party_sas_phrase_for_test(
 std::string mdkr_party_signaling_url_for_test(
     const std::string &origin, const std::string &path);
 
+/* host_command_result parse seam: feeds one raw signaling text through the
+ * same parser the socket path uses and copies out the CommandRejected event
+ * it would enqueue. False when the text is not a failed host_command_result
+ * (successes never produce a result event). */
+bool mdkr_party_host_command_rejection_for_test(
+    const std::string &text, MdkrPartyTransportEvent &event);
+
 #endif /* MDKR_LIBDATACHANNEL_PARTY_TRANSPORT_H */

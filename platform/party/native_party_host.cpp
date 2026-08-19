@@ -56,6 +56,24 @@ std::string safeMessage(const std::string &value, const char *fallback) {
     return printable(value, kMaxMessage) && !value.empty() ? value : fallback;
 }
 
+/* I3: the worker's typed host_command_result codes, mapped to honest
+ * player-facing copy (services/party/src/party-room.ts commandError and
+ * room-model.ts supply the codes). An unmapped code returns nullptr and the
+ * caller keeps the generic copy exactly as before -- a future code can
+ * never crash the launcher or lie to the player, it is just not yet
+ * specific. */
+const char *typedCommandErrorCopy(const std::string &code) {
+    if (code == "service_budget_safe") {
+        return "The controller service has reached today's limit. "
+               "Try again after midnight UTC.";
+    }
+    if (code == "invite_rotated") {
+        return "That invite was replaced. Use the newest code.";
+    }
+    if (code == "room_full") return "No free phone slot.";
+    return nullptr;
+}
+
 }  // namespace
 
 MdkrNativePartyHost::MdkrNativePartyHost(MdkrPartyTransport &transport)
@@ -367,7 +385,7 @@ void MdkrNativePartyHost::applyEvent(
             }
             return;
         }
-        case MdkrPartyTransportEventType::CommandRejected:
+        case MdkrPartyTransportEventType::CommandRejected: {
             if (event.controllerId.empty()) {
                 /* No controller identity: a genuine host-command rejection
                  * (approve/reject/rotate/dismiss/close all funnel into the
@@ -389,9 +407,14 @@ void MdkrNativePartyHost::applyEvent(
                 MdkrNativePartyController *candidate = controller(event.controllerId);
                 if (candidate != nullptr) candidate->commandPending = false;
             }
-            view_.message = safeMessage(
+            /* I3: a recognized typed code wins over whatever prose the
+             * transport attached; an unknown or absent code keeps the
+             * pre-existing generic surface untouched. */
+            const char *typedCopy = typedCommandErrorCopy(event.errorCode);
+            view_.message = typedCopy != nullptr ? typedCopy : safeMessage(
                 event.message, "That controller action did not complete. Try again.");
             return;
+        }
         case MdkrPartyTransportEventType::Recovering:
             view_.phase = MdkrNativePartyPhase::Recovering;
             view_.busy = true;

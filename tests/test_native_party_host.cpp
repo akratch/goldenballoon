@@ -293,6 +293,72 @@ void giveUpClearsOnlyItsOwnControllersCommandPending() {
         "This phone could not connect. Remove it and pair again.");
 }
 
+/* I3: the worker's typed command errors reach the player honestly, per
+ * controller. host_command_result{ok:false,error:"<code>"} arrives as a
+ * CommandRejected carrying the code verbatim in errorCode; the host maps
+ * the known codes to their exact copy and -- when the event names a
+ * controller -- clears only that controller's commandPending, leaving an
+ * unrelated controller's genuinely in-flight command pending. This is the
+ * give-up scoping generalized to every command rejection that names a
+ * controller, not just connect_timeout. An unknown code keeps the existing
+ * generic copy exactly as before. */
+void typedCommandErrorSurfacesHonestCopyPerController() {
+    mdkr_native_remote_pad_reset_all();
+    FakeTransport transport;
+    MdkrNativePartyHost host(transport);
+    assert(host.open("https://party.example"));
+    transport.events.push_back(roomEvent(
+        1u, 1u, 5000u, {pending("phone-a"), pending("phone-b")}));
+    host.service(1u);
+    assert(host.approve("phone-a", 1u));
+    assert(host.approve("phone-b", 2u));
+    assert(host.view().controllers[0].commandPending);
+    assert(host.view().controllers[1].commandPending);
+
+    /* The real transport shape: the generic prose is still present on the
+     * event, but the typed code must win the copy decision. */
+    MdkrPartyTransportEvent budget;
+    budget.type = MdkrPartyTransportEventType::CommandRejected;
+    budget.controllerId = "phone-b";
+    budget.errorCode = "service_budget_safe";
+    budget.message = "That controller action did not complete. Try again.";
+    transport.events.push_back(budget);
+    host.service(2u);
+
+    /* The behavioral half: phone-a's own in-flight approve stays pending;
+     * only phone-b's command was rejected. */
+    assert(host.view().controllers[0].commandPending);
+    assert(!host.view().controllers[1].commandPending);
+    assert(host.view().message ==
+        "The controller service has reached today's limit. "
+        "Try again after midnight UTC.");
+
+    MdkrPartyTransportEvent rotated;
+    rotated.type = MdkrPartyTransportEventType::CommandRejected;
+    rotated.errorCode = "invite_rotated";
+    transport.events.push_back(rotated);
+    host.service(3u);
+    assert(host.view().message ==
+        "That invite was replaced. Use the newest code.");
+
+    MdkrPartyTransportEvent full;
+    full.type = MdkrPartyTransportEventType::CommandRejected;
+    full.controllerId = "phone-b";
+    full.errorCode = "room_full";
+    transport.events.push_back(full);
+    host.service(4u);
+    assert(host.view().message == "No free phone slot.");
+
+    /* Unknown code: the existing copy, exactly as before this task. */
+    MdkrPartyTransportEvent unknown;
+    unknown.type = MdkrPartyTransportEventType::CommandRejected;
+    unknown.errorCode = "invalid_state";
+    transport.events.push_back(unknown);
+    host.service(5u);
+    assert(host.view().message ==
+        "That controller action did not complete. Try again.");
+}
+
 /* I5 sweep: a room_state controller entry with no seat assigned yet (the
  * wire's "seat" key absent entirely, not merely null -- a phone that has
  * paired but has not been approved to a seat) must reach the host as an
@@ -466,6 +532,7 @@ int main() {
     expiryPreservesApprovedSeat();
     commandRejectionAndRemovalStayRecoverable();
     giveUpClearsOnlyItsOwnControllersCommandPending();
+    typedCommandErrorSurfacesHonestCopyPerController();
     seatlessRoomEntryAppliedAsNoSeatPendingWithoutCrash();
     expiryLatchesInHostsOwnClockDomain();
     terminalErrorAfterPushFailureStaysErrorAndNeverRebinds();

@@ -36,5 +36,44 @@ int main() {
     assert(mdkr_party_signaling_url_for_test(
                "http://127.0.0.1:8787", "/api/party/native-create") ==
            "ws://127.0.0.1:8787/api/party/native-create");
+
+    /* I3: a failed host_command_result carries the worker's typed error
+     * code VERBATIM into the CommandRejected event, alongside the same
+     * generic prose as before (the host owns the per-code copy table). */
+    MdkrPartyTransportEvent rejected;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false,"error":"room_full"})",
+        rejected));
+    assert(rejected.type == MdkrPartyTransportEventType::CommandRejected);
+    assert(rejected.errorCode == "room_full");
+    assert(rejected.message ==
+        "That controller action did not complete. Try again.");
+    assert(rejected.controllerId.empty());
+
+    /* ok:true results and non-results produce no rejection event at all. */
+    MdkrPartyTransportEvent ignored;
+    assert(!mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":true})", ignored));
+    assert(!mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result"})", ignored));
+    assert(!mdkr_party_host_command_rejection_for_test(
+        R"({"type":"room_state","ok":false})", ignored));
+
+    /* A missing, non-string, or oversized error field degrades to the empty
+     * "unknown" code -- it must never hide the failure itself. */
+    MdkrPartyTransportEvent missing;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false})", missing));
+    assert(missing.errorCode.empty());
+    MdkrPartyTransportEvent numeric;
+    assert(mdkr_party_host_command_rejection_for_test(
+        R"({"type":"host_command_result","ok":false,"error":7})", numeric));
+    assert(numeric.errorCode.empty());
+    MdkrPartyTransportEvent oversized;
+    assert(mdkr_party_host_command_rejection_for_test(
+        std::string(R"({"type":"host_command_result","ok":false,"error":")") +
+            std::string(65u, 'x') + R"("})",
+        oversized));
+    assert(oversized.errorCode.empty());
     return 0;
 }

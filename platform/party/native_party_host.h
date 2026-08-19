@@ -94,6 +94,10 @@ struct MdkrPartyTransportEvent {
     MdkrPartyTransportRoomState room;
     std::string controllerId;
     std::string message;
+    /* CommandRejected only: the worker's typed host_command_result error
+     * code, verbatim (services/party/src/party-room.ts commandError).
+     * Empty means unknown; the host then keeps its generic copy. */
+    std::string errorCode;
     std::vector<uint8_t> packet;
     bool haptics = false;
 };

@@ -70,7 +70,9 @@ void floodOfDroppablePacketsDropsOldestAndCounts() {
 }
 
 /* (b) Room/control events are never droppable: interleaved among a much
- * larger packet flood, all of them survive a capacity-128 queue, in order. */
+ * larger packet flood, all of them survive a capacity-128 queue, in order.
+ * The CommandRejected among them proves the I3 payload extension rides the
+ * queue intact: its typed errorCode survives verbatim next to its prose. */
 void roomStateSurvivesAPacketFloodInOrder() {
     constexpr size_t kCapacity = 128u;
     MdkrPartyEventQueue queue(kCapacity);
@@ -79,18 +81,31 @@ void roomStateSurvivesAPacketFloodInOrder() {
         for (int i = 0; i < 75; ++i) queue.push(padPacketEvent(sequence++));
         queue.push(roomStateEvent(transition));
     }
+    MdkrPartyTransportEvent rejected;
+    rejected.type = MdkrPartyTransportEventType::CommandRejected;
+    rejected.errorCode = "room_full";
+    rejected.message = "That controller action did not complete. Try again.";
+    queue.push(rejected);
     for (int i = 0; i < 100; ++i) queue.push(padPacketEvent(sequence++));
 
     const std::vector<MdkrPartyTransportEvent> drained = queue.drain();
     assert(drained.size() == kCapacity);
 
     std::vector<uint64_t> roomStateOrder;
+    size_t rejections = 0u;
     for (const MdkrPartyTransportEvent &event : drained) {
         if (event.type == MdkrPartyTransportEventType::RoomState) {
             roomStateOrder.push_back(event.room.transitionId);
         }
+        if (event.type == MdkrPartyTransportEventType::CommandRejected) {
+            rejections++;
+            assert(event.errorCode == "room_full");
+            assert(event.message ==
+                "That controller action did not complete. Try again.");
+        }
     }
     assert((roomStateOrder == std::vector<uint64_t>{1u, 2u, 3u, 4u}));
+    assert(rejections == 1u);
 }
 
 /* (c) No latch: a drain must not leave the queue unable to accept or
