@@ -28,7 +28,15 @@
  * authored delete paths (the pak menu's per-slot ghost erase,
  * save_data.c func_800753D8, and whole-note deletion/reformat) stick: a pair
  * the index says was in the window but is no longer there was erased by the
- * game, so its bank file is deleted rather than resurrected.
+ * game, so its bank file is deleted rather than resurrected. The sidecar is
+ * bookkeeping, never the source of truth for what exists: sweeps read the
+ * bank DIRECTORY itself, so losing the sidecar fails toward the same
+ * deletion semantics rather than toward resurrection — a record file
+ * neither the live window nor the index can vouch for is quarantined, and a
+ * missing note (deletion, reformat, or a quarantined-and-recreated pak
+ * image) quarantines every record the sweep finds instead of unlinking
+ * them. Quarantined files are never loaded again but remain recoverable by
+ * hand, so a pak-side I/O accident cannot silently destroy the library.
  *
  * On-disk formats follow platform/virtual_pak.c's discipline: magic/version/
  * size validation, a SHA-256 digest over the whole image, copy-on-write

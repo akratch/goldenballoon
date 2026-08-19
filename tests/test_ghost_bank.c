@@ -484,17 +484,14 @@ static int bank_file_exists(int level, int vehicle) {
     return 1;
 }
 
-static int bank_file_payload(int level, int vehicle, uint8_t *payload,
-                             size_t capacity, size_t *length) {
-    char path[1200];
+static int decode_record_file(const char *path, int level, int vehicle,
+                              uint8_t *payload, size_t capacity,
+                              size_t *length) {
     uint8_t image[MDKR_GHOST_BANK_RECORD_IMAGE_MAX + 1];
     size_t got;
     int stored_level = -1;
     int stored_vehicle = -1;
-    FILE *file;
-    snprintf(path, sizeof(path), "%s/controller-1-ghost-%d-%d.mdg", s_root,
-             level, vehicle);
-    file = fopen(path, "rb");
+    FILE *file = fopen(path, "rb");
     if (file == NULL) {
         return 0;
     }
@@ -506,6 +503,52 @@ static int bank_file_payload(int level, int vehicle, uint8_t *payload,
         return 0;
     }
     return stored_level == level && stored_vehicle == vehicle;
+}
+
+static int bank_file_payload(int level, int vehicle, uint8_t *payload,
+                             size_t capacity, size_t *length) {
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/controller-1-ghost-%d-%d.mdg", s_root,
+             level, vehicle);
+    return decode_record_file(path, level, vehicle, payload, capacity,
+                              length);
+}
+
+/* The first quarantine slot for a pair's record, decoded. */
+static int quarantined_payload(int level, int vehicle, uint8_t *payload,
+                               size_t capacity, size_t *length) {
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/controller-1-ghost-%d-%d.mdg.bad.1",
+             s_root, level, vehicle);
+    return decode_record_file(path, level, vehicle, payload, capacity,
+                              length);
+}
+
+/* Plant a record file the way an interrupted or sidecar-less past life would
+ * have left it: valid image, no index entry vouching for it. */
+static void write_orphan_record(int level, int vehicle,
+                                const uint8_t *payload, size_t length) {
+    char path[1200];
+    uint8_t image[MDKR_GHOST_BANK_RECORD_IMAGE_MAX];
+    size_t image_size = 0;
+    FILE *file;
+    CHECK(mdkr_ghost_bank_record_encode(level, vehicle, payload, length,
+                                        image, sizeof(image), &image_size) ==
+          MDKR_GHOST_BANK_OK);
+    snprintf(path, sizeof(path), "%s/controller-1-ghost-%d-%d.mdg", s_root,
+             level, vehicle);
+    file = fopen(path, "wb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        CHECK(fwrite(image, 1, image_size, file) == image_size);
+        fclose(file);
+    }
+}
+
+static void delete_index_file(void) {
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/controller-1-index.mdgi", s_root);
+    remove(path);
 }
 
 static void reset_fake_pak(void) {
@@ -672,18 +715,100 @@ static void test_select_failure_no_ops(void) {
     CHECK(mdkr_ghost_bank_select(0, 1, 3) != 0);
 }
 
+static void test_wipe_quarantines_orphans(void) {
+    uint8_t payload[SLOT_BYTES];
+    uint8_t recovered[SLOT_BYTES];
+    size_t recovered_length = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)(i * 17u + 3u);
+    }
+
+    reset_fake_pak();
+    mdkr_ghost_bank_reset();
+    /* A record with no sidecar vouching for it: the sidecar was lost, then
+     * the note was deleted or the pak reformatted. The index alone cannot
+     * name this file, so the wipe must find it by sweeping the directory. */
+    write_orphan_record(9, 1, payload, SLOT_BYTES);
+    delete_index_file();
+    s_noteExists = 0;
+    CHECK(mdkr_ghost_bank_select(0, 2, 1) == 0);
+    CHECK(!bank_file_exists(9, 1));
+    /* Quarantined, not unlinked: the bytes survive for hand recovery even
+     * though nothing will ever load them again. */
+    CHECK(quarantined_payload(9, 1, recovered, sizeof(recovered),
+                              &recovered_length));
+    CHECK(recovered_length == SLOT_BYTES);
+    CHECK(memcmp(recovered, payload, SLOT_BYTES) == 0);
+
+    /* And the orphan stays dead: with a fresh full window, selecting its
+     * pair neither restores it nor errors. */
+    fill_six_pairs();
+    CHECK(mdkr_ghost_bank_select(0, 9, 1) == 0);
+    CHECK(mdkr_ghost_window_find(s_note, NOTE_BYTES, 9, 1) == -1);
+}
+
+static void test_reconcile_quarantines_orphans(void) {
+    uint8_t payload[SLOT_BYTES];
+    uint8_t recovered[SLOT_BYTES];
+    size_t recovered_length = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)(i * 41u + 11u);
+    }
+
+    reset_fake_pak();
+    mdkr_ghost_bank_reset();
+    fill_six_pairs();
+    CHECK(mdkr_ghost_bank_select(0, 1, 0) == 0); /* migration + index */
+
+    /* Sidecar lost while the note still exists. A banked-looking record the
+     * rebuilt index cannot vouch for must not wait around to resurrect. */
+    write_orphan_record(11, 2, payload, SLOT_BYTES);
+    delete_index_file();
+    CHECK(mdkr_ghost_bank_select(0, 2, 1) == 0);
+    CHECK(!bank_file_exists(11, 2));
+    CHECK(quarantined_payload(11, 2, recovered, sizeof(recovered),
+                              &recovered_length));
+    CHECK(recovered_length == SLOT_BYTES);
+    CHECK(memcmp(recovered, payload, SLOT_BYTES) == 0);
+    /* Resident pairs survive the lost sidecar: the window vouches for them
+     * and the rebuilt index re-adopts their records. */
+    CHECK(bank_file_exists(1, 0));
+    CHECK(bank_file_exists(6, 2));
+
+    /* The quarantined pair is gone from the bank's point of view. */
+    CHECK(mdkr_ghost_bank_select(0, 11, 2) == 0);
+    CHECK(mdkr_ghost_window_find(s_note, NOTE_BYTES, 11, 2) == -1);
+}
+
 static void remove_tree(const char *root) {
-    /* Only the flat bank directory layout is created here. */
+    /* Only the flat bank directory layout is created here, plus the .bad.N
+     * quarantine names the wipe/orphan arms deliberately produce. */
     char path[1400];
     int level;
     int vehicle;
+    int suffix;
     snprintf(path, sizeof(path), "%s/controller-1-index.mdgi", root);
     remove(path);
+    for (suffix = 1; suffix <= 4; suffix++) {
+        snprintf(path, sizeof(path), "%s/controller-1-index.mdgi.bad.%d",
+                 root, suffix);
+        remove(path);
+    }
     for (level = 0; level < 64; level++) {
         for (vehicle = 0; vehicle < 3; vehicle++) {
             snprintf(path, sizeof(path), "%s/controller-1-ghost-%d-%d.mdg",
                      root, level, vehicle);
             remove(path);
+            for (suffix = 1; suffix <= 4; suffix++) {
+                snprintf(path, sizeof(path),
+                         "%s/controller-1-ghost-%d-%d.mdg.bad.%d", root,
+                         level, vehicle, suffix);
+                remove(path);
+            }
         }
     }
 #if defined(_WIN32)
@@ -716,6 +841,8 @@ int main(void) {
     test_select_eviction_and_restore();
     test_select_erase_reconciliation();
     test_select_failure_no_ops();
+    test_wipe_quarantines_orphans();
+    test_reconcile_quarantines_orphans();
 
     mdkr_ghost_bank_set_root(NULL);
     remove_tree(s_root);

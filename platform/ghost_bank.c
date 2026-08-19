@@ -30,6 +30,7 @@
 #include "PR/os_cont.h" /* MAXCONTROLLERS */
 #include "save_data.h"
 
+#include <dirent.h> /* mingw-w64 ships it too; see platform/mod_registry.c */
 #include <stdio.h>
 #include <string.h>
 
@@ -817,8 +818,11 @@ static int load_image(const char *path, uint8_t *image, size_t capacity,
     return 1;
 }
 
-/* Rename a file that failed validation out of the way, virtual_pak style. */
-static void quarantine(const char *path) {
+/* Rename a file out of active service, virtual_pak style: corrupt images,
+ * and records being retired by a wipe or orphan sweep. A .bad.N name never
+ * matches record_name_pair() or any load path, so a quarantined file is
+ * dead to the bank while staying recoverable by hand. */
+static void quarantine(const char *path, const char *reason) {
     char bad_path[GHOST_BANK_PATH_MAX + 16];
     int suffix;
     for (suffix = 1; suffix <= 99; suffix++) {
@@ -832,13 +836,14 @@ static void quarantine(const char *path) {
             continue;
         }
         if (mdkr_move_utf8(path, bad_path, 0, 1) == 0) {
-            fprintf(stderr, "[GHOSTBANK] quarantined corrupt file as %s\n",
-                    bad_path);
+            fprintf(stderr, "[GHOSTBANK] quarantined %s file as %s\n",
+                    reason, bad_path);
         }
         return;
     }
     fprintf(stderr,
-            "[GHOSTBANK] corrupt file retained; quarantine slots are full\n");
+            "[GHOSTBANK] %s file retained; quarantine slots are full\n",
+            reason);
 }
 
 /* Load the controller's index sidecar; absent or corrupt (after quarantine)
@@ -855,13 +860,13 @@ static int index_load(int controllerIndex, MdkrGhostBankIndex *index) {
     got = load_image(path, image, sizeof(image), &size);
     if (got <= 0) {
         if (got < 0) {
-            quarantine(path);
+            quarantine(path, "corrupt");
         }
         return 1;
     }
     if (mdkr_ghost_bank_index_decode(image, size, index) !=
         MDKR_GHOST_BANK_OK) {
-        quarantine(path);
+        quarantine(path, "corrupt");
         mdkr_ghost_bank_index_init(index);
     }
     return 1;
@@ -919,7 +924,7 @@ static int record_load(int controllerIndex, int level, int vehicle,
     got = load_image(path, image, sizeof(image), &size);
     if (got <= 0) {
         if (got < 0) {
-            quarantine(path);
+            quarantine(path, "corrupt");
         }
         return 0;
     }
@@ -927,7 +932,7 @@ static int record_load(int controllerIndex, int level, int vehicle,
                                       &stored_vehicle, payload, capacity,
                                       length) != MDKR_GHOST_BANK_OK ||
         stored_level != level || stored_vehicle != vehicle) {
-        quarantine(path);
+        quarantine(path, "corrupt");
         return 0;
     }
     return 1;
@@ -940,6 +945,14 @@ static void record_delete(int controllerIndex, int level, int vehicle) {
     }
 }
 
+static void record_quarantine(int controllerIndex, int level, int vehicle,
+                              const char *reason) {
+    char path[GHOST_BANK_PATH_MAX];
+    if (record_path(path, sizeof(path), controllerIndex, level, vehicle)) {
+        quarantine(path, reason);
+    }
+}
+
 static void index_delete(int controllerIndex) {
     char path[GHOST_BANK_PATH_MAX];
     if (index_path(path, sizeof(path), controllerIndex)) {
@@ -947,20 +960,98 @@ static void index_delete(int controllerIndex) {
     }
 }
 
-/* The whole DKRACING-GHOSTS note is gone: a pak reformat or a note deletion
- * through the pak menu. Authored intent is "every ghost on this pak is
- * gone", and the bank must not outvote it, so the library goes too. The
- * sidecar is deleted last so an interrupted wipe resumes. */
-static void wipe_library(int controllerIndex,
-                         const MdkrGhostBankIndex *index) {
-    uint32_t i;
-    for (i = 0; i < index->count; i++) {
-        record_delete(controllerIndex, index->entries[i].level,
-                      index->entries[i].vehicle);
+/* True only for the exact spelling record_path() produces for this
+ * controller, established by parsing and then rebuilding the name: "+5",
+ * zero-padded, ".mdg.tmp" and ".mdg.bad.N" spellings all fail the
+ * round-trip, so quarantined and in-flight files never alias a record. */
+static int record_name_pair(const char *name, int controllerIndex,
+                            int *level, int *vehicle) {
+    char expected[64];
+    int parsed_controller = -1;
+    int parsed_level = -1;
+    int parsed_vehicle = -1;
+    int consumed = 0;
+    if (name == NULL ||
+        sscanf(name, "controller-%d-ghost-%d-%d.mdg%n", &parsed_controller,
+               &parsed_level, &parsed_vehicle, &consumed) != 3 ||
+        consumed <= 0 || name[consumed] != '\0' ||
+        parsed_controller != controllerIndex + 1 ||
+        !pair_fields_valid(parsed_level, parsed_vehicle)) {
+        return 0;
+    }
+    snprintf(expected, sizeof(expected), "controller-%d-ghost-%d-%d.mdg",
+             parsed_controller, parsed_level, parsed_vehicle);
+    if (strcmp(expected, name) != 0) {
+        return 0;
+    }
+    *level = parsed_level;
+    *vehicle = parsed_vehicle;
+    return 1;
+}
+
+/* Every pair that has a record file in the bank directory, read from the
+ * DIRECTORY rather than from the index sidecar: the sidecar is bookkeeping
+ * that can be lost or quarantined, and a record it cannot name must still
+ * be findable, or a lost sidecar turns deletions into resurrections. The
+ * capacity covers the whole legal pair space several times over; one file
+ * per name makes overflow impossible for well-formed banks. */
+typedef struct {
+    uint8_t level;
+    uint8_t vehicle;
+} GhostBankSweepPair;
+
+#define GHOST_BANK_SWEEP_MAX 1024
+
+static int collect_records(int controllerIndex, GhostBankSweepPair *pairs,
+                           int capacity) {
+    char root[GHOST_BANK_PATH_MAX];
+    DIR *directory;
+    struct dirent *entry;
+    int count = 0;
+    if (!bank_root(root, sizeof(root))) {
+        return 0;
+    }
+    directory = opendir(root);
+    if (directory == NULL) {
+        return 0;
+    }
+    while (count < capacity && (entry = readdir(directory)) != NULL) {
+        int level = -1;
+        int vehicle = -1;
+        if (record_name_pair(entry->d_name, controllerIndex, &level,
+                             &vehicle)) {
+            pairs[count].level = (uint8_t)level;
+            pairs[count].vehicle = (uint8_t)vehicle;
+            count++;
+        }
+    }
+    closedir(directory);
+    return count;
+}
+
+/* The whole DKRACING-GHOSTS note is gone: a pak reformat, a note deletion
+ * through the pak menu, or a quarantined-and-recreated pak image. Authored
+ * intent is "every ghost on this pak is gone", and the bank must not outvote
+ * it — but the pak side of that event is recoverable from its own .bad.N
+ * quarantine, so the records are QUARANTINED, not unlinked: nothing will
+ * ever load them again, and nothing is destroyed that a player could still
+ * recover by hand. The sweep works from the directory itself so records a
+ * lost sidecar can no longer name are wiped all the same; the sidecar goes
+ * last so an interrupted wipe resumes. */
+static void wipe_library(int controllerIndex) {
+    GhostBankSweepPair pairs[GHOST_BANK_SWEEP_MAX];
+    int count = collect_records(controllerIndex, pairs,
+                                GHOST_BANK_SWEEP_MAX);
+    int i;
+    for (i = 0; i < count; i++) {
+        record_quarantine(controllerIndex, pairs[i].level, pairs[i].vehicle,
+                          "retired");
     }
     index_delete(controllerIndex);
-    MDKR_TRACE("[GHOSTBANK] event=wipe controller=%d entries=%u",
-               controllerIndex, (unsigned)index->count);
+    if (count > 0) {
+        MDKR_TRACE("[GHOSTBANK] event=wipe controller=%d records=%d",
+                   controllerIndex, count);
+    }
 }
 
 /* Reconcile the index with the window the game actually has:
@@ -972,9 +1063,18 @@ static void wipe_library(int controllerIndex,
  *     pickup of pairs the authored save path added through an empty slot);
  *   - a resident pair the index thought was banked is promoted (the
  *     window-write side of a swap landed but the follow-up index write did
- *     not).
- * Only the index (and, for migration, missing bank files) is written here;
- * the pak is never touched. Returns 1 when the index changed. */
+ *     not);
+ *   - a record file neither the window nor the index can vouch for is
+ *     quarantined. Such orphans only arise when the sidecar itself was lost
+ *     or quarantined, at which point banked-and-legitimate is
+ *     indistinguishable from erased-before-the-loss — so the module fails
+ *     toward the authored deletion semantics (never silently resurrect)
+ *     while the .bad.N rename keeps the bytes recoverable by hand. Records
+ *     for pairs in the window are exempt: the window vouches for them, and
+ *     the migration arm above re-adopts them into the rebuilt index.
+ * Only the index, missing migration bank files, and orphan quarantines are
+ * written here; the pak is never touched. Returns 1 when the index
+ * changed. */
 static int reconcile(int controllerIndex, const uint8_t *window, size_t size,
                      MdkrGhostBankIndex *index, int io_allowed) {
     uint8_t payload[MDKR_GHOST_RECORD_MAX_BYTES];
@@ -1038,6 +1138,24 @@ static int reconcile(int controllerIndex, const uint8_t *window, size_t size,
         if (mdkr_ghost_bank_index_touch(index, level, vehicle, 1) ==
             MDKR_GHOST_BANK_OK) {
             changed = 1;
+        }
+    }
+    if (io_allowed) {
+        GhostBankSweepPair on_disk[GHOST_BANK_SWEEP_MAX];
+        int count = collect_records(controllerIndex, on_disk,
+                                    GHOST_BANK_SWEEP_MAX);
+        for (i = 0; i < count; i++) {
+            if (mdkr_ghost_window_find(window, size, on_disk[i].level,
+                                       on_disk[i].vehicle) >= 0 ||
+                mdkr_ghost_bank_index_find(index, on_disk[i].level,
+                                           on_disk[i].vehicle) >= 0) {
+                continue;
+            }
+            record_quarantine(controllerIndex, on_disk[i].level,
+                              on_disk[i].vehicle, "orphaned");
+            MDKR_TRACE(
+                "[GHOSTBANK] event=orphan controller=%d level=%d vehicle=%d",
+                controllerIndex, on_disk[i].level, on_disk[i].vehicle);
         }
     }
     return changed;
@@ -1106,8 +1224,8 @@ int mdkr_ghost_bank_select(int controllerIndex, int levelId, int vehicleId) {
 
     if (status == CONTROLLER_PAK_CHANGED) {
         /* No DKRACING-GHOSTS note. */
-        if (index.count > 0 && io_allowed) {
-            wipe_library(controllerIndex, &index);
+        if (io_allowed) {
+            wipe_library(controllerIndex);
         }
         /* An absent note never blocks a pair: the authored save creates the
          * whole file with the pair in slot zero. */

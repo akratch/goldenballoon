@@ -4493,10 +4493,17 @@ and reads run **sequentially against the one shared directory**. Asserted:
    size: extra pairs live in the bank, never in a grown pak.
 
 The authored per-slot ghost erase (`func_800753D8`), whole-note deletion and
-reformat still stick — the bank reconciles its index against the live window
-and drops bank copies the game deleted (`tests/test_ghost_bank.c` covers those
-arms at the unit level, along with LRU order, swap bookkeeping, the
-first-run migration split of a pre-bank note, and crash-ordering).
+reformat still stick — the bank reconciles its index against the live window,
+drops bank copies the game deleted, and fails toward deletion when its own
+sidecar is lost: sweeps read the bank directory itself, so records neither
+the window nor the index can vouch for are quarantined to `.bad.N` (never
+loaded again, still recoverable by hand) rather than left to resurrect — and
+a wipe after note deletion/reformat quarantines rather than unlinks, so a
+pak-side I/O accident cannot destroy the library. `tests/test_ghost_bank.c`
+covers those arms at the unit level, along with LRU order, swap bookkeeping,
+the first-run migration split of a pre-bank note, and refused-write no-ops;
+the swap's crash-ordering argument lives in the code comment at
+`ghost_bank.c`'s evict site, not in a unit that interrupts the stores.
 
 ## Taj vehicle challenges — `tests/check_taj_challenges.py`
 
