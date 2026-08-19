@@ -134,7 +134,7 @@ describe("MatchRoom local Durable Object adapter", () => {
       .toBe(true);
 
     const wrongDirectory = await post("/api/controller/code", {
-      code: host.fallbackCode, protocol: 1,
+      code: host.fallbackCode, protocol: 2,
       controllerPublicKey: "C".repeat(87)});
     expect(wrongDirectory.status).toBe(404);
   });

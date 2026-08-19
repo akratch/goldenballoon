@@ -442,7 +442,7 @@ void MdkrNativePartyHost::applyEvent(
             MdkrNativePartyController *candidate = controller(event.controllerId);
             if (candidate == nullptr || !occupiesSeat(*candidate)) return;
             /* I2: the phone's page completed the handshake but speaks a
-             * different pairing-protocol version. Say so, visibly distinct
+             * different channel-protocol version. Say so, visibly distinct
              * from "Reconnecting", and demote the seat to neutral input.
              * The room and the seat's lease stay intact -- the transport
              * kept the peer up, and the phone reloading into a matching

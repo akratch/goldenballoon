@@ -780,7 +780,11 @@
       peer.pc.localDescription?.sdp);
     const controllerFingerprint = globalThis.MDKRPartySas.sdpFingerprint(answerSdp);
     if (!hostFingerprint || !controllerFingerprint) {
+      // Same stale-peer guard as the success arm: a retired peer's late
+      // refusal must not delete or announce against its successor's state.
+      if (peers.get(controllerId) !== peer || peer.retired) return;
       pairingPhrases.delete(controllerId);
+      if (room) renderRoomState({...room, transitionId: room.transitionId});
       announce("A phone connection could not be verified. It shows no pairing phrase; remove the phone if one is expected.");
       return;
     }
@@ -795,7 +799,9 @@
       pairingPhrases.set(controllerId, value);
       if (room) renderRoomState({...room, transitionId: room.transitionId});
     } catch (_) {
+      if (peers.get(controllerId) !== peer || peer.retired) return;
       pairingPhrases.delete(controllerId);
+      if (room) renderRoomState({...room, transitionId: room.transitionId});
       announce("A phone sent an invalid pairing key. Remove it and pair again.");
     }
   }

@@ -40,6 +40,12 @@ export function applyRoomCommand(room: StoredRoom, command: RoomCommand): RoomRe
     // Pairing protocol 2 = SAS v2 (the phrase binds both DTLS fingerprints).
     // A protocol-1 page derives words this room's hosts can never match, so
     // it is refused here rather than paired into a phrase that cannot verify.
+    // This HTTP redemption "pairing protocol" is its own namespace: the
+    // direct data-channel messages carry a separate channel protocol
+    // (kProtocol in the native transport, deliberately still 1 -- SAS v2
+    // changed no channel message shape), and the Worker-internal
+    // x-mdkr-internal-api header version is a third; the three share only
+    // the protocol_update_required refusal token.
     if (input.protocol !== 2) return {ok: false, error: "protocol_update_required"};
     if (input.now >= room.inviteExpiresAt) return {ok: false, error: "invite_expired"};
     const inviteMatches = input.inviteDigest.length > 0 &&

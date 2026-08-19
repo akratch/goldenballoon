@@ -24,7 +24,7 @@ MdkrPartyRetryDecision mdkr_party_retry_decide(
     MdkrPartyRetryDecision decision;
 
     /* A connected phone, a peer whose controller_ready declared the wrong
-     * pairing-protocol version (its offer WAS answered -- connected, just
+     * channel-protocol version (its offer WAS answered -- connected, just
      * wrong, and no retry can close a version gap; I2), or a peer that has
      * not sent an offer yet, is never this policy's business. */
     if (authenticated || protocolMismatched || offerSentMs == 0u) {

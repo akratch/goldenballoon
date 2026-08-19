@@ -38,6 +38,14 @@ using Clock = std::chrono::steady_clock;
 constexpr size_t kMaxQueuedEvents = 128u;
 constexpr size_t kMaxSignalBytes = 64u * 1024u;
 constexpr size_t kMaxControlBytes = 4096u;
+/*
+ * Channel protocol: the version tag inside the direct data-channel messages
+ * (controller_ready/host_ready/ping/pong/rumble). This is a SEPARATE
+ * namespace from the HTTP redemption "pairing protocol" (room-model.ts,
+ * now 2 = SAS v2) and from the Worker-internal x-mdkr-internal-api header
+ * version; the three share only the protocol_update_required refusal
+ * token. SAS v2 changed no channel message shape, so this stays 1.
+ */
 constexpr unsigned kProtocol = 1u;
 
 const std::array<const char *, 32> kLeft = {{
@@ -182,7 +190,7 @@ bool commandRejectionFromSignal(const Json &value,
  * seam. Only a controller_ready addressed to this exact peer -- matching
  * controllerId AND connectionSequence -- produces an event at all; anything
  * else stays ignored exactly as before. A matching peer that declares any
- * pairing-protocol version but kProtocol becomes ControllerProtocolMismatch
+ * channel-protocol version but kProtocol becomes ControllerProtocolMismatch
  * (I2) rather than the pre-fix silent drop, which left the phone healthy at
  * the WebRTC layer while its seat sat in an indistinguishable
  * "Reconnecting" forever. May throw on malformed JSON field types; both
@@ -486,7 +494,7 @@ struct Peer {
     uint32_t peerGeneration = 0u;
     bool failed = false;
     bool authenticated = false;
-    /* I2: this peer's controller_ready declared a different pairing-protocol
+    /* I2: this peer's controller_ready declared a different channel-protocol
      * version. It is connected-but-wrong-version, not stranded: the C3
      * unanswered-offer ladder must leave it alone (no recreate, no resend,
      * no give-up -- none of those can close a version gap). Cleared only by
