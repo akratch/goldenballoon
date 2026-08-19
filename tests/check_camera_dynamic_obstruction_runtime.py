@@ -59,6 +59,8 @@ def main() -> int:
             MDKR_CAMERA_OBSTRUCTION="modern",
             MDKR_CAMERA_TRACE="2",
             MDKR_SAVE_DIR=save_dir,
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"),
             MDKR_DRIVE_ROUTE=HUB_TOUR_ROUTE,
             MDKR_AUTOPILOT="1",
         )

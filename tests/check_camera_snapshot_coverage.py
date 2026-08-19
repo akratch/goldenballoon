@@ -390,6 +390,8 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm,
         MDKR_TEST_CAMERA_CUT_TRACE="1",
         MDKR_DUMP_FROM=str(DUMP_FROM),
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     command = [
         str(binary), "--headless-frames", str(PRESENTS),
@@ -591,6 +593,7 @@ def run_cutscene_arm(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_TEST_CAMERA_CUT_TRACE="1",
         MDKR_DUMP_FROM=str(CUTSCENE_DUMP_FROM),
         MDKR_SAVE_DIR=str(save_dir),
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     command = [
         str(binary), "--headless-frames", str(CUTSCENE_PRESENTS),
@@ -726,6 +729,7 @@ def run_adventure_arm(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
         MDKR_TEST_CAMERA_CUT_TRACE="1",
         MDKR_SAVE_DIR=str(save_dir),
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     command = [
         str(binary), "--headless-frames", str(ADVENTURE_PRESENTS),
@@ -974,6 +978,7 @@ def run_preview_arm(binary: Path, rom: Path, root: Path, timeout: int,
         MDKR_INTERNAL_TEST_TOKEN="mdkr64-presentation-replay-v1",
         MDKR_TEST_CAMERA_CUT_TRACE="1",
         MDKR_SAVE_DIR=str(save_dir),
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     command = [
         str(binary), "--headless-frames", str(PREVIEW_PRESENTS),

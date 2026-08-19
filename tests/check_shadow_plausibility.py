@@ -156,6 +156,8 @@ def run_arm(
         MDKR_RENDERER=renderer,
         MDKR_LOAD_TRACK=str(scene.track),
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_DUMP_FROM=str(dump_at),
         MDKR_DUMP_EVERY="999999",
         MDKR_WORLD_SHADOW="full" if shadows else "off",

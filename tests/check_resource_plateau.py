@@ -255,6 +255,8 @@ def run_backend(
             "MDKR_RESOURCE_STATS": "1",
             "MDKR_RENDERER": renderer,
             "MDKR_SAVE_DIR": str(run_root / "save"),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
         })
         command = [
             str(binary),

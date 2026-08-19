@@ -183,6 +183,8 @@ def run(binary: str, rom: str, verbose: bool) -> tuple[list[Row], list[str]]:
                MDKR_LOAD_TRACK="%d:%d" % (LEVEL, VEHICLE),
                MDKR64_HIDDEN="1",
                MDKR_SAVE_DIR=save_dir,
+               # Isolate the video config with the save (see check_door_blocks.py).
+               MDKR_VIDEO_CONFIG_PATH=os.path.join(save_dir, "video.ini"),
                LC_ALL="C")
     cmd = [binary,
            "--headless-frames", str(FRAMES),

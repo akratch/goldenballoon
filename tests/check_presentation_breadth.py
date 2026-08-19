@@ -325,6 +325,8 @@ def run(binary: Path, rom: Path, label: str, root: Path, arm: Arm,
         # registers the exit report this gate reads its overflow count from.
         MDKR_PRESENT_SNAPSHOT="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     env.update(extra)
     command = [

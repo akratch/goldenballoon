@@ -604,6 +604,10 @@ CHECKS = (
           "raw pointer/token narrowing confined to typed boundary helpers"),
     Check("delta_inventory", "check_delta_inventory.py", "source",
           "every //!@Delta simulation-cadence site carries an M0 classification"),
+    Check("harness_isolation", "check_harness_isolation.py", "source",
+          "every check that isolates MDKR_SAVE_DIR also pins "
+          "MDKR_VIDEO_CONFIG_PATH, so a repo-root mdkr64.ini cannot reach "
+          "a check's engine"),
     Check("player_prose", "check_player_prose.py", "source",
           "banned AI-slop vocabulary in launcher UI strings, README.md and "
           "RELEASE_NOTES.md"),

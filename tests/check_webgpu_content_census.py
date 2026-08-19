@@ -319,6 +319,8 @@ def run_case(
                 # is one of them.
                 "MDKR_TEXCACHE_VERIFY": "1",
                 "MDKR_SAVE_DIR": str(save_dir),
+                # Isolate the video config with the save (see check_door_blocks.py).
+                "MDKR_VIDEO_CONFIG_PATH": str(save_dir / "video.ini"),
             }
         )
         if extra_env:

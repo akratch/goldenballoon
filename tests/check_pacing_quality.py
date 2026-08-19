@@ -337,6 +337,8 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
         # comparable with `surfaceupdates` on a run that is definitely using it.
         MDKR_RENDERER="webgpu",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         # A hidden native Metal window has no drawable by design, and this gate
         # is about images that actually reach a surface. Use the established
         # compositor-visible headless seam rather than confusing offscreen

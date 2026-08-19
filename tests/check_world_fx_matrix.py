@@ -102,6 +102,8 @@ def run_scene(
         MDKR_TEST_RENDER_FULL_ADMISSION="1",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         LC_ALL="C",
     )
     if scene.track is not None:

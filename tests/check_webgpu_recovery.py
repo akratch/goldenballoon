@@ -72,6 +72,8 @@ def run_case(
     with tempfile.TemporaryDirectory(prefix="mdkr-wgpu-fault-") as temporary:
         case_dir = Path(temporary)
         env["MDKR_SAVE_DIR"] = str(case_dir / "save")
+        # Isolate the video config with the save (see check_door_blocks.py).
+        env["MDKR_VIDEO_CONFIG_PATH"] = str(case_dir / "save" / "video.ini")
         command = [
             str(binary),
             "--rom",

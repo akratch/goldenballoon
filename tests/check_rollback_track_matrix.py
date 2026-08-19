@@ -80,6 +80,8 @@ def run_track(binary: Path, rom: Path, level: int, vehicle: int,
             MDKR_ROLLBACK_LAB_DELAYED_INPUT="1",
             MDKR_ROLLBACK_LAB_ROUNDTRIP="1",
             MDKR_SAVE_DIR=str(root / "saves"),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(root / "saves" / "video.ini"),
             MDKR_TEST_SCRIPT_ONLY_INPUT="1",
             MDKR_TRACE_VEHICLE="1",
             MDKR64_HIDDEN="1",

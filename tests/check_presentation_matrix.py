@@ -220,6 +220,8 @@ def run(binary: Path, rom: Path, label: str, root: Path,
         MDKR_LOAD_TRACK="5",
         MDKR_RENDERER=renderer,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
     )
     if renderer == "webgpu":

@@ -89,6 +89,8 @@ def main() -> int:
             MDKR_TRACE="1",
             MDKR_AUTOPILOT="1",
             MDKR_SAVE_DIR=str(save),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(save / "video.ini"),
         )
         command = [
             str(binary), "--headless-frames", str(FRAMES),

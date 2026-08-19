@@ -132,6 +132,8 @@ def run_arm(binary: Path, rom: Path, root: Path, backend: str, label: str,
         MDKR_PRESENT_SCHED_TRACE="1",
         MDKR_RENDERER=backend,
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
         MDKR_SYNTH_FIELDS="1",
         MDKR_TEST_SCRIPT_ONLY_INPUT="1",
         MDKR_WORLD_SHADOW="off",

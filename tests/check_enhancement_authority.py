@@ -129,6 +129,8 @@ def run(binary: Path, rom: Path, work: Path, label: str,
         MDKR_LOAD_TRACK="5",
         MDKR_RENDERER="gl",
         MDKR_SAVE_DIR=str(save_dir),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
     )
     command = [
         str(binary), "--headless-frames", str(FRAMES),

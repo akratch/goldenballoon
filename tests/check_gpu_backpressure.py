@@ -62,6 +62,8 @@ def run_backend(binary: Path, rom: Path, backend: str | None,
             MDKR_PRESENT_RATE="uncapped",
             MDKR_PRESENT_SCHED_TRACE="1",
             MDKR_SAVE_DIR=str(root / "save"),
+            # Isolate the video config with the save (see check_door_blocks.py).
+            MDKR_VIDEO_CONFIG_PATH=str(root / "save" / "video.ini"),
             MDKR_TEST_VISIBLE_HEADLESS="1",
         )
         if backend is not None:

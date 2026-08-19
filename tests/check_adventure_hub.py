@@ -203,6 +203,8 @@ def main() -> int:
                MDKR_SYNTH_FIELDS="1",
                MDKR_TRACE="1",
                MDKR_SAVE_DIR=os.path.join(frame_dir, "save"),
+               # Isolate the video config with the save (see check_door_blocks.py).
+               MDKR_VIDEO_CONFIG_PATH=os.path.join(frame_dir, "save", "video.ini"),
                MDKR_DRIVE_ROUTE=HUB_TOUR_ROUTE,   # closed loop -- see the docstring
                MDKR_AUTOPILOT="1",                # drives the tail once the tour ends
                MDKR_DUMP_FROM=str(HUB_LOAD_MAX_FRAME),
