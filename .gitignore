@@ -119,3 +119,4 @@ node_modules/
 dist/web/mdkr-online-tools.js
 dist/web/mdkr-online-tools.wasm
 dist/web/mdkr-online-tools.js.symbols
+mdkr64.ini.lock

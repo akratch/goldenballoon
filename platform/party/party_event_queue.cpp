@@ -79,12 +79,17 @@ void MdkrPartyEventQueue::push(MdkrPartyTransportEvent event) {
     events_.push_back(std::move(event));
 }
 
-std::vector<MdkrPartyTransportEvent> MdkrPartyEventQueue::drain() {
-    std::vector<MdkrPartyTransportEvent> drained;
-    drained.reserve(events_.size());
+void MdkrPartyEventQueue::drainInto(std::vector<MdkrPartyTransportEvent> &out) {
+    out.clear();
+    out.reserve(events_.size());
     for (MdkrPartyTransportEvent &event : events_) {
-        drained.push_back(std::move(event));
+        out.push_back(std::move(event));
     }
     events_.clear();
+}
+
+std::vector<MdkrPartyTransportEvent> MdkrPartyEventQueue::drain() {
+    std::vector<MdkrPartyTransportEvent> drained;
+    drainInto(drained);
     return drained;
 }

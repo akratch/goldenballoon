@@ -43,8 +43,10 @@ public:
 
     /* Empties the queue into caller order (oldest first). Draining is not
      * an overflow condition and never blocks a future push: there is no
-     * latch. */
+     * latch. drainInto reuses the caller's buffer so a steady-state drain
+     * cycle allocates nothing. */
     std::vector<MdkrPartyTransportEvent> drain();
+    void drainInto(std::vector<MdkrPartyTransportEvent> &out);
 
     uint64_t droppedPadPackets() const { return droppedPadPackets_; }
 

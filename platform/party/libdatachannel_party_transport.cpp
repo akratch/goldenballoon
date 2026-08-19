@@ -347,7 +347,7 @@ public:
         tick();
         std::lock_guard<std::mutex> lock(mutex_);
         if (drainedIndex_ >= drained_.size()) {
-            drained_ = queue_.drain();
+            queue_.drainInto(drained_);
             drainedIndex_ = 0u;
             /* Log a burst only when its size changes, not once per drained
              * event: a sustained flood must not itself become a stderr
@@ -504,7 +504,9 @@ private:
         std::vector<std::shared_ptr<Peer>> timedOut;
         std::vector<std::pair<MdkrNativePartyController, unsigned>> recreations;
         const Clock::time_point now = Clock::now();
-        const uint64_t nowMs = steadyNowMs();
+        const uint64_t nowMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()).count());
         {
             std::lock_guard<std::mutex> lock(mutex_);
             reconnect = !shuttingDown_ && !socket_ && !credential_.empty() &&
