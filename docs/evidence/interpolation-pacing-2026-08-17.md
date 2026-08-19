@@ -530,3 +530,54 @@ true mechanism before the scintillation A/B was re-run at the falls).
 The 15 Hz flipbook-beat and BSP-order-percept theories are superseded:
 BSP order churn is real but its role is TRIGGER of the pairing desync,
 not a direct percept.
+
+## EIGHTH WAVE (2026-08-19, issue #44): the two post-race camera rails —
+## finish-camera dwell holds and the borrowed-lens latch conflict
+
+Two independent camera-side defects, both invisible to pixels-only
+instruments and both found from the census/journal rails (the voidinterp
+lesson again).
+
+Defect (a) — racer flicker at the lap-3 finish. The Task 9 standing
+exclusion (racer_camera_apply_finish_exclusion) held CAMERA_FINISH_RACE /
+CAMERA_FINISH_CHALLENGE discontinuous on EVERY capture, dwell ticks
+included. Dwell ticks are exactly where those cameras smoothly track the
+finished racer (atan2 re-aim / 0x200-per-tick boom orbit): the shot
+stepped at 30 Hz while OBJECT_ROOT kept blending, so the one object the
+camera re-centers drifted per interpolated present and snapped per
+endpoint. Measured on the coverage gate's adventure route: 17 spectate
+hops, 0 of 1,358 dwell ticks blended, camexcluded=1389. Fix: the caller
+no longer asserts the exclusion by default
+(MDKR_TEST_FINISH_CAMERA_EXCLUDE=1 restores it for A/B, the
+MDKR_WORLD_STATIC_VERTEX_BLEND idiom; toggled build reproduces the legacy
+numbers exactly). Cut coverage survives via the mode-change and
+spectate-hop one-shot notes plus the automatic clauses (2000 units /
+67.5 deg / 20 deg FOV / region / slot). After: 1,356 of 1,358 dwell ticks
+blend and every classified hop still refuses to pair
+(check_camera_snapshot_coverage's new post-race dwell floor).
+
+Defect (b) — cleared-track preview flyby uniformly unsmoothed. The
+authored-camera conflict rule was firing silently once per preview tick:
+menu_camera_centre rewrites the active camera to the fixed menu pose and
+runs viewport_main -> camSetProjMtx for its overlay pass — a second,
+different record for viewport 0 on top of the flyby scene's own — and a
+conflicted set publishes ZERO cameras, which no counter named (cam0..7
+merely stop advancing). New census: camconflict= (the defect signal) and
+camborrowskips=. Measured red on the win-then-re-enter route:
+camconflict=1781, zero [CAMERA-CUT] rows across the ~1,450-tick preview.
+Fix: a depth-counted authored-camera BORROW scope
+(presentation_snapshot_authored_camera_borrow_begin/end) bracketing
+menu_camera_centre's viewport_main call; a borrowing latch refuses to
+file, and cam_build_view_basis leaves sShadowRegisterGameplayVp clear
+under an open borrow so menu content drawn with the borrowed lens is
+never a VP-substitution target. The conflict rule is NOT weakened: a
+genuinely ambiguous double-lens tick still fails closed. After:
+camconflict=0, camborrowskips=1781, preview window 1,457/1,457 journal
+rows blend; census otherwise byte-identical. The walk.c gate comment that
+claimed "a borrowing menu never runs camSetProjMtx for a level scene" was
+false and is corrected.
+
+New instruments: camconflict= / camborrowskips= in [SNAPSHOT]; the
+adventure-preview-reentry gate arm (win, door re-entry, held-open
+preview) and the post-race dwell-blend floor in
+check_camera_snapshot_coverage.py.
