@@ -838,6 +838,22 @@ def run_check(args: argparse.Namespace) -> None:
                 and bytes(cancel["bytes"]) == one_field,
                 f"cancelled erase changed storage: {cancel}",
             )
+            # The game nests its ghost bank in a directory under /save; a
+            # confirmed erase must remove that tree too, not only the flat
+            # store the older layout had.
+            planted = cdp.evaluate(
+                """(async () => {
+                  await MDKRSaveUI.testApi.plantSaveFile(
+                    "ghost-bank/controller-1-ghost-5-2.mdg",
+                    new Uint8Array([1, 2, 3, 4]));
+                  return await MDKRSaveUI.testApi.saveTree();
+                })()""",
+                await_promise=True,
+            )
+            require(
+                "/save/ghost-bank/controller-1-ghost-5-2.mdg" in planted,
+                f"ghost bank fixture was not planted: {planted}",
+            )
             cdp.evaluate(
                 """(() => {
                   window.confirm = () => true;
@@ -866,6 +882,13 @@ def run_check(args: argparse.Namespace) -> None:
                 },
                 "confirmed erase retained local recovery data: "
                 f"{erased_recovery}",
+            )
+            erased_tree = cdp.evaluate(
+                "MDKRSaveUI.testApi.saveTree()", await_promise=True
+            )
+            require(
+                all("ghost-bank" not in path for path in erased_tree),
+                f"confirmed erase kept ghost bank records: {erased_tree}",
             )
 
             # Use the actual hidden file input rather than the test bridge for

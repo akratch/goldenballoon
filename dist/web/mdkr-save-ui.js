@@ -313,6 +313,47 @@ globalThis.MDKRSaveUI = (() => {
         });
       },
 
+      /* Test seams: plant a file under /save (creating directories along the
+       * way) and list the store as a tree. Erase coverage needs a nested
+       * fixture -- the game's ghost bank -- that no repository operation
+       * creates from the page. */
+      async plantSaveFile(relativePath, bytes) {
+        return serialize(async () => {
+          if (released) throw new Error("save manager was released to the game");
+          await syncFs(true);
+          const parts = relativePath.split("/").filter((part) =>
+            part.length !== 0 && part !== "." && part !== "..");
+          if (parts.length === 0) throw new Error("empty plant path");
+          let dir = "/save";
+          for (const part of parts.slice(0, -1)) {
+            dir = dir + "/" + part;
+            try { saveModule.FS.mkdir(dir); } catch (_) {}
+          }
+          saveModule.FS.writeFile(dir + "/" + parts[parts.length - 1], bytes);
+          await syncFs(false);
+        });
+      },
+
+      async saveTree() {
+        return serialize(async () => {
+          if (released) throw new Error("save manager was released to the game");
+          await syncFs(true);
+          const paths = [];
+          const walk = (dir) => {
+            for (const name of saveModule.FS.readdir(dir)) {
+              if (name === "." || name === "..") continue;
+              const path = dir + "/" + name;
+              paths.push(path);
+              let stat = null;
+              try { stat = saveModule.FS.stat(path); } catch (_) { continue; }
+              if (saveModule.FS.isDir(stat.mode)) walk(path);
+            }
+          };
+          walk("/save");
+          return paths.sort();
+        });
+      },
+
       async controllerPaks() {
         return serialize(async () => {
           if (released) throw new Error("save manager was released to the game");
@@ -524,16 +565,41 @@ globalThis.MDKRSaveUI = (() => {
         return serialize(async () => {
           if (released) throw new Error("save manager was released to the game");
           await syncFs(true);
-          for (const name of saveModule.FS.readdir("/save")) {
-            if (name === "." || name === "..") continue;
-            if ("/save/" + name === VIDEO_CONFIG_PATH) continue;
-            try { saveModule.FS.unlink("/save/" + name); } catch (_) {}
-          }
+          // The store is a tree, not a flat directory: the game keeps its
+          // ghost bank in /save/ghost-bank/. unlink on a directory is a
+          // silent no-op here, so erase must recurse or the verification
+          // below fails the whole operation.
+          const removeTree = (dir) => {
+            for (const name of saveModule.FS.readdir(dir)) {
+              if (name === "." || name === "..") continue;
+              const path = dir + "/" + name;
+              if (path === VIDEO_CONFIG_PATH) continue;
+              let stat = null;
+              try { stat = saveModule.FS.stat(path); } catch (_) { continue; }
+              if (saveModule.FS.isDir(stat.mode)) {
+                removeTree(path);
+                try { saveModule.FS.rmdir(path); } catch (_) {}
+              } else {
+                try { saveModule.FS.unlink(path); } catch (_) {}
+              }
+            }
+          };
+          removeTree("/save");
           await syncFs(false);
           await syncFs(true);
-          const remaining = saveModule.FS.readdir("/save").filter(
-            (name) => name !== "." && name !== ".." &&
-                      "/save/" + name !== VIDEO_CONFIG_PATH);
+          const remaining = [];
+          const collectTree = (dir) => {
+            for (const name of saveModule.FS.readdir(dir)) {
+              if (name === "." || name === "..") continue;
+              const path = dir + "/" + name;
+              if (path === VIDEO_CONFIG_PATH) continue;
+              remaining.push(path);
+              let stat = null;
+              try { stat = saveModule.FS.stat(path); } catch (_) { continue; }
+              if (saveModule.FS.isDir(stat.mode)) collectTree(path);
+            }
+          };
+          collectTree("/save");
           if (remaining.length !== 0) {
             throw new Error(
               "stored data remains after erase: " + remaining.join(", "));
@@ -1965,6 +2031,15 @@ globalThis.MDKRSaveUI = (() => {
       snapshot: async () => {
         await init();
         return repository.snapshot();
+      },
+      plantSaveFile: async (relativePath, bytes) => {
+        await init();
+        return repository.plantSaveFile(relativePath, bytes instanceof
+          Uint8Array ? bytes : new Uint8Array(bytes));
+      },
+      saveTree: async () => {
+        await init();
+        return repository.saveTree();
       },
       controllerPaks: async () => {
         await init();

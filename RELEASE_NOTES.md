@@ -24,6 +24,10 @@ authored rate.
   requested one into the pak's own save slots automatically. The pak file
   format is unchanged, existing ghosts carry over, and the ghost that
   races you is byte-identical to one saved the original way.
+- The Stored data backup bundle carries the Pak images themselves; the
+  per-track library is an ordinary folder (`ghost-bank`) beside your save
+  data, so copy that folder to back it up. A bundle format that includes
+  it is planned.
 
 ## Fixes
 

@@ -30,7 +30,10 @@ Open **Stored data** on the launcher:
 - **Download raw EEPROM** creates a byte-exact `.eep` file for emulator and
   native-port interoperability.
 - **Download ghost Paks** creates a versioned `.mdkr-paks` bundle containing
-  every stored controller-port image.
+  every stored controller-port image. The per-track ghost library (the
+  `ghost-bank` directory beside the Pak files, one file per track and
+  vehicle) is not part of the bundle yet; on desktop, back it up by copying
+  the directory.
 - **Import ghost Paks** validates every image through the game's C decoder and
   transactionally replaces the complete stored Pak set.
 - **Import backup** accepts either format. Review the decoded slots and global
@@ -41,8 +44,8 @@ Open **Stored data** on the launcher:
   checksum-safe generations and the previous import/editor rollback. Restoring
   one uses the same reviewed, verified replacement transaction as import.
 - **Erase saved progress** removes the EEPROM, rollback copies, automatic
-  recovery points, Controller Paks, and quarantined artifacts after an explicit
-  confirmation.
+  recovery points, Controller Paks, the per-track ghost library, and
+  quarantined artifacts after an explicit confirmation.
 
 The import target can also receive a dropped file or be opened from the keyboard.
 The size limit is 64 KiB; raw EEPROM input must be exactly 512 bytes.
