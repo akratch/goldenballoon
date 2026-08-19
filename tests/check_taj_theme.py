@@ -65,6 +65,11 @@ def main() -> int:
             "MDKR_TRACE": "1",
             "MDKR_RENDERER": "gl",
             "MDKR_SAVE_DIR": str(save_path),
+            # Isolate the video config for the same reason the save dir is
+            # isolated (see the check_door_blocks note): a repo-root
+            # mdkr64.ini with display-paced smoothing turns --headless-frames
+            # into a presents budget and the drive never reaches Taj.
+            "MDKR_VIDEO_CONFIG_PATH": str(temp_path / "video.ini"),
             "MDKR_MUSIC_MIDI_TRACE_JSONL": str(note_path),
             "MDKR_DRIVE_ROUTE": DRIVE_ROUTE,
         })
