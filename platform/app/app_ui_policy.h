@@ -59,6 +59,17 @@ OverlayBackState AppUi_overlayBackTransition(
 // deactivation. `dirty` remains true after a failed commit so Retry can reuse it.
 bool AppUi_deferredCommit(bool previewChanged, bool deactivated, bool *dirty);
 
+// The OS cursor is drawn by ImGui's SDL2 backend, which only runs while
+// onRender() builds a frame -- something ordinary racing skips entirely, so
+// nothing ever calls SDL_ShowCursor and the pointer stays in SDL's
+// default-visible state for the whole race (issue #45). This is the
+// authoritative answer instead: the cursor is wanted exactly when something
+// mouse-interactive is on screen to hit, i.e. the pause overlay or a dev-tool
+// window. Not "is a frame being built" -- the F10 FPS readout and a
+// Tools.Enabled session with nothing open also build a frame, and neither has
+// anything on screen a click could land on.
+bool AppUi_cursorVisible(bool overlayOpen, bool anyDevToolOpen);
+
 struct AppUiIdleDecision {
     bool buildFrame;
     unsigned waitMilliseconds;
