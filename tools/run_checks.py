@@ -223,6 +223,9 @@ SERIAL_NAMES = frozenset({
     # their frame and wall-clock budgets retain the semantics they assert.
     "campaign_progression",
     "ghost_matrix",
+    "ghost_bank_capacity",   # dozens of full boot+race+save cycles, each with
+                             # a host-paced 420s guard; banded in the pool its
+                             # first write ran 401s and the rest timed out
     "framed_world_views",
     # The nanosecond-budget family. Each asserts p50/p95/p99 wall-clock
     # ceilings measured inside the engine; a pooled neighbour's cache and
@@ -748,7 +751,9 @@ CHECKS = (
           "more than six Time Trial ghost pairs in ONE save directory: no "
           "spurious NO ROOM FOR GHOSTS, and evicted pairs return from the "
           "ghost bank byte-identical (issue #46)",
-          timeout=2400),
+          # 31 minutes on a quiet machine; the margin is a runtime target and
+          # the individual writes retain their own 420s guard.
+          timeout=3600),
     Check("boost_magnitude", "check_boost_magnitude.py", "native",
           "zip-pad boost per-frame speed trace, racer-count independence, and "
           "perturbed-boost-constant positive controls"),
