@@ -18,6 +18,40 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 readonly PHONE_PARTY_NOTICE_SHA256="dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd"
 
+# Trimmed local-play (no internet) controller assets staged beside the exe
+# (Task 5), emitted as the exact zip entries they produce: each file plus the
+# directory entries `zip -r` records for it. Source of truth:
+# tools/lan_controller_assets.txt, cross-checked against the C++ manifest builder
+# by tests/check_lan_controller_assets.py.
+lan_web_zip_entries() {
+  {
+    printf 'GoldenBalloon/dist/\n'
+    printf 'GoldenBalloon/dist/web/\n'
+    while IFS= read -r asset; do
+      case "$asset" in ''|\#*) continue ;; esac
+      printf 'GoldenBalloon/dist/web/%s\n' "$asset"
+      printf 'GoldenBalloon/dist/web/%s/\n' "${asset%%/*}"
+    done < tools/lan_controller_assets.txt
+  } | LC_ALL=C sort -u
+}
+
+# Copy the trimmed controller assets into $1/dist/web, failing closed on any
+# missing source file.
+stage_lan_web_assets() {
+  local stage_dir="$1" asset src dest
+  while IFS= read -r asset; do
+    case "$asset" in ''|\#*) continue ;; esac
+    src="dist/web/$asset"
+    dest="$stage_dir/dist/web/$asset"
+    [[ -s "$src" ]] || {
+      echo "ERROR: local-play controller asset missing or empty: $src" >&2
+      return 1
+    }
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+  done < tools/lan_controller_assets.txt
+}
+
 binary="build/mdkr64.exe"
 version="dev"
 self_test=false
@@ -42,6 +76,8 @@ verify_windows_archive() {
     echo "ERROR: unzip is required to verify the Windows archive." >&2
     return 1
   }
+  local web_entries
+  web_entries="$(lan_web_zip_entries)"
   expected="$(printf '%s\n' \
     GoldenBalloon/ \
     GoldenBalloon/GoldenBalloon.exe \
@@ -49,7 +85,8 @@ verify_windows_archive() {
     GoldenBalloon/NativePhoneParty-NOTICES.txt \
     GoldenBalloon/README.md \
     GoldenBalloon/RUN_ME.txt \
-    GoldenBalloon/gamecontrollerdb.txt | LC_ALL=C sort)"
+    GoldenBalloon/gamecontrollerdb.txt \
+    ${web_entries} | LC_ALL=C sort)"
   # MSYS2 unzip may emit CRLF for archive entries even though the Bash-built
   # expected manifest uses LF. Normalize only the listing transport; carriage
   # returns are not valid in any accepted manifest entry.
@@ -95,6 +132,11 @@ if [[ "$self_test" == true ]]; then
   : >"$test_root/GoldenBalloon/README.md"
   : >"$test_root/GoldenBalloon/RUN_ME.txt"
   : >"$test_root/GoldenBalloon/gamecontrollerdb.txt"
+  while IFS= read -r asset; do
+    case "$asset" in ''|\#*) continue ;; esac
+    mkdir -p "$test_root/GoldenBalloon/dist/web/$(dirname "$asset")"
+    : >"$test_root/GoldenBalloon/dist/web/$asset"
+  done < tools/lan_controller_assets.txt
   ( cd "$test_root" && zip -r -q package.zip GoldenBalloon )
   verify_windows_archive "$test_root/package.zip"
   : >"$test_root/GoldenBalloon/SDL2.dll"
@@ -131,6 +173,9 @@ tr -d '\r' < third_party/native_phone_party/NOTICE.txt \
 # Community controller-mapping DB (MC.2), next to the exe where SDL_GetBasePath()
 # resolves it at controller init.
 cp lib/sdl_gamecontrollerdb/gamecontrollerdb.txt "$stage/"
+# Local-only Phone Party controller page, staged beside the exe where
+# SDL_GetBasePath() resolves dist/web at LAN start (Task 5).
+stage_lan_web_assets "$stage"
 cat > "$stage/RUN_ME.txt" <<'EOF'
 Golden Balloon (Windows portable build)
 

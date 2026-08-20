@@ -608,6 +608,14 @@ CHECKS = (
           "every check that isolates MDKR_SAVE_DIR also pins "
           "MDKR_VIDEO_CONFIG_PATH, so a repo-root mdkr64.ini cannot reach "
           "a check's engine"),
+    Check("party_cmake_origin_gate", "check_party_cmake_origin_gate.py",
+          "source",
+          "the configure-time MDKR_PARTY_ORIGIN validator rejects every "
+          "non-canonical origin shape (path/query/userinfo/trailing slash)"),
+    Check("lan_controller_assets", "check_lan_controller_assets.py", "source",
+          "the local-play controller asset set agrees across the C++ manifest "
+          "(lan_party_launch.cpp), the packaging list, and the tracked "
+          "dist/web tree, so a packaged build cannot stage a broken page"),
     Check("player_prose", "check_player_prose.py", "source",
           "banned AI-slop vocabulary in launcher UI strings, README.md and "
           "RELEASE_NOTES.md"),
@@ -915,6 +923,15 @@ CHECKS = (
           "native host driver, real local Worker and real controller page: "
           "seatless pending entry, matched phrases, Connected with real "
           "input, dropped-offer retry under 60s and 3s-stall recovery"),
+    # The no-internet crown gate: the same driver under --lan drives the
+    # embedded server + in-process room (NO wrangler) against a real headless
+    # controller over plain http, so it drives Chromium and belongs to the
+    # serialized browser_local lane exactly like party_native_e2e.
+    Check("party_lan_e2e", "check_party_lan_e2e.py", "browser_local",
+          "native host + embedded server/room + real browser with no cloud in "
+          "the loop: capability golden path with the page's pure-JS SAS phrase "
+          "matching the native mbedtls phrase, wrong-then-right code redeem, a "
+          "13-code throttle trip, and host_closed on stop"),
     Check("browser_presentation_rates", "check_browser_presentation_rates.py",
           "browser", "display/capped/irregular rAF scheduling, fixed authority, "
           "and explicit uncapped/display-margin-to-display semantics"),

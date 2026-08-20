@@ -8,13 +8,17 @@
 #include "ui_online_room.h"
 #include "ui_settings.h"
 #include "party/libdatachannel_party_transport.h"
+#include "party/lan_party_transport.h"
+#include "party/lan_party_launch.h"
 #include "party/native_party_host.h"
+#include "ui_overlay.h"
 
 #include "imgui.h"
 #include "SDL.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
 
@@ -708,10 +712,91 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
 
 }  // namespace
 
-Launcher::Launcher()
-    : partyTransport_(mdkr_create_native_party_transport()),
-      phoneParty_(std::make_unique<MdkrNativePartyHost>(*partyTransport_)) {
+Launcher::Launcher() {
+    /* The shipped default is the cloud transport (the compiled https Party
+     * service). Task 5 wires a UI toggle to selectPartyTransport(Lan) for
+     * zero-internet local play; routing both factories through this one seam is
+     * also what links the LAN transport surface into the binary. */
+    selectPartyTransport(PartyTransportKind::Cloud);
+}
+
+void Launcher::selectPartyTransport(PartyTransportKind kind,
+                                   MdkrLanPartyTransportConfig config) {
+    /* Runtime mutual-exclusion: exactly one live party transport. Tear the
+     * current host down first -- ~MdkrNativePartyHost tells the phones goodbye
+     * and shuts its transport down -- then release the transport before
+     * building the next, so a cloud and a LAN transport can never both be live.
+     * The assert pins the invariant the seam exists to guarantee. */
+    state_.phoneParty = nullptr;
+    phoneParty_.reset();
+    partyTransport_.reset();
+    assert(!partyTransport_ && !phoneParty_);
+    switch (kind) {
+        case PartyTransportKind::Cloud:
+            partyTransport_ = mdkr_create_native_party_transport();
+            break;
+        case PartyTransportKind::Lan:
+            partyTransport_ = mdkr_create_lan_party_transport(std::move(config));
+            break;
+    }
+    phoneParty_ = std::make_unique<MdkrNativePartyHost>(*partyTransport_);
     state_.phoneParty = phoneParty_.get();
+    partyKind_ = kind;
+    /* Keep the in-game overlay's cached host pointer valid across a switch: the
+     * pointer was published once at startup, and a rebuild would leave it
+     * dangling otherwise. Harmless at construction (main_app republishes the
+     * same value right after). */
+    Overlay_setPhonePartyHost(state_.phoneParty);
+}
+
+void Launcher::refreshLanControls() {
+    /* Availability gates on BOTH a reachable LAN host AND the controller assets
+     * actually resolving -- never a live "Start" button that would fail only
+     * after the click in a build whose assets were not staged. Both are cheap
+     * (a getifaddrs pick and a handful of small file reads), but rechecked only
+     * about once a second so joining Wi-Fi or mounting the bundle lights up the
+     * card without paying for it every frame. */
+    const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
+    if (!lanChecked_ || now - lanCheckedMs_ >= 1000u) {
+        lanChecked_ = true;
+        lanCheckedMs_ = now;
+        const std::string host = mdkr_lan_party_advertised_host();
+        lanHostReachable_ = !host.empty();
+        lanAvailable_ = mdkr_lan_party_can_start(host, mdkr_lan_party_web_root());
+    }
+    state_.lanParty.active = (partyKind_ == PartyTransportKind::Lan);
+    state_.lanParty.available = lanAvailable_;
+    /* Honest reason for the disabled card: no network vs. assets not in this
+     * build (the two shared constants). */
+    state_.lanParty.unavailableReason = lanAvailable_ ? nullptr
+        : (lanHostReachable_ ? kMdkrLanPartyNoAssetsReason
+                             : kMdkrLanPartyNoNetworkReason);
+    state_.lanParty.note = lanNote_.empty() ? nullptr : lanNote_.c_str();
+}
+
+void Launcher::applyLanStart() {
+    MdkrLanPartyTransportConfig config;
+    std::string reason;
+    if (!mdkr_lan_party_build_launch_config(config, reason)) {
+        lanNote_ = reason;   /* stays on the default transport; card shows why */
+        return;
+    }
+    lanNote_.clear();
+    selectPartyTransport(PartyTransportKind::Lan, std::move(config));
+    if (!phoneParty_->open("lan")) {
+        /* Bind or bring-up failed: fall back to the default transport so the
+         * card's cloud/entry surface returns rather than a dead LAN surface. */
+        lanNote_ = "Local play could not start. Keyboard and gamepads still work.";
+        selectPartyTransport(PartyTransportKind::Cloud);
+    }
+}
+
+void Launcher::applyLanStop() {
+    /* The card already told the phones goodbye (closeRoom). Rebuilding the
+     * default transport releases the LAN port and returns the cloud/entry
+     * surface; the rebuild's destructor is an idempotent second goodbye. */
+    lanNote_.clear();
+    selectPartyTransport(PartyTransportKind::Cloud);
 }
 
 Launcher::~Launcher() = default;
@@ -860,6 +945,7 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 LauncherAction Launcher::draw(AppHost &host) {
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
+    refreshLanControls();
     LauncherAction action;
     const int panelAtFrameStart = active_;
     for (int i = 0; i < kPanelCount; ++i) g_smokeTopTabValid[i] = false;
@@ -927,6 +1013,17 @@ LauncherAction Launcher::draw(AppHost &host) {
     }
     state_.requestTab = -1;
     state_.requestTabPriority = 0;
+
+    // Apply the party card's deferred Start/Stop only now the frame is done: the
+    // card drew from the live host, and a transport switch rebuilds it. Refresh
+    // the controls so the same frame's later readers (the in-game overlay) see
+    // the new host, not a stale one.
+    if (state_.lanParty.request == PhonePartyLanControls::Request::Start) {
+        applyLanStart();
+    } else if (state_.lanParty.request == PhonePartyLanControls::Request::Stop) {
+        applyLanStop();
+    }
+    state_.lanParty.request = PhonePartyLanControls::Request::None;
 
     if (panelAtFrameStart == kLauncherPanelSettings &&
         active_ != kLauncherPanelSettings) {

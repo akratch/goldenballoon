@@ -22,6 +22,16 @@
   } : null;
   if (testState) globalThis.__mdkrControllerTestState = testState;
 
+  // Test seam: expose the pure, DOM-free gate/redeem helpers and stop before
+  // the first getElementById, so unit tests reach them without a full page.
+  if (testConfig?.exposeInternals) {
+    globalThis.__mdkrControllerInternals = Object.freeze({
+      trustedControllerLocation, pairingCryptoAvailable, lanControllerMode,
+      lanRedeemFrame,
+    });
+    return;
+  }
+
   const views = {
     opening: $("state-opening"), code: $("state-code"), waiting: $("state-waiting"),
     assigned: $("state-assigned"), controller: $("state-controller"),
@@ -37,6 +47,8 @@
   let active = false;
   let inputTestPassed = false;
   let wakeLock = null;
+  let keepAwakeVideo = null;
+  let keepAwakeTimer = null;
   let surface = null;
   let heartbeat = null;
   let capability = "";
@@ -92,6 +104,8 @@
       "Keyboard, gamepads and this display’s touch controls still work offline."],
     service_unavailable: ["Pairing unavailable",
       "The controller service could not be reached. Check the internet connection or play with the display’s keyboard or gamepads."],
+    lan_unreachable: ["Can’t reach the game",
+      "Make sure your phone is on the same Wi-Fi as the game, then enter the current room code."],
   };
 
   function announce(message) { $("live-status").textContent = message; }
@@ -238,13 +252,59 @@
       value === "127.0.0.1" || value === "[::1]";
   }
 
+  // RFC 1918 IPv4 ranges + link-local, and IPv6 unique-local/link-local: a
+  // private address the host could have served the page from. A DNS name or
+  // public address is foreign and never trusted over http.
+  function privateHostname(hostname) {
+    const value = String(hostname || "").toLowerCase();
+    if (value.startsWith("[")) {
+      return /^\[f[cd][0-9a-f:]/.test(value) || /^\[fe[89ab][0-9a-f:]/.test(value);
+    }
+    const quad = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!quad) return false;
+    const octet = quad.slice(1).map(Number);
+    if (octet.some((part) => part > 255)) return false;
+    const [a, b] = octet;
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+
   function trustedControllerLocation() {
     try {
       const url = new URL(location.href);
-      return isSecureContext === true && !url.username && !url.password &&
-        (url.protocol === "https:" ||
-          (url.protocol === "http:" && loopbackHostname(url.hostname)));
+      if (url.username || url.password) return false;
+      // Cloud is byte-unchanged: an https page in a secure context. Local play
+      // trusts a plain-http page only as the loopback/LAN host that served it
+      // (same-origin ws back to location.host), never a foreign http origin.
+      if (url.protocol === "https:") return isSecureContext === true;
+      if (url.protocol === "http:") {
+        return loopbackHostname(url.hostname) || privateHostname(url.hostname);
+      }
+      return false;
     } catch (_) { return false; }
+  }
+
+  // The redeem selector is the mode the SERVER declared (party-mode.js), never a
+  // guess from the page protocol: the cloud worker serves cloud mode even over
+  // http loopback, and the embedded LAN server overrides that one file to true.
+  function lanControllerMode() { return !!globalThis.__MDKR_LAN_PARTY__; }
+
+  // A secure origin must expose crypto.subtle; a plain-http LAN page does not,
+  // and MDKRPartySas carries the pure-JS SAS fallback there (getRandomValues
+  // stays). Absent subtle on a secure origin still fails closed.
+  function pairingCryptoAvailable() {
+    return !!globalThis.crypto?.subtle ||
+      (isSecureContext !== true && !!globalThis.crypto?.getRandomValues);
+  }
+
+  // The protocol-2 redeem frame the LAN room expects as its first ws frame:
+  // exactly one of capability|code, plus type/protocol/controllerPublicKey/name.
+  function lanRedeemFrame(controllerPublicKey, invite) {
+    const frame = {type: "redeem", protocol: 2, controllerPublicKey,
+      name: normalizedDeviceName(invite.name)};
+    if (invite.code !== undefined) frame.code = invite.code;
+    else frame.capability = invite.capability;
+    return frame;
   }
 
   function secureControllerRecoveryUrl() {
@@ -303,13 +363,23 @@
   }
 
   async function tabKey(value) {
-    if (globalThis.crypto && globalThis.crypto.subtle && globalThis.TextEncoder) {
-      const digest = await globalThis.crypto.subtle.digest(
-        "SHA-256", new TextEncoder().encode(value));
+    const encoded = globalThis.TextEncoder
+      ? new TextEncoder().encode(value) : null;
+    if (encoded && globalThis.crypto && globalThis.crypto.subtle) {
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
       return [...new Uint8Array(digest).slice(0, 12)]
         .map((byte) => byte.toString(16).padStart(2, "0")).join("");
     }
-    return "session"; // old browser fallback is intentionally room-scoped only
+    // Insecure-origin local play has no crypto.subtle, so the secure-context
+    // digest above is unavailable. The audited pure-JS SHA-256 the SAS fallback
+    // already ships keeps the tab lease per-room AND in the 24-hex shape
+    // parsedFallbackLease requires -- a fixed word there fails that validator,
+    // which strands every LAN phone in the duplicate state instead of pairing.
+    if (encoded && globalThis.MDKRPartySas?.fallback?.sha256) {
+      return [...globalThis.MDKRPartySas.fallback.sha256(encoded).slice(0, 12)]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    return "session"; // last-resort ancient-browser fallback, room-scoped only
   }
 
   function tabLeaseId() {
@@ -327,7 +397,7 @@
     showError("duplicate_controller");
     try { transport?.close?.(); } catch (_) {}
     if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-    if (wakeLock) wakeLock.release().catch(() => {});
+    releaseKeepAwake();
     announce("This tab released the controller because another tab took over.");
   }
 
@@ -610,6 +680,10 @@
     let terminalPeerGeneration = 0;
     let recoveryPeerGeneration = 0;
     let controllerInfo = null;
+    // Local play: the redeem frame the ws sends first (kept so a dropped socket
+    // re-redeems) and the initial redeem's pending promise.
+    let lanFrame = null;
+    let lanPending = null;
     let inputTestNonce = 0;
     let controlGeneration = 0;
     let reconnectTimer = null;
@@ -749,7 +823,7 @@
         showError("unverified_connection");
         api.close();
         if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-        if (wakeLock) wakeLock.release().catch(() => {});
+        releaseKeepAwake();
         return;
       }
       $("pairing-phrase").textContent = phrase;
@@ -981,13 +1055,17 @@
     }
 
     function connectControl(value) {
-      if (!value?.roomId || !value?.credential || leavingPage) return false;
+      if (leavingPage) return false;
+      // Cloud needs roomId + credential up front; a LAN socket learns them from
+      // its redeem_result, so the redeem frame alone starts it.
+      if (!lanFrame && (!value?.roomId || !value?.credential)) return false;
       if (!controllerInfo || controllerInfo.roomId !== value.roomId ||
           controllerInfo.controllerId !== value.controllerId) {
         publishedControllerTransition = 0;
         publishedControllerFingerprint = "";
       }
       controllerInfo = value;
+      let redeemed = false;
       const handleMessage = (update) => {
         if (update.type === "controller_state" && update.phase === "pending") {
           signalingLimited = false;
@@ -1016,6 +1094,9 @@
           }
           signal({type: "controller_hello"});
         } else if (update.type === "controller_state" && update.phase === "closed") {
+          // The LAN room's terminal close carries no reason, so tear down here
+          // or the socket would re-redeem as a fresh pending phone.
+          if (lanFrame) api.close();
           showError(phase === "waiting" ? "approval_rejected" : "seat_reclaimed");
         } else if (update.type === "webrtc_offer") void acceptOffer(update);
         else if (update.type === "webrtc_ice" && update.to === value.controllerId &&
@@ -1025,6 +1106,37 @@
                  update.candidate && JSON.stringify(update.candidate).length <= 4096) {
           void peer?.addIceCandidate(update.candidate).catch(() => {});
         }
+      };
+      // LAN redeem-over-ws: the first frame back is the room's redeem_result on
+      // this same socket. On success adopt its ids and signal on; on failure a
+      // higher controlGeneration bars reconnect and the reason is surfaced.
+      const finishRedeem = (update, connection, generation) => {
+        const ok = !!update && update.type === "redeem_result" &&
+          update.ok === true && update.protocol === 2 &&
+          /^[A-Za-z0-9_-]{22}$/.test(update.controllerId || "") &&
+          /^[A-Za-z0-9_-]{22}$/.test(update.roomId || "") &&
+          /^[A-Za-z0-9_-]{87}$/.test(update.hostPublicKey || "");
+        if (!ok) {
+          // finishRedeem is the LAN redeem-over-ws path only, so a missing/
+          // unknown reason is a Wi-Fi/LAN reach problem, not an internet one.
+          const raw = update && typeof update.error === "string"
+            ? update.error : "lan_unreachable";
+          controlGeneration++;
+          clearControlTimers();
+          controlSocket = null;
+          try { connection.close(1000, "redeem_rejected"); } catch (_) {}
+          if (lanPending) { lanPending.reject(new Error(raw)); lanPending = null; }
+          else showError(errors[raw] ? raw : "lan_unreachable");
+          return;
+        }
+        redeemed = true;
+        value.controllerId = update.controllerId;
+        value.roomId = update.roomId;
+        value.hostPublicKey = update.hostPublicKey;
+        value.protocol = 2;
+        controllerInfo = value;
+        if (lanPending) { lanPending.resolve({protocol: 2}); lanPending = null; }
+        signal({type: "controller_hello"});
       };
       receiveTestSignal = handleMessage;
       if (testConfig?.directSignaling) {
@@ -1043,10 +1155,16 @@
       try { previous?.close?.(1000, "controller_socket_replaced"); } catch (_) {}
       let connection;
       try {
-        const url = new URL(`/api/party/${value.roomId}/connect`, location.origin);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        connection = new WebSocket(url, ["gb-control-v1",
-          `gb-controller.${value.credential}`]);
+        // Cloud pairing rides the Worker's per-room signaling path; local play
+        // uses the host's own /party-ws on the same origin. WHICH endpoint is the
+        // server-declared mode (not the protocol, so the cloud page works over
+        // http loopback too); ws vs wss follows the page's actual protocol.
+        const url = lanControllerMode()
+          ? new URL("/party-ws", location.origin)
+          : new URL(`/api/party/${value.roomId}/connect`, location.origin);
+        url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        connection = new WebSocket(url, lanFrame ? ["gb-control-v1"]
+          : ["gb-control-v1", `gb-controller.${value.credential}`]);
         controlSocket = connection;
         connection.binaryType = "arraybuffer";
       } catch (_) {
@@ -1063,7 +1181,15 @@
               reconnectAttempt = 0;
             }
           }, 30_000);
-          signal({type: "controller_hello"});
+          // LAN redeems first on this socket; cloud is already authenticated.
+          if (lanFrame) {
+            try { connection.send(JSON.stringify(lanFrame)); }
+            catch (_) {
+              failControlSocket(connection, generation, 4011, "redeem_send_failed");
+            }
+          } else {
+            signal({type: "controller_hello"});
+          }
         });
         connection.addEventListener("message", (event) => {
           if (connection !== controlSocket || generation !== controlGeneration) return;
@@ -1075,7 +1201,9 @@
           }
           try {
             const update = JSON.parse(event.data);
-            if (update?.type === "controller_state") {
+            if (lanFrame && !redeemed) {
+              finishRedeem(update, connection, generation);
+            } else if (update?.type === "controller_state") {
               acceptControllerState(update, handleMessage);
             } else {
               handleMessage(update);
@@ -1102,7 +1230,7 @@
             clearControlTimers();
             showError(event.reason);
             if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-            if (wakeLock) wakeLock.release().catch(() => {});
+            releaseKeepAwake();
             if (peer) { peer.close(); peer = null; }
             stateChannel = null;
             controlChannel = null;
@@ -1166,6 +1294,9 @@
       // descriptions are set, so bindPairingPhrase derives it at connection.
       async redeem(secret) {
         const identity = await identityPromise;
+        if (lanControllerMode()) {
+          return redeemOverLan({capability: secret}, identity.publicKey);
+        }
         const value = await post("/api/controller/redeem", {capability: secret,
           protocol: 2, name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
@@ -1174,6 +1305,9 @@
       },
       async redeemCode(code) {
         const identity = await identityPromise;
+        if (lanControllerMode()) {
+          return redeemOverLan({code}, identity.publicKey);
+        }
         const value = await post("/api/controller/code", {code, protocol: 2,
           name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
@@ -1181,6 +1315,31 @@
         return value;
       },
     };
+
+    // Local play: build the redeem frame and let connectControl open the host's
+    // own ws, send it first, and adopt that same socket for signaling once
+    // redeem_result arrives. A timeout mirrors the cloud POST so an unreachable
+    // host fails closed instead of hanging.
+    function redeemOverLan(invite, controllerPublicKey) {
+      lanFrame = lanRedeemFrame(controllerPublicKey,
+        {...invite, name: $("device-name").value});
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (!lanPending) return;
+          lanPending = null;
+          lanFrame = null;
+          api.close();
+          // Local play has no internet leg; an unreachable host is a Wi-Fi/LAN
+          // problem, so the copy must not tell the player to check the internet.
+          reject(new Error("lan_unreachable"));
+        }, controllerRequestTimeoutMs);
+        lanPending = {
+          resolve: (result) => { clearTimeout(timer); resolve(result); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        };
+        connectControl({});
+      });
+    }
     return api;
   }
 
@@ -1257,17 +1416,78 @@
     }
   }
 
+  /* Wake Lock, or the keep-awake fallback the insecure-origin LAN page needs.
+   * navigator.wakeLock is a secure-context API, so a plain-http phone does not
+   * get it; there, a muted inline video kept playing holds the screen awake
+   * (the long-standing NoSleep technique). Its frames come from a canvas
+   * capture stream on srcObject, not a URL, so it needs nothing from media-src
+   * -- the controller CSP forbids every media URL. Both paths start on the
+   * Use-controller tap, the gesture the browser requires to let a video play. */
   async function requestWakeLock() {
-    if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+    if (navigator.wakeLock && navigator.wakeLock.request) {
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        $("wake-status").textContent = "Screen will stay awake";
+        wakeLock.addEventListener("release", () => {
+          wakeLock = null;
+          $("wake-status").textContent = "Screen wake lock released";
+        }, {once: true});
+      } catch (_) {
+        $("wake-status").textContent = "Screen wake lock unavailable";
+      }
+      return;
+    }
+    startKeepAwakeVideo();
+  }
+
+  function startKeepAwakeVideo() {
+    if (keepAwakeVideo) { keepAwakeVideo.play().catch(() => {}); return; }
     try {
-      wakeLock = await navigator.wakeLock.request("screen");
-      $("wake-status").textContent = "Screen will stay awake";
-      wakeLock.addEventListener("release", () => {
-        wakeLock = null;
-        $("wake-status").textContent = "Screen wake lock released";
-      }, {once: true});
+      const canvas = document.createElement("canvas");
+      canvas.width = 2; canvas.height = 2;
+      const context = canvas.getContext("2d");
+      const stream = canvas.captureStream ? canvas.captureStream(1) : null;
+      if (!stream) {
+        $("wake-status").textContent = "Screen may dim while racing";
+        return;
+      }
+      const video = document.createElement("video");
+      video.muted = true; video.defaultMuted = true; video.loop = true;
+      video.setAttribute("playsinline", "");
+      video.setAttribute("aria-hidden", "true");
+      video.style.cssText = "position:fixed;top:-1px;left:-1px;width:1px;" +
+        "height:1px;opacity:0;pointer-events:none";
+      video.srcObject = stream;
+      document.body.appendChild(video);
+      keepAwakeVideo = video;
+      // A moving canvas keeps the capture track producing frames -- what holds
+      // the display awake; a still stream can be treated as idle and let sleep.
+      let tick = 0;
+      keepAwakeTimer = setInterval(() => {
+        if (!context) return;
+        context.fillStyle = (tick++ & 1) ? "#000" : "#010101";
+        context.fillRect(0, 0, 2, 2);
+      }, 1000);
+      video.play().then(() => {
+        $("wake-status").textContent = "Screen will stay awake";
+      }).catch(() => {
+        $("wake-status").textContent = "Screen may dim while racing";
+      });
     } catch (_) {
-      $("wake-status").textContent = "Screen wake lock unavailable";
+      $("wake-status").textContent = "Screen may dim while racing";
+    }
+  }
+
+  function releaseKeepAwake() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    if (keepAwakeTimer !== null) { clearInterval(keepAwakeTimer); keepAwakeTimer = null; }
+    if (keepAwakeVideo) {
+      try {
+        keepAwakeVideo.pause();
+        keepAwakeVideo.srcObject = null;
+        keepAwakeVideo.remove();
+      } catch (_) {}
+      keepAwakeVideo = null;
     }
   }
 
@@ -1319,7 +1539,7 @@
     neutralize("leave");
     try { transport?.close?.(); } catch (_) {}
     if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-    if (wakeLock) wakeLock.release().catch(() => {});
+    releaseKeepAwake();
     if (releaseTabLease) { releaseTabLease(); releaseTabLease = null; }
     showError("left_room", "Enter another code");
   }
@@ -1386,7 +1606,7 @@
         return;
       }
       if (!("PointerEvent" in window) || !("RTCPeerConnection" in window) ||
-          !globalThis.crypto?.subtle || !globalThis.MDKRPartySas) {
+          !pairingCryptoAvailable() || !globalThis.MDKRPartySas) {
         showError("unsupported", shareRecoveryLabel(), "share"); return;
       }
     }

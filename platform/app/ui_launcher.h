@@ -22,7 +22,10 @@
 
 #include "engine_entry.h"   // MdkrBootConfig
 #include "rom_validate.h"   // RomInfo
+#include "ui_phone_party.h" // PhonePartyLanControls
+#include "party/lan_party_transport.h" // MdkrLanPartyTransportConfig
 
+#include <cstdint>
 #include <string>
 #include <memory>
 
@@ -56,6 +59,11 @@ struct LauncherState {
     SDL_Window *hostWindow = nullptr;
     /* Process-owned by Launcher; borrowed by the Play Here panel. */
     MdkrNativePartyHost *phoneParty = nullptr;
+    /* Local-play (no internet) control surface for the Phone Party card. The
+     * launcher fills these before the card draws and reads `request` back after
+     * the frame -- switching to/from the LAN transport rebuilds `phoneParty`, so
+     * it must happen at a safe point, not mid-draw. */
+    PhonePartyLanControls lanParty;
     // Paths stay dynamically owned by the launcher until engine boot. The UTF-8
     // filesystem boundary supports Windows extended paths, so a fixed MAX_PATH
     // or 4 KiB UI buffer must never turn a valid picked file into another path.
@@ -149,9 +157,36 @@ public:
     // Read-only test witness for the intermediate-width navigation smoke.
     int activePanelForSmoke() const { return active_; }
 
+    // Which relay backs the one live Phone Party transport. Cloud is the
+    // shipped default (the compiled https Party service); Lan is the embedded
+    // zero-internet server+room. Runtime mutual-exclusion is enforced by
+    // selectPartyTransport(): exactly one is ever live. Task 5 owns the UI that
+    // flips this at runtime.
+    enum class PartyTransportKind { Cloud, Lan };
+
 private:
+    // Tears the current transport (and the host bound to it) down before
+    // building the requested one, so a cloud and a LAN transport can never be
+    // live at once. Called at construction with the shipped default, and by the
+    // party card's deferred Start/Stop. `config` seeds the LAN transport
+    // (advertised host, controller manifest, port); ignored for Cloud.
+    void selectPartyTransport(PartyTransportKind kind,
+                              MdkrLanPartyTransportConfig config = {});
+    // Deferred local-play actions from the party card, applied after the frame.
+    void applyLanStart();
+    void applyLanStop();
+    // Refresh lanParty.available/active/note for the card (cheap; throttled).
+    void refreshLanControls();
+
     std::unique_ptr<MdkrPartyTransport> partyTransport_;
     std::unique_ptr<MdkrNativePartyHost> phoneParty_;
+    PartyTransportKind partyKind_ = PartyTransportKind::Cloud;
+    // Owns the storage the card's `note` pointer borrows (a start failure).
+    std::string lanNote_;
+    bool lanAvailable_ = false;      // cached host + controller-asset presence
+    bool lanHostReachable_ = false;  // cached advertised-host presence (reason)
+    bool lanChecked_ = false;
+    uint64_t lanCheckedMs_ = 0u;     // last availability check (SDL ticks)
     LauncherState state_;
     int  active_ = 0;               // index into the panel table
     bool panelEnvChecked_ = false;  // MDKR_APP_PANEL design-review/CI hook

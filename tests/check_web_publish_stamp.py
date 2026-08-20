@@ -43,7 +43,8 @@ def main() -> int:
             ],
             "controller/index.html": [
                 "../input/touch-surface.css", "controller.css",
-                "../party/party-protocol.js", "../party/party-sas.js",
+                "../party/party-mode.js", "../party/party-protocol.js",
+                "../party/party-sas.js",
                 "../input/touch-surface.js", "controller.js",
             ],
             "room/index.html": ["room-entry.css", "room-entry.js"],

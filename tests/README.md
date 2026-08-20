@@ -1380,6 +1380,30 @@ controller with fresh input within five seconds of resuming, which drives the
 bounded transport queue and the host's custody self-heal through the true
 stack.
 
+`tests/check_party_lan_e2e.py` is the no-internet crown gate: it runs the same
+`mdkr_native_party_e2e_driver` under `--lan`, where the embedded
+`MdkrLanPartyServer` plus the in-process `MdkrLanPartyRoom` ARE the signaling
+backend and no `wrangler` Worker exists anywhere in the run. A headless Chromium
+loads `/controller/#<capability>` from that embedded server over plain `http`
+and pairs with the pure-JS SAS fallback. Because a loopback origin is a secure
+context that would expose `crypto.subtle`, the lane serves the page from a real
+non-loopback private LAN IPv4 (falling back to `127.0.0.1` with a boot hook only
+when the host has no LAN address) and asserts, in the live page, that
+`isSecureContext === false` and `crypto.subtle === undefined` so the phrase can
+only have come from `MDKRPartySas`'s pure-JS SHA-256 + P-256 twin. Its golden
+path requires that page phrase to equal the native mbedtls phrase (the crown
+cross-proof) and non-neutral packets to cross the real ingress; further
+scenarios refuse a wrong six-digit code before pairing on the right one, trip the
+room's shared code bucket with thirteen rapid wrong codes, and require the phone
+to show `host_closed` when the host closes the room.
+
+`tests/check_lan_controller_assets.py` keeps the local-play controller asset set
+identical across the three places that must never disagree: the C++
+`kControllerAssets` manifest in `lan_party_launch.cpp` that the embedded server
+serves, the `tools/lan_controller_assets.txt` list the packaging scripts stage
+from, and the tracked `dist/web` tree those files are copied out of, so a
+packaged build cannot ship a controller page that loads broken.
+
 The controller-page gate additionally covers exact 43-character fragment
 scrubbing, embedded private share/copy recovery, capability-free public-page
 share/copy plus code guidance, acknowledged duplicate-tab private navigation,
@@ -5494,6 +5518,22 @@ about most. `mdkr_boss_cadence_clamp` (`game/src/racer.c`) and
 `menu_stick_delay_amount` (`game/src/menu.c`) are the two correct examples;
 ordinary arithmetic uses of `updateRate` as a scale factor are unaffected.
 Positive control: a seeded `updateRate == 2` mode test must be rejected.
+
+### Harness isolation — `tests/check_harness_isolation.py`
+
+```bash
+python3 tests/check_harness_isolation.py
+```
+
+Source gate that keeps the taj-theme false-failure class extinct. A check that
+sets `MDKR_SAVE_DIR` but not `MDKR_VIDEO_CONFIG_PATH` inherits a repo-root
+`mdkr64.ini`; with display-paced motion smoothing configured there, the
+engine's `--headless-frames` budget counts presents instead of authored ticks
+and scripted drives fall short of their goal (the mechanism documented in
+`check_door_blocks.py`). The gate fails the moment a check acquires a
+save-dir assignment without a video-config pin (or `save_env`), with two
+documented exemptions (`check_ghost_bank_capacity.py`, `check_shell_dropfile.py`)
+and a `--self-test` proving the scanner is not vacuous.
 
 ### Delta inventory — `tests/check_delta_inventory.py`
 

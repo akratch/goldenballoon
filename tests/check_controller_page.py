@@ -62,16 +62,23 @@ def run(args: argparse.Namespace) -> None:
     for path in required:
         require(path.is_file(), f"controller artifact is missing: {path}")
     critical_bytes = sum(path.stat().st_size for path in required[:6])
-    # 104 KiB, raised twice: to 101 KiB when accumulated honest error copy
-    # (the protocol_update_required entry) crossed the original 100 KiB, and
-    # to 104 KiB when SAS v2 landed -- the pairing phrase now binds both
-    # DTLS fingerprints, which puts the canonical fingerprint parser and the
-    # connection-time derivation on the page's critical path. The
+    # 123 KiB, raised across the phases: to 101 KiB when accumulated honest
+    # error copy (the protocol_update_required entry) crossed the original 100
+    # KiB, to 104 KiB when SAS v2 put the fingerprint parser + connection-time
+    # derivation on the critical path, to 117 KiB when local (LAN) play made
+    # party-sas.js vendor a pure-JS SHA-256 + P-256 ECDH twin (the phrase must
+    # stay byte-identical to the native host or every pairing looks like a MITM)
+    # and controller.js took on the NoSleep keep-awake, and to 123 KiB when the
+    # phone learned to pair over a LAN: controller.js now carries the whole
+    # redeem-over-ws transport (the LAN room authenticates the first ws frame,
+    # not an HTTP POST), the relaxed trusted-origin gate that trusts only the
+    # host that served the page, and the crypto.subtle fallback wiring. The
     # guardrail's job is catching runaway growth -- a bundled library, an
-    # accidental asset -- not vetoing player copy or the MITM defense, so
-    # the ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 104 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 104 KiB")
+    # accidental asset -- not vetoing player copy, the MITM defense or a real
+    # second pairing transport, so the ceiling moves by the smallest whole KiB
+    # each time.
+    require(critical_bytes < 123 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 123 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):

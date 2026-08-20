@@ -27,12 +27,16 @@ uint64_t g_inviteCopiedUntilMs = 0u;
 
 /* MDKR_APP_PARTY_TRACE=1: one line, once per process, on the first frame the
  * party surface actually commits draws — the packaged-build lanes assert the
- * surface exists in the shipped launcher without a phone or a ROM. The three
- * flags are set AT the draw sites, so a frame that skipped the invite/QR/code
- * cannot report them. */
+ * surface exists in the shipped launcher without a phone or a ROM. The flags are
+ * set AT the draw sites, so a frame that skipped the invite/QR/code cannot
+ * report them. cloud/local name WHICH surface drew: the release lanes rely on it
+ * to prove an origin-less build shows the local-play card (allowed) but never a
+ * cloud/online card (which still needs a compiled origin). */
 bool g_traceDrewInvite = false;
 bool g_traceDrewQr = false;
 bool g_traceDrewCode = false;
+bool g_traceDrewCloud = false;
+bool g_traceDrewLocal = false;
 
 const char *partyPhaseName(MdkrNativePartyPhase phase) {
     switch (phase) {
@@ -53,13 +57,14 @@ void partyTraceEmitOnce(MdkrNativePartyHost &host, const char *serviceOrigin) {
     if (emitted || armed == nullptr || armed[0] != '1') return;
     emitted = true;
     std::printf("[app] party: origin=%s transport=%s phase=%s "
-                "invite=%d qr=%d code=%d\n",
+                "invite=%d qr=%d code=%d cloud=%d local=%d\n",
                 serviceOrigin != nullptr && serviceOrigin[0] != '\0'
                     ? serviceOrigin : "unset",
                 host.transportAvailable() ? "available" : "unavailable",
                 partyPhaseName(host.view().phase),
                 g_traceDrewInvite ? 1 : 0, g_traceDrewQr ? 1 : 0,
-                g_traceDrewCode ? 1 : 0);
+                g_traceDrewCode ? 1 : 0, g_traceDrewCloud ? 1 : 0,
+                g_traceDrewLocal ? 1 : 0);
     std::fflush(stdout);
 }
 
@@ -415,6 +420,82 @@ void pruneSeatChoices(const MdkrNativePartyView &view) {
     }
 }
 
+/* Said once when local play starts, and again in the entry card: the OS asks
+ * to allow incoming connections the first time the port opens, and the player
+ * has to say yes for phones to reach the game. Kept concrete and short. */
+const char *kLanFirewallGuidance =
+    "The first time you start this, macOS or Windows may ask whether to allow "
+    "incoming connections. Choose Allow so phones on your network can join.";
+
+/* The live local-play surface: the same QR / six-digit code / pairing-phrase
+ * flow the cloud room shows (drawRoom, reused whole), plus the firewall line and
+ * a Stop that hands the launcher the revert-to-default request. Only drawn while
+ * the LAN transport is the live one, so the cloud card is never on screen at the
+ * same time -- the on-screen half of the runtime mutual exclusion. */
+void drawLanActive(MdkrNativePartyHost &host, PhonePartyLanControls &lan) {
+    const MdkrNativePartyView &view = host.view();
+    if (view.phase != MdkrNativePartyPhase::Closed) {
+        if (view.phase == MdkrNativePartyPhase::Opening ||
+            view.phase == MdkrNativePartyPhase::Open ||
+            view.phase == MdkrNativePartyPhase::InviteRevoked) {
+            ui::TextSubtleWrapped("%s", kLanFirewallGuidance);
+            ui::Gap(ui::kGapS);
+        }
+        drawRoom(host);
+    } else {
+        ui::TextSubtle("Local play stopped.");
+    }
+    ui::Gap(ui::kGapM);
+    if (ImGui::Button("Stop Local Play", ui::kBtnSecondary())) {
+        /* Say goodbye to the phones now (closeRoom), then ask the launcher to
+         * release the port and return to the default transport after the frame
+         * -- the surface is still drawing from this host. */
+        host.closeRoom();
+        lan.request = PhonePartyLanControls::Request::Stop;
+    }
+    ui::SpeakFocusedItem("Stop Local Play", nullptr,
+        "Ends the local controller room and releases the network port. Phones "
+        "disconnect; keyboard and gamepads are unchanged.");
+}
+
+/* The entry card beneath the cloud card (or standing alone in a build with no
+ * cloud origin): the one place a player starts local play. A build with no LAN
+ * address shows the reason instead of a dead button -- fail closed. */
+void drawLanEntryCard(PhonePartyLanControls &lan) {
+    ui::Gap(ui::kGapM);
+    if (ui::CardBegin("##lan-entry", AppTheme::accent(), 0.0f)) {
+        ImGui::PushFont(AppTheme::fonts().title);
+        ImGui::TextUnformatted("Local play (no internet)");
+        ImGui::PopFont();
+        ui::TextSubtleWrapped(
+            "Start a controller room on your own Wi-Fi or wired network. Phones "
+            "scan a code and connect straight to this game — no internet, no "
+            "account, no app.");
+        if (!lan.available) {
+            /* The launcher always sets an honest reason (no network, or the
+             * controller page is not in this build) when unavailable. */
+            if (lan.unavailableReason != nullptr &&
+                lan.unavailableReason[0] != '\0') {
+                ui::TextSubtleWrapped("%s", lan.unavailableReason);
+            }
+        } else {
+            if (ui::PrimaryButton("Start Local Play", ui::kBtnWide())) {
+                lan.request = PhonePartyLanControls::Request::Start;
+            }
+            ui::SpeakFocusedItem("Start Local Play", nullptr,
+                "Starts a controller room on this network. Phones scan a code to "
+                "join; no internet is used.");
+            ui::TextSubtleWrapped("%s", kLanFirewallGuidance);
+        }
+        if (lan.note != nullptr && lan.note[0] != '\0') {
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ui::TextSubtleWrapped("%s", lan.note);
+            ImGui::PopStyleColor();
+        }
+    }
+    ui::CardEnd();
+}
+
 void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
     pruneSeatChoices(host.view());
     announceState(host.view());
@@ -444,7 +525,8 @@ bool PhoneParty_availableInBuild(const char *serviceOrigin) {
 }
 
 void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
-                             const char *serviceOrigin) {
+                             const char *serviceOrigin,
+                             PhonePartyLanControls &lan) {
     ui::Gap(ui::kGapL);
     ImGui::Separator();
     ui::Gap(ui::kGapM);
@@ -453,7 +535,26 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
         "players on this screen. Approve the phone and it becomes Controller 1 "
         "(or the next open slot); when it connects, compare the pairing phrase "
         "on both screens.");
-    drawFull(host, serviceOrigin);
+    /* Exactly one surface at a time. While a local room is the live transport it
+     * owns the whole card; otherwise the cloud flow does (unchanged), and local
+     * play is offered beneath it only when no cloud room is open -- so a cloud
+     * room and a local room can never be started or shown at once. A build with
+     * no cloud origin skips the cloud flow entirely and makes local play the
+     * whole surface. */
+    if (lan.active) {
+        g_traceDrewLocal = true;
+        drawLanActive(host, lan);
+    } else if (PhoneParty_availableInBuild(serviceOrigin)) {
+        g_traceDrewCloud = true;
+        drawFull(host, serviceOrigin);
+        if (host.view().phase == MdkrNativePartyPhase::Closed) {
+            g_traceDrewLocal = true;
+            drawLanEntryCard(lan);
+        }
+    } else {
+        g_traceDrewLocal = true;
+        drawLanEntryCard(lan);
+    }
     partyTraceEmitOnce(host, serviceOrigin);
 }
 

@@ -1,27 +1,53 @@
 /*
  * End-to-end Phone Party host driver.
  *
- * Owned by tests/check_party_native_e2e.py and deliberately NOT a ctest: it
- * opens the REAL libdatachannel transport against a live local Party Worker
- * (wrangler dev) whose lifetime, port and paired controller page only the
- * check script provides. It drives MdkrNativePartyHost exactly like the
- * launcher does — open, service in a loop, approve, drain the remote-pad
- * ingress — and narrates every observable transition as `[E2E] key=value`
- * lines on stdout so the check can assert ordering through the true stack.
+ * Owned by two check scripts and deliberately NOT a ctest.
  *
- *   --origin <url>     Party service origin (the check passes the loopback
- *                      wrangler origin; the host's token gate applies).
+ *   CLOUD arm (tests/check_party_native_e2e.py): opens the REAL libdatachannel
+ *   transport against a live local Party Worker (wrangler dev) whose lifetime,
+ *   port and paired controller page the check provides.
+ *
+ *   LAN arm (tests/check_party_lan_e2e.py, --lan): opens the REAL
+ *   LanPartyTransport — the embedded MdkrLanPartyServer + in-process
+ *   MdkrLanPartyRoom ARE the signaling backend, with NO wrangler and NO cloud
+ *   in the loop. This proves the whole no-internet path: a real headless
+ *   browser loads the controller page from the embedded server over plain
+ *   http, redeems over /party-ws, and pairs by the pure-JS SAS fallback whose
+ *   phrase must equal the native mbedtls phrase.
+ *
+ * Either way it drives MdkrNativePartyHost exactly like the launcher does —
+ * open, service in a loop, approve, drain the remote-pad ingress — and narrates
+ * every observable transition as `[E2E] key=value` lines on stdout so the check
+ * can assert ordering through the true stack.
+ *
+ *   --origin <url>     Party service origin (cloud arm: the loopback wrangler
+ *                      origin, host token gate applies). Ignored by the LAN
+ *                      transport and optional under --lan.
  *   --auto-approve     approve the first pending controller onto seat 1.
  *   --packets <n>      exit 0 once a controller has reached Connected and
  *                      <n> non-neutral pad packets crossed the ingress
  *                      (default 50).
  *   --timeout-ms <t>   exit 3 if that has not happened in time
  *                      (default 120000).
+ *   --lan              use the embedded LanPartyTransport instead of the cloud
+ *                      libdatachannel transport (no wrangler in the loop).
+ *   --lan-web-root <d> directory holding the packaged controller assets the
+ *                      embedded server serves (dist/web); required under --lan.
+ *   --lan-host <h>     LAN address the invite URL advertises (the host the
+ *                      browser navigates to, e.g. 192.168.1.5 or 127.0.0.1);
+ *                      required under --lan.
+ *   --close-room-after-connected
+ *                      after Connected + <packets> non-neutral packets, close
+ *                      the ROOM (server kept alive so a phone re-redeem learns
+ *                      host_closed) instead of exiting, then run a short grace
+ *                      window and exit 0. The LAN stop scenario.
  *
  * Exit codes: 0 success, 1 usage, 2 host error, 3 timeout.
  */
 
 #include "party/libdatachannel_party_transport.h"
+#include "party/lan_party_launch.h"
+#include "party/lan_party_transport.h"
 #include "party/native_party_host.h"
 #include "party/native_remote_pad_ingress.h"
 #include "party/party_protocol.h"
@@ -78,6 +104,10 @@ struct Options {
     bool autoApprove = false;
     uint64_t packets = 50u;
     uint64_t timeoutMs = 120000u;
+    bool lan = false;
+    std::string lanWebRoot;
+    std::string lanHost;
+    bool closeRoomAfterConnected = false;
 };
 
 bool parseOptions(int argc, char **argv, Options &options) {
@@ -92,19 +122,57 @@ bool parseOptions(int argc, char **argv, Options &options) {
             options.packets = std::strtoull(argv[++index], nullptr, 10);
         } else if (argument == "--timeout-ms" && hasValue) {
             options.timeoutMs = std::strtoull(argv[++index], nullptr, 10);
+        } else if (argument == "--lan") {
+            options.lan = true;
+        } else if (argument == "--lan-web-root" && hasValue) {
+            options.lanWebRoot = argv[++index];
+        } else if (argument == "--lan-host" && hasValue) {
+            options.lanHost = argv[++index];
+        } else if (argument == "--close-room-after-connected") {
+            options.closeRoomAfterConnected = true;
         } else {
             std::fprintf(stderr,
                 "usage: %s --origin <url> [--auto-approve] [--packets <n>] "
-                "[--timeout-ms <t>]\n", argv[0]);
+                "[--timeout-ms <t>] [--lan --lan-web-root <d> --lan-host <h>] "
+                "[--close-room-after-connected]\n", argv[0]);
             return false;
         }
     }
-    if (options.origin.empty() || options.packets == 0u ||
-        options.timeoutMs == 0u) {
+    if (options.packets == 0u || options.timeoutMs == 0u) {
+        std::fprintf(stderr, "--packets and --timeout-ms must be non-zero\n");
+        return false;
+    }
+    if (options.lan) {
+        /* The LAN transport is configured from these, not from --origin. */
+        if (options.lanWebRoot.empty() || options.lanHost.empty()) {
+            std::fprintf(stderr,
+                "--lan requires --lan-web-root and --lan-host\n");
+            return false;
+        }
+    } else if (options.origin.empty()) {
         std::fprintf(stderr, "--origin is required\n");
         return false;
     }
     return true;
+}
+
+/* Build the transport this driver runs the host over: the embedded
+ * LanPartyTransport under --lan (the whole no-internet backend in-process), or
+ * the cloud libdatachannel transport otherwise. Returns nullptr on a fatal
+ * setup failure (a missing controller bundle), which main() reports as a host
+ * error. */
+std::unique_ptr<MdkrPartyTransport> makeTransport(const Options &options) {
+    if (!options.lan) return mdkr_create_native_party_transport();
+    MdkrLanPartyTransportConfig config;
+    if (!mdkr_lan_party_build_manifest(options.lanWebRoot, config.manifest)) {
+        std::fprintf(stderr,
+            "[E2E] result=error message=controller assets missing under %s\n",
+            options.lanWebRoot.c_str());
+        return nullptr;
+    }
+    config.advertisedHost = options.lanHost;
+    config.bindPort = 0u;  /* ephemeral: the server reports it into the URL. */
+    return mdkr_create_lan_party_transport(std::move(config));
 }
 
 /* Every observable change becomes one stdout line the check script tails
@@ -211,10 +279,14 @@ int main(int argc, char **argv) {
     Options options;
     if (!parseOptions(argc, argv, options)) return 1;
 
-    std::unique_ptr<MdkrPartyTransport> transport =
-        mdkr_create_native_party_transport();
+    std::unique_ptr<MdkrPartyTransport> transport = makeTransport(options);
+    if (!transport) {
+        std::fflush(stderr);
+        return 2;
+    }
     MdkrNativePartyHost host(*transport);
-    std::printf("[E2E] origin=%s\n", options.origin.c_str());
+    std::printf("[E2E] origin=%s\n",
+        options.lan ? ("lan/" + options.lanHost).c_str() : options.origin.c_str());
     std::fflush(stdout);
     if (!host.open(options.origin)) {
         std::printf("[E2E] result=error message=%s\n",
@@ -232,8 +304,36 @@ int main(int argc, char **argv) {
     uint64_t nonNeutral = 0u;
     uint64_t echoedNonNeutral = 0u;
     bool sawConnected = false;
+    /* --close-room-after-connected: the LAN stop scenario, modeling the
+     * launcher's "Stop Local Play". Once input has demonstrably flowed we send
+     * the room's terminal close (4000 + "host_closed", which the phone reads off
+     * the close frame), give it a brief bounded flush, then tear the WHOLE
+     * transport down synchronously -- exactly what applyLanStop does. The server
+     * is gone before any reconnect could re-redeem, so a phone that shows
+     * host_closed can only have learned it from that frame, not a re-redeem. A
+     * short observation window then lets the check read the page before we exit. */
+    constexpr uint64_t kCloseFlushMs = 400u;
+    constexpr uint64_t kCloseObserveMs = 4000u;
+    bool roomClosed = false;
+    uint64_t roomClosedAtMs = 0u;
 
     while (nowMs() - startedMs < options.timeoutMs) {
+        /* Stop scenario, post-teardown: the room is closed and the transport is
+         * shut down. Do not touch the (shut) transport again; just idle out the
+         * observation window so the check can read host_closed off the page, then
+         * exit. */
+        if (roomClosed) {
+            if (nowMs() - roomClosedAtMs >= kCloseObserveMs) {
+                std::printf("[E2E] result=ok nonneutral=%llu packets=%llu\n",
+                    static_cast<unsigned long long>(nonNeutral),
+                    static_cast<unsigned long long>(totalPackets));
+                std::fflush(stdout);
+                mdkr_native_remote_pad_reset_all();
+                return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         host.service(nowMs());
         echoView(host.view(), lastPhase, lastUrl, lastMessage, echoes);
         if (host.view().phase == MdkrNativePartyPhase::Error) {
@@ -254,6 +354,27 @@ int main(int argc, char **argv) {
             echoedNonNeutral = nonNeutral;
         }
         sawConnected = sawConnected || anyConnected(host.view());
+        /* Stop scenario: once input has flowed, send the terminal close, flush
+         * it briefly, then tear the transport down synchronously (the launcher's
+         * real Stop). The next loop iteration idles the observation window. */
+        if (options.closeRoomAfterConnected) {
+            if (sawConnected && anyConnected(host.view()) &&
+                nonNeutral >= options.packets) {
+                (void)transport->closeRoom();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kCloseFlushMs));
+                transport->shutdown();
+                roomClosed = true;
+                roomClosedAtMs = nowMs();
+                std::printf("[E2E] room_closed nonneutral=%llu packets=%llu "
+                    "server_down=1\n",
+                    static_cast<unsigned long long>(nonNeutral),
+                    static_cast<unsigned long long>(totalPackets));
+                std::fflush(stdout);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         if (sawConnected && anyConnected(host.view()) &&
             nonNeutral >= options.packets) {
             std::printf("[E2E] result=ok nonneutral=%llu packets=%llu\n",

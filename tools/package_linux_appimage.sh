@@ -14,6 +14,35 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 readonly PHONE_PARTY_NOTICE_SHA256="dc48863706380100072297911937267b5eaee28a40a972516e07b285cc7635dd"
 
+# Trimmed local-play (no internet) controller assets staged beside the binary
+# (usr/bin), as the AppDir/tarball file entries they produce. Source of truth:
+# tools/lan_controller_assets.txt, cross-checked against the C++ manifest builder
+# by tests/check_lan_controller_assets.py.
+lan_web_appdir_files() {
+  local asset
+  while IFS= read -r asset; do
+    case "$asset" in ''|\#*) continue ;; esac
+    printf 'Golden-Balloon.AppDir/usr/bin/dist/web/%s\n' "$asset"
+  done < tools/lan_controller_assets.txt
+}
+
+# Copy the trimmed controller assets into $1/usr/bin/dist/web, failing closed on
+# any missing source file (they are tracked, so this must always succeed).
+stage_lan_web_assets() {
+  local appdir="$1" asset src dest
+  while IFS= read -r asset; do
+    case "$asset" in ''|\#*) continue ;; esac
+    src="dist/web/$asset"
+    dest="$appdir/usr/bin/dist/web/$asset"
+    [[ -s "$src" ]] || {
+      echo "ERROR: local-play controller asset missing or empty: $src" >&2
+      return 1
+    }
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+  done < tools/lan_controller_assets.txt
+}
+
 binary="build/mdkr64"
 version="dev"
 # Release packaging is STRICT by default -- a missing bundled SDL2 runtime or
@@ -58,6 +87,8 @@ verify_linux_tarball() {
     echo "ERROR: Linux developer tarball contains multiple SDL2 runtimes." >&2
     return 1
   fi
+  local web_files
+  web_files="$(lan_web_appdir_files)"
   expected="$(
     printf '%s\n' \
       Golden-Balloon.AppDir/AppRun \
@@ -68,7 +99,8 @@ verify_linux_tarball() {
       Golden-Balloon.AppDir/mdkr64.desktop \
       Golden-Balloon.AppDir/mdkr64.png \
       Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt \
-      Golden-Balloon.AppDir/usr/bin/mdkr64
+      Golden-Balloon.AppDir/usr/bin/mdkr64 \
+      ${web_files}
     [[ -z "$sdl_entries" ]] || printf '%s\n' "$sdl_entries"
   )"
   expected="$(printf '%s\n' "$expected" | LC_ALL=C sort)"
@@ -108,6 +140,11 @@ if [[ "$self_test" == true ]]; then
     "$test_appdir/NativePhoneParty-NOTICES.txt"
   : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
   : >"$test_appdir/usr/bin/mdkr64"
+  while IFS= read -r asset; do
+    case "$asset" in ''|\#*) continue ;; esac
+    mkdir -p "$test_appdir/usr/bin/dist/web/$(dirname "$asset")"
+    : >"$test_appdir/usr/bin/dist/web/$asset"
+  done < tools/lan_controller_assets.txt
   : >"$test_appdir/usr/lib/libSDL2-2.0.so.0"
   tar -C "$test_root" -czf "$test_root/package.tar.gz" Golden-Balloon.AppDir
   verify_linux_tarball "$test_root/package.tar.gz" "$test_appdir"
@@ -162,6 +199,11 @@ if ! cp lib/sdl_gamecontrollerdb/gamecontrollerdb.txt "$appdir/usr/bin/"; then
     exit 1
   fi
 fi
+
+# Local-only Phone Party controller page, staged beside the binary where
+# SDL_GetBasePath() resolves dist/web at LAN start (Task 5). Tracked files, so
+# a failure here is a real problem in dev and release alike.
+stage_lan_web_assets "$appdir"
 
 # Bundle the linked SDL2 (GL/glibc come from the host; AppImage targets glibc>=host).
 sdl="$(ldd "$binary" | awk '/libSDL2/{print $3; exit}')"

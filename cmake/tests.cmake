@@ -1158,6 +1158,87 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME party_firewall_negative
         COMMAND mdkr_party_firewall_negative_test)
 
+    # Phase 3 local-only play: the embedded HTTP+WS server that serves the
+    # controller page and the /party-ws control socket from ONE port with no
+    # internet. Wire-level test against 127.0.0.1 on an ephemeral port, so it
+    # stays GPU-, network- and ROM-free like the rest of the party suite.
+    # The /party-ws upgrade enforces a LAN Host allowlist (DNS-rebinding
+    # defense at THIS layer); the test drives it through the allowed loopback
+    # Hosts and asserts foreign Hosts are refused.
+    #
+    # MDKR_LAN_PARTY_TESTING is defined HERE AND NOWHERE ELSE. It compiles
+    # the send-path park hook and the HTTP-deadline override into
+    # lan_party_server.cpp so the teardown-vs-send ordering and the slow-drip
+    # deadline are deterministically testable; without the define neither
+    # seam exists in any shipped build (the MDKR_A11Y_SPEECH_TESTING pattern).
+    add_executable(mdkr_lan_party_server_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_server.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp)
+    target_include_directories(mdkr_lan_party_server_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_lan_party_server_test PRIVATE
+        MDKR_LAN_PARTY_TESTING)
+    target_compile_features(mdkr_lan_party_server_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_lan_party_server_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(mdkr_lan_party_server_test PRIVATE ws2_32)
+    endif()
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_server_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_server_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_server COMMAND mdkr_lan_party_server_test)
+    # Every wait in it is bounded and short; this is the backstop for a
+    # genuine hang (a stop() that never joins), which must fail the suite
+    # rather than stall it.
+    set_tests_properties(lan_party_server PROPERTIES TIMEOUT 120)
+
+    # Phase 3 local-only play: the pure launcher-side config helpers -- pick the
+    # QR's advertised LAN host from the machine's addresses, and build the
+    # controller-asset manifest from a packaged web tree. No getifaddrs, no
+    # resource bundle, no libdatachannel: just the two decisions worth pinning
+    # (lan_party_launch.cpp). The getifaddrs/resource glue is app-only and, like
+    # ui_*.cpp, has no unit harness.
+    add_executable(mdkr_lan_party_launch_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_launch.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_launch.cpp)
+    target_include_directories(mdkr_lan_party_launch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_lan_party_launch_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_launch_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_launch_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_launch COMMAND mdkr_lan_party_launch_test)
+
+    # Phase 3 local-only play: the in-process local room -- the zero-internet
+    # equivalent of the Cloudflare Party room DO. It mints the invite
+    # capability + fallback code, holds seat leases, throttles code redemption,
+    # and relays the pairing protocol between the phones' WebSockets and the
+    # native host. The room is pure (no server, no libdatachannel, no network):
+    # this test drives it against a fake controller socket and an in-memory
+    # host sink with a deterministic clock and RNG, so it stays as cheap and
+    # hermetic as the rest of the party unit suite.
+    add_executable(mdkr_lan_party_room_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_room.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp)
+    target_include_directories(mdkr_lan_party_room_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_lan_party_room_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_lan_party_room_test PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_room_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_room_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_room COMMAND mdkr_lan_party_room_test)
+    set_tests_properties(lan_party_room PROPERTIES TIMEOUT 60)
+
     # Rollback primitives are kept ROM-, renderer- and window-free. Their
     # boundaries must stay cheap enough to run on every native presubmit.
     add_executable(mdkr_net_input_test
@@ -1980,6 +2061,14 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_release_party_origin.py
                 --self-test)
+    # Phase 3 local-only play: the trimmed controller asset set must agree
+    # across the C++ manifest builder and the packaging source-of-truth list,
+    # and every listed file must exist in dist/web -- so a packaged build stages
+    # exactly what the phone loads and the page never ships broken.
+    add_test(
+        NAME party_lan_controller_assets
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_lan_controller_assets.py)
     add_test(
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}
