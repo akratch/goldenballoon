@@ -863,6 +863,14 @@ void runWebSocket(const std::shared_ptr<MdkrLanPartyServerState> &state,
 
 /* ---- The per-connection HTTP loop ------------------------------------------ */
 
+/* The control subprotocol the shipped controller page offers on /party-ws for
+ * local play (dist/web/controller/controller.js) and the cloud Worker echoes on
+ * the controller connect (services/party worker.ts). A browser that offered a
+ * Sec-WebSocket-Protocol fails the handshake unless the server SELECTS one, so
+ * the embedded server must echo this back or no LAN phone can complete the
+ * upgrade -- exactly what the end-to-end lane pins. */
+constexpr char kMdkrLanPartyControlSubprotocol[] = "gb-control-v1";
+
 enum class UpgradeCheck { Ok, NotAnUpgrade, BadKey };
 
 UpgradeCheck validateUpgrade(const Request &request, std::string &key) {
@@ -988,12 +996,24 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
                 send404(connection->fd, false);
                 break;
             }
+            /* RFC 6455 subprotocol negotiation: select the page's control
+             * subprotocol when it was offered, mirroring the cloud Worker.
+             * Without this echo Chromium fails the whole handshake. */
+            std::string selectedProtocol;
+            const auto offered =
+                request.headers.find("sec-websocket-protocol");
+            if (offered != request.headers.end() &&
+                tokenListContains(offered->second,
+                                  kMdkrLanPartyControlSubprotocol)) {
+                selectedProtocol = "Sec-WebSocket-Protocol: " +
+                    std::string(kMdkrLanPartyControlSubprotocol) + "\r\n";
+            }
             const std::string response =
                 "HTTP/1.1 101 Switching Protocols\r\n"
                 "Upgrade: websocket\r\n"
                 "Connection: Upgrade\r\n"
                 "Sec-WebSocket-Accept: " +
-                wsAcceptValue(key) + "\r\n\r\n";
+                wsAcceptValue(key) + "\r\n" + selectedProtocol + "\r\n";
             if (!sendAll(connection->fd, response.data(), response.size())) {
                 break;
             }

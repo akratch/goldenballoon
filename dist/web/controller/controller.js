@@ -360,13 +360,23 @@
   }
 
   async function tabKey(value) {
-    if (globalThis.crypto && globalThis.crypto.subtle && globalThis.TextEncoder) {
-      const digest = await globalThis.crypto.subtle.digest(
-        "SHA-256", new TextEncoder().encode(value));
+    const encoded = globalThis.TextEncoder
+      ? new TextEncoder().encode(value) : null;
+    if (encoded && globalThis.crypto && globalThis.crypto.subtle) {
+      const digest = await globalThis.crypto.subtle.digest("SHA-256", encoded);
       return [...new Uint8Array(digest).slice(0, 12)]
         .map((byte) => byte.toString(16).padStart(2, "0")).join("");
     }
-    return "session"; // old browser fallback is intentionally room-scoped only
+    // Insecure-origin local play has no crypto.subtle, so the secure-context
+    // digest above is unavailable. The audited pure-JS SHA-256 the SAS fallback
+    // already ships keeps the tab lease per-room AND in the 24-hex shape
+    // parsedFallbackLease requires -- a fixed word there fails that validator,
+    // which strands every LAN phone in the duplicate state instead of pairing.
+    if (encoded && globalThis.MDKRPartySas?.fallback?.sha256) {
+      return [...globalThis.MDKRPartySas.fallback.sha256(encoded).slice(0, 12)]
+        .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    return "session"; // last-resort ancient-browser fallback, room-scoped only
   }
 
   function tabLeaseId() {

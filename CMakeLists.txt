@@ -916,12 +916,21 @@ if(NOT EMSCRIPTEN)
                 # controller page that only tests/check_party_native_e2e.py
                 # provides, so that check owns running it (the same
                 # script-owns-binary split the GPU-adjacent gates use).
+                # The LAN arm (--lan) links the embedded server + in-process
+                # room + LanPartyTransport so tests/check_party_lan_e2e.py can
+                # prove the whole no-internet path with NO wrangler. The pure
+                # lan_party_launch.cpp carries the manifest builder; the getifaddrs
+                # /SDL glue (lan_party_launch_config.cpp) is app-only and stays out.
                 add_executable(mdkr_native_party_e2e_driver
                     ${CMAKE_SOURCE_DIR}/tests/test_native_party_e2e_driver.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c
                     ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_launch.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp)
@@ -935,6 +944,10 @@ if(NOT EMSCRIPTEN)
                 target_link_libraries(mdkr_native_party_e2e_driver PRIVATE
                     LibDataChannel::LibDataChannel MbedTLS::MbedTLS
                     Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_native_party_e2e_driver PRIVATE
+                        ws2_32)
+                endif()
                 if(MSVC)
                     target_compile_options(mdkr_native_party_e2e_driver PRIVATE /W4 /WX)
                 else()
