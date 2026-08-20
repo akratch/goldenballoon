@@ -318,11 +318,27 @@ jobs:
             local count line expected_prefix
             count="$(grep -cE '^\[app\] party: ' "$party/launcher.log" || true)"
             if [[ -z "${PARTY_ORIGIN:-}" ]]; then
-              if [[ "$count" != "0" ]]; then
-                echo "$label: partyless artifact exposed a Phone Party trace/surface" >&2
+              # Phase 3 split invariant: an origin-less build must expose NO
+              # cloud/online party surface (that still needs a compiled origin),
+              # but local play (no internet) MAY appear -- it works precisely
+              # without one, gated on its own preconditions. So the trace may be
+              # present; if it is, it must be the local-only surface: origin
+              # unset and cloud=0. A cloud=1 line here is the leak this gate
+              # exists to catch.
+              if [[ "$count" -gt 1 ]]; then
+                echo "$label: expected at most one [app] party: line, got $count" >&2
                 exit 1
               fi
-              echo "$label: partyless launcher surface is absent"
+              if [[ "$count" == "1" ]]; then
+                line="$(grep -E '^\[app\] party: ' "$party/launcher.log")"
+                if [[ "$line" != *"origin=unset"* || "$line" == *"cloud=1"* ]]; then
+                  echo "$label: partyless artifact exposed a cloud Phone Party surface: $line" >&2
+                  exit 1
+                fi
+                echo "$label: partyless artifact shows only local play, $line"
+              else
+                echo "$label: partyless launcher surface is absent"
+              fi
               return 0
             fi
             if [[ "$count" != "1" ]]; then
@@ -449,11 +465,24 @@ jobs:
           ) 2>&1 | tee "$party_work/launcher.log"
           party_count="$(grep -cE '^\[app\] party: ' "$party_work/launcher.log" || true)"
           if [[ -z "${PARTY_ORIGIN:-}" ]]; then
-            if [[ "$party_count" != "0" ]]; then
-              echo "package: partyless artifact exposed a Phone Party trace/surface" >&2
+            # Phase 3 split invariant (see the built-tree step): an origin-less
+            # package must expose no cloud/online surface, but local play (no
+            # internet) MAY appear. A present line must be the local-only
+            # surface (origin unset, cloud=0); a cloud=1 line is the leak.
+            if [[ "$party_count" -gt 1 ]]; then
+              echo "package: expected at most one [app] party: line, got $party_count" >&2
               exit 1
             fi
-            echo "package: partyless launcher surface is absent"
+            if [[ "$party_count" == "1" ]]; then
+              party_line="$(grep -E '^\[app\] party: ' "$party_work/launcher.log")"
+              if [[ "$party_line" != *"origin=unset"* || "$party_line" == *"cloud=1"* ]]; then
+                echo "package: partyless artifact exposed a cloud Phone Party surface: $party_line" >&2
+                exit 1
+              fi
+              echo "package: partyless artifact shows only local play, $party_line"
+            else
+              echo "package: partyless launcher surface is absent"
+            fi
           else
             if [[ "$party_count" != "1" ]]; then
               echo "package: expected exactly one [app] party: line, got $party_count" >&2

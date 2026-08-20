@@ -27,12 +27,16 @@ uint64_t g_inviteCopiedUntilMs = 0u;
 
 /* MDKR_APP_PARTY_TRACE=1: one line, once per process, on the first frame the
  * party surface actually commits draws — the packaged-build lanes assert the
- * surface exists in the shipped launcher without a phone or a ROM. The three
- * flags are set AT the draw sites, so a frame that skipped the invite/QR/code
- * cannot report them. */
+ * surface exists in the shipped launcher without a phone or a ROM. The flags are
+ * set AT the draw sites, so a frame that skipped the invite/QR/code cannot
+ * report them. cloud/local name WHICH surface drew: the release lanes rely on it
+ * to prove an origin-less build shows the local-play card (allowed) but never a
+ * cloud/online card (which still needs a compiled origin). */
 bool g_traceDrewInvite = false;
 bool g_traceDrewQr = false;
 bool g_traceDrewCode = false;
+bool g_traceDrewCloud = false;
+bool g_traceDrewLocal = false;
 
 const char *partyPhaseName(MdkrNativePartyPhase phase) {
     switch (phase) {
@@ -53,13 +57,14 @@ void partyTraceEmitOnce(MdkrNativePartyHost &host, const char *serviceOrigin) {
     if (emitted || armed == nullptr || armed[0] != '1') return;
     emitted = true;
     std::printf("[app] party: origin=%s transport=%s phase=%s "
-                "invite=%d qr=%d code=%d\n",
+                "invite=%d qr=%d code=%d cloud=%d local=%d\n",
                 serviceOrigin != nullptr && serviceOrigin[0] != '\0'
                     ? serviceOrigin : "unset",
                 host.transportAvailable() ? "available" : "unavailable",
                 partyPhaseName(host.view().phase),
                 g_traceDrewInvite ? 1 : 0, g_traceDrewQr ? 1 : 0,
-                g_traceDrewCode ? 1 : 0);
+                g_traceDrewCode ? 1 : 0, g_traceDrewCloud ? 1 : 0,
+                g_traceDrewLocal ? 1 : 0);
     std::fflush(stdout);
 }
 
@@ -537,13 +542,17 @@ void PhoneParty_drawLauncher(MdkrNativePartyHost &host,
      * no cloud origin skips the cloud flow entirely and makes local play the
      * whole surface. */
     if (lan.active) {
+        g_traceDrewLocal = true;
         drawLanActive(host, lan);
     } else if (PhoneParty_availableInBuild(serviceOrigin)) {
+        g_traceDrewCloud = true;
         drawFull(host, serviceOrigin);
         if (host.view().phase == MdkrNativePartyPhase::Closed) {
+            g_traceDrewLocal = true;
             drawLanEntryCard(lan);
         }
     } else {
+        g_traceDrewLocal = true;
         drawLanEntryCard(lan);
     }
     partyTraceEmitOnce(host, serviceOrigin);
