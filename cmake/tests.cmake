@@ -1160,14 +1160,24 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     # Phase 3 local-only play: the embedded HTTP+WS server that serves the
     # controller page and the /party-ws control socket from ONE port with no
-    # internet. Wire-level test against 127.0.0.1 on an ephemeral port --
-    # loopback only, no origin gates at this layer -- so it stays GPU-,
-    # network- and ROM-free like the rest of the party suite.
+    # internet. Wire-level test against 127.0.0.1 on an ephemeral port, so it
+    # stays GPU-, network- and ROM-free like the rest of the party suite.
+    # The /party-ws upgrade enforces a LAN Host allowlist (DNS-rebinding
+    # defense at THIS layer); the test drives it through the allowed loopback
+    # Hosts and asserts foreign Hosts are refused.
+    #
+    # MDKR_LAN_PARTY_TESTING is defined HERE AND NOWHERE ELSE. It compiles
+    # the send-path park hook and the HTTP-deadline override into
+    # lan_party_server.cpp so the teardown-vs-send ordering and the slow-drip
+    # deadline are deterministically testable; without the define neither
+    # seam exists in any shipped build (the MDKR_A11Y_SPEECH_TESTING pattern).
     add_executable(mdkr_lan_party_server_test
         ${CMAKE_SOURCE_DIR}/tests/test_lan_party_server.cpp
         ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp)
     target_include_directories(mdkr_lan_party_server_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_lan_party_server_test PRIVATE
+        MDKR_LAN_PARTY_TESTING)
     target_compile_features(mdkr_lan_party_server_test PRIVATE cxx_std_17)
     target_link_libraries(mdkr_lan_party_server_test PRIVATE Threads::Threads)
     if(WIN32)

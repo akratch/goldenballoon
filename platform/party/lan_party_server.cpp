@@ -7,6 +7,7 @@ using SocketHandle = SOCKET;
 #else
 #include <arpa/inet.h>
 #include <cerrno>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -21,6 +22,11 @@ using SocketHandle = int;
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifdef MDKR_LAN_PARTY_TESTING
+void (*mdkr_lan_party_test_send_hook)() = nullptr;
+unsigned mdkr_lan_party_test_http_deadline_ms = 0u;
+#endif
 
 namespace {
 
@@ -47,6 +53,15 @@ constexpr unsigned kRecvPollMs = 250u;
 constexpr unsigned kSendTimeoutMs = 5000u;
 constexpr unsigned kAcceptPollMs = 200u;
 constexpr unsigned kHttpIdleDeadlineMs = 15000u;
+
+unsigned httpDeadlineMs() {
+#ifdef MDKR_LAN_PARTY_TESTING
+    if (mdkr_lan_party_test_http_deadline_ms != 0u) {
+        return mdkr_lan_party_test_http_deadline_ms;
+    }
+#endif
+    return kHttpIdleDeadlineMs;
+}
 /* After sending a close frame, how long the reader lingers to absorb the
  * peer's in-flight bytes so the close is delivered on a FIN, not lost to a
  * reset from closing with unread data queued. */
@@ -471,6 +486,92 @@ bool send404(SocketHandle fd, bool keepAlive) {
                              std::string{}, keepAlive);
 }
 
+/* ---- Host allowlist (DNS-rebinding gate for /party-ws) -------------------- */
+
+/*
+ * Every IPv4 address this machine answers on. A phone's controller page
+ * only ever dials the exact host the QR/invite named -- one of these -- so
+ * this is the complete legitimate Host set for the upgrade gate below.
+ */
+std::vector<std::string> machineIpv4Addresses() {
+    std::vector<std::string> result;
+#ifdef _WIN32
+    char name[256] = {0};
+    if (::gethostname(name, sizeof(name) - 1) == 0) {
+        struct addrinfo hints;
+        std::memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        struct addrinfo *list = nullptr;
+        if (::getaddrinfo(name, nullptr, &hints, &list) == 0) {
+            for (const struct addrinfo *entry = list; entry != nullptr;
+                 entry = entry->ai_next) {
+                char text[INET_ADDRSTRLEN] = {0};
+                const struct sockaddr_in *address =
+                    reinterpret_cast<const struct sockaddr_in *>(
+                        entry->ai_addr);
+                if (::inet_ntop(AF_INET, &address->sin_addr, text,
+                                sizeof(text)) != nullptr) {
+                    result.emplace_back(text);
+                }
+            }
+            ::freeaddrinfo(list);
+        }
+    }
+#else
+    struct ifaddrs *interfaces = nullptr;
+    if (::getifaddrs(&interfaces) == 0) {
+        for (const struct ifaddrs *entry = interfaces; entry != nullptr;
+             entry = entry->ifa_next) {
+            if (entry->ifa_addr == nullptr ||
+                entry->ifa_addr->sa_family != AF_INET) {
+                continue;
+            }
+            char text[INET_ADDRSTRLEN] = {0};
+            const struct sockaddr_in *address =
+                reinterpret_cast<const struct sockaddr_in *>(entry->ifa_addr);
+            if (::inet_ntop(AF_INET, &address->sin_addr, text,
+                            sizeof(text)) != nullptr) {
+                result.emplace_back(text);
+            }
+        }
+        ::freeifaddrs(interfaces);
+    }
+#endif
+    return result;
+}
+
+/*
+ * DNS-rebinding gate: an internet page that rebinds its own hostname to
+ * this machine's LAN IP reaches this port as "same-origin" plain HTTP+WS
+ * (no TLS mismatch stops it; Safari ships no Private Network Access), but
+ * the browser still sends the ATTACKER'S name in Host. Legitimate phones
+ * dial exactly what the invite named -- loopback or a machine address --
+ * so the whole Host token (host, plus an optional all-digits port) must
+ * match the allowlist byte-for-byte after lowercasing. '@'/extra-':'
+ * smuggle shapes fail the digits-only port rule; name suffixes fail the
+ * exact host compare. Refusals reflect nothing.
+ */
+bool hostAllowed(const Request &request,
+                 const std::vector<std::string> &allowed) {
+    const auto found = request.headers.find("host");
+    if (found == request.headers.end()) return false;
+    std::string host = loweredCopy(found->second);
+    const size_t colon = host.find(':');
+    if (colon != std::string::npos) {
+        const std::string port = host.substr(colon + 1u);
+        if (port.empty() || port.size() > 5u) return false;
+        for (const char byte : port) {
+            if (byte < '0' || byte > '9') return false;
+        }
+        host.erase(colon);
+    }
+    if (host.empty()) return false;
+    for (const std::string &candidate : allowed) {
+        if (host == candidate) return true;
+    }
+    return false;
+}
+
 } /* namespace */
 
 /* ---- WebSocket connection state ------------------------------------------ */
@@ -510,6 +611,11 @@ bool wsSendFrame(MdkrLanPartyWsState &socket, uint8_t opcode,
                  const char *payload, size_t size) {
     std::lock_guard<std::mutex> lock(socket.sendMutex);
     if (socket.closeSent) return false;
+#ifdef MDKR_LAN_PARTY_TESTING
+    /* Inside the critical section, past the closeSent gate: exactly where
+     * a sender sits when teardown must not pull the fd out from under it. */
+    if (mdkr_lan_party_test_send_hook) mdkr_lan_party_test_send_hook();
+#endif
     const std::string header = wsFrameHeader(opcode, size);
     if (!sendAll(socket.fd, header.data(), header.size())) return false;
     return size == 0u || sendAll(socket.fd, payload, size);
@@ -620,8 +726,11 @@ struct MdkrLanPartyServerState {
     SocketHandle listenFd = kInvalidSocket;
     uint16_t boundPort = 0u;
     /* Frozen before the accept thread exists, cleared after every
-     * connection thread is joined: connection threads read it unlocked. */
+     * connection thread is joined: connection threads read both unlocked. */
     MdkrLanPartyManifest manifest;
+    /* Lowercased Host values that may open /party-ws: loopback plus the
+     * machine's own IPv4 addresses (see hostAllowed). Same freeze rule. */
+    std::vector<std::string> allowedHosts;
     std::function<void(std::shared_ptr<MdkrLanPartyWebSocket>)> wsCallback;
     std::thread acceptThread;
     std::vector<std::shared_ptr<Connection>> connections; /* guarded */
@@ -714,10 +823,11 @@ void runWebSocket(const std::shared_ptr<MdkrLanPartyServerState> &state,
         } else if (opcode == 0xau) {
             /* Unsolicited pong: ignored. */
         } else if (opcode == 0x8u) {
-            /* Close handshake: echo their code (or an empty close when
-             * they sent none) unless our side already sent one. */
-            wsSendClose(*socket, payload.data(),
-                        payload.size() >= 2u ? 2u : 0u);
+            /* Close handshake: reply with OUR normal-closure 1000, never
+             * the peer's bytes -- RFC 6455 7.4 reserves code ranges, and
+             * this file's non-reflection rule wins over the echo the RFC
+             * merely suggests. No-op if our side already sent a close. */
+            wsSendCloseCode(*socket, 1000u);
             break;
         } else {
             wsSendCloseCode(*socket, 1002u);
@@ -726,6 +836,21 @@ void runWebSocket(const std::shared_ptr<MdkrLanPartyServerState> &state,
         }
     }
     if (drainBeforeTeardown) drainBriefly(socket->fd);
+    /* SEAL before the fd can die: serveConnection closes it the moment we
+     * return, and on POSIX the kernel recycles the lowest free fd
+     * immediately -- an unsealed late sendText()/close() could write a
+     * frame meant for this phone into whichever connection inherits the
+     * number. Latching closeSent UNDER sendMutex serializes teardown
+     * against any sender already inside the critical section (waiting out
+     * even one wedged in sendAll, bounded by SO_SNDTIMEO), and every send
+     * path refuses on closeSent under this same lock, so no write can
+     * start after the latch. This is the thread-safety promise the header
+     * makes for sendText()/close(); the ordering is pinned by the parked-
+     * sender test. */
+    {
+        std::lock_guard<std::mutex> lock(socket->sendMutex);
+        socket->closeSent = true;
+    }
     shutdownBoth(socket->fd);
     wsNotifyClosed(*socket);
 }
@@ -759,7 +884,7 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
     std::string buffer;
     size_t served = 0u;
     Clock::time_point deadline =
-        Clock::now() + std::chrono::milliseconds(kHttpIdleDeadlineMs);
+        Clock::now() + std::chrono::milliseconds(httpDeadlineMs());
     while (!state->stopping) {
         const size_t headerEnd = buffer.find("\r\n\r\n");
         if (headerEnd == std::string::npos) {
@@ -775,10 +900,16 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
             char chunk[4096];
             const int got = recvSome(connection->fd, chunk, sizeof(chunk));
             if (got == 0 || got == -1) break;
-            if (got == -2) {
-                if (Clock::now() >= deadline) break;
-                continue;
-            }
+            /* The deadline is anchored at the last COMPLETE request (reset
+             * only after a response goes out), and enforced on EVERY
+             * buffering iteration -- silence and slow drip alike. A byte
+             * per poll interval is not progress: pre-fix it renewed the
+             * idle check forever, letting one hostile device hold a slot
+             * for the ~34 minutes the head cap took to fill, x32 slots.
+             * A real controller page head is under a kilobyte and arrives
+             * in milliseconds; the full window is pure headroom. */
+            if (Clock::now() >= deadline) break;
+            if (got == -2) continue;
             buffer.append(chunk, static_cast<size_t>(got));
             continue;
         }
@@ -791,17 +922,40 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
         buffer.erase(0u, headerEnd + 4u);
         served++;
         if (request.method != "GET") {
-            /* Any body that came with it stays unread, so this connection
-             * cannot stay in framing sync: refuse and close. */
+            /* HEAD included, deliberately: browsers fetch these assets with
+             * GET only, and refusing HEAD keeps the surface at exactly one
+             * method. Any body that came with the request stays unread, so
+             * this connection cannot stay in framing sync: refuse and
+             * close. */
             sendPlainResponse(connection->fd, 405, "Method Not Allowed",
                               "Method not allowed.\n", "Allow: GET\r\n",
                               false);
+            break;
+        }
+        /* A GET carrying a body would desync keep-alive framing: this
+         * server never reads bodies, so the body bytes would parse as the
+         * NEXT request head. No browser fetches assets that way; refuse
+         * and close. Content-Length: 0 stays accepted -- some HTTP
+         * libraries attach it to every request. */
+        const auto contentLength = request.headers.find("content-length");
+        if (request.headers.count("transfer-encoding") != 0u ||
+            (contentLength != request.headers.end() &&
+             contentLength->second != "0")) {
+            sendPlainResponse(connection->fd, 400, "Bad Request",
+                              "Bad request.\n", std::string{}, false);
             break;
         }
         std::string path = request.target;
         const size_t cut = path.find_first_of("?#");
         if (cut != std::string::npos) path.erase(cut);
         if (path == kWsPath) {
+            if (!hostAllowed(request, state->allowedHosts)) {
+                /* DNS-rebinding gate (see hostAllowed): a Host this server
+                 * does not answer as may never open the control socket. */
+                sendPlainResponse(connection->fd, 403, "Forbidden",
+                                  "Forbidden.\n", std::string{}, false);
+                break;
+            }
             std::string key;
             const UpgradeCheck check = validateUpgrade(request, key);
             if (check == UpgradeCheck::NotAnUpgrade) {
@@ -860,7 +1014,7 @@ void serveConnection(std::shared_ptr<MdkrLanPartyServerState> state,
                 std::string{}, keepAlive);
         }
         if (!sent || !keepAlive) break;
-        deadline = Clock::now() + std::chrono::milliseconds(kHttpIdleDeadlineMs);
+        deadline = Clock::now() + std::chrono::milliseconds(httpDeadlineMs());
     }
     closeSocket(connection->fd);
     connection->done = true;
@@ -978,6 +1132,10 @@ bool MdkrLanPartyServer::start(uint16_t port, MdkrLanPartyManifest manifest) {
     state_->listenFd = fd;
     state_->boundPort = ntohs(bound.sin_port);
     state_->manifest = std::move(manifest);
+    state_->allowedHosts = {"localhost", "127.0.0.1"};
+    for (std::string &address : machineIpv4Addresses()) {
+        state_->allowedHosts.push_back(std::move(address));
+    }
     state_->stopping = false;
     state_->running = true;
     state_->acceptThread = std::thread(acceptLoop, state_);
@@ -1016,6 +1174,7 @@ void MdkrLanPartyServer::stop() {
     }
     std::lock_guard<std::mutex> lock(state_->mutex);
     state_->manifest.clear();
+    state_->allowedHosts.clear();
     state_->stopping = false;
 }
 

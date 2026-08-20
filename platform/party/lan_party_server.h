@@ -88,6 +88,21 @@ inline const char *mdkr_lan_party_content_type(const std::string &path) {
     return "application/octet-stream";
 }
 
+#ifdef MDKR_LAN_PARTY_TESTING
+/*
+ * Test-only seams, compiled solely into the unit test: cmake/tests.cmake
+ * defines MDKR_LAN_PARTY_TESTING there and nowhere else, so no shipped
+ * build contains the pointer, the call site, or the override (the
+ * MDKR_A11Y_SPEECH_TESTING pattern). The send hook runs INSIDE the
+ * frame-send critical section, which is what makes the teardown-vs-send
+ * ordering deterministically testable instead of a scheduler lottery; the
+ * deadline override lets the slow-drip regression run in seconds instead
+ * of the product deadline.
+ */
+extern void (*mdkr_lan_party_test_send_hook)();
+extern unsigned mdkr_lan_party_test_http_deadline_ms; /* 0 = product value */
+#endif
+
 struct MdkrLanPartyWsState; /* Internal; defined in lan_party_server.cpp. */
 
 /*
