@@ -304,11 +304,13 @@ int main(int argc, char **argv) {
     uint64_t nonNeutral = 0u;
     uint64_t echoedNonNeutral = 0u;
     bool sawConnected = false;
-    /* --close-room-after-connected: the LAN stop scenario. Once the room is
-     * closed the server stays up (transport->closeRoom() is room-close-only,
-     * unlike host.closeRoom() which also tears the server down), so a phone's
-     * re-redeem after the 4000 close learns host_closed. We then run a short
-     * grace window before exiting 0 so the check can observe that on the page. */
+    /* --close-room-after-connected: the LAN stop scenario. We call
+     * transport->closeRoom() (the room-close command) but NOT host.closeRoom()
+     * or transport->shutdown(); the embedded server keeps serving until the
+     * transport is destroyed at the end of main(). So after the 4000 close the
+     * phone can re-redeem over the still-served /party-ws and learn host_closed.
+     * We then run a short grace window before exiting 0 so the check can observe
+     * that on the page. */
     constexpr uint64_t kCloseGraceMs = 8000u;
     bool roomClosed = false;
     uint64_t roomClosedAtMs = 0u;

@@ -350,6 +350,18 @@ std::string upgradeRequest(const std::string &host = "127.0.0.1") {
            "Sec-WebSocket-Version: 13\r\n\r\n";
 }
 
+/* An upgrade that offers a Sec-WebSocket-Protocol value (a single token or a
+ * comma list), so the subprotocol-negotiation branch can be exercised. */
+std::string upgradeRequestWithProtocol(const std::string &offered) {
+    return std::string("GET /party-ws HTTP/1.1\r\n") +
+           "Host: 127.0.0.1\r\n" +
+           "Upgrade: websocket\r\n" +
+           "Connection: Upgrade\r\n" +
+           "Sec-WebSocket-Key: " + kSampleKey + "\r\n" +
+           "Sec-WebSocket-Protocol: " + offered + "\r\n" +
+           "Sec-WebSocket-Version: 13\r\n\r\n";
+}
+
 /* Completes the client half of the upgrade and asserts the 101. */
 void completeUpgrade(TestClient &client) {
     client.send(upgradeRequest());
@@ -710,6 +722,64 @@ void foreignHostCannotOpenThePartyWs(MdkrLanPartyServer &server) {
     }
 }
 
+/*
+ * The 101 must SELECT the server's own control subprotocol when the page offers
+ * it (RFC 6455 4.2.2; Chromium fails the whole handshake if the client offered a
+ * Sec-WebSocket-Protocol and the server names none) and must NEVER reflect a
+ * foreign token -- the same non-reflection posture foreignHostCannotOpenThePartyWs
+ * pins for the Host name. This locks that branch in milliseconds, instead of
+ * leaving it guarded only by the Chrome+LAN-gated end-to-end lane.
+ */
+void subprotocolIsSelectedNotReflected(MdkrLanPartyServer &server) {
+    /* Positive: the page offers exactly what it does over LAN redeem-over-ws
+     * (controller.js sends ["gb-control-v1"]); the 101 echoes that token. */
+    {
+        TestClient client(server.port());
+        client.send(upgradeRequestWithProtocol("gb-control-v1"));
+        const HttpResponse response = readResponse(client);
+        assert(response.statusLine.find("HTTP/1.1 101") == 0u);
+        const auto selected = response.headers.find("sec-websocket-protocol");
+        assert(selected != response.headers.end());
+        assert(selected->second == "gb-control-v1");
+    }
+    /* Positive, mixed offer: the server picks its own supported token out of a
+     * comma list and reflects none of the junk offered beside it. */
+    {
+        TestClient client(server.port());
+        client.send(
+            upgradeRequestWithProtocol("evil, gb-control-v1, other-junk"));
+        const HttpResponse response = readResponse(client);
+        assert(response.statusLine.find("HTTP/1.1 101") == 0u);
+        const auto selected = response.headers.find("sec-websocket-protocol");
+        assert(selected != response.headers.end());
+        assert(selected->second == "gb-control-v1"); /* its own constant only */
+        assert(response.raw.find("evil") == std::string::npos);
+        assert(response.raw.find("other-junk") == std::string::npos);
+    }
+    /* Negative (the injection guard): a foreign-only offer is NOT reflected --
+     * the server selects no subprotocol at all, never echoes the attacker's
+     * token. It still upgrades; the browser makes its own accept decision. */
+    {
+        TestClient client(server.port());
+        client.send(upgradeRequestWithProtocol("evil"));
+        const HttpResponse response = readResponse(client);
+        assert(response.statusLine.find("HTTP/1.1 101") == 0u);
+        assert(response.headers.find("sec-websocket-protocol") ==
+               response.headers.end());
+        assert(response.raw.find("evil") == std::string::npos);
+    }
+    /* No offer at all: the response omits the header, matching the
+     * completeUpgrade path every other 101 test exercises. */
+    {
+        TestClient client(server.port());
+        client.send(upgradeRequest());
+        const HttpResponse response = readResponse(client);
+        assert(response.statusLine.find("HTTP/1.1 101") == 0u);
+        assert(response.headers.find("sec-websocket-protocol") ==
+               response.headers.end());
+    }
+}
+
 /* Fix round 1, minor 4: a GET carrying a body would desync keep-alive
  * framing (the unread body bytes would parse as the next request head).
  * Content-Length: 0 stays accepted -- some HTTP libraries attach it. */
@@ -896,6 +966,7 @@ int main() {
 
     /* Fix round 1 regressions. */
     foreignHostCannotOpenThePartyWs(server);
+    subprotocolIsSelectedNotReflected(server);
     getWithABodyIsRefusedNotReframed(server);
     peerCloseCodeIsNotEchoedVerbatim(server);
     slowDripCannotHoldAConnectionSlot(server);
