@@ -3026,6 +3026,39 @@ oracle route the console capture used, then envelope-aligned and compared. Measu
 numbers and the method's limits are in
 [`docs/open-items/audio.md`](../docs/open-items/audio.md).
 
+## Cave SFX reverb bus — `tests/check_cave_reverb_bus.py` (RUN THIS AFTER ANY AUX-BUS, `alSynNew`, `alFxNew`, OR SFX FX-ROUTING CHANGE)
+
+DKR runs **two** reverb buses (`game/src/audio.c`): bus 0 = `AL_FX_CUSTOM` (the
+ROM music reverb, which every CSP voice keeps) and bus 1 = `AL_FX_BIGROOM` (the
+fixed libaudio big-room reverb every SFX voice is re-parented onto for the
+cave/tunnel echo). Every other audio gate drives the outdoor Ancient Lake
+oracle, which carries **no reverb lines**, so SFX wet ~= 0 there and the bus SFX
+land on is invisible — which is why issue #49 (Treasure Caves echo turning into
+attenuation) survived the whole suite.
+
+This is that missing oracle. It loads Treasure Caves directly
+(`MDKR_LOAD_TRACK=30`, the retarget hook `check_track_sweep.py` uses) and drives
+it with DKR's own AI (`MDKR_AUTOPILOT=1`) so the racer moves under the cave
+ceiling where `audspat_calculate_echo` ramps the SFX reverb send up. The
+clean-room synth writes a per-voice reverb-routing line to
+`MDKR_AUDIO_VOICE_TRACE_JSONL` each time a voice's FX mix is set: the aux bus its
+envmixer is currently a source of, the wet send (fxMix 0..127), and how many aux
+buses the synth built.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_cave_reverb_bus.py --build build \
+    --rom baserom.us.v80.z64
+```
+
+It asserts (1) the synth built **two** aux buses (`max_aux == 2`), (2) Treasure
+Caves loaded as a race and the racer made forward progress (anti-vacuity for
+"mid-cave"), and (3) at least a margin of `fxmix>0` SFX voices reached bus 1.
+Before the fix the port built one aux bus, `max_aux == 1`, and every `fxmix>0`
+line — including the cave SFX — is on bus 0, so assertions 1 and 3 both fail;
+that is the RED state the fix turns GREEN. The trace still carries the bus-0
+music wet lines, so a build that lost reverb entirely fails the anti-vacuity
+rather than passing.
+
 ## RAW16 byte order and timbre — `tests/check_raw16_audio.py` (RUN THIS AFTER ANY RAW16, MIXER LOAD, ENDIAN-HELPER, OR AUDIO-BANK CHANGE)
 
 `check_audio_output.py` passed on the broken build: a byte-reversed instrument can
