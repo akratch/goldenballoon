@@ -432,6 +432,7 @@ void hud_main_hub(Object *obj, s32 updateRate);
 #ifdef NATIVE_PORT
 void hud_tick(s32 updateRate);
 void hud_authoritative_rng_tick_viewport(s32 updateRate);
+void hud_widescreen_restore_screen_ortho(Gfx **dList, Mtx **mtx);
 #endif
 void hud_render_player(Gfx **dList, Mtx **mtx, Vertex **vertexList, Object *obj, s32 updateRate);
 void hud_weapon(Object *obj, s32 updateRate);
