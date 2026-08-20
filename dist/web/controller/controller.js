@@ -22,6 +22,16 @@
   } : null;
   if (testState) globalThis.__mdkrControllerTestState = testState;
 
+  // Test seam: expose the pure, DOM-free gate/redeem helpers and stop before
+  // the first getElementById, so unit tests reach them without a full page.
+  if (testConfig?.exposeInternals) {
+    globalThis.__mdkrControllerInternals = Object.freeze({
+      trustedControllerLocation, pairingCryptoAvailable, lanControllerMode,
+      lanRedeemFrame,
+    });
+    return;
+  }
+
   const views = {
     opening: $("state-opening"), code: $("state-code"), waiting: $("state-waiting"),
     assigned: $("state-assigned"), controller: $("state-controller"),
@@ -240,13 +250,58 @@
       value === "127.0.0.1" || value === "[::1]";
   }
 
+  // RFC 1918 IPv4 ranges + link-local, and IPv6 unique-local/link-local: a
+  // private address the host could have served the page from. A DNS name or
+  // public address is foreign and never trusted over http.
+  function privateHostname(hostname) {
+    const value = String(hostname || "").toLowerCase();
+    if (value.startsWith("[")) {
+      return /^\[f[cd][0-9a-f:]/.test(value) || /^\[fe[89ab][0-9a-f:]/.test(value);
+    }
+    const quad = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!quad) return false;
+    const octet = quad.slice(1).map(Number);
+    if (octet.some((part) => part > 255)) return false;
+    const [a, b] = octet;
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+
   function trustedControllerLocation() {
     try {
       const url = new URL(location.href);
-      return isSecureContext === true && !url.username && !url.password &&
-        (url.protocol === "https:" ||
-          (url.protocol === "http:" && loopbackHostname(url.hostname)));
+      if (url.username || url.password) return false;
+      // Cloud is byte-unchanged: an https page in a secure context. Local play
+      // trusts a plain-http page only as the loopback/LAN host that served it
+      // (same-origin ws back to location.host), never a foreign http origin.
+      if (url.protocol === "https:") return isSecureContext === true;
+      if (url.protocol === "http:") {
+        return loopbackHostname(url.hostname) || privateHostname(url.hostname);
+      }
+      return false;
     } catch (_) { return false; }
+  }
+
+  // The served protocol is the whole redeem selector: https POST for cloud, the
+  // host's own ws for local play (a foreign http origin was refused at boot).
+  function lanControllerMode() { return location.protocol !== "https:"; }
+
+  // A secure origin must expose crypto.subtle; a plain-http LAN page does not,
+  // and MDKRPartySas carries the pure-JS SAS fallback there (getRandomValues
+  // stays). Absent subtle on a secure origin still fails closed.
+  function pairingCryptoAvailable() {
+    return !!globalThis.crypto?.subtle ||
+      (isSecureContext !== true && !!globalThis.crypto?.getRandomValues);
+  }
+
+  // The protocol-2 redeem frame the LAN room expects as its first ws frame:
+  // exactly one of capability|code, plus type/protocol/controllerPublicKey/name.
+  function lanRedeemFrame(controllerPublicKey, invite) {
+    const frame = {type: "redeem", protocol: 2, controllerPublicKey,
+      name: normalizedDeviceName(invite.name)};
+    if (invite.code !== undefined) frame.code = invite.code;
+    else frame.capability = invite.capability;
+    return frame;
   }
 
   function secureControllerRecoveryUrl() {
@@ -612,6 +667,10 @@
     let terminalPeerGeneration = 0;
     let recoveryPeerGeneration = 0;
     let controllerInfo = null;
+    // Local play: the redeem frame the ws sends first (kept so a dropped socket
+    // re-redeems) and the initial redeem's pending promise.
+    let lanFrame = null;
+    let lanPending = null;
     let inputTestNonce = 0;
     let controlGeneration = 0;
     let reconnectTimer = null;
@@ -983,13 +1042,17 @@
     }
 
     function connectControl(value) {
-      if (!value?.roomId || !value?.credential || leavingPage) return false;
+      if (leavingPage) return false;
+      // Cloud needs roomId + credential up front; a LAN socket learns them from
+      // its redeem_result, so the redeem frame alone starts it.
+      if (!lanFrame && (!value?.roomId || !value?.credential)) return false;
       if (!controllerInfo || controllerInfo.roomId !== value.roomId ||
           controllerInfo.controllerId !== value.controllerId) {
         publishedControllerTransition = 0;
         publishedControllerFingerprint = "";
       }
       controllerInfo = value;
+      let redeemed = false;
       const handleMessage = (update) => {
         if (update.type === "controller_state" && update.phase === "pending") {
           signalingLimited = false;
@@ -1018,6 +1081,9 @@
           }
           signal({type: "controller_hello"});
         } else if (update.type === "controller_state" && update.phase === "closed") {
+          // The LAN room's terminal close carries no reason, so tear down here
+          // or the socket would re-redeem as a fresh pending phone.
+          if (lanFrame) api.close();
           showError(phase === "waiting" ? "approval_rejected" : "seat_reclaimed");
         } else if (update.type === "webrtc_offer") void acceptOffer(update);
         else if (update.type === "webrtc_ice" && update.to === value.controllerId &&
@@ -1027,6 +1093,35 @@
                  update.candidate && JSON.stringify(update.candidate).length <= 4096) {
           void peer?.addIceCandidate(update.candidate).catch(() => {});
         }
+      };
+      // LAN redeem-over-ws: the first frame back is the room's redeem_result on
+      // this same socket. On success adopt its ids and signal on; on failure a
+      // higher controlGeneration bars reconnect and the reason is surfaced.
+      const finishRedeem = (update, connection, generation) => {
+        const ok = !!update && update.type === "redeem_result" &&
+          update.ok === true && update.protocol === 2 &&
+          /^[A-Za-z0-9_-]{22}$/.test(update.controllerId || "") &&
+          /^[A-Za-z0-9_-]{22}$/.test(update.roomId || "") &&
+          /^[A-Za-z0-9_-]{87}$/.test(update.hostPublicKey || "");
+        if (!ok) {
+          const raw = update && typeof update.error === "string"
+            ? update.error : "service_unavailable";
+          controlGeneration++;
+          clearControlTimers();
+          controlSocket = null;
+          try { connection.close(1000, "redeem_rejected"); } catch (_) {}
+          if (lanPending) { lanPending.reject(new Error(raw)); lanPending = null; }
+          else showError(errors[raw] ? raw : "service_unavailable");
+          return;
+        }
+        redeemed = true;
+        value.controllerId = update.controllerId;
+        value.roomId = update.roomId;
+        value.hostPublicKey = update.hostPublicKey;
+        value.protocol = 2;
+        controllerInfo = value;
+        if (lanPending) { lanPending.resolve({protocol: 2}); lanPending = null; }
+        signal({type: "controller_hello"});
       };
       receiveTestSignal = handleMessage;
       if (testConfig?.directSignaling) {
@@ -1053,8 +1148,8 @@
           ? new URL(`/api/party/${value.roomId}/connect`, location.origin)
           : new URL("/party-ws", location.origin);
         url.protocol = secure ? "wss:" : "ws:";
-        connection = new WebSocket(url, ["gb-control-v1",
-          `gb-controller.${value.credential}`]);
+        connection = new WebSocket(url, lanFrame ? ["gb-control-v1"]
+          : ["gb-control-v1", `gb-controller.${value.credential}`]);
         controlSocket = connection;
         connection.binaryType = "arraybuffer";
       } catch (_) {
@@ -1071,7 +1166,15 @@
               reconnectAttempt = 0;
             }
           }, 30_000);
-          signal({type: "controller_hello"});
+          // LAN redeems first on this socket; cloud is already authenticated.
+          if (lanFrame) {
+            try { connection.send(JSON.stringify(lanFrame)); }
+            catch (_) {
+              failControlSocket(connection, generation, 4011, "redeem_send_failed");
+            }
+          } else {
+            signal({type: "controller_hello"});
+          }
         });
         connection.addEventListener("message", (event) => {
           if (connection !== controlSocket || generation !== controlGeneration) return;
@@ -1083,7 +1186,9 @@
           }
           try {
             const update = JSON.parse(event.data);
-            if (update?.type === "controller_state") {
+            if (lanFrame && !redeemed) {
+              finishRedeem(update, connection, generation);
+            } else if (update?.type === "controller_state") {
               acceptControllerState(update, handleMessage);
             } else {
               handleMessage(update);
@@ -1174,6 +1279,9 @@
       // descriptions are set, so bindPairingPhrase derives it at connection.
       async redeem(secret) {
         const identity = await identityPromise;
+        if (lanControllerMode()) {
+          return redeemOverLan({capability: secret}, identity.publicKey);
+        }
         const value = await post("/api/controller/redeem", {capability: secret,
           protocol: 2, name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
@@ -1182,6 +1290,9 @@
       },
       async redeemCode(code) {
         const identity = await identityPromise;
+        if (lanControllerMode()) {
+          return redeemOverLan({code}, identity.publicKey);
+        }
         const value = await post("/api/controller/code", {code, protocol: 2,
           name: normalizedDeviceName($("device-name").value),
           controllerPublicKey: identity.publicKey});
@@ -1189,6 +1300,29 @@
         return value;
       },
     };
+
+    // Local play: build the redeem frame and let connectControl open the host's
+    // own ws, send it first, and adopt that same socket for signaling once
+    // redeem_result arrives. A timeout mirrors the cloud POST so an unreachable
+    // host fails closed instead of hanging.
+    function redeemOverLan(invite, controllerPublicKey) {
+      lanFrame = lanRedeemFrame(controllerPublicKey,
+        {...invite, name: $("device-name").value});
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (!lanPending) return;
+          lanPending = null;
+          lanFrame = null;
+          api.close();
+          reject(new Error("service_unavailable"));
+        }, controllerRequestTimeoutMs);
+        lanPending = {
+          resolve: (result) => { clearTimeout(timer); resolve(result); },
+          reject: (error) => { clearTimeout(timer); reject(error); },
+        };
+        connectControl({});
+      });
+    }
     return api;
   }
 
@@ -1455,7 +1589,7 @@
         return;
       }
       if (!("PointerEvent" in window) || !("RTCPeerConnection" in window) ||
-          !globalThis.crypto?.subtle || !globalThis.MDKRPartySas) {
+          !pairingCryptoAvailable() || !globalThis.MDKRPartySas) {
         showError("unsupported", shareRecoveryLabel(), "share"); return;
       }
     }
