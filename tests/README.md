@@ -5495,6 +5495,22 @@ about most. `mdkr_boss_cadence_clamp` (`game/src/racer.c`) and
 ordinary arithmetic uses of `updateRate` as a scale factor are unaffected.
 Positive control: a seeded `updateRate == 2` mode test must be rejected.
 
+### Harness isolation — `tests/check_harness_isolation.py`
+
+```bash
+python3 tests/check_harness_isolation.py
+```
+
+Source gate that keeps the taj-theme false-failure class extinct. A check that
+sets `MDKR_SAVE_DIR` but not `MDKR_VIDEO_CONFIG_PATH` inherits a repo-root
+`mdkr64.ini`; with display-paced motion smoothing configured there, the
+engine's `--headless-frames` budget counts presents instead of authored ticks
+and scripted drives fall short of their goal (the mechanism documented in
+`check_door_blocks.py`). The gate fails the moment a check acquires a
+save-dir assignment without a video-config pin (or `save_env`), with two
+documented exemptions (`check_ghost_bank_capacity.py`, `check_shell_dropfile.py`)
+and a `--self-test` proving the scanner is not vacuous.
+
 ### Delta inventory — `tests/check_delta_inventory.py`
 
 ```bash

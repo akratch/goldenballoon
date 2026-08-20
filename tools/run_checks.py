@@ -608,6 +608,10 @@ CHECKS = (
           "every check that isolates MDKR_SAVE_DIR also pins "
           "MDKR_VIDEO_CONFIG_PATH, so a repo-root mdkr64.ini cannot reach "
           "a check's engine"),
+    Check("party_cmake_origin_gate", "check_party_cmake_origin_gate.py",
+          "source",
+          "the configure-time MDKR_PARTY_ORIGIN validator rejects every "
+          "non-canonical origin shape (path/query/userinfo/trailing slash)"),
     Check("player_prose", "check_player_prose.py", "source",
           "banned AI-slop vocabulary in launcher UI strings, README.md and "
           "RELEASE_NOTES.md"),
