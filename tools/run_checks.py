@@ -593,6 +593,10 @@ CHECKS = (
           "every ROM-derived legal standard-track vehicle pairing"),
     Check("ci_contract", "check_ci_contract.py", "source",
           "push/PR native, sanitizer, wasm, save-custody, and ROM policy"),
+    Check("widescreen_hud_scope", "check_widescreen_hud_scope.py", "source",
+          "the opt-in widescreen HUD offset stays confined to the HUD: the "
+          "banana counter rides its group's anchor and the centered ortho is "
+          "restored before dialogue boxes/pause menu/Taj subtitles draw (#50)"),
     Check("release_ready_web_provenance", "check_release_ready_web_provenance.py", "source",
           "candidate staged-web source-commit and clean-provenance fixtures"),
     Check("web_publish_stamp", "check_web_publish_stamp.py", "source",

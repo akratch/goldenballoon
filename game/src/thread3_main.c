@@ -479,6 +479,12 @@ void main_game_loop(void) {
 
     sound_update_queue(logicUpdateRate);
     debug_text_print(&gCurrDisplayList);
+#ifdef NATIVE_PORT
+    /* Confine the widescreen HUD's expanded draw space to the HUD: dialogue
+     * boxes, the pause menu and Taj subtitles render next and must keep their
+     * authored centered 4:3 placement (#50). */
+    hud_widescreen_restore_screen_ortho(&gCurrDisplayList, &gGameCurrMatrix);
+#endif
     render_dialogue_boxes(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
     dialogue_close(4);
     dialogue_clear(4);
