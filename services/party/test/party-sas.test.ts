@@ -35,7 +35,7 @@ interface PageSas {
 const sas = (): PageSas => (globalThis as Record<string, any>).MDKRPartySas;
 
 // The real Web Crypto, captured before any test hides it from the page code.
-const realCrypto = globalThis.crypto;
+const realCrypto = (globalThis as Record<string, any>).crypto;
 
 function bytesFromBase64Url(value: string): Uint8Array {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/") +
@@ -185,7 +185,7 @@ describe("insecure-origin JS fallback", () => {
 
   it("reproduces the 5a oracle vectors without crypto.subtle", async () => {
     await withFallback(async () => {
-      expect(globalThis.crypto.subtle).toBeUndefined();
+      expect((globalThis as Record<string, any>).crypto.subtle).toBeUndefined();
       await expect(sas().phrase(hostScalarOne, controllerPublicKey, transcript()))
         .resolves.toBe("Gentle-Star Royal-Pilot");
       await expect(sas().phrase(hostScalarOne, controllerPublicKey, transcript({
@@ -211,7 +211,7 @@ describe("insecure-origin JS fallback", () => {
     // Flip a byte of the on-curve controller key: no longer satisfies the
     // curve equation, so the fallback ECDH must refuse rather than derive.
     const bad = bytesFromBase64Url(controllerPublicKey);
-    bad[40] ^= 0x01;
+    bad[40] = bad[40]! ^ 0x01;
     const badKey = base64UrlFromBytes(bad);
     await withFallback(async () => {
       await expect(sas().phrase(hostScalarOne, badKey, transcript({
