@@ -7,6 +7,11 @@
  */
 
 #include "audio_compat_internal.h"
+#include "decomp_names.h"
+
+/* Re-parent a pooled physical voice onto an aux bus; expands to func_80065A80
+ * (defined in audio_compat.c) via the alias in decomp_names.h. */
+void alSynSetVoiceAuxBus(ALSynth *drvr, PVoice *pvoice, s16 bus);
 
 static void native_csp_set_uspt_from_tempo(ALCSPlayer *seqp, f32 tempo)
 {
@@ -555,6 +560,13 @@ static void native_csp_handle_midi(ALCSPlayer *seqp, ALEvent *event)
                     __unmapVoice((ALSeqPlayer *)seqp, voice);
                     return;
                 }
+
+                /* Physical voices are pooled and shared with the SFX player,
+                 * which parks its voices on the big-room bus. Re-parent this
+                 * one to bus 0 (the music reverb) before it sounds so a
+                 * recycled slot cannot leak music into the SFX bus. No-op when
+                 * the voice is already on bus 0. */
+                alSynSetVoiceAuxBus(seqp->drvr, voice->pvoice, 0);
 
                 voice_state->sound = sound;
                 voice_state->envPhase = AL_PHASE_ATTACK;
