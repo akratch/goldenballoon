@@ -413,13 +413,13 @@ static void hud_mtx_ortho(Gfx **dList, Mtx **mtx) {
 /* The widescreen HUD swaps in the left-anchored, presentation-wide WIDE_HUD
  * draw space (mtx_ortho_wide_hud) so the balloon/banana counters, lap counter
  * and minimap can reach the true screen edges.  That draw space is meant for
- * the HUD alone: it persists in the game display list, so the dialogue boxes,
- * pause menu and Taj subtitles drawn after the HUD (render_dialogue_boxes)
- * would otherwise inherit it and slide off-centre.  Restoring the standard
- * centered SAFE_2D ortho at that boundary re-establishes the authored 4:3
- * placement those elements expect.  This is a no-op unless the widescreen HUD
- * is actually driving the frame, so the default (widescreen-HUD-off) path emits
- * nothing new and is byte-identical. */
+ * the HUD alone: it persists in the game display list, so the dialogue boxes
+ * (including Taj's) drawn after the HUD (render_dialogue_boxes) would otherwise
+ * inherit it and slide off-centre.  Restoring the standard centered SAFE_2D
+ * ortho at that boundary re-establishes the authored 4:3 placement those
+ * elements expect.  This is a no-op unless the widescreen HUD is actually
+ * driving the frame, so the default (widescreen-HUD-off) path emits nothing new
+ * and is byte-identical. */
 void hud_widescreen_restore_screen_ortho(Gfx **dList, Mtx **mtx) {
     if (hud_widescreen_enabled()) {
         mtx_ortho(dList, mtx);

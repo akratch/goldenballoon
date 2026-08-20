@@ -19,12 +19,16 @@ house style), so it needs neither the ROM nor the GPU lane and stays green in
 the unit-test tier.  It asserts:
 
   1. every member of the race banana counter shares the lap counter's anchor
-     bucket in hud_widescreen_anchor(); and
+     bucket in hud_widescreen_anchor();
   2. the standard centered ortho is restored at the HUD -> dialogue-box
-     boundary, gated so the widescreen-HUD-off default path is untouched.
+     boundary, gated so the widescreen-HUD-off default path is untouched; and
+  3. that restore is confined to gGameMode == GAMEMODE_INGAME, the only mode
+     that emits the expanded WIDE_HUD ortho (hud_render_general runs solely in
+     mode_game and hud_render_player's HUD body is gated out of the menu), so
+     the intro/menu/lockup dialogue path keeps its untouched behaviour.
 
-A self-test replays both assertions against the pre-fix source to prove they
-actually fail red, matching the origin-gate's self-test discipline.
+A self-test replays all three assertions against the pre-fix source to prove
+they actually fail red, matching the origin-gate's self-test discipline.
 """
 
 from __future__ import annotations
@@ -62,6 +66,13 @@ ANCHOR_FN_RE = re.compile(
 )
 CASE_RE = re.compile(r"case\s+(HUD_[A-Z0-9_]+)\s*:")
 RETURN_RE = re.compile(r"return\s+(MDKR_HUD_ANCHOR_[A-Z]+)\s*;")
+
+# The restore call must sit directly inside an in-game mode guard so it only
+# fires where the expanded WIDE_HUD ortho can actually have been emitted.
+INGAME_GUARD_RE = re.compile(
+    r"if\s*\(\s*gGameMode\s*==\s*GAMEMODE_INGAME\s*\)\s*\{\s*"
+    r"hud_widescreen_restore_screen_ortho\s*\(",
+)
 
 
 def anchor_of(body: str) -> dict[str, str]:
@@ -135,6 +146,16 @@ def check_ortho_restore(game_ui: str, thread3: str) -> list[str]:
         problems.append(
             "hud_widescreen_restore_screen_ortho() must be called before "
             "render_dialogue_boxes() in thread3_main.c")
+
+    # And it must be confined to in-game: the expanded WIDE_HUD ortho is only
+    # ever emitted from mode_game, so restoring it in the intro/menu/lockup
+    # modes is wasted emission that also forces SAFE_2D onto the shared
+    # render_dialogue_boxes path used by menu dialogue (#50 follow-up).
+    if restore >= 0 and not INGAME_GUARD_RE.search(thread3):
+        problems.append(
+            "hud_widescreen_restore_screen_ortho() must be confined to "
+            "gGameMode == GAMEMODE_INGAME, the only mode that emits the "
+            "expanded WIDE_HUD ortho")
     return problems
 
 
@@ -170,6 +191,26 @@ def self_test() -> int:
         return 1
     if not check_ortho_restore(game_ui, broken_thread3):
         print("self-test: FAIL -- ortho-restore check passed a broken source",
+              file=sys.stderr)
+        return 1
+
+    # Regression 3: the in-game mode guard dropped, leaving the restore to fire
+    # in every mode (the pre-follow-up #50 shape).  The call still runs before
+    # the dialogue boxes, so only the confinement assertion must catch it.
+    unguarded_thread3 = re.sub(
+        r"if\s*\(\s*gGameMode\s*==\s*GAMEMODE_INGAME\s*\)\s*\{\s*"
+        r"(hud_widescreen_restore_screen_ortho\s*\([^;]*;)\s*\}",
+        r"\1", thread3, count=1)
+    if unguarded_thread3 == thread3:
+        print("self-test: FAIL -- could not synthesise the mode-guard regression",
+              file=sys.stderr)
+        return 1
+    if INGAME_GUARD_RE.search(unguarded_thread3):
+        print("self-test: FAIL -- mode-guard regression left the guard intact",
+              file=sys.stderr)
+        return 1
+    if not check_ortho_restore(game_ui, unguarded_thread3):
+        print("self-test: FAIL -- confinement check passed an unguarded source",
               file=sys.stderr)
         return 1
 

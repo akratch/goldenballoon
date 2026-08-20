@@ -487,10 +487,13 @@ production coverage:
   right-edge anchor in `hud_widescreen_anchor()` -- so the "x" glyph cannot
   drift out of its group into the lap counter -- and that the standard centered
   ortho is restored at the HUD -> dialogue-box boundary in `thread3_main.c`,
-  gated on `hud_widescreen_enabled()`, so the pause menu, dialogue boxes and
-  Taj subtitles keep their authored centered 4:3 placement while the
-  widescreen-HUD-off default path emits nothing new (#50). A self-test replays
-  both assertions against the pre-fix source to prove they fail red.
+  gated on `hud_widescreen_enabled()`, so the dialogue boxes (including Taj's)
+  keep their authored centered 4:3 placement while the widescreen-HUD-off
+  default path emits nothing new (#50). It further asserts that the restore is
+  confined to `gGameMode == GAMEMODE_INGAME` -- the only mode that emits the
+  expanded WIDE_HUD ortho -- so the intro/menu/lockup dialogue path is left
+  untouched. A self-test replays all three assertions against the pre-fix source
+  to prove they fail red.
 - `check_live_toggle_settings.py` gates the same settings being CHANGED
   mid-run. `Video.FrameLimit`, `Video.MotionSmoothing` and
   `Video.AllowTearing` apply at the host-frame boundary and
