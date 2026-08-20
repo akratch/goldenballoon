@@ -480,10 +480,17 @@ void main_game_loop(void) {
     sound_update_queue(logicUpdateRate);
     debug_text_print(&gCurrDisplayList);
 #ifdef NATIVE_PORT
-    /* Confine the widescreen HUD's expanded draw space to the HUD: dialogue
-     * boxes, the pause menu and Taj subtitles render next and must keep their
-     * authored centered 4:3 placement (#50). */
-    hud_widescreen_restore_screen_ortho(&gCurrDisplayList, &gGameCurrMatrix);
+    /* Confine the widescreen HUD's expanded draw space to the HUD: the dialogue
+     * boxes (including Taj's) render next and must keep their authored centered
+     * 4:3 placement (#50).  The expanded WIDE_HUD ortho is only ever emitted
+     * from mode_game -- hud_render_general runs there, and hud_render_player's
+     * HUD body is gated out of the menu -- so confine the restore to
+     * GAMEMODE_INGAME.  Outside it there is nothing to undo, and firing it would
+     * force an unnecessary SAFE_2D onto the shared dialogue-box path used by the
+     * intro/menu/lockup dialogue. */
+    if (gGameMode == GAMEMODE_INGAME) {
+        hud_widescreen_restore_screen_ortho(&gCurrDisplayList, &gGameCurrMatrix);
+    }
 #endif
     render_dialogue_boxes(&gCurrDisplayList, &gGameCurrMatrix, &gGameCurrVertexList);
     dialogue_close(4);
