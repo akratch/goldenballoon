@@ -467,13 +467,11 @@ void drawLanEntryCard(PhonePartyLanControls &lan) {
             "scan a code and connect straight to this game — no internet, no "
             "account, no app.");
         if (!lan.available) {
+            /* The launcher always sets an honest reason (no network, or the
+             * controller page is not in this build) when unavailable. */
             if (lan.unavailableReason != nullptr &&
                 lan.unavailableReason[0] != '\0') {
                 ui::TextSubtleWrapped("%s", lan.unavailableReason);
-            } else {
-                ui::TextSubtleWrapped(
-                    "Connect this computer to Wi-Fi or a wired network to use "
-                    "local play.");
             }
         } else {
             if (ui::PrimaryButton("Start Local Play", ui::kBtnWide())) {

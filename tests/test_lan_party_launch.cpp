@@ -88,6 +88,7 @@ void malformedAddressesAreIgnored() {
 /* ---- manifest build ---------------------------------------------------- */
 
 std::string g_tempRoot;
+std::vector<std::string> g_createdRoots;
 
 std::string tempRoot() {
     if (!g_tempRoot.empty()) return g_tempRoot;
@@ -97,6 +98,17 @@ std::string tempRoot() {
     dir += "mdkr-lan-launch-" + std::to_string(static_cast<long>(std::rand()));
     g_tempRoot = dir;
     return dir;
+}
+
+/* Remember a root so cleanupRoots() removes it -- a local test run must not
+ * litter $TMPDIR with a tree per invocation. */
+void rememberRoot(const std::string &root) { g_createdRoots.push_back(root); }
+
+void cleanupRoots() {
+    for (const std::string &root : g_createdRoots) {
+        (void)std::system(("rm -rf '" + root + "'").c_str());
+    }
+    g_createdRoots.clear();
 }
 
 void writeAsset(const std::string &root, const std::string &relative,
@@ -115,6 +127,7 @@ void writeAsset(const std::string &root, const std::string &relative,
 
 void seedFullTree(const std::string &root) {
     assert(std::system(("mkdir -p '" + root + "'").c_str()) == 0);
+    rememberRoot(root);
     writeAsset(root, "controller/index.html", "<!doctype html><html></html>");
     writeAsset(root, "controller/controller.css", ".x{color:red}");
     writeAsset(root, "controller/controller.js", "console.log(1)");
@@ -154,9 +167,24 @@ void manifestBuildsFromPackagedTree() {
                 manifest.size());
 }
 
+void canStartRequiresBothHostAndAssets() {
+    /* The availability predicate the launcher card gates on. Assets-present +
+     * host -> can start; assets-missing -> cannot (the dead-button fix); no
+     * host -> cannot regardless of assets. */
+    const std::string root = tempRoot() + "-canstart";
+    seedFullTree(root);
+    const std::string missing = root + "-missing";  /* never created */
+    assert(mdkr_lan_party_can_start("192.168.1.5", root));
+    assert(!mdkr_lan_party_can_start("192.168.1.5", missing));
+    assert(!mdkr_lan_party_can_start("", root));
+    assert(!mdkr_lan_party_can_start("", missing));
+    std::printf("canStartRequiresBothHostAndAssets: ok\n");
+}
+
 void missingControllerPageFailsClosed() {
     const std::string root = tempRoot() + "-partial";
     assert(std::system(("mkdir -p '" + root + "/party'").c_str()) == 0);
+    rememberRoot(root);
     writeAsset(root, "party/party-sas.js", "x");
     /* No controller/index.html: a page that would load broken is no page.
      * build must fail and leave the manifest empty. */
@@ -177,7 +205,9 @@ int main() {
     selectedHostIsAlwaysAllowlisted();
     malformedAddressesAreIgnored();
     manifestBuildsFromPackagedTree();
+    canStartRequiresBothHostAndAssets();
     missingControllerPageFailsClosed();
+    cleanupRoots();
     std::printf("all lan_party_launch cases passed\n");
     return 0;
 }

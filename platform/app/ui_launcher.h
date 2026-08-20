@@ -183,7 +183,8 @@ private:
     PartyTransportKind partyKind_ = PartyTransportKind::Cloud;
     // Owns the storage the card's `note` pointer borrows (a start failure).
     std::string lanNote_;
-    bool lanAvailable_ = false;      // cached advertised-host presence
+    bool lanAvailable_ = false;      // cached host + controller-asset presence
+    bool lanHostReachable_ = false;  // cached advertised-host presence (reason)
     bool lanChecked_ = false;
     uint64_t lanCheckedMs_ = 0u;     // last availability check (SDL ticks)
     LauncherState state_;

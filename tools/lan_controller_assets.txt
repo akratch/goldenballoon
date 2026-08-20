@@ -1,0 +1,20 @@
+# Trimmed controller asset set for local-only (no internet) Phone Party.
+#
+# Paths are relative to dist/web. This is the SOURCE OF TRUTH shared by the
+# three packaging scripts (macos/Scripts/build_app_bundle.sh,
+# tools/package_windows_zip.sh, tools/package_linux_appimage.sh) so a packaged
+# build stages exactly the files the embedded LAN server hands to a phone -- not
+# the whole dist/web tree, which also carries the cloud-only Online Room / Party
+# web app that local-only releases deliberately exclude.
+#
+# It is cross-checked against the C++ manifest builder
+# (platform/party/lan_party_launch.cpp kControllerAssets) by
+# tests/check_lan_controller_assets.py, so this list and the code that serves it
+# can never drift. Keep in sync; blank lines and '#' comments are ignored.
+controller/index.html
+controller/controller.css
+controller/controller.js
+party/party-protocol.js
+party/party-sas.js
+input/touch-surface.css
+input/touch-surface.js

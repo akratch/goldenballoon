@@ -506,6 +506,19 @@ if [[ "${APP_BUNDLE_INPUT}" == true ]]; then
                     # Exact, hash-pinned license/source-form manifest for the
                     # static native Phone Party transport and QR generator.
                     ;;
+                Contents/Resources/dist/web/controller/*.html|\
+                Contents/Resources/dist/web/controller/*.css|\
+                Contents/Resources/dist/web/controller/*.js|\
+                Contents/Resources/dist/web/party/*.js|\
+                Contents/Resources/dist/web/input/*.css|\
+                Contents/Resources/dist/web/input/*.js)
+                    # Local-only Phone Party controller page (Task 5): plain
+                    # HTML/CSS/JS the embedded LAN server hands to a phone with
+                    # no internet -- no ROM/asset content. Confined to the exact
+                    # directories and extensions the manifest builder loads
+                    # (tools/lan_controller_assets.txt); the ROM/media extension
+                    # filter and the bootstrap-magic tree scan below still apply.
+                    ;;
                 *)
                     fail "Unexpected app resource in asset-free bundle: ${REL}"
                     RESOURCE_FAIL=1

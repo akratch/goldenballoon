@@ -488,6 +488,30 @@ GAMECONTROLLERDB_SRC="${PROJECT_ROOT}/lib/sdl_gamecontrollerdb/gamecontrollerdb.
 ditto "${GAMECONTROLLERDB_SRC}" \
     "${OUTPUT_APP}/Contents/Resources/gamecontrollerdb.txt" ||
     die "Failed to copy the game-controller mapping database into the app bundle."
+
+# Local-only Phone Party (no internet): the embedded LAN server serves this
+# trimmed controller page to a phone with no internet. Stage exactly the files
+# it loads -- tools/lan_controller_assets.txt, cross-checked against the C++
+# manifest builder by tests/check_lan_controller_assets.py -- under
+# Contents/Resources/dist/web, where mdkr_user_resource_path resolves them. Not
+# the whole dist/web tree, which also carries the cloud-only Online Room/Party
+# web app the local-only philosophy excludes. Same die-guard shape as the
+# controller database above.
+LAN_ASSET_LIST="${PROJECT_ROOT}/tools/lan_controller_assets.txt"
+[[ -s "${LAN_ASSET_LIST}" ]] ||
+    die "Local-play controller asset list is missing: ${LAN_ASSET_LIST}"
+while IFS= read -r LAN_ASSET; do
+    if [[ -z "${LAN_ASSET}" || "${LAN_ASSET}" == \#* ]]; then
+        continue
+    fi
+    LAN_ASSET_SRC="${PROJECT_ROOT}/dist/web/${LAN_ASSET}"
+    LAN_ASSET_DEST="${OUTPUT_APP}/Contents/Resources/dist/web/${LAN_ASSET}"
+    [[ -s "${LAN_ASSET_SRC}" ]] ||
+        die "Local-play controller asset is missing or empty: ${LAN_ASSET_SRC}"
+    mkdir -p "$(dirname "${LAN_ASSET_DEST}")"
+    ditto "${LAN_ASSET_SRC}" "${LAN_ASSET_DEST}" ||
+        die "Failed to copy local-play controller asset into the app bundle: ${LAN_ASSET}"
+done < "${LAN_ASSET_LIST}"
 if [[ "${BUNDLE_SDL2}" == true ]]; then
     SDL2_LICENSE_DEST="${OUTPUT_APP}/Contents/Resources/ThirdParty/SDL2-LICENSE.txt"
     mkdir -p "$(dirname "${SDL2_LICENSE_DEST}")"

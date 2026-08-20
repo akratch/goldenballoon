@@ -111,6 +111,13 @@ std::string mdkr_lan_party_select_advertised_host(
     return best;
 }
 
+bool mdkr_lan_party_can_start(const std::string &advertisedHost,
+                              const std::string &webRoot) {
+    if (advertisedHost.empty()) return false;
+    MdkrLanPartyManifest manifest;
+    return mdkr_lan_party_build_manifest(webRoot, manifest);
+}
+
 bool mdkr_lan_party_build_manifest(const std::string &webRoot,
                                    MdkrLanPartyManifest &out) {
     out.clear();

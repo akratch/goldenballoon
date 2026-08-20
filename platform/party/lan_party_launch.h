@@ -26,6 +26,17 @@
 #include <vector>
 
 /*
+ * The two player-facing reasons local play cannot start, in one place so the
+ * card copy (ui_phone_party.cpp), the launcher's availability line
+ * (ui_launcher.cpp) and the start-failure note (lan_party_launch_config.cpp)
+ * can never drift. Both are prose-gate clean.
+ */
+inline constexpr char kMdkrLanPartyNoNetworkReason[] =
+    "Connect this computer to Wi-Fi or a wired network to use local play.";
+inline constexpr char kMdkrLanPartyNoAssetsReason[] =
+    "The controller page is missing from this build, so local play cannot start.";
+
+/*
  * Choose the LAN IPv4 the invite QR will advertise from a set of this
  * machine's addresses (the SAME set the server freezes into its Host allowlist,
  * so whatever this returns is always allowlisted). Loopback (127/8) and
@@ -49,11 +60,32 @@ bool mdkr_lan_party_build_manifest(const std::string &webRoot,
                                    MdkrLanPartyManifest &out);
 
 /*
+ * The availability predicate the launcher card gates on: local play can start
+ * only when there is a reachable LAN host AND the controller assets actually
+ * resolve under `webRoot`. Pure over its two inputs (it builds the manifest to
+ * confirm every asset is present, not just the index), so it is unit-tested
+ * directly -- the card must never show a live "Start" button that fails only
+ * after the click when the assets were never staged.
+ */
+bool mdkr_lan_party_can_start(const std::string &advertisedHost,
+                              const std::string &webRoot);
+
+/*
  * Production advertised-host: select over this machine's real IPv4 addresses
  * (mdkr_lan_party_machine_ipv4_addresses, the allowlist source). Empty when the
  * machine is on no network.
  */
 std::string mdkr_lan_party_advertised_host();
+
+/*
+ * Resolve the packaged web tree that holds the controller assets, trying the
+ * macOS bundle's Resources, then beside the executable (where the Windows zip
+ * and Linux AppImage stage them, found via SDL_GetBasePath -- the same posture
+ * the controller-mapping database already uses), then the working directory for
+ * a dev run from the repo. Returns the first root whose controller page is
+ * present, or empty when none is.
+ */
+std::string mdkr_lan_party_web_root();
 
 /*
  * Assemble a full LanPartyTransport config from the live machine: advertised

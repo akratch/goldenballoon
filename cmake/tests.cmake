@@ -2061,6 +2061,14 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_release_party_origin.py
                 --self-test)
+    # Phase 3 local-only play: the trimmed controller asset set must agree
+    # across the C++ manifest builder and the packaging source-of-truth list,
+    # and every listed file must exist in dist/web -- so a packaged build stages
+    # exactly what the phone loads and the page never ships broken.
+    add_test(
+        NAME party_lan_controller_assets
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_lan_controller_assets.py)
     add_test(
         NAME audio_sink_evidence_contract
         COMMAND ${Python3_EXECUTABLE}

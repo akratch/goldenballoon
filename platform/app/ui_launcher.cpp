@@ -750,19 +750,27 @@ void Launcher::selectPartyTransport(PartyTransportKind kind,
 }
 
 void Launcher::refreshLanControls() {
-    /* Advertised host is a cheap getifaddrs pick; recheck about once a second so
-     * plugging in a cable or joining Wi-Fi lights up the card without paying the
-     * syscall every frame. The controller manifest is built only at Start. */
+    /* Availability gates on BOTH a reachable LAN host AND the controller assets
+     * actually resolving -- never a live "Start" button that would fail only
+     * after the click in a build whose assets were not staged. Both are cheap
+     * (a getifaddrs pick and a handful of small file reads), but rechecked only
+     * about once a second so joining Wi-Fi or mounting the bundle lights up the
+     * card without paying for it every frame. */
     const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
     if (!lanChecked_ || now - lanCheckedMs_ >= 1000u) {
         lanChecked_ = true;
         lanCheckedMs_ = now;
-        lanAvailable_ = !mdkr_lan_party_advertised_host().empty();
+        const std::string host = mdkr_lan_party_advertised_host();
+        lanHostReachable_ = !host.empty();
+        lanAvailable_ = mdkr_lan_party_can_start(host, mdkr_lan_party_web_root());
     }
     state_.lanParty.active = (partyKind_ == PartyTransportKind::Lan);
     state_.lanParty.available = lanAvailable_;
-    state_.lanParty.unavailableReason = lanAvailable_ ? nullptr :
-        "Connect this computer to Wi-Fi or a wired network to use local play.";
+    /* Honest reason for the disabled card: no network vs. assets not in this
+     * build (the two shared constants). */
+    state_.lanParty.unavailableReason = lanAvailable_ ? nullptr
+        : (lanHostReachable_ ? kMdkrLanPartyNoAssetsReason
+                             : kMdkrLanPartyNoNetworkReason);
     state_.lanParty.note = lanNote_.empty() ? nullptr : lanNote_.c_str();
 }
 
