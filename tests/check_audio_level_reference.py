@@ -193,6 +193,13 @@ WANT_FRAMES = 3164800
 FRAMES_TOL = 8192           # ~0.37 s; the pump's last block may be short
 
 # ---- assertions 2-4: level ------------------------------------------------
+# These baselines were frozen before the cave SFX reverb bus was corrected,
+# so the true Ancient Lake level is now ~+0.084 dB (whole -12.773, L -12.769,
+# R -12.776, crest 12.773): a few Ancient Lake SFX carry authored fxmix and now
+# use the big-room reverb the original routes them to. The shift is 10x inside
+# RMS_TOL_DB, so the gate stays green; the routing itself is guarded directly by
+# check_cave_reverb_bus.py. A full baseline refresh to the corrected values is a
+# deliberate follow-up (no --update mode exists yet), not done piecemeal here.
 BASE_RMS_DBFS = -12.857     # 7457.9 / 32768
 BASE_RMS_L_DBFS = -12.857   # 7457.3
 BASE_RMS_R_DBFS = -12.856   # 7458.6

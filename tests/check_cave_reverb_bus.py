@@ -49,9 +49,11 @@ Self-validation — this check is proven to be able to fail
 ---------------------------------------------------------
 The pre-fix binary (single aux bus) produces a trace whose every line is
 ``bus:0 max_aux:1`` including the fxmix>0 cave SFX, so assertions 1 and 3 both
-fail. That is the RED state; the fix turns it GREEN. The trace also carries the
-bus-0 (music) fxmix>0 lines, so a build that merely lost all reverb — rather than
-mis-routing it — would fail assertion 2/3's anti-vacuity instead of passing.
+fail. That is the RED state; the fix turns it GREEN. Only SFX voices appear here
+(music sets its FX mix through the note-on start param, not ``alSynSetFXMix``),
+which sharpens the bus-0/bus-1 discriminator. This oracle proves the ROUTING —
+which bus the cave SFX reach — not that the reverb DSP carries real parameters;
+the level/PCM gates cover the DSP itself.
 
 Always runs muted + headless (MDKR_AUDIO=0 and --headless-frames), one authored
 Original-cadence ticket per host opportunity (MDKR_SYNTH_FIELDS=2), per
