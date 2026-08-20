@@ -1158,6 +1158,33 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME party_firewall_negative
         COMMAND mdkr_party_firewall_negative_test)
 
+    # Phase 3 local-only play: the embedded HTTP+WS server that serves the
+    # controller page and the /party-ws control socket from ONE port with no
+    # internet. Wire-level test against 127.0.0.1 on an ephemeral port --
+    # loopback only, no origin gates at this layer -- so it stays GPU-,
+    # network- and ROM-free like the rest of the party suite.
+    add_executable(mdkr_lan_party_server_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_server.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp)
+    target_include_directories(mdkr_lan_party_server_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_lan_party_server_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_lan_party_server_test PRIVATE Threads::Threads)
+    if(WIN32)
+        target_link_libraries(mdkr_lan_party_server_test PRIVATE ws2_32)
+    endif()
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_server_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_server_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_server COMMAND mdkr_lan_party_server_test)
+    # Every wait in it is bounded and short; this is the backstop for a
+    # genuine hang (a stop() that never joins), which must fail the suite
+    # rather than stall it.
+    set_tests_properties(lan_party_server PROPERTIES TIMEOUT 120)
+
     # Rollback primitives are kept ROM-, renderer- and window-free. Their
     # boundaries must stay cheap enough to run on every native presubmit.
     add_executable(mdkr_net_input_test
