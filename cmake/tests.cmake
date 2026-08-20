@@ -1195,6 +1195,30 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # rather than stall it.
     set_tests_properties(lan_party_server PROPERTIES TIMEOUT 120)
 
+    # Phase 3 local-only play: the in-process local room -- the zero-internet
+    # equivalent of the Cloudflare Party room DO. It mints the invite
+    # capability + fallback code, holds seat leases, throttles code redemption,
+    # and relays the pairing protocol between the phones' WebSockets and the
+    # native host. The room is pure (no server, no libdatachannel, no network):
+    # this test drives it against a fake controller socket and an in-memory
+    # host sink with a deterministic clock and RNG, so it stays as cheap and
+    # hermetic as the rest of the party unit suite.
+    add_executable(mdkr_lan_party_room_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_room.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp)
+    target_include_directories(mdkr_lan_party_room_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_lan_party_room_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_lan_party_room_test PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_room_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_room_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_room COMMAND mdkr_lan_party_room_test)
+    set_tests_properties(lan_party_room PROPERTIES TIMEOUT 60)
+
     # Rollback primitives are kept ROM-, renderer- and window-free. Their
     # boundaries must stay cheap enough to run on every native presubmit.
     add_executable(mdkr_net_input_test
