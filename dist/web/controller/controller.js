@@ -37,6 +37,8 @@
   let active = false;
   let inputTestPassed = false;
   let wakeLock = null;
+  let keepAwakeVideo = null;
+  let keepAwakeTimer = null;
   let surface = null;
   let heartbeat = null;
   let capability = "";
@@ -327,7 +329,7 @@
     showError("duplicate_controller");
     try { transport?.close?.(); } catch (_) {}
     if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-    if (wakeLock) wakeLock.release().catch(() => {});
+    releaseKeepAwake();
     announce("This tab released the controller because another tab took over.");
   }
 
@@ -749,7 +751,7 @@
         showError("unverified_connection");
         api.close();
         if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-        if (wakeLock) wakeLock.release().catch(() => {});
+        releaseKeepAwake();
         return;
       }
       $("pairing-phrase").textContent = phrase;
@@ -1043,8 +1045,14 @@
       try { previous?.close?.(1000, "controller_socket_replaced"); } catch (_) {}
       let connection;
       try {
-        const url = new URL(`/api/party/${value.roomId}/connect`, location.origin);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        // Cloud pairing rides the Worker's per-room signaling path over wss.
+        // Local play serves this page over plain http from the host itself, so
+        // the signaling socket is the host's own /party-ws on the same origin.
+        const secure = location.protocol === "https:";
+        const url = secure
+          ? new URL(`/api/party/${value.roomId}/connect`, location.origin)
+          : new URL("/party-ws", location.origin);
+        url.protocol = secure ? "wss:" : "ws:";
         connection = new WebSocket(url, ["gb-control-v1",
           `gb-controller.${value.credential}`]);
         controlSocket = connection;
@@ -1102,7 +1110,7 @@
             clearControlTimers();
             showError(event.reason);
             if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-            if (wakeLock) wakeLock.release().catch(() => {});
+            releaseKeepAwake();
             if (peer) { peer.close(); peer = null; }
             stateChannel = null;
             controlChannel = null;
@@ -1257,17 +1265,78 @@
     }
   }
 
+  /* Wake Lock, or the keep-awake fallback the insecure-origin LAN page needs.
+   * navigator.wakeLock is a secure-context API, so a plain-http phone does not
+   * get it; there, a muted inline video kept playing holds the screen awake
+   * (the long-standing NoSleep technique). Its frames come from a canvas
+   * capture stream on srcObject, not a URL, so it needs nothing from media-src
+   * -- the controller CSP forbids every media URL. Both paths start on the
+   * Use-controller tap, the gesture the browser requires to let a video play. */
   async function requestWakeLock() {
-    if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+    if (navigator.wakeLock && navigator.wakeLock.request) {
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        $("wake-status").textContent = "Screen will stay awake";
+        wakeLock.addEventListener("release", () => {
+          wakeLock = null;
+          $("wake-status").textContent = "Screen wake lock released";
+        }, {once: true});
+      } catch (_) {
+        $("wake-status").textContent = "Screen wake lock unavailable";
+      }
+      return;
+    }
+    startKeepAwakeVideo();
+  }
+
+  function startKeepAwakeVideo() {
+    if (keepAwakeVideo) { keepAwakeVideo.play().catch(() => {}); return; }
     try {
-      wakeLock = await navigator.wakeLock.request("screen");
-      $("wake-status").textContent = "Screen will stay awake";
-      wakeLock.addEventListener("release", () => {
-        wakeLock = null;
-        $("wake-status").textContent = "Screen wake lock released";
-      }, {once: true});
+      const canvas = document.createElement("canvas");
+      canvas.width = 2; canvas.height = 2;
+      const context = canvas.getContext("2d");
+      const stream = canvas.captureStream ? canvas.captureStream(1) : null;
+      if (!stream) {
+        $("wake-status").textContent = "Screen may dim while racing";
+        return;
+      }
+      const video = document.createElement("video");
+      video.muted = true; video.defaultMuted = true; video.loop = true;
+      video.setAttribute("playsinline", "");
+      video.setAttribute("aria-hidden", "true");
+      video.style.cssText = "position:fixed;top:-1px;left:-1px;width:1px;" +
+        "height:1px;opacity:0;pointer-events:none";
+      video.srcObject = stream;
+      document.body.appendChild(video);
+      keepAwakeVideo = video;
+      // A moving canvas keeps the capture track producing frames -- what holds
+      // the display awake; a still stream can be treated as idle and let sleep.
+      let tick = 0;
+      keepAwakeTimer = setInterval(() => {
+        if (!context) return;
+        context.fillStyle = (tick++ & 1) ? "#000" : "#010101";
+        context.fillRect(0, 0, 2, 2);
+      }, 1000);
+      video.play().then(() => {
+        $("wake-status").textContent = "Screen will stay awake";
+      }).catch(() => {
+        $("wake-status").textContent = "Screen may dim while racing";
+      });
     } catch (_) {
-      $("wake-status").textContent = "Screen wake lock unavailable";
+      $("wake-status").textContent = "Screen may dim while racing";
+    }
+  }
+
+  function releaseKeepAwake() {
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    if (keepAwakeTimer !== null) { clearInterval(keepAwakeTimer); keepAwakeTimer = null; }
+    if (keepAwakeVideo) {
+      try {
+        keepAwakeVideo.pause();
+        keepAwakeVideo.srcObject = null;
+        keepAwakeVideo.remove();
+      } catch (_) {}
+      keepAwakeVideo = null;
     }
   }
 
@@ -1319,7 +1388,7 @@
     neutralize("leave");
     try { transport?.close?.(); } catch (_) {}
     if (heartbeat !== null) { clearInterval(heartbeat); heartbeat = null; }
-    if (wakeLock) wakeLock.release().catch(() => {});
+    releaseKeepAwake();
     if (releaseTabLease) { releaseTabLease(); releaseTabLease = null; }
     showError("left_room", "Enter another code");
   }

@@ -62,16 +62,19 @@ def run(args: argparse.Namespace) -> None:
     for path in required:
         require(path.is_file(), f"controller artifact is missing: {path}")
     critical_bytes = sum(path.stat().st_size for path in required[:6])
-    # 104 KiB, raised twice: to 101 KiB when accumulated honest error copy
-    # (the protocol_update_required entry) crossed the original 100 KiB, and
-    # to 104 KiB when SAS v2 landed -- the pairing phrase now binds both
-    # DTLS fingerprints, which puts the canonical fingerprint parser and the
-    # connection-time derivation on the page's critical path. The
-    # guardrail's job is catching runaway growth -- a bundled library, an
-    # accidental asset -- not vetoing player copy or the MITM defense, so
-    # the ceiling moves by the smallest whole KiB each time.
-    require(critical_bytes < 104 * 1024,
-            f"controller critical path is {critical_bytes} bytes, budget is 104 KiB")
+    # 117 KiB, raised across the phases: to 101 KiB when accumulated honest
+    # error copy (the protocol_update_required entry) crossed the original 100
+    # KiB, to 104 KiB when SAS v2 put the fingerprint parser + connection-time
+    # derivation on the critical path, and to 117 KiB for local (LAN) play --
+    # a plain-http origin hides crypto.subtle and Wake Lock, so party-sas.js
+    # now vendors a pure-JS SHA-256 + P-256 ECDH twin (the phrase must stay
+    # byte-identical to the native host or every pairing looks like a MITM)
+    # and controller.js carries the NoSleep keep-awake. The guardrail's job is
+    # catching runaway growth -- a bundled library, an accidental asset -- not
+    # vetoing player copy or the MITM defense, so the ceiling moves by the
+    # smallest whole KiB each time.
+    require(critical_bytes < 117 * 1024,
+            f"controller critical path is {critical_bytes} bytes, budget is 117 KiB")
     headers = (shell / "_headers").read_text(encoding="utf-8")
     for value in ("frame-ancestors 'none'", "Referrer-Policy: no-referrer",
                   "X-Content-Type-Options: nosniff", "Cache-Control: no-store"):
