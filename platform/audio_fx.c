@@ -17,18 +17,58 @@ static s32 s_native_fx_bypass_params[2] = {
     AL_FX_BUFFER_SIZE,
 };
 
-static s32 *native_fx_params_for_config(ALSynConfig *config)
+/*
+ * AL_FX_BIGROOM reverb preset — aux bus 1.
+ *
+ * Diddy Kong Racing declares two FX buses (game/src/audio.c): bus 0 is its
+ * ROM-authored AL_FX_CUSTOM music reverb, and bus 1 is the fixed libaudio
+ * AL_FX_BIGROOM room reverb that every SFX voice is re-parented onto for the
+ * cave/tunnel echo (audiosfx.c). This is the same delay-line reverb the CUSTOM
+ * preset drives; only the tap/coefficient table differs, so the crossfade and
+ * delay-line DSP consume it unchanged.
+ *
+ * Layout is the flat s32[] alFxNew() parses: section count, ring length, then
+ * eight fields per section — input tap, output tap, fbcoef, ffcoef, gain,
+ * chorus rate, chorus depth, low-pass cutoff. Delay taps are in samples on the
+ * synth's 44.1 kHz-derived clock, where the preset table expresses a delay in
+ * milliseconds as ms * 40 (44 truncated to an 8-sample boundary): the ring is
+ * 100 ms and the taps are 66/22/54/66/91/94 ms. The final section adds the
+ * 0x5000 low-pass cutoff that gives the big room its darker tail.
+ */
+static s32 s_native_fx_bigroom_params[2 + 4 * 8] = {
+    /* sections  ring length (100 ms) */
+    4,           4000,
+    /* input  output  fbcoef  ffcoef    gain  chorusRate chorusDepth  lpCoef */
+       0,       2640,   9830,  -9830,      0,          0,          0,       0,
+     880,       2160,   3276,  -3276, 0x3fff,          0,          0,       0,
+    2640,       3640,   3276,  -3276, 0x3fff,          0,          0,       0,
+       0,       3760,   8000,      0,      0,          0,          0,  0x5000,
+};
+
+static s32 *native_fx_params_for_config(ALSynConfig *config, s16 bus)
 {
-    /* DKR's ALSynConfig carries one ALFxId PER AUX BUS (fxType[2]), where
-     * mgb64's engine had a single scalar. Reading it as a scalar silently
-     * compares an array address against the enum, always misses AL_FX_CUSTOM,
-     * and falls through to the bypass params — which allocates the reverb but
-     * gives it no delay line, so the wet path is inaudible and reverb-on and
-     * reverb-off captures come out identical. Index bus 0 explicitly; that is
-     * the bus every CSP voice is parented to. */
-    if (config != NULL && config->fxType[0] == AL_FX_CUSTOM &&
-        config->params != NULL) {
-        return config->params;
+    /* DKR's ALSynConfig carries one ALFxId PER AUX BUS (fxType[2]), so the
+     * effect a bus should build is fxType[bus]. Reading it as a scalar silently
+     * compared an array address against the enum, always missed AL_FX_CUSTOM,
+     * and fell through to the bypass params — which allocate the reverb but give
+     * it no delay line, so the wet path is inaudible and reverb-on and
+     * reverb-off captures come out identical. Select per bus instead: bus 0's
+     * AL_FX_CUSTOM reads the ROM params, bus 1's AL_FX_BIGROOM uses the fixed
+     * preset above. */
+    if (config == NULL || bus < 0 || bus > 1) {
+        return s_native_fx_bypass_params;
+    }
+
+    switch (config->fxType[bus]) {
+    case AL_FX_CUSTOM:
+        if (config->params != NULL) {
+            return config->params;
+        }
+        break;
+    case AL_FX_BIGROOM:
+        return s_native_fx_bigroom_params;
+    default:
+        break;
     }
 
     return s_native_fx_bypass_params;
@@ -529,7 +569,7 @@ s32 alFxParamHdl(void *filter, s32 param_id, void *param)
     return 0;
 }
 
-void alFxNew(ALFx *fx, ALSynConfig *config, ALHeap *heap)
+void alFxNew(ALFx *fx, ALSynConfig *config, s16 bus, ALHeap *heap)
 {
     ALFilter *filter;
     s32 *params;
@@ -548,7 +588,7 @@ void alFxNew(ALFx *fx, ALSynConfig *config, ALHeap *heap)
     filter->handler = alFxPull;
     fx->paramHdl = (ALSetFXParam)alFxParamHdl;
 
-    params = native_fx_params_for_config(config);
+    params = native_fx_params_for_config(config, bus);
     section_count = params[0];
     length = params[1];
     if (section_count < 0 || section_count > 64 || length <= 0 ||

@@ -141,6 +141,7 @@ void alSynNew(ALSynth *synth, ALSynConfig *config)
     PVoice *voices;
     ALFilter **sources;
     ALParam *params;
+    s32 num_busses;
     s32 i;
 
     if (synth == NULL || config == NULL || config->heap == NULL) {
@@ -169,18 +170,32 @@ void alSynNew(ALSynth *synth, ALSynConfig *config)
     alSaveNew(save);
     synth->outputFilter = (ALFilter *)save;
 
-    synth->auxBus = alHeapAlloc(heap, 1, sizeof(*synth->auxBus));
+    /*
+     * DKR declares two FX buses in ALSynConfig.fxType[] (game/src/audio.c):
+     * bus 0 = AL_FX_CUSTOM (the ROM music reverb, which every CSP voice keeps)
+     * and bus 1 = AL_FX_BIGROOM (the big-room cave echo every SFX voice is
+     * re-parented onto). The port used to build a single aux bus and hardcode
+     * maxAuxBusses = 1, which silently rejected the SFX re-parent to bus 1
+     * (audio_compat.c) and left the cave SFX on the music reverb. Build one aux
+     * bus per configured fxType[] entry instead — for DKR that is the two
+     * non-AL_FX_NONE effects — and give each its own per-bus source array.
+     */
+    num_busses = (s32)(sizeof(config->fxType) / sizeof(config->fxType[0]));
+
+    synth->auxBus = alHeapAlloc(heap, num_busses, sizeof(*synth->auxBus));
     synth->mainBus = alHeapAlloc(heap, 1, sizeof(*synth->mainBus));
     if (synth->auxBus == NULL || synth->mainBus == NULL) {
         return;
     }
 
-    synth->maxAuxBusses = 1;
-    sources = alHeapAlloc(heap, config->maxPVoices, sizeof(*sources));
-    if (sources == NULL) {
-        return;
+    synth->maxAuxBusses = num_busses;
+    for (i = 0; i < num_busses; i++) {
+        sources = alHeapAlloc(heap, config->maxPVoices, sizeof(*sources));
+        if (sources == NULL) {
+            return;
+        }
+        alAuxBusNew(&synth->auxBus[i], sources, config->maxPVoices);
     }
-    alAuxBusNew(synth->auxBus, sources, config->maxPVoices);
 
     sources = alHeapAlloc(heap, config->maxPVoices, sizeof(*sources));
     if (sources == NULL) {
@@ -188,10 +203,18 @@ void alSynNew(ALSynth *synth, ALSynConfig *config)
     }
     alMainBusNew(synth->mainBus, sources, config->maxPVoices);
 
-    if (config->fxType[0] != AL_FX_NONE) {
-        alSynAllocFX(synth, 0, config, heap);
-    } else {
-        alMainBusParam(synth->mainBus, AL_FILTER_ADD_SOURCE, &synth->auxBus[0]);
+    /*
+     * An FX-carrying bus gets its delay-line unit (which pulls the wet send
+     * from the aux bus and folds the reverb back into the main bus); an
+     * AL_FX_NONE bus is wired straight to the main bus. Mirrors stock alSynNew.
+     */
+    for (i = 0; i < num_busses; i++) {
+        if (config->fxType[i] != AL_FX_NONE) {
+            alSynAllocFX(synth, (s16)i, config, heap);
+        } else {
+            alMainBusParam(synth->mainBus, AL_FILTER_ADD_SOURCE,
+                           &synth->auxBus[i]);
+        }
     }
 
     voices = alHeapAlloc(heap, config->maxPVoices, sizeof(*voices));
@@ -696,7 +719,7 @@ ALFxRef *alSynAllocFX(ALSynth *s, s16 bus, ALSynConfig *config, ALHeap *heap)
     }
 
     aux = &s->auxBus[bus];
-    alFxNew(&aux->fx[0], config, heap);
+    alFxNew(&aux->fx[0], config, bus, heap);
     alFxParam(&aux->fx[0], AL_FILTER_SET_SOURCE, aux);
     alMainBusParam(s->mainBus, AL_FILTER_ADD_SOURCE, &aux->fx[0]);
     return (ALFxRef *)&aux->fx[0];
