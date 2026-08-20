@@ -159,6 +159,7 @@ Execute these in order unless a failing gate creates a lower-level repair:
 | LC-16 | HUMAN / PROVISIONING | Run the packaged Windows/macOS/Linux and physical-device lifecycle/accessibility matrix; archive firewall-negative, signing/notarization and binary-size evidence before A2 release. |
 | LC-15 | READY | Physical browser acceptance, docs and staged A1 rollout. |
 | LC-17 | PROPOSED P1 | Remembering, floating stick and tilt are earned enhancements after A1; never expand the initial critical path. |
+| LAN-LOCAL (Phase 3) | DONE LOCAL / DEVICE REVIEW | Zero-internet local play: the launcher embeds the controller-page server and an in-process room, phones scan a QR to a plain-`http://<lan-ip>/controller/` origin, redeem over `/party-ws`, and pair over real libdatachannel DTLS with the pure-JS SAS v2 twin. `check_party_lan_e2e.py` drives the whole triangle with no Worker; the Host allowlist refuses DNS-rebinding, an upgraded socket is anonymous until it redeems, and the six-digit fallback throttles on one shared bucket. The card is gated on a reachable LAN address plus staged controller assets and fails closed to an honest reason otherwise; an origin-less build shows the local card but never a cloud card. Trust model in [`../security/multiplayer-threat-model.md`](../security/multiplayer-threat-model.md#lan-mode-local-play-no-internet). Remaining: the real-phone device items in [`../RC_PHONE_PARTY_CHECKLIST.md`](../RC_PHONE_PARTY_CHECKLIST.md). |
 
 ### S12 — rollback core
 
@@ -242,6 +243,36 @@ Execute these in order unless a failing gate creates a lower-level repair:
 - “$0” is an admission guarantee, not unlimited availability: the product may
   refuse new pairing/online sessions and difficult NAT paths. Offline
   keyboard/gamepad/touch local play always remains available.
+
+## Local play (no internet): what it protects and trusts
+
+Phase 3 adds local play: a phone-controller room that runs entirely on one LAN
+with no cloud Worker, no account and no internet. The launcher embeds the
+controller-page server and an in-process room; phones scan a QR to a plain-`http`
+origin on this machine's LAN address. The full trust analysis is in
+[`../security/multiplayer-threat-model.md`](../security/multiplayer-threat-model.md#lan-mode-local-play-no-internet);
+in short:
+
+- **Protected, unchanged from cloud mode.** Pad input and rumble ride WebRTC
+  data channels that are DTLS-encrypted regardless of the plain-`http` page, so
+  the gameplay channel is encrypted end to end. The pairing phrase (SAS v2)
+  commits to both DTLS fingerprints, so a matching phrase means the two people
+  verified the pad channel was not swapped — pad-channel MITM is detectable
+  exactly as in cloud mode. Fail-closed: the page trusts only its serving origin;
+  `/party-ws` upgrades only for a Host in the machine's own allowlist (DNS
+  rebinding refused); a socket is anonymous until it redeems; the six-digit code
+  throttles on one shared bucket; an origin-less build shows the local card but
+  never a cloud card.
+- **Not protected.** The integrity of the controller *page* itself. Plain `http`
+  cannot authenticate the page's bytes, so a hostile device already on your LAN
+  could serve a fake page. Local play trusts your own network — the trust level
+  of your printer's or router's `http` admin page. This is a deliberate trade for
+  zero-internet play, not a defended boundary.
+
+Proven end to end by `check_party_lan_e2e.py` (native host + embedded server +
+in-process room + real headless-Chromium controller over real DTLS, no Worker).
+The real-phone acceptance items are in
+[`../RC_PHONE_PARTY_CHECKLIST.md`](../RC_PHONE_PARTY_CHECKLIST.md).
 
 ## Repeatable evidence commands
 

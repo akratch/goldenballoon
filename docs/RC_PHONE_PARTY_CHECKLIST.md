@@ -143,6 +143,58 @@ has never seen this build.
 - On both, after that clean install, Phone Party pairs a phone successfully — signing
   must not break the compiled party origin or the transport.
 
+## 9. Local play (no internet): LAN pairing, race, and stop
+
+Local play (**Play → Use a Phone as a Controller → Local play (no internet) →
+Start Local Play**) needs no deployed origin and no compiled
+`MDKR_PARTY_ORIGIN` — it works in any RC, including a build with no party origin
+at all, which still shows the local-play card but no cloud card. Run these on the
+RC you are blessing, with the host machine and the phones on the **same** Wi-Fi
+or wired network. The security trust model these items exercise is written down
+in [`docs/security/multiplayer-threat-model.md`](security/multiplayer-threat-model.md#lan-mode-local-play-no-internet):
+the controller page is served over plain `http`, so local play trusts your own
+network; the pad channel is still DTLS-encrypted and the phrase still binds it.
+
+**Do (firewall prompt — allow):** On a machine that has never run this build,
+press **Start Local Play**.
+**Expected observable:** The first time, macOS or Windows asks whether to allow
+incoming connections; choose **Allow**. After Allow, the card shows the QR, the
+six-digit code, and — once a phone connects — the pairing phrase. (If you deny
+the prompt, phones cannot reach the game; that is the OS blocking the port, not a
+product defect. Re-allow it in the OS firewall settings and Start again.)
+
+**Do (QR scan on a real phone):** Scan the card's QR with a real iPhone and a
+real Android phone using the stock camera, and open the link.
+**Expected observable:** The phone opens the controller page over
+**`http://<this machine's LAN IP>:<port>/controller/`**. A browser "not secure"
+chip is **expected and correct** here — local play uses no certificate. The
+controller renders full-bleed and takes a seat after host approval; the
+six-digit code path also lands in the same room when typed on the phone.
+
+**Do (phrase match):** When the phone connects, compare the pairing phrase shown
+on the phone with the one in the launcher.
+**Expected observable:** The two phrases are **character-for-character
+identical**. Approve only on a match. A mismatch means the pad channel was not
+verified — do not approve.
+
+**Do (race with the router unplugged from the internet):** Disconnect the
+router's internet uplink (unplug the WAN, or turn the modem off) so the LAN has
+**no internet at all**, leaving Wi-Fi up. Pair one and then four phones and run a
+full race to results.
+**Expected observable:** Pairing and the whole race work with the router
+unplugged from the internet — steering, accelerate, brake, item and horn all
+respond with no perceptible lag versus a wired pad, and haptics fire. Nothing
+waits on or times out against a cloud service, because there is no internet in
+the path. This is the core no-internet acceptance: **local play works with the
+router unplugged from the internet.**
+
+**Do (stop shows the room closed):** Press **Stop Local Play**.
+**Expected observable:** Every connected phone drops to a neutral **stopped**
+state naming the room as closed (the `host_closed` terminal state the phone
+receives); the network port is released; and desktop keyboard/gamepad play is
+unchanged throughout. Pressing **Start Local Play** again mints a fresh invite
+and phones must re-scan.
+
 ---
 
 ## Blessing

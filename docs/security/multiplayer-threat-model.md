@@ -58,6 +58,56 @@ save, wasm or game-asset route. Signaling is untrusted for gameplay authority.
 | XSS/supply chain | Dedicated origin, no user HTML, same-origin pinned assets, deny-default CSP, Trusted Types where supported, lockfile/license audit | Header and public-asset gates |
 | Native callback/packet exhaustion | Transport callbacks enqueue only into bounded process-owned queues; signaling queue overflow fails the room, pad queue overflow revokes custody, state is capped at 64 bytes, MatchRoom inbound frames at 4 KiB and control/SDP at 16/64 KiB | Queue saturation and oversized payloads become typed failure/neutral rather than unbounded allocation, latency or held input |
 | Service compromise | Store keyed credential digests, minimum room metadata, no packet/SDP history, ≤24 h room TTL enforced on request and by alarm | Storage snapshot/data map audit |
+| LAN plain-HTTP page integrity | Local play serves the controller page over plain `http` on the LAN by owner decision (certificates are off the product path), so the transport cannot authenticate the page's bytes. This is a deliberate trust of the host's own network — the trust level of a printer or router `http` admin page — not a defended boundary; the honest claim lives in the LAN-mode section below and must not be overstated. The properties that still hold fail-closed: the page trusts only the origin that served it (`default-src 'self'`, no cross-origin fetch); `/party-ws` upgrades only for a Host in the machine's own loopback + IPv4 allowlist, so an internet page that rebinds its name to this machine's LAN IP is refused at the upgrade even though it reaches the port; an upgraded socket is anonymous and does nothing until it redeems a valid capability or code; the six-digit fallback throttles on one shared guess bucket (correct on a LAN, where a per-IP bucket is defeated by a single NAT); refusals reflect nothing | The zero-internet E2E lane serves the page from a real non-loopback IPv4, proves `isSecureContext === false` (no `crypto.subtle`), redeems over `/party-ws` and pairs with the pure-JS SAS v2 twin over real libdatachannel DTLS with no Worker in the path; the Host-allowlist/DNS-rebinding refusal, the anonymous-until-redeem close and the single-bucket code throttle each reject their negatives |
+
+## LAN mode (local play, no internet)
+
+Local play runs the whole pairing and gameplay path on one LAN with no cloud
+Worker, no account and no internet: the launcher embeds the controller-page
+server and an in-process room, and phones scan a QR to a plain-`http://<lan-ip>:<port>/controller/`
+origin. Certificates are off the product path by owner decision, so this mode
+changes the transport trust model in exactly one way. State it precisely for
+players and reviewers — overclaiming here is a defect.
+
+What local play still protects, unchanged from cloud mode:
+
+- **The gameplay channel is encrypted end to end.** Pad input and rumble travel
+  over WebRTC data channels, which are DTLS-encrypted regardless of the page
+  being served over plain `http`. Serving the page insecurely does not weaken
+  the pad channel; DTLS negotiates its own keys on the channel itself.
+- **A matching phrase means the humans verified the channel.** The pairing
+  phrase (SAS v2, `golden-balloon-party-sas-v2` transcript) commits to both
+  endpoints' canonical DTLS certificate fingerprints. A relay that swaps either
+  fingerprint moves the phrase, so a character-for-character match means the two
+  people confirmed the pad channel was not swapped — MITM of the pad channel is
+  detectable exactly as in cloud mode. Because the LAN origin is insecure the
+  browser withholds `crypto.subtle`, so the page runs the pure-JS SHA-256 +
+  P-256 SAS twin; the zero-internet E2E lane cross-proves that twin against the
+  native Mbed TLS crypto on a real channel.
+- **Fail-closed admission holds.** The page trusts only the origin that served
+  it (`default-src 'self'`, no cross-origin fetch). `/party-ws` upgrades only
+  for a Host in the machine's own loopback + IPv4 allowlist, so an internet page
+  that rebinds its name to this machine's LAN IP is refused at the upgrade even
+  though it reaches the port. An upgraded socket is anonymous and does nothing
+  until it redeems a valid capability or code. The six-digit fallback is
+  throttled by one shared guess bucket — correct on a LAN, where a per-IP bucket
+  would be defeated by a single NAT. There is no cloud surface at all: an
+  origin-less build shows the local-play card but never a cloud/online card,
+  which still requires a compiled `MDKR_PARTY_ORIGIN`.
+
+What plain-`http` local mode does **not** protect: the integrity of the
+controller **page** itself. The transport cannot authenticate the page's bytes,
+so a hostile device already on your LAN could serve a different page at the same
+address. The honest framing is that local mode trusts your own network — the
+trust level of your printer's or router's `http` admin page. This is a
+deliberate, reasonable trade for zero-internet play, not a defended boundary; do
+not describe local play as protecting against a compromised LAN.
+
+The zero-internet path is proven end to end by `tests/check_party_lan_e2e.py`
+(native host + embedded server + in-process room + real headless-Chromium
+controller over real libdatachannel DTLS, no Worker anywhere) and the host
+allowlist, anonymous-until-redeem and single-bucket throttle negatives in the
+LAN room/server suites.
 
 ## Security invariants
 
