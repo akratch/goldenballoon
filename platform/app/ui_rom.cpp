@@ -866,12 +866,17 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         const char *value = std::getenv("MDKR_APP_PARTY_TRACE");
         return value != nullptr && value[0] == '1';
     }();
-    const bool partyAvailable = PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN);
+    /* Cloud pairing needs a compiled origin; local play (no internet) needs
+     * only a LAN address, which the launcher checks into s.lanParty.available.
+     * Either one makes the party surface real -- an origin-less local-only
+     * build still offers local play. */
+    const bool partyAvailable =
+        PhoneParty_availableInBuild(MDKR_PARTY_ORIGIN) || s.lanParty.available;
     /* A trace may relax only the ROM-ready gate. It cannot manufacture the
-     * feature in an origin-less release: setting a test environment variable
-     * on a packaged binary must still leave the player-facing surface absent. */
+     * cloud feature in an origin-less release; local play is a genuine feature
+     * of such a build, not a teaser, so it is drawn on its own merits. */
     if (s.phoneParty != nullptr && !g_changing &&
         partyAvailable && (ready || partyTraceRequested)) {
-        PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN);
+        PhoneParty_drawLauncher(*s.phoneParty, MDKR_PARTY_ORIGIN, s.lanParty);
     }
 }

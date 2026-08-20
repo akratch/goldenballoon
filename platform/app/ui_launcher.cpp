@@ -9,7 +9,9 @@
 #include "ui_settings.h"
 #include "party/libdatachannel_party_transport.h"
 #include "party/lan_party_transport.h"
+#include "party/lan_party_launch.h"
 #include "party/native_party_host.h"
+#include "ui_overlay.h"
 
 #include "imgui.h"
 #include "SDL.h"
@@ -718,7 +720,8 @@ Launcher::Launcher() {
     selectPartyTransport(PartyTransportKind::Cloud);
 }
 
-void Launcher::selectPartyTransport(PartyTransportKind kind) {
+void Launcher::selectPartyTransport(PartyTransportKind kind,
+                                   MdkrLanPartyTransportConfig config) {
     /* Runtime mutual-exclusion: exactly one live party transport. Tear the
      * current host down first -- ~MdkrNativePartyHost tells the phones goodbye
      * and shuts its transport down -- then release the transport before
@@ -733,11 +736,59 @@ void Launcher::selectPartyTransport(PartyTransportKind kind) {
             partyTransport_ = mdkr_create_native_party_transport();
             break;
         case PartyTransportKind::Lan:
-            partyTransport_ = mdkr_create_lan_party_transport();
+            partyTransport_ = mdkr_create_lan_party_transport(std::move(config));
             break;
     }
     phoneParty_ = std::make_unique<MdkrNativePartyHost>(*partyTransport_);
     state_.phoneParty = phoneParty_.get();
+    partyKind_ = kind;
+    /* Keep the in-game overlay's cached host pointer valid across a switch: the
+     * pointer was published once at startup, and a rebuild would leave it
+     * dangling otherwise. Harmless at construction (main_app republishes the
+     * same value right after). */
+    Overlay_setPhonePartyHost(state_.phoneParty);
+}
+
+void Launcher::refreshLanControls() {
+    /* Advertised host is a cheap getifaddrs pick; recheck about once a second so
+     * plugging in a cable or joining Wi-Fi lights up the card without paying the
+     * syscall every frame. The controller manifest is built only at Start. */
+    const uint64_t now = static_cast<uint64_t>(SDL_GetTicks64());
+    if (!lanChecked_ || now - lanCheckedMs_ >= 1000u) {
+        lanChecked_ = true;
+        lanCheckedMs_ = now;
+        lanAvailable_ = !mdkr_lan_party_advertised_host().empty();
+    }
+    state_.lanParty.active = (partyKind_ == PartyTransportKind::Lan);
+    state_.lanParty.available = lanAvailable_;
+    state_.lanParty.unavailableReason = lanAvailable_ ? nullptr :
+        "Connect this computer to Wi-Fi or a wired network to use local play.";
+    state_.lanParty.note = lanNote_.empty() ? nullptr : lanNote_.c_str();
+}
+
+void Launcher::applyLanStart() {
+    MdkrLanPartyTransportConfig config;
+    std::string reason;
+    if (!mdkr_lan_party_build_launch_config(config, reason)) {
+        lanNote_ = reason;   /* stays on the default transport; card shows why */
+        return;
+    }
+    lanNote_.clear();
+    selectPartyTransport(PartyTransportKind::Lan, std::move(config));
+    if (!phoneParty_->open("lan")) {
+        /* Bind or bring-up failed: fall back to the default transport so the
+         * card's cloud/entry surface returns rather than a dead LAN surface. */
+        lanNote_ = "Local play could not start. Keyboard and gamepads still work.";
+        selectPartyTransport(PartyTransportKind::Cloud);
+    }
+}
+
+void Launcher::applyLanStop() {
+    /* The card already told the phones goodbye (closeRoom). Rebuilding the
+     * default transport releases the LAN port and returns the cloud/entry
+     * surface; the rebuild's destructor is an idempotent second goodbye. */
+    lanNote_.clear();
+    selectPartyTransport(PartyTransportKind::Cloud);
 }
 
 Launcher::~Launcher() = default;
@@ -886,6 +937,7 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 LauncherAction Launcher::draw(AppHost &host) {
     state_.hostWindow = host.window();
     phoneParty_->service(static_cast<uint64_t>(SDL_GetTicks64()));
+    refreshLanControls();
     LauncherAction action;
     const int panelAtFrameStart = active_;
     for (int i = 0; i < kPanelCount; ++i) g_smokeTopTabValid[i] = false;
@@ -953,6 +1005,17 @@ LauncherAction Launcher::draw(AppHost &host) {
     }
     state_.requestTab = -1;
     state_.requestTabPriority = 0;
+
+    // Apply the party card's deferred Start/Stop only now the frame is done: the
+    // card drew from the live host, and a transport switch rebuilds it. Refresh
+    // the controls so the same frame's later readers (the in-game overlay) see
+    // the new host, not a stale one.
+    if (state_.lanParty.request == PhonePartyLanControls::Request::Start) {
+        applyLanStart();
+    } else if (state_.lanParty.request == PhonePartyLanControls::Request::Stop) {
+        applyLanStop();
+    }
+    state_.lanParty.request = PhonePartyLanControls::Request::None;
 
     if (panelAtFrameStart == kLauncherPanelSettings &&
         active_ != kLauncherPanelSettings) {

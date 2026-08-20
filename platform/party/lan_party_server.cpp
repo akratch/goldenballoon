@@ -486,14 +486,18 @@ bool send404(SocketHandle fd, bool keepAlive) {
                              std::string{}, keepAlive);
 }
 
+} /* namespace */
+
 /* ---- Host allowlist (DNS-rebinding gate for /party-ws) -------------------- */
 
 /*
  * Every IPv4 address this machine answers on. A phone's controller page
  * only ever dials the exact host the QR/invite named -- one of these -- so
- * this is the complete legitimate Host set for the upgrade gate below.
+ * this is the complete legitimate Host set for the upgrade gate below, and the
+ * exact set local play advertises from (lan_party_launch.h). Public so the
+ * launcher draws the QR host from the same enumeration that allowlists it.
  */
-std::vector<std::string> machineIpv4Addresses() {
+std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses() {
     std::vector<std::string> result;
 #ifdef _WIN32
     char name[256] = {0};
@@ -539,6 +543,8 @@ std::vector<std::string> machineIpv4Addresses() {
 #endif
     return result;
 }
+
+namespace {
 
 /*
  * DNS-rebinding gate: an internet page that rebinds its own hostname to
@@ -1133,7 +1139,7 @@ bool MdkrLanPartyServer::start(uint16_t port, MdkrLanPartyManifest manifest) {
     state_->boundPort = ntohs(bound.sin_port);
     state_->manifest = std::move(manifest);
     state_->allowedHosts = {"localhost", "127.0.0.1"};
-    for (std::string &address : machineIpv4Addresses()) {
+    for (std::string &address : mdkr_lan_party_machine_ipv4_addresses()) {
         state_->allowedHosts.push_back(std::move(address));
     }
     state_->stopping = false;

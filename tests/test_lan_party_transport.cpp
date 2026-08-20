@@ -387,6 +387,51 @@ void lanOpenBringsUpAScannableInvite() {
                 view.controllerUrl.c_str());
 }
 
+void qrPayloadHasTheInsecureControllerFragmentFormat() {
+    Harness harness;
+    assert(harness.host->open("lan"));
+    harness.service();
+    const std::string url = harness.host->view().controllerUrl;
+    /* http://<advertised-host>:<port>/controller/#<capability> -- the
+     * insecure-origin path a phone reaches with no internet. */
+    const std::string expectedPrefix = "http://192.168.1.7:49200/controller/#";
+    assert(url.rfind(expectedPrefix, 0u) == 0u);
+    const std::string capability = url.substr(expectedPrefix.size());
+    assert(!capability.empty());
+    /* Exactly one '#', and the capability is the whole fragment (no extra path
+     * segments smuggled after it). */
+    assert(url.find('#') == expectedPrefix.size() - 1u);
+    assert(capability.find('/') == std::string::npos);
+    assert(capability.find('#') == std::string::npos);
+    std::printf("qrPayloadHasTheInsecureControllerFragmentFormat: ok "
+                "(cap=%zu chars)\n", capability.size());
+}
+
+void lanStartStopLifecycleAndSingleRoom() {
+    Harness harness;
+    /* Start. */
+    assert(harness.host->open("lan"));
+    harness.service();
+    assert(harness.host->view().phase == MdkrNativePartyPhase::Open);
+    assert(harness.host->view().inviteVisible);
+
+    /* Mutual exclusion: exactly one room at a time. A second open() -- the shape
+     * a "start cloud while LAN is live" would take -- is refused while a room is
+     * live, so a cloud and a LAN room can never stack on one host. (The runtime
+     * cross-transport swap is Launcher::selectPartyTransport, which tears the
+     * live transport down before building the next; that seam is exercised
+     * end-to-end in Task 6, not here.) */
+    assert(!harness.host->open("lan"));
+    assert(harness.host->view().phase == MdkrNativePartyPhase::Open);
+
+    /* Stop releases the room; the invite is gone and seats return to local. */
+    assert(harness.host->closeRoom());
+    assert(harness.host->view().phase == MdkrNativePartyPhase::Closed);
+    assert(!harness.host->view().inviteVisible);
+    assert(harness.host->view().controllerUrl.empty());
+    std::printf("lanStartStopLifecycleAndSingleRoom: ok\n");
+}
+
 void redeemThenApproveTakesASeat() {
     Harness harness;
     assert(harness.host->open("lan"));
@@ -576,6 +621,8 @@ void fullHandshakeEmitsPhraseAndConnects() {
 int main() {
     cloudArmStillRefusesNonHttpsOpen();
     lanOpenBringsUpAScannableInvite();
+    qrPayloadHasTheInsecureControllerFragmentFormat();
+    lanStartStopLifecycleAndSingleRoom();
     redeemThenApproveTakesASeat();
     seatCasRefusesDoubleOccupancy();
     closeTearsDownPhoneWithHostClosed();

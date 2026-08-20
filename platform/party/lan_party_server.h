@@ -88,6 +88,15 @@ inline const char *mdkr_lan_party_content_type(const std::string &path) {
     return "application/octet-stream";
 }
 
+/*
+ * Every IPv4 address this machine answers on (loopback included). This is the
+ * exact set the server freezes into its /party-ws Host allowlist at start(), so
+ * a local-play invite that advertises one of these hosts (lan_party_launch.h)
+ * is always a host the socket will accept. Enumerates getifaddrs on POSIX and
+ * gethostname/getaddrinfo on Windows; the order is the OS enumeration order.
+ */
+std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses();
+
 #ifdef MDKR_LAN_PARTY_TESTING
 /*
  * Test-only seams, compiled solely into the unit test: cmake/tests.cmake

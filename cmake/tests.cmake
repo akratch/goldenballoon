@@ -1195,6 +1195,26 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # rather than stall it.
     set_tests_properties(lan_party_server PROPERTIES TIMEOUT 120)
 
+    # Phase 3 local-only play: the pure launcher-side config helpers -- pick the
+    # QR's advertised LAN host from the machine's addresses, and build the
+    # controller-asset manifest from a packaged web tree. No getifaddrs, no
+    # resource bundle, no libdatachannel: just the two decisions worth pinning
+    # (lan_party_launch.cpp). The getifaddrs/resource glue is app-only and, like
+    # ui_*.cpp, has no unit harness.
+    add_executable(mdkr_lan_party_launch_test
+        ${CMAKE_SOURCE_DIR}/tests/test_lan_party_launch.cpp
+        ${CMAKE_SOURCE_DIR}/platform/party/lan_party_launch.cpp)
+    target_include_directories(mdkr_lan_party_launch_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_features(mdkr_lan_party_launch_test PRIVATE cxx_std_17)
+    if(MSVC)
+        target_compile_options(mdkr_lan_party_launch_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_lan_party_launch_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME lan_party_launch COMMAND mdkr_lan_party_launch_test)
+
     # Phase 3 local-only play: the in-process local room -- the zero-internet
     # equivalent of the Cloudflare Party room DO. It mints the invite
     # capability + fallback code, holds seat leases, throttles code redemption,

@@ -795,6 +795,8 @@ if(NOT EMSCRIPTEN)
                 ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/lan_party_transport.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_launch.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_launch_config.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
