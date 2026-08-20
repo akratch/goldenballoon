@@ -149,7 +149,19 @@ public:
     // Read-only test witness for the intermediate-width navigation smoke.
     int activePanelForSmoke() const { return active_; }
 
+    // Which relay backs the one live Phone Party transport. Cloud is the
+    // shipped default (the compiled https Party service); Lan is the embedded
+    // zero-internet server+room. Runtime mutual-exclusion is enforced by
+    // selectPartyTransport(): exactly one is ever live. Task 5 owns the UI that
+    // flips this at runtime.
+    enum class PartyTransportKind { Cloud, Lan };
+
 private:
+    // Tears the current transport (and the host bound to it) down before
+    // building the requested one, so a cloud and a LAN transport can never be
+    // live at once. Called once at construction with the shipped default.
+    void selectPartyTransport(PartyTransportKind kind);
+
     std::unique_ptr<MdkrPartyTransport> partyTransport_;
     std::unique_ptr<MdkrNativePartyHost> phoneParty_;
     LauncherState state_;

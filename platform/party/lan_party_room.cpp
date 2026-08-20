@@ -1044,7 +1044,7 @@ void handleControllerSignal(MdkrLanPartyRoomState &state,
     effects.push_back({Effect::Kind::Close, ctx->socket, "", 4003u});
 }
 
-/* Worker admitSignalMessage, verbatim: reset the sliding window on rollover,
+/* Worker admitSignalMessage, verbatim: reset the fixed window on rollover,
  * count the frame against both the window and the lifetime, and admit only
  * while both stay under their caps. Called once per post-auth frame BEFORE the
  * parse, so a flood of malformed frames is throttled too. */

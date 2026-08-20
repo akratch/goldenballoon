@@ -8,6 +8,7 @@
 #include "ui_online_room.h"
 #include "ui_settings.h"
 #include "party/libdatachannel_party_transport.h"
+#include "party/lan_party_transport.h"
 #include "party/native_party_host.h"
 
 #include "imgui.h"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
 
@@ -708,9 +710,33 @@ void drawActivePanel(int activePanel, LauncherState &state, LauncherAction &acti
 
 }  // namespace
 
-Launcher::Launcher()
-    : partyTransport_(mdkr_create_native_party_transport()),
-      phoneParty_(std::make_unique<MdkrNativePartyHost>(*partyTransport_)) {
+Launcher::Launcher() {
+    /* The shipped default is the cloud transport (the compiled https Party
+     * service). Task 5 wires a UI toggle to selectPartyTransport(Lan) for
+     * zero-internet local play; routing both factories through this one seam is
+     * also what links the LAN transport surface into the binary. */
+    selectPartyTransport(PartyTransportKind::Cloud);
+}
+
+void Launcher::selectPartyTransport(PartyTransportKind kind) {
+    /* Runtime mutual-exclusion: exactly one live party transport. Tear the
+     * current host down first -- ~MdkrNativePartyHost tells the phones goodbye
+     * and shuts its transport down -- then release the transport before
+     * building the next, so a cloud and a LAN transport can never both be live.
+     * The assert pins the invariant the seam exists to guarantee. */
+    state_.phoneParty = nullptr;
+    phoneParty_.reset();
+    partyTransport_.reset();
+    assert(!partyTransport_ && !phoneParty_);
+    switch (kind) {
+        case PartyTransportKind::Cloud:
+            partyTransport_ = mdkr_create_native_party_transport();
+            break;
+        case PartyTransportKind::Lan:
+            partyTransport_ = mdkr_create_lan_party_transport();
+            break;
+    }
+    phoneParty_ = std::make_unique<MdkrNativePartyHost>(*partyTransport_);
     state_.phoneParty = phoneParty_.get();
 }
 

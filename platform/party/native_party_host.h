@@ -162,6 +162,18 @@ public:
     virtual ~MdkrPartyTransport() = default;
     virtual bool available() const = 0;
     virtual const char *unavailableReason() const = 0;
+    /*
+     * Transport-selection seam. Whether this transport's invite origin must be
+     * the compiled secure (https) Party origin -- the fail-closed default, so
+     * the cloud transport and every test fake keep the M2 canonical-origin
+     * policy unchanged (a non-https CLOUD open still refuses, and a room_state
+     * whose controllerUrl is not https is still rejected). The LAN transport
+     * overrides this to false: its invite is an http://<lan-ip>:<port> the
+     * phones reach with no internet at all, legitimately outside the
+     * compiled-origin trust model. The host consults this at open() and when
+     * validating a room update's controllerUrl, and nowhere else.
+     */
+    virtual bool requiresSecureOrigin() const { return true; }
     virtual bool open(const std::string &serviceOrigin) = 0;
     virtual bool approve(const std::string &controllerId, unsigned seat) = 0;
     virtual bool reject(const std::string &controllerId) = 0;

@@ -124,10 +124,18 @@ bool MdkrNativePartyHost::open(const std::string &serviceOrigin) {
     /* M2: not merely "starts with https://" -- the compiled origin must be
      * the one canonical scheme+host[:port] shape. A value carrying a path,
      * query, fragment, userinfo or trailing slash is a misconfigured build
-     * and fails closed here, before any transport bootstrap. */
-    if (serviceOrigin.size() > kMaxUrl ||
-        (!mdkr_party_canonical_https_origin(serviceOrigin) &&
-         !mdkr_party_loopback_test_url_allowed(serviceOrigin))) {
+     * and fails closed here, before any transport bootstrap. The
+     * canonical-origin gate is the CLOUD arm's; a LAN transport
+     * (requiresSecureOrigin()==false) legitimately bypasses it because its
+     * origin is an in-process http://<lan-ip>:<port>, not the compiled Party
+     * service. The size cap and the transport's own open() still apply. */
+    if (serviceOrigin.size() > kMaxUrl) {
+        setError("Phone controllers require the configured secure Party service.");
+        return false;
+    }
+    if (transport_.requiresSecureOrigin() &&
+        !mdkr_party_canonical_https_origin(serviceOrigin) &&
+        !mdkr_party_loopback_test_url_allowed(serviceOrigin)) {
         setError("Phone controllers require the configured secure Party service.");
         return false;
     }
@@ -230,13 +238,24 @@ bool MdkrNativePartyHost::closeRoom() {
 
 bool MdkrNativePartyHost::roomStateValid(
     const MdkrPartyTransportRoomState &room) const {
+    /* The invite URL's scheme trust model follows the same transport-selection
+     * seam as open(): the CLOUD arm demands https (or the token-gated loopback
+     * test origin); a LAN transport advertises a plain http://<lan-ip>:<port>
+     * the phones reach with no internet, so it is validated as a well-formed
+     * http(s) URL rather than a secure one. Everything else -- the printable
+     * caps, the six-digit code, the roster shape -- is identical either way. */
+    const bool secureOrigin = transport_.requiresSecureOrigin();
+    const bool inviteUrlUntrusted = secureOrigin
+        ? (room.controllerUrl.rfind("https://", 0u) != 0u &&
+           !mdkr_party_loopback_test_url_allowed(room.controllerUrl))
+        : (room.controllerUrl.rfind("http://", 0u) != 0u &&
+           room.controllerUrl.rfind("https://", 0u) != 0u);
     if (room.transitionId == 0u || room.inviteGeneration == 0u ||
         room.controllers.size() > kMaxControllers ||
         !printable(room.controllerUrl, kMaxUrl) ||
         !printable(room.fallbackCode, 12u) ||
         (room.inviteActive &&
-         ((room.controllerUrl.rfind("https://", 0u) != 0u &&
-           !mdkr_party_loopback_test_url_allowed(room.controllerUrl)) ||
+         (inviteUrlUntrusted ||
           room.fallbackCode.size() != 6u ||
           !std::all_of(room.fallbackCode.begin(), room.fallbackCode.end(),
                        [](unsigned char byte) { return std::isdigit(byte) != 0; })))) {

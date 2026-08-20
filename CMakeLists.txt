@@ -793,6 +793,10 @@ if(NOT EMSCRIPTEN)
         if(MDKR_NATIVE_PHONE_PARTY)
             list(APPEND APP_SOURCES
                 ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_transport.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp
+                ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
                 ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp
                 ${CMAKE_SOURCE_DIR}/platform/net/match_peer_crypto.cpp)
@@ -817,6 +821,7 @@ if(NOT EMSCRIPTEN)
                 add_executable(mdkr_native_party_sas_test
                     ${CMAKE_SOURCE_DIR}/tests/test_native_party_sas.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp)
                 target_include_directories(mdkr_native_party_sas_test PRIVATE
@@ -835,6 +840,51 @@ if(NOT EMSCRIPTEN)
                         -Wall -Wextra -Wpedantic -Werror)
                 endif()
                 add_test(NAME native_party_sas COMMAND mdkr_native_party_sas_test)
+
+                # Phase 3 local-only play: the LanPartyTransport driven under
+                # the real MdkrNativePartyHost. Lives here (not cmake/tests.cmake)
+                # because it needs libdatachannel + nlohmann + MbedTLS, which are
+                # only configured inside this MDKR_NATIVE_PHONE_PARTY block. The
+                # phones are simulated with a fake bridge socket + a real
+                # loopback WebRTC answerer, so it stays network- and ROM-free.
+                # MDKR_LAN_PARTY_TESTING compiles the transport's port-free test
+                # factory + controller-attach seam (and the server's park hooks),
+                # and nowhere else -- the MDKR_A11Y_SPEECH_TESTING pattern.
+                add_executable(mdkr_lan_party_transport_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_lan_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_server.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/lan_party_room.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/native_party_host.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c)
+                target_include_directories(mdkr_lan_party_transport_test PRIVATE
+                    ${CMAKE_SOURCE_DIR}/platform
+                    ${MDKR_LIBDATACHANNEL_JSON_INCLUDE}
+                    ${MDKR_PARTY_GENERATED_INCLUDE})
+                target_include_directories(mdkr_lan_party_transport_test SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/include)
+                target_compile_definitions(mdkr_lan_party_transport_test PRIVATE
+                    MDKR_LAN_PARTY_TESTING)
+                target_compile_features(mdkr_lan_party_transport_test PRIVATE cxx_std_17)
+                target_link_libraries(mdkr_lan_party_transport_test PRIVATE
+                    LibDataChannel::LibDataChannel MbedTLS::MbedTLS Threads::Threads)
+                if(WIN32)
+                    target_link_libraries(mdkr_lan_party_transport_test PRIVATE ws2_32)
+                endif()
+                if(MSVC)
+                    target_compile_options(mdkr_lan_party_transport_test PRIVATE /W4 /WX)
+                else()
+                    target_compile_options(mdkr_lan_party_transport_test PRIVATE
+                        -Wall -Wextra -Wpedantic -Werror)
+                endif()
+                add_test(NAME lan_party_transport
+                    COMMAND mdkr_lan_party_transport_test)
+                # Bounded internal waits; this backstops a genuine hang (a
+                # handshake that never connects) rather than stalling the suite.
+                set_tests_properties(lan_party_transport PROPERTIES TIMEOUT 120)
 
                 add_executable(mdkr_match_peer_crypto_test
                     ${CMAKE_SOURCE_DIR}/tests/test_match_peer_crypto.cpp
@@ -870,6 +920,7 @@ if(NOT EMSCRIPTEN)
                     ${CMAKE_SOURCE_DIR}/platform/party/native_remote_pad_ingress.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c
                     ${CMAKE_SOURCE_DIR}/platform/party/libdatachannel_party_transport.cpp
+                    ${CMAKE_SOURCE_DIR}/platform/party/party_webrtc_signaling.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_event_queue.cpp
                     ${CMAKE_SOURCE_DIR}/platform/party/party_retry_policy.cpp)
                 target_include_directories(mdkr_native_party_e2e_driver PRIVATE

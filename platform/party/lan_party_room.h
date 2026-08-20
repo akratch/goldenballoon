@@ -59,7 +59,7 @@ inline constexpr unsigned kMdkrLanPartyCodeAttemptsPerWindow = 12u;
 inline constexpr uint64_t kMdkrLanPartyCodeWindowMs = 10u * 60u * 1000u;
 
 /* Post-auth signaling rate limit, ported verbatim from the worker's
- * admitSignalMessage (services/party/src/party-room.ts): a sliding 10-second
+ * admitSignalMessage (services/party/src/party-room.ts): a fixed 10-second
  * window of at most 120 frames plus a hard 512-frame lifetime cap per socket.
  * A redeemed controller that breaches either bound is closed 4008
  * (rate_limited) -- the Task 1 server bounds a frame's SIZE, never its rate,
