@@ -665,6 +665,10 @@ CHECKS = (
     Check("audio_level_reference", "check_audio_level_reference.py", "native",
           "absolute output level: RMS/crest/true-peak/per-band/per-slice against "
           "the frozen baseline, with injected-gain controls"),
+    Check("cave_reverb_bus", "check_cave_reverb_bus.py", "native",
+          "cave SFX reach the AL_FX_BIGROOM aux bus: a Treasure Caves autopilot "
+          "drive with the per-voice reverb-routing trace, asserting two aux buses "
+          "and fxmix>0 SFX voices on bus 1"),
     Check("resource_plateau", "check_resource_plateau.py", "native",
           "repeated GL/WebGPU stage, pool/audio/GPU/registry ownership plateau"),
     Check("raw16_audio", "check_raw16_audio.py", "native",

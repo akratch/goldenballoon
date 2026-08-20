@@ -8,6 +8,54 @@
 
 #include "audio_compat_internal.h"
 
+/*
+ * SFX/CSP voice reverb-routing trace (MDKR_AUDIO_VOICE_TRACE_JSONL).
+ *
+ * Records, each time a voice's FX (reverb) mix is set, which aux bus its
+ * envmixer is currently a source of, the wet-send amount, and how many aux
+ * buses the synth built. Music (CSP) voices stay on bus 0 (AL_FX_CUSTOM); SFX
+ * voices are re-parented to bus 1 (AL_FX_BIGROOM) for the cave/tunnel echo, so
+ * on a reverb-line route a fxmix>0 voice only appears on bus 1 once the second
+ * aux bus exists. tests/check_cave_reverb_bus.py reads this seam.
+ */
+#ifdef NATIVE_PORT
+static FILE *s_native_voice_trace_fp = NULL;
+static int s_native_voice_trace_init = 0;
+
+static FILE *native_voice_trace_fp(void)
+{
+    const char *path;
+
+    if (s_native_voice_trace_init) {
+        return s_native_voice_trace_fp;
+    }
+
+    s_native_voice_trace_init = 1;
+    path = getenv("MDKR_AUDIO_VOICE_TRACE_JSONL");
+    if (path != NULL && *path != '\0') {
+        s_native_voice_trace_fp = mdkr_fopen_utf8(path, "w");
+    }
+
+    return s_native_voice_trace_fp;
+}
+
+static void native_voice_trace_fxmix(ALSynth *s, ALVoice *voice, u8 fxmix)
+{
+    FILE *fp = native_voice_trace_fp();
+
+    if (fp == NULL || voice == NULL || voice->pvoice == NULL) {
+        return;
+    }
+
+    fprintf(fp,
+            "{\"event\":\"fxmix\",\"bus\":%d,\"fxmix\":%d,\"max_aux\":%d}\n",
+            (s32)voice->pvoice->unkDC, (s32)fxmix,
+            s != NULL ? s->maxAuxBusses : -1);
+}
+#else
+#define native_voice_trace_fxmix(s, voice, fxmix) ((void)0)
+#endif
+
 static void enqueue_voice_update(ALVoice *voice, ALParam *update)
 {
     ALFilter *filter;
@@ -636,6 +684,7 @@ void alSynSetFXMix(ALSynth *s, ALVoice *voice, u8 fxmix)
     }
 
     update->data.i = fxmix;
+    native_voice_trace_fxmix(s, voice, fxmix);
     enqueue_voice_update(voice, update);
 }
 
