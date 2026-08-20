@@ -49,11 +49,13 @@ Self-validation — this check is proven to be able to fail
 ---------------------------------------------------------
 The pre-fix binary (single aux bus) produces a trace whose every line is
 ``bus:0 max_aux:1`` including the fxmix>0 cave SFX, so assertions 1 and 3 both
-fail. That is the RED state; the fix turns it GREEN. Only SFX voices appear here
-(music sets its FX mix through the note-on start param, not ``alSynSetFXMix``),
-which sharpens the bus-0/bus-1 discriminator. This oracle proves the ROUTING —
-which bus the cave SFX reach — not that the reverb DSP carries real parameters;
-the level/PCM gates cover the DSP itself.
+fail. That is the RED state; the fix turns it GREEN. The fxmix lines on this
+route are the cave SFX (a CSP voice only emits one if the sequence sends a
+reverb control change), and the assertions count wet voices reaching bus 1, so
+the discriminator is the SFX routing. This oracle proves the ROUTING — which bus
+the cave SFX reach — not that the reverb DSP carries real parameters; the
+level/PCM gates cover the DSP itself. (check_music_bus_isolation.py is the
+companion oracle proving music voices stay on bus 0.)
 
 Always runs muted + headless (MDKR_AUDIO=0 and --headless-frames), one authored
 Original-cadence ticket per host opportunity (MDKR_SYNTH_FIELDS=2), per

@@ -673,6 +673,11 @@ CHECKS = (
           "cave SFX reach the AL_FX_BIGROOM aux bus: a Treasure Caves autopilot "
           "drive with the per-voice reverb-routing trace, asserting two aux buses "
           "and fxmix>0 SFX voices on bus 1"),
+    Check("music_bus_isolation", "check_music_bus_isolation.py", "native",
+          "music (CSP) voices stay on the AL_FX_CUSTOM music bus and never leak "
+          "onto the big-room SFX bus after recycled SFX voices moved pool slots "
+          "there: a Treasure Caves autopilot drive with the per-voice routing "
+          "trace, asserting every music note-on is on bus 0"),
     Check("resource_plateau", "check_resource_plateau.py", "native",
           "repeated GL/WebGPU stage, pool/audio/GPU/registry ownership plateau"),
     Check("raw16_audio", "check_raw16_audio.py", "native",

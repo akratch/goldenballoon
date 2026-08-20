@@ -11,12 +11,22 @@
 /*
  * SFX/CSP voice reverb-routing trace (MDKR_AUDIO_VOICE_TRACE_JSONL).
  *
- * Records, each time a voice's FX (reverb) mix is set, which aux bus its
- * envmixer is currently a source of, the wet-send amount, and how many aux
- * buses the synth built. Music (CSP) voices stay on bus 0 (AL_FX_CUSTOM); SFX
- * voices are re-parented to bus 1 (AL_FX_BIGROOM) for the cave/tunnel echo, so
- * on a reverb-line route a fxmix>0 voice only appears on bus 1 once the second
- * aux bus exists. tests/check_cave_reverb_bus.py reads this seam.
+ * Two event kinds share one JSONL stream:
+ *
+ *   "fxmix" — emitted whenever a voice's FX (reverb) mix is set via
+ *   alSynSetFXMix (the SFX player per-sound, and the CSP player for MIDI
+ *   reverb control changes). Records which aux bus the voice's envmixer is
+ *   currently a source of, the wet-send amount, and how many aux buses the
+ *   synth built. tests/check_cave_reverb_bus.py reads it.
+ *
+ *   "music" — emitted from alSynStartVoiceParams (the CSP/music note-on start
+ *   path, which the SFX player never uses) with the same bus/max_aux fields, so
+ *   music voices' bus membership is observable even though they never call
+ *   alSynSetFXMix. tests/check_music_bus_isolation.py reads it.
+ *
+ * Music (CSP) voices stay on bus 0 (AL_FX_CUSTOM); SFX voices are re-parented
+ * to bus 1 (AL_FX_BIGROOM) for the cave/tunnel echo, so on a reverb-line route
+ * a fxmix>0 voice only appears on bus 1 once the second aux bus exists.
  */
 #ifdef NATIVE_PORT
 static FILE *s_native_voice_trace_fp = NULL;
@@ -52,8 +62,23 @@ static void native_voice_trace_fxmix(ALSynth *s, ALVoice *voice, u8 fxmix)
             (s32)voice->pvoice->unkDC, (s32)fxmix,
             s != NULL ? s->maxAuxBusses : -1);
 }
+
+static void native_voice_trace_music(ALSynth *s, ALVoice *voice, u8 fxmix)
+{
+    FILE *fp = native_voice_trace_fp();
+
+    if (fp == NULL || voice == NULL || voice->pvoice == NULL) {
+        return;
+    }
+
+    fprintf(fp,
+            "{\"event\":\"music\",\"bus\":%d,\"fxmix\":%d,\"max_aux\":%d}\n",
+            (s32)voice->pvoice->unkDC, (s32)fxmix,
+            s != NULL ? s->maxAuxBusses : -1);
+}
 #else
 #define native_voice_trace_fxmix(s, voice, fxmix) ((void)0)
+#define native_voice_trace_music(s, voice, fxmix) ((void)0)
 #endif
 
 static void enqueue_voice_update(ALVoice *voice, ALParam *update)
@@ -720,6 +745,7 @@ void alSynStartVoiceParams(ALSynth *s, ALVoice *voice, ALWaveTable *table,
     update->pitch = pitch;
     update->samples = _timeToSamples(s, delta);
     update->wave = table;
+    native_voice_trace_music(s, voice, fxmix);
     enqueue_voice_update(voice, (ALParam *)update);
 }
 

@@ -3062,6 +3062,45 @@ that is the RED state the fix turns GREEN. The trace still carries the bus-0
 music wet lines, so a build that lost reverb entirely fails the anti-vacuity
 rather than passing.
 
+## Music voices stay off the big-room bus — `tests/check_music_bus_isolation.py` (RUN THIS AFTER ANY AUX-BUS, VOICE-ALLOC, OR CSP NOTE-ON ROUTING CHANGE)
+
+The companion to `check_cave_reverb_bus.py`. That gate proves SFX *reach* bus 1;
+this one proves music *never does*. Physical voices are a shared pool
+(`alSynAllocVoice`, `platform/audio_synth.c`), and the allocator sets only the
+logical voice's `fxBus` — it never moves the physical voice's aux bus. SFX
+re-parent their physical voice to bus 1 (`AL_FX_BIGROOM`) and never move it back,
+so a slot an SFX used stays pinned to the big-room reverb. Stock DKR
+(`csplayer.c`) re-parents every music voice to bus 0 (`AL_FX_CUSTOM`) on note-on,
+right after a successful `alSynAllocVoice`; the port dropped that step, and
+`maxAuxBusses == 1` masked the leak until issue #49 built the real second bus.
+When a music note then reuses an SFX-vacated voice, its reverb send follows the
+voice onto bus 1 and the music leaks into the SFX echo.
+
+This is the missing music-side oracle. It loads Treasure Caves
+(`MDKR_LOAD_TRACK=30`) and drives it with DKR's own AI (`MDKR_AUTOPILOT=1`) — a
+race that plays music over dense engine SFX, so the 40-voice pool is recycled
+between the two owners and music note-ons routinely land on slots an SFX just
+vacated on bus 1. The clean-room synth writes a per-voice routing line to
+`MDKR_AUDIO_VOICE_TRACE_JSONL`: an `"fxmix"` line whenever the SFX player sets a
+voice's FX mix (as `check_cave_reverb_bus.py` reads) and a new `"music"` line at
+every CSP note-on start (`alSynStartVoiceParams`, a path the SFX player never
+uses), each carrying the aux bus the voice is a source of and how many buses the
+synth built.
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_music_bus_isolation.py --build build \
+    --rom baserom.us.v80.z64
+```
+
+It asserts (1) the synth built **two** aux buses (`max_aux == 2`), (2) Treasure
+Caves loaded as a race with forward progress, (3) SFX actually reached bus 1 and
+(4) music actually played — both anti-vacuity, since the leak needs SFX-parked
+voices *and* music note-ons — and (5) the oracle: **zero** music note-ons are on
+bus 1. Before the fix a Treasure Caves drive puts most music note-ons (measured
+5209 of 6252) on bus 1 once SFX have moved pool voices there, so assertion 5
+fails — the RED state. Restoring the stock per-note re-parent to bus 0 turns it
+GREEN (every music line on bus 0).
+
 ## RAW16 byte order and timbre — `tests/check_raw16_audio.py` (RUN THIS AFTER ANY RAW16, MIXER LOAD, ENDIAN-HELPER, OR AUDIO-BANK CHANGE)
 
 `check_audio_output.py` passed on the broken build: a byte-reversed instrument can
