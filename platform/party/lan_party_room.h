@@ -58,6 +58,17 @@ inline constexpr size_t kMdkrLanPartyMaxSignalBytes = 64u * 1024u;
 inline constexpr unsigned kMdkrLanPartyCodeAttemptsPerWindow = 12u;
 inline constexpr uint64_t kMdkrLanPartyCodeWindowMs = 10u * 60u * 1000u;
 
+/* Post-auth signaling rate limit, ported verbatim from the worker's
+ * admitSignalMessage (services/party/src/party-room.ts): a sliding 10-second
+ * window of at most 120 frames plus a hard 512-frame lifetime cap per socket.
+ * A redeemed controller that breaches either bound is closed 4008
+ * (rate_limited) -- the Task 1 server bounds a frame's SIZE, never its rate,
+ * so this is the only thing standing between an authenticated phone and a
+ * flood of the host sink. */
+inline constexpr uint64_t kMdkrLanPartySignalWindowMs = 10u * 1000u;
+inline constexpr unsigned kMdkrLanPartySignalWindowMessages = 120u;
+inline constexpr unsigned kMdkrLanPartySignalLifetimeMessages = 512u;
+
 /*
  * Abstract controller socket. The room depends only on this, never on the
  * concrete MdkrLanPartyWebSocket, so it is unit-testable with a fake and

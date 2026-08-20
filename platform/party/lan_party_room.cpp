@@ -518,35 +518,90 @@ bool normalizedCandidate(const json::Value &value) {
 
 /* ---- Name normalization ------------------------------------------------ */
 
-/* A modest native analogue of security.ts normalizeName: drop control bytes,
- * trim ASCII whitespace, and cap at the code-point budget. The name is
- * cosmetic (the native host renders it), so full NFC is intentionally out of
- * scope; what matters is that no control byte reaches the host row. */
+/* Lenient UTF-8 decode into code points; malformed lead/continuation bytes are
+ * skipped rather than trusted, so no half-formed sequence reaches the host. */
+std::vector<uint32_t> decodeUtf8(const std::string &value) {
+    std::vector<uint32_t> out;
+    const size_t size = value.size();
+    for (size_t index = 0u; index < size;) {
+        const unsigned char lead = static_cast<unsigned char>(value[index]);
+        uint32_t code;
+        size_t width;
+        if (lead < 0x80u) { code = lead; width = 1u; }
+        else if ((lead & 0xe0u) == 0xc0u) { code = lead & 0x1fu; width = 2u; }
+        else if ((lead & 0xf0u) == 0xe0u) { code = lead & 0x0fu; width = 3u; }
+        else if ((lead & 0xf8u) == 0xf0u) { code = lead & 0x07u; width = 4u; }
+        else { index++; continue; }
+        if (index + width > size) break;
+        bool ok = true;
+        for (size_t offset = 1u; offset < width; offset++) {
+            const unsigned char cont = static_cast<unsigned char>(value[index + offset]);
+            if ((cont & 0xc0u) != 0x80u) { ok = false; break; }
+            code = (code << 6u) | (cont & 0x3fu);
+        }
+        if (!ok) { index++; continue; }
+        index += width;
+        out.push_back(code);
+    }
+    return out;
+}
+
+void encodeUtf8(std::string &out, uint32_t code) {
+    if (code <= 0x7fu) {
+        out.push_back(static_cast<char>(code));
+    } else if (code <= 0x7ffu) {
+        out.push_back(static_cast<char>(0xc0u | (code >> 6u)));
+        out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+    } else if (code <= 0xffffu) {
+        out.push_back(static_cast<char>(0xe0u | (code >> 12u)));
+        out.push_back(static_cast<char>(0x80u | ((code >> 6u) & 0x3fu)));
+        out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+    } else {
+        out.push_back(static_cast<char>(0xf0u | (code >> 18u)));
+        out.push_back(static_cast<char>(0x80u | ((code >> 12u) & 0x3fu)));
+        out.push_back(static_cast<char>(0x80u | ((code >> 6u) & 0x3fu)));
+        out.push_back(static_cast<char>(0x80u | (code & 0x3fu)));
+    }
+}
+
+/* The code points security.ts normalizeName strips: C0 controls, DEL + C1,
+ * zero-width and directional-formatting characters, bidi overrides/isolates,
+ * word joiner and BOM. */
+bool nameStripped(uint32_t code) {
+    return code <= 0x1fu || (code >= 0x7fu && code <= 0x9fu) ||
+           (code >= 0x200bu && code <= 0x200fu) || code == 0x2028u ||
+           code == 0x2029u || (code >= 0x202au && code <= 0x202eu) ||
+           code == 0x2060u || (code >= 0x2066u && code <= 0x2069u) ||
+           code == 0xfeffu;
+}
+
+/* Unicode White_Space that can survive the strip above, for the .trim() step. */
+bool nameWhitespace(uint32_t code) {
+    return code == 0x20u || code == 0xa0u || code == 0x1680u ||
+           (code >= 0x2000u && code <= 0x200au) || code == 0x202fu ||
+           code == 0x205fu || code == 0x3000u;
+}
+
+/* Native port of security.ts normalizeName: strip the invisible/bidi code
+ * points above, trim surrounding whitespace, and cap at the code-point budget.
+ * Canonical NFC composition still needs ICU and stays out of scope (the name
+ * is cosmetic, rendered by the native host); what this guarantees is that no
+ * control, zero-width or direction-flipping code point reaches the host row. */
 std::string normalizeName(const std::string &value) {
-    std::string stripped;
-    stripped.reserve(value.size());
-    for (unsigned char byte : value) {
-        if (byte < 0x20u || byte == 0x7fu) continue;
-        stripped.push_back(static_cast<char>(byte));
+    std::vector<uint32_t> kept;
+    for (uint32_t code : decodeUtf8(value)) {
+        if (!nameStripped(code)) kept.push_back(code);
     }
     size_t begin = 0u;
-    size_t finish = stripped.size();
-    while (begin < finish && stripped[begin] == ' ') begin++;
-    while (finish > begin && stripped[finish - 1u] == ' ') finish--;
-    stripped = stripped.substr(begin, finish - begin);
+    size_t finish = kept.size();
+    while (begin < finish && nameWhitespace(kept[begin])) begin++;
+    while (finish > begin && nameWhitespace(kept[finish - 1u])) finish--;
     std::string out;
     unsigned codePoints = 0u;
-    for (size_t index = 0u; index < stripped.size();) {
-        const unsigned char lead = static_cast<unsigned char>(stripped[index]);
-        size_t width = 1u;
-        if (lead >= 0xf0u) width = 4u;
-        else if (lead >= 0xe0u) width = 3u;
-        else if (lead >= 0xc0u) width = 2u;
-        if (index + width > stripped.size()) break;
-        if (codePoints >= kMdkrLanPartyMaxNameCodePoints) break;
-        out.append(stripped, index, width);
-        index += width;
-        codePoints++;
+    for (size_t index = begin;
+         index < finish && codePoints < kMdkrLanPartyMaxNameCodePoints;
+         index++, codePoints++) {
+        encodeUtf8(out, kept[index]);
     }
     return out;
 }
@@ -570,6 +625,10 @@ struct MdkrLanPartySocketCtx {
     bool authenticated = false;
     std::string controllerId;
     bool removed = false;
+    /* Post-auth signal throttle, one per socket (worker admitSignalMessage). */
+    unsigned windowMessages = 0u;
+    uint64_t windowStartedAt = 0u;
+    unsigned lifetimeMessages = 0u;
 };
 
 struct MdkrLanPartyRoomState {
@@ -813,10 +872,27 @@ void handleRedeem(MdkrLanPartyRoomState &state,
 
     const bool byCapability = capability != nullptr;
     const bool byCode = code != nullptr;
-    /* Allowed keys: type, protocol, controllerPublicKey, exactly one of
-     * capability|code, and an optional name. Anything else is malformed. */
-    size_t expected = 3u + (name != nullptr ? 1u : 0u) + 1u;
-    if (value.obj.size() != expected || byCapability == byCode) {
+    const bool hasName = name != nullptr;
+    /* Exactly one of capability|code, alongside type/protocol/
+     * controllerPublicKey and an optional name -- validated with the same
+     * json::exactKeys helper every other handler uses. */
+    bool keysOk = false;
+    if (byCapability != byCode) {
+        if (byCapability) {
+            keysOk = hasName
+                         ? json::exactKeys(value, {"capability", "controllerPublicKey",
+                                                   "name", "protocol", "type"})
+                         : json::exactKeys(value, {"capability", "controllerPublicKey",
+                                                   "protocol", "type"});
+        } else {
+            keysOk = hasName
+                         ? json::exactKeys(value, {"code", "controllerPublicKey",
+                                                   "name", "protocol", "type"})
+                         : json::exactKeys(value, {"code", "controllerPublicKey",
+                                                   "protocol", "type"});
+        }
+    }
+    if (!keysOk) {
         refuseRedeem(effects, socket, "invalid_invite");
         return;
     }
@@ -919,8 +995,14 @@ void handleControllerSignal(MdkrLanPartyRoomState &state,
         return;
     }
     const std::string &realId = ctx->controllerId;
+    /* Defense in depth + worker parity: the supplied controllerId must be a
+     * well-formed base64url-22 even though the relayed id is always forced to
+     * this socket's authenticated id (never the wire value). */
+    const json::Value *suppliedId = value.find("controllerId");
+    const bool idWellFormed = suppliedId != nullptr && suppliedId->isString() &&
+                              isBase64Url(suppliedId->str, 22u);
     if (type->str == "controller_hello") {
-        if (!json::exactKeys(value, {"controllerId", "type"})) {
+        if (!json::exactKeys(value, {"controllerId", "type"}) || !idWellFormed) {
             effects.push_back({Effect::Kind::Close, ctx->socket, "", 4003u});
             return;
         }
@@ -932,7 +1014,7 @@ void handleControllerSignal(MdkrLanPartyRoomState &state,
         const json::Value *pg = value.find("peerGeneration");
         const json::Value *sdp = value.find("sdp");
         if (!json::exactKeys(value, {"controllerId", "peerGeneration", "sdp", "type"}) ||
-            !json::positiveU32(pg) || sdp == nullptr ||
+            !idWellFormed || !json::positiveU32(pg) || sdp == nullptr ||
             normalizedDescription(*sdp, "answer") == nullptr) {
             effects.push_back({Effect::Kind::Close, ctx->socket, "", 4003u});
             return;
@@ -948,7 +1030,7 @@ void handleControllerSignal(MdkrLanPartyRoomState &state,
         const json::Value *candidate = value.find("candidate");
         if (!json::exactKeys(value,
                              {"candidate", "controllerId", "peerGeneration", "type"}) ||
-            !json::positiveU32(pg) || candidate == nullptr ||
+            !idWellFormed || !json::positiveU32(pg) || candidate == nullptr ||
             !normalizedCandidate(*candidate)) {
             effects.push_back({Effect::Kind::Close, ctx->socket, "", 4003u});
             return;
@@ -962,6 +1044,21 @@ void handleControllerSignal(MdkrLanPartyRoomState &state,
     effects.push_back({Effect::Kind::Close, ctx->socket, "", 4003u});
 }
 
+/* Worker admitSignalMessage, verbatim: reset the sliding window on rollover,
+ * count the frame against both the window and the lifetime, and admit only
+ * while both stay under their caps. Called once per post-auth frame BEFORE the
+ * parse, so a flood of malformed frames is throttled too. */
+bool admitSignal(MdkrLanPartySocketCtx &ctx, uint64_t now) {
+    if (now - ctx.windowStartedAt >= kMdkrLanPartySignalWindowMs) {
+        ctx.windowMessages = 0u;
+        ctx.windowStartedAt = now;
+    }
+    ctx.windowMessages += 1u;
+    ctx.lifetimeMessages += 1u;
+    return ctx.windowMessages <= kMdkrLanPartySignalWindowMessages &&
+           ctx.lifetimeMessages <= kMdkrLanPartySignalLifetimeMessages;
+}
+
 void handleControllerMessage(MdkrLanPartyRoomState &state,
                              const std::shared_ptr<MdkrLanPartySocketCtx> &ctx,
                              const std::string &text, std::vector<Effect> &effects,
@@ -969,6 +1066,14 @@ void handleControllerMessage(MdkrLanPartyRoomState &state,
     if (ctx->removed || !ctx->socket) return;
     if (text.size() > kMdkrLanPartyMaxSignalBytes) {
         effects.push_back({Effect::Kind::Close, ctx->socket, "", 4009u});
+        return;
+    }
+    /* Redeem is a one-shot on an anonymous socket and is bounded by the code
+     * throttle; the per-socket signal rate limit governs a REDEEMED socket's
+     * frames, exactly as the worker applies admitSignalMessage only to
+     * authenticated peers. A breach closes 4008, mirroring the worker. */
+    if (ctx->authenticated && !admitSignal(*ctx, nowMs(state))) {
+        effects.push_back({Effect::Kind::Close, ctx->socket, "", 4008u});
         return;
     }
     json::Value value;

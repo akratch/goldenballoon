@@ -515,6 +515,79 @@ void peerCloseDeregistersTheControllerFromRelay() {
     assert(next->sawText("\"ok\":true"));
 }
 
+/* Post-auth flood defence: an authenticated controller gets 120 signal frames
+ * per 10-second window; the 121st in the window closes the socket 4008 and is
+ * not relayed (worker admitSignalMessage parity). */
+void signalFloodInAWindowClosesFourZeroZeroEight() {
+    Fixture fixture;
+    auto phone = fixture.attach();
+    phone->inject(redeemCapability(fixture.invite.capability));
+    const std::string id = stringField(phone->sent[0], "controllerId");
+    const std::string hello =
+        "{\"type\":\"controller_hello\",\"controllerId\":" + quote(id) + "}";
+
+    const size_t hostBefore = fixture.hostMessages.size();
+    for (unsigned n = 0u; n < kMdkrLanPartySignalWindowMessages; n++) {
+        phone->inject(hello);
+        assert(!phone->closed);
+    }
+    assert(fixture.hostMessages.size() ==
+           hostBefore + kMdkrLanPartySignalWindowMessages);
+
+    phone->inject(hello); /* the 121st */
+    assert(phone->closed);
+    assert(phone->closeCode == 4008u);
+    assert(fixture.hostMessages.size() ==
+           hostBefore + kMdkrLanPartySignalWindowMessages);
+}
+
+/* A slow but sustained legitimate stream is never window-throttled, yet the
+ * hard 512-frame lifetime cap still trips. */
+void signalLifetimeCapClosesAtFiveTwelve() {
+    Fixture fixture;
+    auto phone = fixture.attach();
+    phone->inject(redeemCapability(fixture.invite.capability));
+    const std::string id = stringField(phone->sent[0], "controllerId");
+    const std::string hello =
+        "{\"type\":\"controller_hello\",\"controllerId\":" + quote(id) + "}";
+
+    for (unsigned n = 0u; n < kMdkrLanPartySignalLifetimeMessages; n++) {
+        if (n % 100u == 0u) fixture.clockMs += kMdkrLanPartySignalWindowMs + 1u;
+        phone->inject(hello);
+        assert(!phone->closed); /* the window never trips for a spread stream */
+    }
+    fixture.clockMs += kMdkrLanPartySignalWindowMs + 1u; /* a fresh window */
+    phone->inject(hello);                                 /* the 513th overall */
+    assert(phone->closed);
+    assert(phone->closeCode == 4008u);
+}
+
+/* Defense in depth + worker parity: the inbound controllerId must be a
+ * 22-char base64url even though the relayed id is forced to the socket's. */
+void controllerSignalWithMalformedIdIsRefused() {
+    Fixture fixture;
+    auto phone = fixture.attach();
+    phone->inject(redeemCapability(fixture.invite.capability));
+    const size_t hostBefore = fixture.hostMessages.size();
+    phone->inject("{\"type\":\"controller_hello\",\"controllerId\":\"tooShort\"}");
+    assert(phone->closed);
+    assert(phone->closeCode == 4003u);
+    assert(fixture.hostMessages.size() == hostBefore);
+}
+
+/* normalizeName strips the worker's zero-width and bidi code points, not just
+ * C0 control bytes, so no invisible or direction-flipping byte reaches the
+ * host's controller row. */
+void nameStripsZeroWidthAndBidiControls() {
+    Fixture fixture;
+    auto phone = fixture.attach();
+    const std::string sneaky = std::string("A\xe2\x80\x8b") + "\xe2\x80\xae" + "B";
+    phone->inject(redeemCapability(fixture.invite.capability, sneaky));
+    assert(fixture.hostSaw("\"name\":\"AB\""));
+    assert(!fixture.hostSaw("\xe2\x80\x8b"));
+    assert(!fixture.hostSaw("\xe2\x80\xae"));
+}
+
 } // namespace
 
 int main() {
@@ -532,6 +605,10 @@ int main() {
     closeTearsDownEverySocketWithHostClosed();
     rejectAndRemoveCloseTheControllerSocket();
     peerCloseDeregistersTheControllerFromRelay();
+    signalFloodInAWindowClosesFourZeroZeroEight();
+    signalLifetimeCapClosesAtFiveTwelve();
+    controllerSignalWithMalformedIdIsRefused();
+    nameStripsZeroWidthAndBidiControls();
     std::fprintf(stderr, "test_lan_party_room: all cases passed\n");
     return 0;
 }
