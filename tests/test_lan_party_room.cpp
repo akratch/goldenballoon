@@ -35,16 +35,18 @@ public:
     std::vector<std::string> sent;
     bool closed = false;
     uint16_t closeCode = 0u;
+    std::string closeReason;
 
     bool sendText(const std::string &payload) override {
         if (closed) return false;
         sent.push_back(payload);
         return true;
     }
-    void close(uint16_t code) override {
+    void close(uint16_t code, const std::string &reason) override {
         if (closed) return;
         closed = true;
         closeCode = code;
+        closeReason = reason;
         if (onClosed_) onClosed_();
     }
     bool isOpen() const override { return !closed; }
@@ -468,7 +470,11 @@ void closeTearsDownEverySocketWithHostClosed() {
     fixture.room->close();
     assert(a->closed && a->closeCode == 4000u);
     assert(b->closed && b->closeCode == 4000u);
-    assert(a->sawText("host_closed") || a->closeCode == 4000u);
+    /* The terminal reason MUST ride the close frame itself so a phone shows
+     * host_closed without re-redeeming (a bare 4000 leaves the page reconnecting,
+     * the I-1 defect). An empty reason here fails this assertion. */
+    assert(a->closeReason == "host_closed");
+    assert(b->closeReason == "host_closed");
     assert(fixture.hostSaw("\"type\":\"host_closed\""));
 
     /* A socket that attaches after close is refused; the room is terminal. */

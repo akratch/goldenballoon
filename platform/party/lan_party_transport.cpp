@@ -106,8 +106,8 @@ public:
     bool sendText(const std::string &payload) override {
         return socket_ && socket_->sendText(payload);
     }
-    void close(uint16_t code) override {
-        if (socket_) socket_->close(code);
+    void close(uint16_t code, const std::string &reason) override {
+        if (socket_) socket_->close(code, reason);
     }
     bool isOpen() const override { return socket_ && socket_->isOpen(); }
     void onMessage(std::function<void(const std::string &)> callback) override {

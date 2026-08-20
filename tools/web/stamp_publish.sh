@@ -83,7 +83,7 @@ perl -pi -e "
 
 perl -pi -e "
   s/(href=\"(?:\\.\\.\\/input\\/touch-surface|controller)\\.css)\"/\$1?v=$STAMP\"/g;
-  s/(src=\"(?:\\.\\.\\/party\\/(?:party-protocol|party-sas)|\\.\\.\\/input\\/touch-surface|controller)\\.js)\"/\$1?v=$STAMP\"/g;
+  s/(src=\"(?:\\.\\.\\/party\\/(?:party-mode|party-protocol|party-sas)|\\.\\.\\/input\\/touch-surface|controller)\\.js)\"/\$1?v=$STAMP\"/g;
   s/^<html lang=\"en\">/<html lang=\"en\" data-build-stamp=\"$STAMP\">/;
 " "$CONTROLLER"
 
@@ -115,6 +115,7 @@ for ref in "style.css?v=$STAMP" "manifest.webmanifest?v=$STAMP" \
 done
 for ref in "../input/touch-surface.css?v=$STAMP" \
            "controller.css?v=$STAMP" \
+           "../party/party-mode.js?v=$STAMP" \
            "../party/party-protocol.js?v=$STAMP" \
            "../party/party-sas.js?v=$STAMP" \
            "../input/touch-surface.js?v=$STAMP" "controller.js?v=$STAMP" \

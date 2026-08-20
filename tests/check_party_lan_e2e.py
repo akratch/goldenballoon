@@ -396,21 +396,28 @@ def scenario_stop(host: str, mode: str, inject: str | None, binary: Path,
         _, controller_id = wait_pending(driver, timeout)
         wait_connected(driver, controller_id, timeout)
         activate_controls(phone, timeout)
-        # The driver closes the room once input has demonstrably flowed; the
-        # server stays up so the phone's re-redeem learns the terminal reason.
-        driver.wait_line(ROOM_CLOSED.match, "host closed the room", timeout)
+        # The driver sends the room's terminal close, flushes it, then tears the
+        # whole transport DOWN (server + peers) — modeling the launcher's Stop.
+        # `server_down=1` on this line means no /party-ws remains, so the phone
+        # cannot re-redeem: whatever host_closed it shows came off the close
+        # frame itself, which is exactly the I-1 fix.
+        _, closed_line = driver.wait_line(
+            lambda line: line if ROOM_CLOSED.match(line) else None,
+            "host closed the room", timeout)
+        require("server_down=1" in closed_line,
+                "driver did not tear the server down on stop")
         wait_value(
             phone,
             "(!document.getElementById('state-error').hidden && "
             "document.getElementById('error-title').textContent) || ''",
             lambda value: value == "Controller room ended",
-            "host_closed on the phone", timeout)
+            "host_closed on the phone from the close frame", timeout)
         require(driver.wait_exit(20) == 0, "driver exited non-zero")
     finally:
         close_all(driver, phone, phone_process)
-    print("scenario stop: PASS — the host closed the room and the phone, "
-          "re-redeeming over the still-served ws, showed host_closed",
-          flush=True)
+    print("scenario stop: PASS — host sent the terminal close and tore the "
+          "server down; the phone showed host_closed from the close frame, with "
+          "no /party-ws left to re-redeem against", flush=True)
 
 
 def run(args: argparse.Namespace) -> None:

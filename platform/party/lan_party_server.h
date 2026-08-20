@@ -110,6 +110,9 @@ std::vector<std::string> mdkr_lan_party_machine_ipv4_addresses();
  */
 extern void (*mdkr_lan_party_test_send_hook)();
 extern unsigned mdkr_lan_party_test_http_deadline_ms; /* 0 = product value */
+/* Post-upgrade idle-reaper close deadline; the ping fires at half of it. 0 =
+ * product value. Lets the reaper test run in a second, not 45. */
+extern unsigned mdkr_lan_party_test_ws_idle_deadline_ms;
 #endif
 
 struct MdkrLanPartyWsState; /* Internal; defined in lan_party_server.cpp. */
@@ -133,7 +136,12 @@ public:
     void onClosed(std::function<void()> callback);
 
     bool sendText(const std::string &payload);
-    void close(uint16_t code = 1000u);
+    /* Close with an optional RFC 6455 reason string (UTF-8, truncated to the
+     * 123-byte control-frame budget). The reason reaches the browser as the
+     * WebSocket close event's `reason`, which the controller page reads to show a
+     * terminal state (e.g. host_closed) from the frame alone, without a
+     * re-redeem. Sent synchronously before the write side is half-closed. */
+    void close(uint16_t code = 1000u, const std::string &reason = std::string());
     bool isOpen() const;
 
 private:

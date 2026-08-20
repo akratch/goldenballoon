@@ -15,10 +15,12 @@ using SocketHandle = SOCKET;
 using SocketHandle = int;
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -26,6 +28,7 @@ using SocketHandle = int;
 #ifdef MDKR_LAN_PARTY_TESTING
 void (*mdkr_lan_party_test_send_hook)() = nullptr;
 unsigned mdkr_lan_party_test_http_deadline_ms = 0u;
+unsigned mdkr_lan_party_test_ws_idle_deadline_ms = 0u;
 #endif
 
 namespace {
@@ -61,6 +64,24 @@ unsigned httpDeadlineMs() {
     }
 #endif
     return kHttpIdleDeadlineMs;
+}
+
+/* Post-upgrade idle reaper: the pre-upgrade HTTP deadline governs only the
+ * handshake, so an upgraded /party-ws could otherwise block on recv forever and
+ * a hostile LAN device could silently hold all kMaxConnections slots. After half
+ * this window of inbound silence the server sends a WebSocket ping (a browser
+ * pongs automatically, so a real -- even approval-waiting -- phone keeps the
+ * socket alive); after the full window with no inbound activity at all the socket
+ * is reaped. Generous by design: it bounds a silent hold, not a live session. */
+constexpr unsigned kWsIdleDeadlineMs = 45000u;
+
+unsigned wsIdleDeadlineMs() {
+#ifdef MDKR_LAN_PARTY_TESTING
+    if (mdkr_lan_party_test_ws_idle_deadline_ms != 0u) {
+        return mdkr_lan_party_test_ws_idle_deadline_ms;
+    }
+#endif
+    return kWsIdleDeadlineMs;
 }
 /* After sending a close frame, how long the reader lingers to absorb the
  * peer's in-flight bytes so the close is delivered on a FIN, not lost to a
@@ -649,6 +670,22 @@ void wsSendCloseCode(MdkrLanPartyWsState &socket, uint16_t code) {
     wsSendClose(socket, payload, sizeof(payload));
 }
 
+/* Close payload is the 2-byte code plus an optional UTF-8 reason (RFC 6455
+ * 5.5.1); the whole control-frame payload must stay <= 125 bytes, so the reason
+ * is capped at 123. */
+void wsSendCloseReason(MdkrLanPartyWsState &socket, uint16_t code,
+                       const std::string &reason) {
+    if (reason.empty()) {
+        wsSendCloseCode(socket, code);
+        return;
+    }
+    std::string payload;
+    payload.push_back(static_cast<char>((code >> 8u) & 0xffu));
+    payload.push_back(static_cast<char>(code & 0xffu));
+    payload.append(reason, 0u, std::min<size_t>(reason.size(), 123u));
+    wsSendClose(socket, payload.data(), payload.size());
+}
+
 void wsNotifyClosed(MdkrLanPartyWsState &socket) {
     socket.open = false;
     std::function<void()> callback;
@@ -705,8 +742,8 @@ bool MdkrLanPartyWebSocket::sendText(const std::string &payload) {
     return wsSendFrame(*state_, 0x1u, payload.data(), payload.size());
 }
 
-void MdkrLanPartyWebSocket::close(uint16_t code) {
-    wsSendCloseCode(*state_, code);
+void MdkrLanPartyWebSocket::close(uint16_t code, const std::string &reason) {
+    wsSendCloseReason(*state_, code, reason);
     /* The connection's reader thread completes the handshake and fires
      * onClosed; it owns the socket's lifetime end to end. */
 }
@@ -750,13 +787,37 @@ void runWebSocket(const std::shared_ptr<MdkrLanPartyServerState> &state,
                   const std::shared_ptr<MdkrLanPartyWsState> &socket,
                   std::string carried) {
     bool drainBeforeTeardown = false;
+    const uint64_t idleCloseMs = wsIdleDeadlineMs();
+    const uint64_t idlePingMs = idleCloseMs / 2u;
+    const auto steadyMs = []() -> uint64_t {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                Clock::now().time_since_epoch()).count());
+    };
+    uint64_t lastActivityMs = steadyMs();
+    bool pingOutstanding = false;
     const auto need = [&](size_t count) -> bool {
         while (carried.size() < count) {
             if (state->stopping) return false;
             char chunk[4096];
             const int got = recvSome(socket->fd, chunk, sizeof(chunk));
             if (got == 0 || got == -1) return false;
-            if (got == -2) continue;
+            if (got == -2) {
+                /* Idle-reaper poll. A live socket resets this on any inbound
+                 * byte, including the automatic pong a browser sends for the
+                 * ping below, so only a silent hold reaches the close. */
+                const uint64_t idle = steadyMs() - lastActivityMs;
+                if (idle >= idleCloseMs) {
+                    wsSendCloseCode(*socket, 1000u);
+                    return false;
+                }
+                if (idle >= idlePingMs && !pingOutstanding) {
+                    pingOutstanding = wsSendFrame(*socket, 0x9u, "", 0u);
+                }
+                continue;
+            }
+            lastActivityMs = steadyMs();
+            pingOutstanding = false;
             carried.append(chunk, static_cast<size_t>(got));
         }
         return true;

@@ -105,6 +105,7 @@ public:
     mutable std::mutex stateMutex;
     bool closed = false;
     uint16_t closeCode = 0u;
+    std::string closeReason;
 
     bool sendText(const std::string &payload) override {
         {
@@ -114,13 +115,14 @@ public:
         toPhone.push(payload);
         return true;
     }
-    void close(uint16_t code) override {
+    void close(uint16_t code, const std::string &reason) override {
         std::function<void()> cb;
         {
             std::lock_guard<std::mutex> lock(stateMutex);
             if (closed) return;
             closed = true;
             closeCode = code;
+            closeReason = reason;
             cb = onClosed_;
         }
         if (cb) cb();

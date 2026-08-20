@@ -104,6 +104,8 @@
       "Keyboard, gamepads and this display’s touch controls still work offline."],
     service_unavailable: ["Pairing unavailable",
       "The controller service could not be reached. Check the internet connection or play with the display’s keyboard or gamepads."],
+    lan_unreachable: ["Can’t reach the game",
+      "Make sure your phone is on the same Wi-Fi as the game, then enter the current room code."],
   };
 
   function announce(message) { $("live-status").textContent = message; }
@@ -282,9 +284,10 @@
     } catch (_) { return false; }
   }
 
-  // The served protocol is the whole redeem selector: https POST for cloud, the
-  // host's own ws for local play (a foreign http origin was refused at boot).
-  function lanControllerMode() { return location.protocol !== "https:"; }
+  // The redeem selector is the mode the SERVER declared (party-mode.js), never a
+  // guess from the page protocol: the cloud worker serves cloud mode even over
+  // http loopback, and the embedded LAN server overrides that one file to true.
+  function lanControllerMode() { return !!globalThis.__MDKR_LAN_PARTY__; }
 
   // A secure origin must expose crypto.subtle; a plain-http LAN page does not,
   // and MDKRPartySas carries the pure-JS SAS fallback there (getRandomValues
@@ -1114,14 +1117,16 @@
           /^[A-Za-z0-9_-]{22}$/.test(update.roomId || "") &&
           /^[A-Za-z0-9_-]{87}$/.test(update.hostPublicKey || "");
         if (!ok) {
+          // finishRedeem is the LAN redeem-over-ws path only, so a missing/
+          // unknown reason is a Wi-Fi/LAN reach problem, not an internet one.
           const raw = update && typeof update.error === "string"
-            ? update.error : "service_unavailable";
+            ? update.error : "lan_unreachable";
           controlGeneration++;
           clearControlTimers();
           controlSocket = null;
           try { connection.close(1000, "redeem_rejected"); } catch (_) {}
           if (lanPending) { lanPending.reject(new Error(raw)); lanPending = null; }
-          else showError(errors[raw] ? raw : "service_unavailable");
+          else showError(errors[raw] ? raw : "lan_unreachable");
           return;
         }
         redeemed = true;
@@ -1150,14 +1155,14 @@
       try { previous?.close?.(1000, "controller_socket_replaced"); } catch (_) {}
       let connection;
       try {
-        // Cloud pairing rides the Worker's per-room signaling path over wss.
-        // Local play serves this page over plain http from the host itself, so
-        // the signaling socket is the host's own /party-ws on the same origin.
-        const secure = location.protocol === "https:";
-        const url = secure
-          ? new URL(`/api/party/${value.roomId}/connect`, location.origin)
-          : new URL("/party-ws", location.origin);
-        url.protocol = secure ? "wss:" : "ws:";
+        // Cloud pairing rides the Worker's per-room signaling path; local play
+        // uses the host's own /party-ws on the same origin. WHICH endpoint is the
+        // server-declared mode (not the protocol, so the cloud page works over
+        // http loopback too); ws vs wss follows the page's actual protocol.
+        const url = lanControllerMode()
+          ? new URL("/party-ws", location.origin)
+          : new URL(`/api/party/${value.roomId}/connect`, location.origin);
+        url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
         connection = new WebSocket(url, lanFrame ? ["gb-control-v1"]
           : ["gb-control-v1", `gb-controller.${value.credential}`]);
         controlSocket = connection;
@@ -1324,7 +1329,9 @@
           lanPending = null;
           lanFrame = null;
           api.close();
-          reject(new Error("service_unavailable"));
+          // Local play has no internet leg; an unreachable host is a Wi-Fi/LAN
+          // problem, so the copy must not tell the player to check the internet.
+          reject(new Error("lan_unreachable"));
         }, controllerRequestTimeoutMs);
         lanPending = {
           resolve: (result) => { clearTimeout(timer); resolve(result); },

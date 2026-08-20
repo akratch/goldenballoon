@@ -164,14 +164,28 @@ describe("controller-page crypto.subtle tolerance (boot gate)", () => {
 });
 
 describe("controller-page LAN-vs-cloud redeem selection", () => {
-  it("selects the LAN ws path on a plain-http origin", () => {
-    vi.stubGlobal("location", {protocol: "http:"});
+  it("selects the LAN ws path when the server declared LAN mode", () => {
+    vi.stubGlobal("__MDKR_LAN_PARTY__", true);
     expect(internals.lanControllerMode()).toBe(true);
   });
 
-  it("keeps the cloud POST path on an https origin", () => {
-    vi.stubGlobal("location", {protocol: "https:"});
+  it("keeps the cloud POST path when the flag is false or absent", () => {
+    vi.stubGlobal("__MDKR_LAN_PARTY__", false);
     expect(internals.lanControllerMode()).toBe(false);
+    vi.unstubAllGlobals();
+    expect(internals.lanControllerMode()).toBe(false); // absent → cloud
+  });
+
+  it("reads the server-declared flag, not the page protocol", () => {
+    // The cloud E2E lane runs the cloud page over http loopback: an http origin
+    // must NOT be mistaken for LAN. Protocol-guessing here was the regression.
+    vi.stubGlobal("location", {protocol: "http:"});
+    vi.stubGlobal("__MDKR_LAN_PARTY__", false);
+    expect(internals.lanControllerMode()).toBe(false);
+    // And a page could be LAN regardless of protocol if the server said so.
+    vi.stubGlobal("location", {protocol: "https:"});
+    vi.stubGlobal("__MDKR_LAN_PARTY__", true);
+    expect(internals.lanControllerMode()).toBe(true);
   });
 });
 

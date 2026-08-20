@@ -676,7 +676,9 @@ void flush(std::vector<Effect> &effects) {
                 if (effect.socket) effect.socket->sendText(effect.text);
                 break;
             case Effect::Kind::Close:
-                if (effect.socket) effect.socket->close(effect.code);
+                /* Effect.text carries the optional close reason (empty for the
+                 * code-only closes); the whole-room teardown sets host_closed. */
+                if (effect.socket) effect.socket->close(effect.code, effect.text);
                 break;
         }
     }
@@ -830,9 +832,10 @@ void sendControllerState(MdkrLanPartyRoomState &state, std::vector<Effect> &effe
 }
 
 void closeControllerSocket(MdkrLanPartyRoomState &state, std::vector<Effect> &effects,
-                           const std::string &controllerId, uint16_t code) {
+                           const std::string &controllerId, uint16_t code,
+                           const std::string &reason = std::string()) {
     if (auto socket = socketFor(state, controllerId)) {
-        effects.push_back({Effect::Kind::Close, socket, "", code});
+        effects.push_back({Effect::Kind::Close, socket, reason, code});
     }
 }
 
@@ -1250,7 +1253,11 @@ void applyHostCommand(MdkrLanPartyRoomState &state, const json::Value &value,
     advance(state);
     for (const auto &ctx : state.sockets) {
         if (!ctx->removed && ctx->socket) {
-            effects.push_back({Effect::Kind::Close, ctx->socket, "", 4000u});
+            /* 4000 + reason "host_closed": the phone reads the terminal state
+             * from the close frame itself, so it shows "Controller room ended"
+             * even when the host tears the server down in the same breath (no
+             * re-redeem needed). */
+            effects.push_back({Effect::Kind::Close, ctx->socket, "host_closed", 4000u});
         }
     }
     pushHost(state, hostOut, "{\"type\":\"host_closed\",\"reason\":\"host_closed\"}");
@@ -1440,7 +1447,9 @@ void MdkrLanPartyRoom::close() {
         advance(*state_);
         for (const auto &ctx : state_->sockets) {
             if (!ctx->removed && ctx->socket) {
-                effects.push_back({Effect::Kind::Close, ctx->socket, "", 4000u});
+                /* See applyHostCommand("close"): the reason travels in the close
+                 * frame so a phone learns host_closed without a re-redeem. */
+                effects.push_back({Effect::Kind::Close, ctx->socket, "host_closed", 4000u});
             }
         }
         pushHost(*state_, hostOut, "{\"type\":\"host_closed\",\"reason\":\"host_closed\"}");

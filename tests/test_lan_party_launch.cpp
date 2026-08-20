@@ -131,6 +131,7 @@ void seedFullTree(const std::string &root) {
     writeAsset(root, "controller/index.html", "<!doctype html><html></html>");
     writeAsset(root, "controller/controller.css", ".x{color:red}");
     writeAsset(root, "controller/controller.js", "console.log(1)");
+    writeAsset(root, "party/party-mode.js", "window.__MDKR_LAN_PARTY__ = false;\n");
     writeAsset(root, "party/party-protocol.js", "export const P=2");
     writeAsset(root, "party/party-sas.js", "export function sas(){}");
     writeAsset(root, "input/touch-surface.css", ".t{}");
@@ -163,6 +164,17 @@ void manifestBuildsFromPackagedTree() {
            "text/javascript; charset=utf-8");
     assert(manifest.count("/input/touch-surface.css") == 1u);
     assert(manifest.count("/input/touch-surface.js") == 1u);
+
+    /* The embedded server declares local-play mode by OVERRIDING this one asset:
+     * the packaged file ships cloud mode (false), but a page served from here
+     * must read true so the controller picks ws-redeem over POST. The tree's
+     * false body must not survive into the served manifest. */
+    const std::string lanMode = "window.__MDKR_LAN_PARTY__ = true;\n";
+    assert(manifest.count("/party/party-mode.js") == 1u);
+    assert(manifest.at("/party/party-mode.js").contentType ==
+           "text/javascript; charset=utf-8");
+    assert((manifest.at("/party/party-mode.js").bytes ==
+            std::vector<uint8_t>(lanMode.begin(), lanMode.end())));
     std::printf("manifestBuildsFromPackagedTree: ok (%zu entries)\n",
                 manifest.size());
 }

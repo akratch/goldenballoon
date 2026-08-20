@@ -67,11 +67,21 @@ constexpr ManifestEntry kControllerAssets[] = {
     {"controller/index.html", "/controller/index.html"},
     {"controller/controller.css", "/controller/controller.css"},
     {"controller/controller.js", "/controller/controller.js"},
+    {"party/party-mode.js", "/party/party-mode.js"},
     {"party/party-protocol.js", "/party/party-protocol.js"},
     {"party/party-sas.js", "/party/party-sas.js"},
     {"input/touch-surface.css", "/input/touch-surface.css"},
     {"input/touch-surface.js", "/input/touch-surface.js"},
 };
+
+/* The mode declaration a page loaded from THIS server sees. The tracked
+ * dist/web/party/party-mode.js declares cloud mode (false); a phone that loaded
+ * the page from the embedded LAN server is authoritatively in local-play mode,
+ * so build_manifest below serves this body for that one asset instead. Declaring
+ * the mode (rather than letting the page guess from its http protocol) is what
+ * keeps the cloud page in cloud mode even when it is served over http loopback. */
+constexpr char kLanPartyModeBody[] = "window.__MDKR_LAN_PARTY__ = true;\n";
+constexpr char kLanPartyModeServed[] = "/party/party-mode.js";
 
 bool readFile(const std::string &path, std::vector<uint8_t> &bytes) {
     std::ifstream file(path, std::ios::binary);
@@ -133,6 +143,13 @@ bool mdkr_lan_party_build_manifest(const std::string &webRoot,
         asset.contentType = mdkr_lan_party_content_type(entry.relative);
         built[entry.served] = std::move(asset);
     }
+    /* Serve the local-play mode declaration to phones that loaded from here,
+     * overriding the tracked cloud-default body while keeping every other asset
+     * byte-exact. The entry is always present (party-mode.js is in the table). */
+    const auto mode = built.find(kLanPartyModeServed);
+    if (mode == built.end()) return false;
+    mode->second.bytes.assign(
+        kLanPartyModeBody, kLanPartyModeBody + std::string(kLanPartyModeBody).size());
     out = std::move(built);
     return true;
 }

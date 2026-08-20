@@ -809,6 +809,32 @@ void getWithABodyIsRefusedNotReframed(MdkrLanPartyServer &server) {
     }
 }
 
+/* Post-upgrade idle reaper: a socket that upgrades and then goes silent (never
+ * redeems, never pongs) must not hold its connection slot forever. The server
+ * pings the idle socket, then closes it when no inbound activity follows. A raw
+ * client that ignores the ping (as here) is reaped; a real browser pongs
+ * automatically and stays alive, which is why an approval-waiting phone is safe.
+ * Red-first: without the reaper this socket never receives a frame, so the read
+ * below times out and the close assertion fails. */
+void idleWebSocketIsReaped(MdkrLanPartyServer &server) {
+    mdkr_lan_party_test_ws_idle_deadline_ms = 600u; /* ping ~300ms, close ~600ms */
+    TestClient client(server.port());
+    completeUpgrade(client);
+    std::string carried;
+    bool sawClose = false;
+    for (int frames = 0; frames < 6 && !sawClose; frames++) {
+        WsFrame frame;
+        if (!readServerFrame(client, carried, frame)) break;
+        if (frame.opcode == 0x8u) {
+            assert(closeCode(frame) == 1000u);
+            sawClose = true;
+        }
+        /* Otherwise a 0x9 ping the reaper sent first; keep reading. */
+    }
+    assert(sawClose);
+    mdkr_lan_party_test_ws_idle_deadline_ms = 0u;
+}
+
 /* Fix round 1, minor 9: the peer's close code is not echoed back --
  * RFC 6455 7.4 reserves ranges, and the non-reflection rule wins: the
  * reply is always our own normal-closure 1000. */
@@ -969,6 +995,7 @@ int main() {
     subprotocolIsSelectedNotReflected(server);
     getWithABodyIsRefusedNotReframed(server);
     peerCloseCodeIsNotEchoedVerbatim(server);
+    idleWebSocketIsReaped(server);
     slowDripCannotHoldAConnectionSlot(server);
     server.stop();
 

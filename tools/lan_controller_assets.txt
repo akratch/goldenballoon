@@ -14,6 +14,7 @@
 controller/index.html
 controller/controller.css
 controller/controller.js
+party/party-mode.js
 party/party-protocol.js
 party/party-sas.js
 input/touch-surface.css

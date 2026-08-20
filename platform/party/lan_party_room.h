@@ -81,7 +81,10 @@ class MdkrLanPartyControllerSocket {
 public:
     virtual ~MdkrLanPartyControllerSocket() = default;
     virtual bool sendText(const std::string &payload) = 0;
-    virtual void close(uint16_t code) = 0;
+    /* Close with a WebSocket code and an optional reason. The room passes
+     * "host_closed" on the whole-room teardown so the phone reads that terminal
+     * state from the close frame alone (no re-redeem); other closes pass "". */
+    virtual void close(uint16_t code, const std::string &reason) = 0;
     virtual bool isOpen() const = 0;
     virtual void onMessage(std::function<void(const std::string &)> callback) = 0;
     virtual void onClosed(std::function<void()> callback) = 0;

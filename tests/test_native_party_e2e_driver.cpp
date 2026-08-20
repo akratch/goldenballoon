@@ -304,18 +304,36 @@ int main(int argc, char **argv) {
     uint64_t nonNeutral = 0u;
     uint64_t echoedNonNeutral = 0u;
     bool sawConnected = false;
-    /* --close-room-after-connected: the LAN stop scenario. We call
-     * transport->closeRoom() (the room-close command) but NOT host.closeRoom()
-     * or transport->shutdown(); the embedded server keeps serving until the
-     * transport is destroyed at the end of main(). So after the 4000 close the
-     * phone can re-redeem over the still-served /party-ws and learn host_closed.
-     * We then run a short grace window before exiting 0 so the check can observe
-     * that on the page. */
-    constexpr uint64_t kCloseGraceMs = 8000u;
+    /* --close-room-after-connected: the LAN stop scenario, modeling the
+     * launcher's "Stop Local Play". Once input has demonstrably flowed we send
+     * the room's terminal close (4000 + "host_closed", which the phone reads off
+     * the close frame), give it a brief bounded flush, then tear the WHOLE
+     * transport down synchronously -- exactly what applyLanStop does. The server
+     * is gone before any reconnect could re-redeem, so a phone that shows
+     * host_closed can only have learned it from that frame, not a re-redeem. A
+     * short observation window then lets the check read the page before we exit. */
+    constexpr uint64_t kCloseFlushMs = 400u;
+    constexpr uint64_t kCloseObserveMs = 4000u;
     bool roomClosed = false;
     uint64_t roomClosedAtMs = 0u;
 
     while (nowMs() - startedMs < options.timeoutMs) {
+        /* Stop scenario, post-teardown: the room is closed and the transport is
+         * shut down. Do not touch the (shut) transport again; just idle out the
+         * observation window so the check can read host_closed off the page, then
+         * exit. */
+        if (roomClosed) {
+            if (nowMs() - roomClosedAtMs >= kCloseObserveMs) {
+                std::printf("[E2E] result=ok nonneutral=%llu packets=%llu\n",
+                    static_cast<unsigned long long>(nonNeutral),
+                    static_cast<unsigned long long>(totalPackets));
+                std::fflush(stdout);
+                mdkr_native_remote_pad_reset_all();
+                return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
         host.service(nowMs());
         echoView(host.view(), lastPhase, lastUrl, lastMessage, echoes);
         if (host.view().phase == MdkrNativePartyPhase::Error) {
@@ -336,28 +354,23 @@ int main(int argc, char **argv) {
             echoedNonNeutral = nonNeutral;
         }
         sawConnected = sawConnected || anyConnected(host.view());
-        /* Stop scenario: close the room once input has demonstrably flowed,
-         * keeping the server alive so the page's re-redeem surfaces
-         * host_closed, then fall through the grace window to a clean exit. */
+        /* Stop scenario: once input has flowed, send the terminal close, flush
+         * it briefly, then tear the transport down synchronously (the launcher's
+         * real Stop). The next loop iteration idles the observation window. */
         if (options.closeRoomAfterConnected) {
-            if (!roomClosed && sawConnected && anyConnected(host.view()) &&
+            if (sawConnected && anyConnected(host.view()) &&
                 nonNeutral >= options.packets) {
                 (void)transport->closeRoom();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kCloseFlushMs));
+                transport->shutdown();
                 roomClosed = true;
                 roomClosedAtMs = nowMs();
-                std::printf("[E2E] room_closed nonneutral=%llu packets=%llu\n",
+                std::printf("[E2E] room_closed nonneutral=%llu packets=%llu "
+                    "server_down=1\n",
                     static_cast<unsigned long long>(nonNeutral),
                     static_cast<unsigned long long>(totalPackets));
                 std::fflush(stdout);
-            }
-            if (roomClosed && nowMs() - roomClosedAtMs >= kCloseGraceMs) {
-                std::printf("[E2E] result=ok nonneutral=%llu packets=%llu\n",
-                    static_cast<unsigned long long>(nonNeutral),
-                    static_cast<unsigned long long>(totalPackets));
-                std::fflush(stdout);
-                host.closeRoom();
-                mdkr_native_remote_pad_reset_all();
-                return 0;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
