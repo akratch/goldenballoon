@@ -14,9 +14,10 @@
  * Two event kinds share one JSONL stream:
  *
  *   "fxmix" — emitted whenever a voice's FX (reverb) mix is set via
- *   alSynSetFXMix, which only the SFX player does. Records which aux bus the
- *   voice's envmixer is currently a source of, the wet-send amount, and how
- *   many aux buses the synth built. tests/check_cave_reverb_bus.py reads it.
+ *   alSynSetFXMix (the SFX player per-sound, and the CSP player for MIDI
+ *   reverb control changes). Records which aux bus the voice's envmixer is
+ *   currently a source of, the wet-send amount, and how many aux buses the
+ *   synth built. tests/check_cave_reverb_bus.py reads it.
  *
  *   "music" — emitted from alSynStartVoiceParams (the CSP/music note-on start
  *   path, which the SFX player never uses) with the same bus/max_aux fields, so
