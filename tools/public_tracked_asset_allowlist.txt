@@ -29,6 +29,7 @@ dist/web/online/online-room.css
 dist/web/online/online-room.js
 dist/web/party/party-host.css
 dist/web/party/party-host.js
+dist/web/party/party-mode.js
 dist/web/party/party-protocol.js
 dist/web/party/party-sas.js
 dist/web/party/qrcodegen.js
