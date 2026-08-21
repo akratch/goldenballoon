@@ -325,8 +325,9 @@ CHECKS = (
           "save failure, and retry"),
     Check("app_scroll", "check_app_scroll.py", "native",
           "launcher panel scrolling through the production SDL adapter: a "
-          "MacBook-trackpad-shaped fractional-preciseY wheel (integer y zero) "
-          "and a touchscreen drag both advance ScrollY"),
+          "MacBook-trackpad-shaped fractional-preciseY wheel (integer y zero), "
+          "a natural-scroll FLIPPED wheel (scrolls the right way), and a "
+          "touchscreen drag all advance ScrollY"),
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
           "and explicit session-only state"),

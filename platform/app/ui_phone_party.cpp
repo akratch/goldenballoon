@@ -279,7 +279,7 @@ void drawPending(MdkrNativePartyHost &host,
         }
         ui::SpeakFocusedItem("Approve This Phone", nullptr,
             "Approves this phone into the chosen slot. After it connects, a "
-            "pairing phrase appears on both screens -- compare them, and remove "
+            "pairing phrase appears on both screens — compare them, and remove "
             "the phone if they differ.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
