@@ -75,6 +75,12 @@ public:
     // ImGui's production touchscreen source path and is gated by its own smoke
     // contract so interactive input can never synthesize a gesture.
     bool queueTouchDragStepForSmoke(int x, int y, bool held);
+    // Queue one mouse-wheel step. The pointer is moved to (x, y) every call so
+    // ImGui hovers the scroll owner, and a non-zero wheelY additionally emits an
+    // SDL_MOUSEWHEEL (preciseY = wheelY) through the same event adapter physical
+    // wheel input uses. Positive wheelY scrolls up; negative scrolls down.
+    // Gated by its own smoke contract.
+    bool queueWheelStepForSmoke(int x, int y, float wheelY);
 
     // Path of a file dragged onto the window since the last call, or "" — the
     // ROM panel's drag-and-drop entry point. Returns and clears.
@@ -147,6 +153,8 @@ private:
     struct SmokeDragStep { int x; int y; bool held; bool touch; };
     std::vector<SmokeDragStep> pendingSmokeDragSteps_;
     bool smokeDragHeld_ = false;
+    struct SmokeWheelStep { int x; int y; float wheelY; };
+    std::vector<SmokeWheelStep> pendingSmokeWheelSteps_;
     std::vector<SDL_GameControllerButton> pendingSmokeGamepadButtons_;
     SDL_GameController *smokeGamepad_ = nullptr;
     int smokeGamepadDeviceIndex_ = -1;

@@ -1063,6 +1063,10 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         std::getenv("MDKR_APP_SMOKE_TOUCH_SCROLL");
     const char *smokeTouchToken =
         std::getenv("MDKR_APP_SMOKE_TOUCH_TOKEN");
+    const char *smokeWheelScroll =
+        std::getenv("MDKR_APP_SMOKE_WHEEL_SCROLL");
+    const char *smokeWheelToken =
+        std::getenv("MDKR_APP_SMOKE_WHEEL_TOKEN");
     const char *smokeOnlineActionValue =
         std::getenv("MDKR_APP_SMOKE_ONLINE_ACTION");
     const char *smokeOnlineFocusValue =
@@ -1111,6 +1115,18 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.shutdown();
         return 2;
     }
+    const bool anyWheelContract =
+        (smokeWheelScroll && smokeWheelScroll[0]) ||
+        (smokeWheelToken && smokeWheelToken[0]);
+    const bool smokeWheel = anyWheelContract && smokeWheelScroll &&
+        std::strcmp(smokeWheelScroll, "1") == 0 && smokeWheelToken &&
+        std::strcmp(smokeWheelToken, "mdkr64-app-wheel-v1") == 0;
+    if (anyWheelContract && !smokeWheel) {
+        std::fprintf(stderr,
+                     "[app] smoke: invalid mouse-wheel input contract\n");
+        host.shutdown();
+        return 2;
+    }
     float smokeUiScaleTarget = 1.0f;
     const bool smokeUiScaleDrag = smokeUiScale && smokeUiScale[0];
     if (smokeUiScaleDrag &&
@@ -1124,9 +1140,12 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if ((smokeUiScaleDrag && smokeFrameLimit) ||
         (smokePresentationPace && (smokeUiScaleDrag || smokeFrameLimit)) ||
         (smokeA11yWalk && (smokeUiScaleDrag || smokeFrameLimit ||
-                           smokePresentationPace || smokeTouch ||
+                           smokePresentationPace || smokeTouch || smokeWheel ||
                            smokeNavigation || smokeOnlineActionArmed)) ||
         (smokeTouch && (smokeUiScaleDrag || smokeFrameLimit ||
+                        smokePresentationPace || smokeNavigation || smokeWheel ||
+                        smokeOnlineActionArmed)) ||
+        (smokeWheel && (smokeUiScaleDrag || smokeFrameLimit ||
                         smokePresentationPace || smokeNavigation ||
                         smokeOnlineActionArmed)) ||
         (smokeOnlineActionArmed &&
@@ -1149,6 +1168,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     if (smokePresentationPace && frames < 8) frames = 8;
     if (smokeUiScaleDrag && frames < 11) frames = 11;
     if (smokeTouch && frames < 10) frames = 10;
+    if (smokeWheel && frames < 12) frames = 12;
     if (smokeOnlineActionArmed && frames < 12) frames = 12;
     /* One keystroke per frame, and the walk has to get all the way round the
      * panel with room to spare -- an early stop would report controls as
@@ -1228,6 +1248,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     float touchFinalScroll = 0.0f;
     bool touchGestureQueued = false;
     bool touchGestureReleased = false;
+    int wheelRect[4] = {0, 0, 0, 0};
+    int wheelPointerX = 0;
+    int wheelPointerY = 0;
+    int wheelScriptStep = 0;
+    float wheelStartScroll = 0.0f;
+    float wheelFinalScroll = 0.0f;
+    bool wheelQueued = false;
     bool onlineActionInputQueued = false;
     int smokePlayActions = 0;
     std::string smokePlayActionRom;
@@ -1438,6 +1465,46 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             }
         }
 
+        if (smokeWheel) {
+            int currentRect[4] = {0, 0, 0, 0};
+            if (!Launcher_smokePanelScrollRect(
+                    &currentRect[0], &currentRect[1],
+                    &currentRect[2], &currentRect[3])) {
+                if (i >= 1) {
+                    std::fprintf(stderr,
+                                 "[app-ui-test] wheel scroll viewport was not rendered\n");
+                    renderOk = false;
+                }
+            } else {
+                wheelFinalScroll = Launcher_smokePanelScrollY();
+                if (wheelScriptStep == 0 && i >= 1) {
+                    std::memcpy(wheelRect, currentRect, sizeof(wheelRect));
+                    wheelPointerX = wheelRect[0] +
+                        (wheelRect[2] - wheelRect[0]) / 2;
+                    wheelPointerY = wheelRect[1] +
+                        (wheelRect[3] - wheelRect[1]) / 2;
+                    wheelStartScroll = wheelFinalScroll;
+                    // Move onto the panel first: ImGui reports a freshly entered
+                    // window as not-hovered for one frame, which would drop the
+                    // opening notch and route it nowhere.
+                    wheelQueued = host.queueWheelStepForSmoke(
+                        wheelPointerX, wheelPointerY, 0.0f);
+                    wheelScriptStep = 1;
+                } else if (wheelScriptStep >= 1 && wheelScriptStep <= 6) {
+                    // A MacBook trackpad two-finger scroll: the integer wheel.y
+                    // truncates to zero and ONLY preciseY carries the motion.
+                    // -0.6 per event reproduces exactly that shape (int y == 0),
+                    // and summed it clears the scroll threshold -- so a handler
+                    // that reads the integer field instead of preciseY scrolls
+                    // nothing here and fails, which is the whole point.
+                    wheelQueued = host.queueWheelStepForSmoke(
+                                      wheelPointerX, wheelPointerY, -0.6f) &&
+                                  wheelQueued;
+                    ++wheelScriptStep;
+                }
+            }
+        }
+
         // Save-failure recovery stays in this process and uses the visible
         // Retry widget. Its appearance proves the rejected enum value was
         // retained; the click still traverses SDL -> ImGui -> commitEdit.
@@ -1629,6 +1696,22 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             static_cast<double>(moved), touchRect[0], touchRect[1],
             touchRect[2], touchRect[3]);
         renderOk = renderOk && targetQualified && scrollQualified;
+    }
+
+    if (smokeWheel) {
+        const float moved = wheelFinalScroll - wheelStartScroll;
+        const bool scrollQualified =
+            wheelQueued && moved >= 80.0f * AppTheme::uiScale();
+        std::fprintf(
+            stderr,
+            "[app-ui-test] wheel handheld scroll=%d start=%.1f final=%.1f "
+            "moved=%.1f rect=%d,%d,%d,%d\n",
+            scrollQualified ? 1 : 0,
+            static_cast<double>(wheelStartScroll),
+            static_cast<double>(wheelFinalScroll),
+            static_cast<double>(moved), wheelRect[0], wheelRect[1],
+            wheelRect[2], wheelRect[3]);
+        renderOk = renderOk && scrollQualified;
     }
 
     if (smokeOnlineActionArmed) {

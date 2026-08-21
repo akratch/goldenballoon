@@ -82,6 +82,7 @@ bool AppHost::init(const char *title, int width, int height) {
         smokeInputMode == AppUiSmokeInputMode::Gamepad ||
         std::getenv("MDKR_APP_SMOKE_UI_SCALE_DRAG") != nullptr ||
         std::getenv("MDKR_APP_SMOKE_TOUCH_SCROLL") != nullptr ||
+        std::getenv("MDKR_APP_SMOKE_WHEEL_SCROLL") != nullptr ||
         std::getenv("MDKR_APP_SMOKE_NAV_TARGET") != nullptr;
     if (smokeInputMode == AppUiSmokeInputMode::Gamepad) {
         /* Hidden launcher automation has no keyboard focus. SDL otherwise
@@ -1306,6 +1307,12 @@ bool AppHost::queueTouchDragStepForSmoke(int x, int y, bool held) {
     return true;
 }
 
+bool AppHost::queueWheelStepForSmoke(int x, int y, float wheelY) {
+    if (std::getenv("MDKR_APP_SMOKE_WHEEL_SCROLL") == nullptr) return false;
+    pendingSmokeWheelSteps_.push_back({x, y, wheelY});
+    return true;
+}
+
 bool AppHost::pumpAndShouldQuit() {
     bool quit = false;
 
@@ -1421,6 +1428,37 @@ bool AppHost::pumpAndShouldQuit() {
             event.button.y         = step.y;
             quit                   = injectSmokeEvent(event) || quit;
             smokeDragHeld_         = step.held;
+        }
+    }
+
+    if (!pendingSmokeWheelSteps_.empty()) {
+        const SmokeWheelStep step = pendingSmokeWheelSteps_.front();
+        pendingSmokeWheelSteps_.erase(pendingSmokeWheelSteps_.begin());
+        /* Move the pointer first so ImGui hovers the scroll owner, then deliver
+         * the notch. Both travel the production SDL -> imgui_impl_sdl2 adapter,
+         * so a mouse wheel is proven to reach the panel it is over rather than
+         * only checking a synthetic scroll call. */
+        SDL_Event event        = {};
+        event.type             = SDL_MOUSEMOTION;
+        event.motion.timestamp = SDL_GetTicks();
+        event.motion.windowID  = SDL_GetWindowID(window_);
+        event.motion.which     = 0;
+        event.motion.x         = step.x;
+        event.motion.y         = step.y;
+        quit                   = injectSmokeEvent(event) || quit;
+
+        if (step.wheelY != 0.0f) {
+            event                 = {};
+            event.type            = SDL_MOUSEWHEEL;
+            event.wheel.timestamp = SDL_GetTicks();
+            event.wheel.windowID  = SDL_GetWindowID(window_);
+            event.wheel.which     = 0;
+            event.wheel.x         = 0;
+            event.wheel.y         = static_cast<int>(step.wheelY);
+            event.wheel.preciseX  = 0.0f;
+            event.wheel.preciseY  = step.wheelY;
+            event.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+            quit                  = injectSmokeEvent(event) || quit;
         }
     }
 
