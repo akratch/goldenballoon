@@ -323,6 +323,10 @@ CHECKS = (
           "real ImGui keyboard/gamepad selection, the Presentation pace quick "
           "choice writing both pacing keys, reload, scale matrix, "
           "save failure, and retry"),
+    Check("app_scroll", "check_app_scroll.py", "native",
+          "launcher panel scrolling through the production SDL adapter: a "
+          "MacBook-trackpad-shaped fractional-preciseY wheel (integer y zero) "
+          "and a touchscreen drag both advance ScrollY"),
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
           "and explicit session-only state"),
