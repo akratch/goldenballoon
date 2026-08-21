@@ -1127,6 +1127,14 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         host.shutdown();
         return 2;
     }
+    // In flipped mode the injected notches are marked SDL_MOUSEWHEEL_FLIPPED
+    // (macOS natural scrolling) and their preciseY sign is inverted, so the
+    // panel only scrolls DOWN -- clearing the same scroll=1 verdict -- if the
+    // FLIPPED flag is honored. A bridge that ignores it scrolls up, clamps at
+    // the top, and the run stays red.
+    const bool smokeWheelFlipped =
+        smokeWheel && std::getenv("MDKR_APP_SMOKE_WHEEL_FLIPPED") != nullptr;
+    const float smokeWheelDelta = smokeWheelFlipped ? 0.6f : -0.6f;
     float smokeUiScaleTarget = 1.0f;
     const bool smokeUiScaleDrag = smokeUiScale && smokeUiScale[0];
     if (smokeUiScaleDrag &&
@@ -1493,12 +1501,15 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 } else if (wheelScriptStep >= 1 && wheelScriptStep <= 6) {
                     // A MacBook trackpad two-finger scroll: the integer wheel.y
                     // truncates to zero and ONLY preciseY carries the motion.
-                    // -0.6 per event reproduces exactly that shape (int y == 0),
-                    // and summed it clears the scroll threshold -- so a handler
-                    // that reads the integer field instead of preciseY scrolls
-                    // nothing here and fails, which is the whole point.
+                    // +/-0.6 per event reproduces exactly that shape (int y ==
+                    // 0), and summed it clears the scroll threshold -- so a
+                    // handler that reads the integer field instead of preciseY
+                    // scrolls nothing here and fails, which is the whole point.
+                    // In flipped mode the sign is inverted and the FLIPPED flag
+                    // is set, so only a bridge that honors the flag scrolls down.
                     wheelQueued = host.queueWheelStepForSmoke(
-                                      wheelPointerX, wheelPointerY, -0.6f) &&
+                                      wheelPointerX, wheelPointerY,
+                                      smokeWheelDelta) &&
                                   wheelQueued;
                     ++wheelScriptStep;
                 }

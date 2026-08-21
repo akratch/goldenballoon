@@ -1213,6 +1213,9 @@ bool AppHost::processEvent(SDL_Event &e) {
     if (AppWindow_handleEvent(window_, e)) {
         return false;
     }
+    // Undo macOS natural-scrolling before ImGui, so a trackpad scrolls the
+    // launcher the same way it scrolls everything else on the machine.
+    AppWindow_normalizeWheel(e);
     ImGui_ImplSDL2_ProcessEvent(&e);
     if (e.type == SDL_QUIT) {
         return true;
@@ -1448,6 +1451,12 @@ bool AppHost::pumpAndShouldQuit() {
         quit                   = injectSmokeEvent(event) || quit;
 
         if (step.wheelY != 0.0f) {
+            /* MDKR_APP_SMOKE_WHEEL_FLIPPED reproduces a macOS "natural
+             * scrolling" trackpad: SDL negates the deltas and marks the event
+             * SDL_MOUSEWHEEL_FLIPPED. A bridge that ignores that flag scrolls
+             * the opposite of every other app on the Mac. */
+            const bool flipped =
+                std::getenv("MDKR_APP_SMOKE_WHEEL_FLIPPED") != nullptr;
             event                 = {};
             event.type            = SDL_MOUSEWHEEL;
             event.wheel.timestamp = SDL_GetTicks();
@@ -1457,7 +1466,8 @@ bool AppHost::pumpAndShouldQuit() {
             event.wheel.y         = static_cast<int>(step.wheelY);
             event.wheel.preciseX  = 0.0f;
             event.wheel.preciseY  = step.wheelY;
-            event.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+            event.wheel.direction =
+                flipped ? SDL_MOUSEWHEEL_FLIPPED : SDL_MOUSEWHEEL_NORMAL;
             quit                  = injectSmokeEvent(event) || quit;
         }
     }

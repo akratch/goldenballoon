@@ -169,6 +169,23 @@ bool AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result, bool *fresh) {
     return true;
 }
 
+void AppWindow_normalizeWheel(SDL_Event &event) {
+    if (event.type != SDL_MOUSEWHEEL) return;
+    if (event.wheel.direction != SDL_MOUSEWHEEL_FLIPPED) return;
+    /* SDL already negated the deltas to the traditional-wheel sense; undo that so
+     * ImGui scrolls in the direction the OS (and the rest of the desktop) does.
+     * Both the integer and the precise deltas carry the gesture depending on the
+     * device, so flip both, then re-tag NORMAL so nothing downstream flips it a
+     * second time. */
+    event.wheel.x = -event.wheel.x;
+    event.wheel.y = -event.wheel.y;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    event.wheel.preciseX = -event.wheel.preciseX;
+    event.wheel.preciseY = -event.wheel.preciseY;
+#endif
+    event.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+}
+
 bool AppWindow_handleEvent(SDL_Window *window, const SDL_Event &event) {
     if ((event.type != SDL_KEYDOWN && event.type != SDL_KEYUP) ||
         !isShortcut(event.key)) {
