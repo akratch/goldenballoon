@@ -1,12 +1,21 @@
-# Golden Balloon
+<p align="center">
+  <img src="dist/web/assets/hero.jpg" alt="Golden Balloon" width="820">
+</p>
 
-A native and browser source port of the 1997 Nintendo 64 kart racer, built on
-the community [decompilation](https://github.com/DavidSM64/Diddy-Kong-Racing).
-Not an emulator: the game is compiled for your machine and runs from a ROM you
-already own. No game assets are included.
+<h1 align="center">Golden Balloon</h1>
 
-**[▶ Play in your browser](https://akratch.github.io/golden-balloon/)** ·
-**[⬇ Download the latest release](https://github.com/akratch/goldenballoon/releases/latest)**
+<p align="center">
+  A native and browser source port of the 1997 Nintendo 64 kart racer, built on
+  the community <a href="https://github.com/DavidSM64/Diddy-Kong-Racing">decompilation</a>.<br>
+  Not an emulator: the game is compiled for your machine and runs from a ROM you
+  already own. No game assets are included.
+</p>
+
+<p align="center">
+  <a href="https://akratch.github.io/golden-balloon/"><b>▶ Play in your browser</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/akratch/goldenballoon/releases/latest"><b>⬇ Download the latest release</b></a>
+</p>
 
 ## Quick start
 
@@ -156,7 +165,7 @@ first-party code under [`platform/`](platform/). Start here:
 - [docs/DEVELOPER_HANDBOOK.md](docs/DEVELOPER_HANDBOOK.md) — architecture and
   the 64-bit/endianness bug shapes behind most defects here
 - [docs/README.md](docs/README.md) — full documentation index
-- [tests/README.md](tests/README.md) — the regression suite (140+ gates)
+- [tests/README.md](tests/README.md) — the regression suite (200+ gates)
 - [ROADMAP.md](ROADMAP.md) — deferred work and what would close it
 
 The browser build publishes to
