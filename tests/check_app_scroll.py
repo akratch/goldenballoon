@@ -8,11 +8,15 @@ this suite:
 * Mouse wheel / MacBook trackpad. A two-finger trackpad scroll on macOS arrives
   as SDL_MOUSEWHEEL events whose *integer* ``y`` is zero and whose motion lives
   entirely in the fractional ``preciseY`` field. A wheel bridge that reads the
-  integer field scrolls nothing -- "scrolling breaks completely" on a trackpad.
-  This check drives exactly that event shape (``preciseY`` fractional, integer
-  ``y`` truncated to zero) through the production
-  ``AppHost::processEvent`` -> ``ImGui_ImplSDL2_ProcessEvent`` adapter and
-  asserts the panel's ``ScrollY`` actually advances.
+  integer field scrolls nothing. This check drives exactly that event shape
+  (``preciseY`` fractional, integer ``y`` truncated to zero) through the
+  production ``AppHost::processEvent`` -> ``ImGui_ImplSDL2_ProcessEvent`` adapter
+  and asserts the panel's ``ScrollY`` actually advances.
+
+* macOS natural-scroll DIRECTION. With natural scrolling on (the default) SDL
+  negates the deltas and sets ``SDL_MOUSEWHEEL_FLIPPED``; a bridge that ignores
+  the flag scrolls the panel the OPPOSITE way to the rest of the desktop. The
+  FLIPPED case asserts the panel still scrolls the way the gesture asks.
 
 * Touchscreen drag. A finger drag that begins on non-interactive content pans
   the same panel through the custom ``TouchScrollCurrentWindow`` gesture.
@@ -86,6 +90,27 @@ def check_wheel(executable: Path, root: Path) -> None:
     run(executable, env, ("[app-ui-test] wheel handheld scroll=1",))
 
 
+def check_wheel_flipped(executable: Path, root: Path) -> None:
+    """A macOS natural-scroll (FLIPPED) wheel scrolls the RIGHT way.
+
+    With natural scrolling on -- the macOS default -- SDL negates the deltas and
+    sets SDL_MOUSEWHEEL_FLIPPED. This run injects that exact event (positive
+    preciseY, FLIPPED) from the top of the panel: only if the flag is honored is
+    the delta re-inverted to scroll the panel DOWN and print scroll=1. A bridge
+    that ignores FLIPPED scrolls up, clamps at the top, and stays red -- the
+    "scrolling goes the wrong way on the trackpad" defect.
+    """
+    env = common(root, root / "video.ini")
+    env.update({
+        "MDKR_APP_SMOKE_FRAMES": "12",
+        "MDKR_APP_SMOKE_WINDOW_SIZE": "1280x720",
+        "MDKR_APP_SMOKE_WHEEL_SCROLL": "1",
+        "MDKR_APP_SMOKE_WHEEL_TOKEN": "mdkr64-app-wheel-v1",
+        "MDKR_APP_SMOKE_WHEEL_FLIPPED": "1",
+    })
+    run(executable, env, ("[app-ui-test] wheel handheld scroll=1",))
+
+
 def check_touch(executable: Path, root: Path) -> None:
     """A touchscreen drag on empty content advances the same panel."""
     env = common(root, root / "video.ini")
@@ -117,6 +142,10 @@ def main() -> int:
         wheel.mkdir()
         check_wheel(executable, wheel)
 
+        wheel_flipped = temporary / "wheel-flipped"
+        wheel_flipped.mkdir()
+        check_wheel_flipped(executable, wheel_flipped)
+
         touch = temporary / "touch"
         touch.mkdir()
         check_touch(executable, touch)
@@ -126,8 +155,9 @@ def main() -> int:
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
 
-    print("app scroll valid: trackpad-shaped fractional wheel and touchscreen "
-          "drag both advance the launcher panel's ScrollY")
+    print("app scroll valid: trackpad-shaped fractional wheel (normal and "
+          "macOS natural-scroll FLIPPED) and touchscreen drag all advance the "
+          "launcher panel's ScrollY in the right direction")
     return 0
 
 

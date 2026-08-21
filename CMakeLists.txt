@@ -1221,6 +1221,8 @@ if(NOT EMSCRIPTEN)
                     "${MDKR_APP_TEST_ROOT}/touch-handheld/saves"
                     "${MDKR_APP_TEST_ROOT}/wheel-handheld/prefs"
                     "${MDKR_APP_TEST_ROOT}/wheel-handheld/saves"
+                    "${MDKR_APP_TEST_ROOT}/wheel-flipped/prefs"
+                    "${MDKR_APP_TEST_ROOT}/wheel-flipped/saves"
                     "${MDKR_APP_TEST_ROOT}/dpi/prefs"
                     "${MDKR_APP_TEST_ROOT}/dpi/saves"
                     "${MDKR_APP_TEST_ROOT}/recovery/prefs"
@@ -1238,6 +1240,7 @@ if(NOT EMSCRIPTEN)
                     "${MDKR_APP_TEST_ROOT}/minimum/video.ini"
                     "${MDKR_APP_TEST_ROOT}/touch-handheld/video.ini"
                     "${MDKR_APP_TEST_ROOT}/wheel-handheld/video.ini"
+                    "${MDKR_APP_TEST_ROOT}/wheel-flipped/video.ini"
                     "${MDKR_APP_TEST_ROOT}/dpi/video.ini"
                     "${MDKR_APP_TEST_ROOT}/recovery/video.ini"
                     "${MDKR_APP_TEST_ROOT}/gl/video.ini")
@@ -1536,6 +1539,19 @@ if(NOT EMSCRIPTEN)
                     DEPENDS app_wheel_handheld_smoke
                     LABELS gpu
                     TIMEOUT 60)
+
+                # macOS "natural scrolling" delivers the wheel as
+                # SDL_MOUSEWHEEL_FLIPPED with negated deltas. The scripted notch
+                # is marked FLIPPED with an inverted sign, so it only scrolls the
+                # panel DOWN (scroll=1) if the flag is honored before ImGui; a
+                # backend that ignores it scrolls up, clamps at the top, and this
+                # fails -- the "trackpad scrolls the wrong way" defect.
+                add_test(NAME app_wheel_flipped_smoke COMMAND ${MDKR_TARGET})
+                set_tests_properties(app_wheel_flipped_smoke PROPERTIES
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=12;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_WHEEL_SCROLL=1;MDKR_APP_SMOKE_WHEEL_TOKEN=mdkr64-app-wheel-v1;MDKR_APP_SMOKE_WHEEL_FLIPPED=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/wheel-flipped/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "wheel handheld scroll=1"
+                    TIMEOUT 180)
 
                 add_test(NAME app_ui_input_persistence
                     COMMAND ${Python3_EXECUTABLE}

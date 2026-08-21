@@ -5501,6 +5501,12 @@ panel's `ScrollY` actually advances:
   field (`MDKR_APP_SMOKE_WHEEL_SCROLL`). A wheel bridge that reads the rounded
   integer field scrolls nothing on a trackpad; this run stays RED until the
   bridge reads `preciseY`.
+* The **macOS natural-scroll direction** — the same wheel marked
+  `SDL_MOUSEWHEEL_FLIPPED` with an inverted sign (`MDKR_APP_SMOKE_WHEEL_FLIPPED`),
+  the exact shape SDL delivers when natural scrolling is on. It only scrolls the
+  panel the way the gesture asks if the FLIPPED flag is honored before ImGui;
+  otherwise the panel scrolls backwards (the "trackpad scrolls the wrong way"
+  defect) and the run stays RED.
 * A **touchscreen drag** (`MDKR_APP_SMOKE_TOUCH_SCROLL`) on non-interactive
   content, which pans the same panel through the custom touch gesture.
 
