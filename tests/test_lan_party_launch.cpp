@@ -106,7 +106,11 @@ void rememberRoot(const std::string &root) { g_createdRoots.push_back(root); }
 
 void cleanupRoots() {
     for (const std::string &root : g_createdRoots) {
-        (void)std::system(("rm -rf '" + root + "'").c_str());
+        /* Best-effort cleanup; a leftover temp dir is harmless. Bind the
+         * result so glibc's warn_unused_result on system() is satisfied
+         * under -Werror (a bare (void) cast does not silence it on GCC). */
+        int rc = std::system(("rm -rf '" + root + "'").c_str());
+        (void)rc;
     }
     g_createdRoots.clear();
 }
