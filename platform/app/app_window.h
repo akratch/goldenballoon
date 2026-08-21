@@ -30,4 +30,18 @@ bool                   AppWindow_consumeCompleted(MdkrVideoRuntimeResult *result
 // never sees the host shortcut; a non-repeated press toggles immediately.
 bool                   AppWindow_handleEvent(SDL_Window *window, const SDL_Event &event);
 
+// Undo macOS "natural scrolling" before ImGui sees a mouse-wheel event.
+//
+// When natural scrolling is on (the macOS default), SDL negates the wheel
+// deltas and sets SDL_MOUSEWHEEL_FLIPPED to say it did. imgui_impl_sdl2 -- like
+// most backends -- ignores that flag and consumes the already-negated deltas,
+// so an ImGui panel scrolls the OPPOSITE way to every other app on that Mac
+// (and to the game itself). Both the launcher and the in-game overlay call this
+// on every event just before ImGui_ImplSDL2_ProcessEvent: a FLIPPED wheel is
+// re-inverted back to the device/OS direction and re-tagged NORMAL. Non-wheel
+// and non-flipped (traditional mouse, natural-scrolling-off) events are left
+// exactly as they arrived. No-op on a copy is safe; call it on the event you
+// are about to forward to ImGui.
+void                   AppWindow_normalizeWheel(SDL_Event &event);
+
 #endif // MDKR64_APP_WINDOW_H

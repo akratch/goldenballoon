@@ -230,8 +230,12 @@ void drawPending(MdkrNativePartyHost &host,
         /* SAS v2: the pairing phrase binds the phone's direct connection, so
          * it cannot exist before that connection does. The compare surface
          * moved to the seat row (drawControllers below); this card only says
-         * when to expect it. */
-        ui::TextSubtleWrapped("Phrase appears when the phone connects.");
+         * when to expect it -- naming the order (approve first, compare next)
+         * so the button below does not read as "match a phrase" that is not on
+         * screen yet. */
+        ui::TextSubtleWrapped(
+            "Pick a slot and approve. The pairing phrase to compare appears "
+            "after the phone connects.");
         unsigned &choice = g_seatChoices[controller.id];
         if (choice < 1u || choice > 4u || seatOccupied(view, choice)) {
             choice = firstFreeSeat(view);
@@ -259,14 +263,24 @@ void drawPending(MdkrNativePartyHost &host,
             "Choose which local controller slot this phone will use.");
         ui::TextSubtleWrapped(
             "The phone takes this numbered slot. Any keyboard, gamepad, or touch source there moves out of the way; other slots are unchanged.");
+        if (choice == 0u) {
+            /* A disabled Approve with no reason is a dead end: say why, and
+             * point at the fix (the connected phones are drawn just below). */
+            ImGui::PushStyleColor(ImGuiCol_Text, AppTheme::bad());
+            ui::TextSubtleWrapped(
+                "All four controller slots are taken. Remove a connected phone "
+                "below to free one.");
+            ImGui::PopStyleColor();
+        }
         const bool disabled = controller.commandPending || choice == 0u;
         if (disabled) ImGui::BeginDisabled();
-        if (ui::PrimaryButton("Approve Matching Phone", ui::kBtnWide())) {
+        if (ui::PrimaryButton("Approve This Phone", ui::kBtnWide())) {
             host.approve(controller.id, choice);
         }
-        ui::SpeakFocusedItem("Approve Matching Phone", nullptr,
-            "The pairing phrase appears on both screens when the phone "
-            "connects. Remove the phone if the phrases differ.");
+        ui::SpeakFocusedItem("Approve This Phone", nullptr,
+            "Approves this phone into the chosen slot. After it connects, a "
+            "pairing phrase appears on both screens — compare them, and remove "
+            "the phone if they differ.");
         if (disabled) ImGui::EndDisabled();
         if (ImGui::Button("Decline", ui::kBtnSecondary())) host.reject(controller.id);
         ui::SpeakFocusedItem("Decline", nullptr,

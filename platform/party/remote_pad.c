@@ -98,13 +98,30 @@ MdkrPartyDecodeResult mdkr_remote_pad_accept(
         pad->stats.stale_connections++;
         return MDKR_PARTY_DECODE_EDGE_SEQUENCE;
     }
-    if (pad->has_sequence && packet.sample_sequence == pad->last_sequence) {
-        pad->stats.duplicates++;
-        return MDKR_PARTY_DECODE_EDGE_SEQUENCE;
-    }
     if (pad->has_sequence &&
         !sequence_newer(packet.sample_sequence, pad->last_sequence)) {
-        pad->stats.stale_packets++;
+        /* No newer sample, but a well-formed frame from the bound connection is
+         * still proof of life. A held button emits no state change, so the
+         * phone's heartbeat resends the current sample_sequence; counting those
+         * keepalives as liveness is what stops the 250 ms silence timeout from
+         * neutralizing a legitimate hold. */
+        const bool duplicate = packet.sample_sequence == pad->last_sequence;
+        if (duplicate) {
+            pad->stats.duplicates++;
+            /* A duplicate carries the phone's current state. If the silence
+             * timeout already latched a neutral, re-assert it so a long hold
+             * resumes instead of staying stuck neutral. queue_sample dedupes,
+             * so this is a no-op whenever the held state is already published. */
+            if (pad->timeout_latched) {
+                (void)queue_sample(
+                    pad, packet.sample_sequence, packet_sample(&packet));
+            }
+        } else {
+            pad->stats.stale_packets++;
+        }
+        pad->last_receive_ms = now_ms;
+        pad->received = true;
+        pad->timeout_latched = false;
         return MDKR_PARTY_DECODE_EDGE_SEQUENCE;
     }
     /* Edges are oldest first. Each is a complete state, so a tap whose current

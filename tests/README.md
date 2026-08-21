@@ -5486,6 +5486,33 @@ then reads them back in a fresh process. Configs the quick choice has no name
 for (a numeric cap, `40`, `display-margin`) must read back as `custom` rather
 than being shown as one of the two named pairs.
 
+### Launcher panel scrolling — `tests/check_app_scroll.py`
+
+```bash
+python3 tests/check_app_scroll.py --build build --rom baserom.us.v80.z64
+```
+
+Drives the two ways a player scrolls a launcher page, both through the production
+`AppHost::processEvent` -> `ImGui_ImplSDL2_ProcessEvent` adapter, and asserts the
+panel's `ScrollY` actually advances:
+
+* A **MacBook-trackpad-shaped mouse wheel** — an `SDL_MOUSEWHEEL` whose integer
+  `y` is zero and whose motion is carried entirely by the fractional `preciseY`
+  field (`MDKR_APP_SMOKE_WHEEL_SCROLL`). A wheel bridge that reads the rounded
+  integer field scrolls nothing on a trackpad; this run stays RED until the
+  bridge reads `preciseY`.
+* The **macOS natural-scroll direction** — the same wheel marked
+  `SDL_MOUSEWHEEL_FLIPPED` with an inverted sign (`MDKR_APP_SMOKE_WHEEL_FLIPPED`),
+  the exact shape SDL delivers when natural scrolling is on. It only scrolls the
+  panel the way the gesture asks if the FLIPPED flag is honored before ImGui;
+  otherwise the panel scrolls backwards (the "trackpad scrolls the wrong way"
+  defect) and the run stays RED.
+* A **touchscreen drag** (`MDKR_APP_SMOKE_TOUCH_SCROLL`) on non-interactive
+  content, which pans the same panel through the custom touch gesture.
+
+Each sub-run owns private app preferences, video config (`MDKR_VIDEO_CONFIG_PATH`),
+and save roots, so a repo-root `mdkr64.ini` can never reach it.
+
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 
 ```bash

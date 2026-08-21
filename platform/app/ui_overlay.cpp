@@ -187,7 +187,12 @@ static int onProcessEvent(const void *ev) {
     if (AppWindow_handleEvent(g_overlay.window, *e)) {
         return 1;
     }
-    ImGui_ImplSDL2_ProcessEvent(e);
+    // Undo macOS natural-scrolling on a copy before ImGui; the device-tracking
+    // switch below still reads the original event. Without this the F1 overlay
+    // scrolls backwards to the game under it on any Mac trackpad.
+    SDL_Event forwarded = *e;
+    AppWindow_normalizeWheel(forwarded);
+    ImGui_ImplSDL2_ProcessEvent(&forwarded);
 
     // Track the active device from decisive events only, so the control hints
     // follow what the player is actually holding without flip-flopping on idle
