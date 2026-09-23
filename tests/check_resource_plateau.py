@@ -55,6 +55,10 @@ REGISTRY_RE = re.compile(
     r"registry_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
     r"live=(\d+) high=(\d+) ambiguous=(\d+) fullFails=(\d+) maxProbe=(\d+)"
 )
+CACHE_RE = re.compile(
+    r"texture_cache_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
+    r"pixels=(\d+) limit=(\d+) table=(\d+) entries=(\d+)"
+)
 FATAL_MARKERS = (
     "[CRASH]",
     "[FATAL]",
@@ -65,7 +69,7 @@ FATAL_MARKERS = (
 )
 
 
-def extended_route() -> str:
+def extended_route(frames: int = DEFAULT_FRAMES) -> str:
     retained: list[str] = []
     for line in BASE_SCRIPT.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -76,8 +80,22 @@ def extended_route() -> str:
         if fields and fields[0].isdigit() and int(fields[0]) < 7650:
             retained.append(line)
     retained.append("# Repeated post-race advances select TRY AGAIN each cycle.")
-    retained.extend(f"{frame} A 5" for frame in range(7650, 26_001, 24))
+    # The native input loader admits 512 entries. Keep a generous navigation
+    # allowance and spread at most 480 retry pulses over the complete soak.
+    step = max(24, (max(0, frames - 7650) + 479) // 480)
+    retained.extend(f"{frame} A 5" for frame in range(7650, frames, step))
     return "\n".join(retained) + "\n"
+
+
+def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
+    races = [row for row in rows if row[:3] == (5, 0, 100)]
+    if len(races) < 4:
+        return "missing repeated texture-cache boundary samples"
+    if any(row[3] > row[4] or row[4] == 0 for row in rows):
+        return "decoded texture cache exceeded its reported budget"
+    if len(set(row[3:] for row in races[-3:])) != 1:
+        return f"texture cache did not plateau: {races[-3:]}"
+    return None
 
 
 def plateau_error(rows: list[tuple[int, ...]]) -> str | None:
@@ -224,6 +242,7 @@ def diagnostic_tail(output: str) -> str:
 def run_backend(
     binary: Path, rom: Path, renderer: str, frames: int,
     timeout: float, verbose: bool, artifacts_dir: Path | None,
+    texture_pack: Path | None = None,
 ) -> str | None:
     cleanup_on_success = artifacts_dir is None
     if artifacts_dir is None:
@@ -243,17 +262,22 @@ def run_backend(
         return detail if not tail else f"{detail}\n{tail}"
 
     try:
+        if texture_pack is not None:
+            mods = run_root / "mods"
+            mods.mkdir()
+            shutil.copyfile(texture_pack, mods / "resource-fixture.zip")
         script = run_root / "resource_plateau.txt"
-        script.write_text(extended_route(), encoding="utf-8")
+        script.write_text(extended_route(frames), encoding="utf-8")
         env = {
             key: value for key, value in os.environ.items()
-            if not key.startswith("MDKR_")
+            if not key.startswith(("MDKR", "GE007_"))
         }
         env.update({
             "MDKR_AUDIO": "0",
             "MDKR_AUTOPILOT": "1",
             "MDKR_RESOURCE_STATS": "1",
             "MDKR_RENDERER": renderer,
+            "MDKR_APP_PREFS_DIR": str(run_root),
             "MDKR_SAVE_DIR": str(run_root / "save"),
             # Isolate the video config with the save (see check_door_blocks.py).
             "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
@@ -284,6 +308,10 @@ def run_backend(
         output = log_path.read_text(encoding="utf-8", errors="replace")
         if process.returncode != 0:
             return failure(f"exit code {process.returncode}", output)
+        if texture_pack is not None and not re.search(
+                r"\[MODS\] [1-9][0-9]* high-resolution textures? used this run",
+                output):
+            return failure("requested pack supplied no rendered texture evidence", output)
         for marker in FATAL_MARKERS:
             if marker in output:
                 line = next(
@@ -319,6 +347,12 @@ def run_backend(
         if "[PTRREG]" not in output:
             return failure("no terminal pointer-registry census was emitted", output)
         rows = [tuple(map(int, match.groups())) for match in RESOURCE_RE.finditer(output)]
+        cache_rows = [tuple(map(int, match.groups()))
+                      for match in CACHE_RE.finditer(output)]
+        cache_races = [row for row in cache_rows if row[:3] == (5, 0, 100)]
+        error = cache_plateau_error(cache_rows)
+        if error is not None:
+            return failure(error, output)
         error = plateau_error(rows)
         if error is not None:
             return failure(error + "\n" + "\n".join(
@@ -373,7 +407,8 @@ def run_backend(
             f"{renderer_warmed[5]}={renderer_warmed[6]} live; "
             f"shaders={renderer_warmed[8]}; "
             f"registry={registry_warmed[3]}/{registry_warmed[4]} "
-            "live/high"
+            "live/high; "
+            f"packPixels={cache_races[-1][3]} table={cache_races[-1][5]} bytes"
         )
         if cleanup_on_success:
             shutil.rmtree(run_root)
@@ -393,11 +428,17 @@ def main() -> int:
         "--renderer", choices=("gl", "webgpu", "both"), default="both")
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     parser.add_argument("--timeout", type=float, default=240.0)
+    parser.add_argument("--texture-pack", type=Path,
+                        help="copy a local ZIP into isolated mods; require actual texture use")
     parser.add_argument(
         "--artifacts-dir", type=Path,
         help="retain each backend route and complete child log here")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
+    if args.texture_pack is not None:
+        args.texture_pack = args.texture_pack.expanduser().resolve()
+        if not args.texture_pack.is_file() or args.texture_pack.suffix.lower() != ".zip":
+            parser.error("--texture-pack must name an existing ZIP file")
 
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).expanduser().resolve()
@@ -466,7 +507,7 @@ def main() -> int:
         for renderer in renderers
         if (error := run_backend(
             binary, rom, renderer, args.frames, args.timeout, args.verbose,
-            args.artifacts_dir))
+            args.artifacts_dir, args.texture_pack))
     ]
     if failures:
         print("check_resource_plateau: FAIL", file=sys.stderr)

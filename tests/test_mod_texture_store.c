@@ -406,8 +406,10 @@ static void test_a_side_no_backend_can_upload_is_refused(void) {
 /* 2. The gate must not cost a legitimate pack its textures. */
 static void test_a_texture_that_fits_still_loads(void) {
     MdkrModTexture texture;
+    MdkrModTextureMemoryStats before, loaded, cached;
     int            found;
 
+    mdkr_mod_texture_memory_stats(&before);
     mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
     found = mdkr_mod_texture_lookup(DIGEST_SOUND, &texture);
 
@@ -416,6 +418,20 @@ static void test_a_texture_that_fits_still_loads(void) {
            "at the size its header declares");
     expect(mdkr_texture_probe_decode_calls() == 1,
            "having actually been decoded, once");
+    mdkr_mod_texture_memory_stats(&loaded);
+    expect(loaded.pixel_bytes == before.pixel_bytes + 8u * 8u * 4u,
+           "resident census counts the admitted RGBA bytes exactly once");
+    expect(loaded.table_bytes > 0 && loaded.entries > 0,
+           "resident census includes its lookup table and entries");
+    expect(mdkr_mod_texture_lookup(DIGEST_SOUND, &texture) == 1,
+           "a repeated lookup remains a cache hit");
+    mdkr_mod_texture_memory_stats(&cached);
+    expect(cached.pixel_bytes == loaded.pixel_bytes &&
+           cached.table_bytes == loaded.table_bytes && cached.entries == loaded.entries &&
+           cached.pixel_limit == loaded.pixel_limit,
+           "a cache hit does not inflate retained ownership counters");
+    expect(mdkr_texture_probe_decode_calls() == 1,
+           "a cache hit does not decode again");
     if (found && texture.rgba != NULL) {
         /* Pixel (1, 0) of the fixture, so a lookup that found some other
          * picture fails here rather than passing on the dimensions alone. */
@@ -663,6 +679,14 @@ int main(int argc, char **argv) {
     if (!mdkr_mod_texture_store_active()) {
         fatal("the store is inactive over the scratch pack", mods);
     }
+    {
+        MdkrModTextureMemoryStats stats;
+        mdkr_mod_texture_memory_stats(NULL);
+        mdkr_mod_texture_memory_stats(&stats);
+        expect(stats.pixel_bytes == 0 && stats.table_bytes == 0 && stats.entries == 0,
+               "new store census has no retained allocations");
+        expect(stats.pixel_limit > 0, "store census reports a nonzero pixel budget");
+    }
 
     test_declared_size_is_refused_before_the_decode();
     test_a_side_no_backend_can_upload_is_refused();
@@ -673,6 +697,12 @@ int main(int argc, char **argv) {
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();
+    {
+        MdkrModTextureMemoryStats stats;
+        mdkr_mod_texture_memory_stats(&stats);
+        expect(stats.pixel_bytes == 0 && stats.table_bytes == 0 && stats.entries == 0,
+               "shutdown clears retained memory census");
+    }
     mdkr_mod_registry_shutdown(&registry);
     remove_tree(scratch);
 

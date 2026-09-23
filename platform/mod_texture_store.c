@@ -716,6 +716,14 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
 
 int mdkr_mod_texture_rice_resident(void) { return s_rice_resident; }
 
+void mdkr_mod_texture_memory_stats(MdkrModTextureMemoryStats *out) {
+    if (out == NULL) return;
+    out->pixel_bytes = s_resident_bytes;
+    out->pixel_limit = MDKR_MOD_TEXTURE_CACHE_BYTES_MAX;
+    out->table_bytes = s_slot_capacity * sizeof(*s_slots);
+    out->entries = s_slot_count;
+}
+
 int mdkr_mod_texture_rice_active(void) {
     return mdkr_mod_texture_store_active() && s_rice_identities > 0;
 }

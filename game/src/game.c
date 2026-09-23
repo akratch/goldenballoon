@@ -5,6 +5,7 @@
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
 #include "mdkr_trace.h"
+#include "mod_texture_store.h"
 #include "fast3d/gfx_pc_dkr.h"
 #include "fast3d/gfx_level_lighting.h"
 #include "presentation_snapshot.h"
@@ -949,6 +950,13 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
      * coincidence. No-op unless MDKR_PRESENT_SNAPSHOT is set. */
     presentation_snapshot_stage_reset();
     if (mdkr_resource_trace_enabled()) {
+        MdkrModTextureMemoryStats textureStats;
+        mdkr_mod_texture_memory_stats(&textureStats);
+        mdkr_trace("texture_cache_state: level=%d players=%d cutscene=%d "
+                   "pixels=%zu limit=%zu table=%zu entries=%zu",
+                   (int)levelId, (int)numberOfPlayers, (int)cutsceneId,
+                   textureStats.pixel_bytes, textureStats.pixel_limit,
+                   textureStats.table_bytes, textureStats.entries);
         MdkrMemoryPoolStats memoryStats;
         u32 audioUsed;
         u32 audioCapacity;

@@ -98,6 +98,16 @@ int  mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
  * "the pack is being used", and worth being able to state separately. */
 int  mdkr_mod_texture_rice_resident(void);
 
+/* Owner-thread, allocation-free snapshot. These are retained CPU payloads,
+ * not process RSS or GPU memory; registry/ZIP allocations are not included. */
+typedef struct MdkrModTextureMemoryStats {
+    size_t pixel_bytes;
+    size_t pixel_limit;
+    size_t table_bytes;
+    size_t entries;
+} MdkrModTextureMemoryStats;
+void mdkr_mod_texture_memory_stats(MdkrModTextureMemoryStats *out);
+
 /* 1 when an ENABLED Rice pack is installed. The renderer tests this before
  * computing a Rice key, because that key is a full pass over the texture's
  * source bytes: without the test, every player with only digest-keyed packs
