@@ -266,7 +266,8 @@ def survived(run: Run) -> list[str]:
 # Tick 0 fires from platform_input_init() BEFORE its startup enumeration, which
 # is the ordering a pad plugged in before launch produces: SDL_Init has already
 # queued the device-added event that the first input pump will deliver.
-ARM_JOIN = ("attach=1@0,hold=1:right@40,"
+ARM_JOIN = ("attach=1@0,hold=1:a@10,hold=1:neutral@20,"
+            "hold=1:start@25,hold=1:neutral@35,hold=1:right@40,"
             "attach=2@120,hold=2:left@160,detach=2@220,"
             "rumble=1:1@260,rumble=3:1@262,"
             "attach=3@300,hold=3:up@340")
@@ -288,6 +289,21 @@ def assert_join(run: Run) -> dict[str, list[str]]:
     hold_rejoin = run.op_at("hold", 3)
 
     scored: dict[str, list[str]] = {}
+
+    # A single boot-attached pad must not publish join buttons to a second
+    # game port, even while SDL's initial device-added event is being drained.
+    button_problems: list[str] = []
+    for first, last, expected in ((10 + SETTLE, 19, 0x8000),
+                                   (25 + SETTLE, 34, 0x1000)):
+        rows, missing = require_rows(run, 0, first, last, "single-pad buttons")
+        button_problems += missing
+        if any(row.buttons != expected for row in rows):
+            button_problems.append(
+                f"single-pad buttons: P1 did not exclusively publish {expected:#06x}")
+        for port in (1, 2, 3):
+            button_problems += expect_neutral(run, port, first, last,
+                                              "single-pad buttons", present=0)
+    scored["1 single-pad buttons"] = button_problems
 
     # 1. The boot pad owns exactly ONE channel, and the pad that joins later
     #    takes the next one.  Both halves matter: a boot pad bound twice makes
