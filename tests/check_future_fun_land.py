@@ -161,6 +161,7 @@ def clear_wizpig_one(save: bytes, eligible: list[int]) -> bytes:
 
 def drive_to_signpost(
     binary: Path, rom: Path, label: str, fixture: bytes, timeout: int,
+    *, adventure_two: bool = False,
 ) -> tuple[int, str, bytes]:
     """One headless process, in its own temporary directory and save dir."""
     with tempfile.TemporaryDirectory(prefix=f"mdkr_ffl_{label}_") as temp:
@@ -168,11 +169,19 @@ def drive_to_signpost(
         save_dir = run_dir / "save"
         save_dir.mkdir()
         (save_dir / "eeprom.bin").write_bytes(fixture)
+        script = HUB_SCRIPT
+        if adventure_two:
+            script = run_dir / "adventure_two_signpost.txt"
+            lines = HUB_SCRIPT.read_text().splitlines()
+            index = lines.index("1900 A 4")
+            lines.insert(index, "1840 DOWN 4")
+            script.write_text("\n".join(lines) + "\n")
         env = {
             key: value for key, value in os.environ.items()
             if not key.startswith(("MDKR", "GE007_"))
         }
         env.update(
+            MDKR_APP_PREFS_DIR=str(run_dir),
             LC_ALL="C",
             MDKR_AUDIO="0",
             MDKR_RENDERER="gl",
@@ -187,7 +196,7 @@ def drive_to_signpost(
         )
         proc = subprocess.run(
             [str(binary), "--headless-frames", str(HUB_FRAMES),
-             "--input-script", str(HUB_SCRIPT), "--rom", str(rom)],
+             "--input-script", str(script), "--rom", str(rom)],
             cwd=run_dir, env=env, text=True, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, timeout=timeout, check=False,
         )

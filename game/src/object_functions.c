@@ -667,14 +667,6 @@ void obj_loop_trophycab(Object *obj, s32 updateRate) {
             if (mdkr_trophy_state(settings->trophies, settings->worldId,
                                   &trophyState) &&
                 trophyState != 0) {
-#ifdef NATIVE_PORT
-                if (mdkr_trace_enabled()) {
-                    mdkr_trace("trophycabinet: DISPLAY world=%d state=%u "
-                               "trophies=0x%x @frame~%d",
-                               (int) settings->worldId, (unsigned) trophyState,
-                               (unsigned) settings->trophies, g_frameCounter);
-                }
-#endif
                 newObject.objectID = ASSET_OBJECT_ID_TROPHY;
                 newObject.x = obj->level_entry->animation.common.x;
                 newObject.y = obj->level_entry->animation.common.y;
@@ -684,6 +676,16 @@ void obj_loop_trophycab(Object *obj, s32 updateRate) {
                 if (tempObj != NULL) {
                     tempObj->level_entry = NULL;
                     tempObj->trans.rotation.y_rotation = obj->trans.rotation.y_rotation;
+#ifdef NATIVE_PORT
+                    /* Report an actual spawned trophy, not merely a save-bit
+                     * decision that could still fail allocation below it. */
+                    if (mdkr_trace_enabled()) {
+                        mdkr_trace("trophycabinet: DISPLAY world=%d state=%u "
+                                   "trophies=0x%x @frame~%d",
+                                   (int) settings->worldId, (unsigned) trophyState,
+                                   (unsigned) settings->trophies, g_frameCounter);
+                    }
+#endif
                 }
             }
         }

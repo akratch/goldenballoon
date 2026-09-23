@@ -61,7 +61,7 @@ BAD_RE = re.compile(
 )
 
 
-def save_slot() -> bytes:
+def save_slot(adventure_two: bool = False) -> bytes:
     bits: list[int] = []
     put_bits(bits, 16, 0)
     put_bits(bits, 68, 0)
@@ -75,7 +75,7 @@ def save_slot() -> bytes:
     for _ in range(6):
         put_bits(bits, 16, 0)
     put_bits(bits, 8, 0)
-    put_bits(bits, 32, 0)
+    put_bits(bits, 32, 4 if adventure_two else 0)
     put_bits(bits, 16, 0x1234)
     put_bits(bits, 8, 0)
     if len(bits) != SLOT_BYTES * 8:
@@ -95,9 +95,9 @@ def config_block() -> bytes:
     return save_config_block(1)  # retail default subtitle bit
 
 
-def eeprom_image() -> bytes:
+def eeprom_image(adventure_two: bool = False) -> bytes:
     out = bytearray(EEPROM_BYTES)
-    out[:SLOT_BYTES] = save_slot()
+    out[:SLOT_BYTES] = save_slot(adventure_two)
     out[SLOT_BYTES:CONFIG_OFFSET] = b"\xFF" * (CONFIG_OFFSET - SLOT_BYTES)
     out[CONFIG_OFFSET:CONFIG_OFFSET + 8] = config_block()
     for offset in RECORD_OFFSETS:
@@ -112,11 +112,13 @@ def read_bits(data: bytes, offset: int, width: int) -> int:
     return value
 
 
-def write_input_script(path: Path, frames: int, mode: str) -> None:
+def write_input_script(path: Path, frames: int, mode: str, adventure_two: bool = False) -> None:
     lines = [
         "1250 START 4", "1330 START 4", "1450 A 4", "1540 A 4",
         "1750 A 4", "1900 A 4", "2050 A 4",
     ]
+    if adventure_two:
+        lines.insert(5, "1840 DOWN 4")
     if mode in ("full", "retry"):
         # Edge-triggered A advances cabinet, round, post-race, rankings and final
         # cinematic screens whenever they are ready. During a race it is merely
@@ -145,18 +147,21 @@ def run_case(
     mode: str,
     order: str | None,
     world: int = 1,
+    adventure_two: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], bytes]:
     with tempfile.TemporaryDirectory(prefix="mdkr_trophy_") as temp:
         run_dir = Path(temp)
         (run_dir / "save").mkdir()
         (run_dir / "save/eeprom.bin").write_bytes(initial_eeprom)
         script = run_dir / "trophy_input.txt"
-        write_input_script(script, frames, mode)
+        write_input_script(script, frames, mode, adventure_two)
         env = {
             key: value for key, value in os.environ.items()
-            if not key.startswith("MDKR_")
+            if not key.startswith(("MDKR", "GE007_"))
         }
         env.update(
+            MDKR_APP_PREFS_DIR=str(run_dir),
+            MDKR64_HIDDEN="1",
             MDKR_AUDIO="0",
             MDKR_SIMULATION_CADENCE="enhanced",
             MDKR_SYNTH_FIELDS="1",

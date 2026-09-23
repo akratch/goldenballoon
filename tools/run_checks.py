@@ -1071,7 +1071,13 @@ CHECKS = (
           "through the measured retail us.v80 path with trophy storage "
           "intact, instead of the menu-8 dead-end hang (issue #55)"),
     Check("trophy_series", "check_trophy_series.py", "native",
-          "all four Adventure trophy championships, quit/retry, and EEPROM reload"),
+          "all five Adventure trophy championships, quit/retry, and Dino EEPROM reload"),
+    Check("trophy_adventure_two", "check_trophy_adventure_two.py", "native",
+          "Adventure Two Future Fun Land mirrored championship, gold award, "
+          "cabinet display and persisted save identity"),
+    Check("trophy_ffl_reload", "check_trophy_ffl_reload.py", "native",
+          "Future Fun Land gold earned and displayed from unchanged EEPROM "
+          "in fresh processes for both Adventure modes"),
     Check("race_finish_time", "check_race_finish_time.py", "native",
           "three-lap finish and EEPROM time"),
     Check("ghost_matrix", "check_ghost_matrix.py", "native",
