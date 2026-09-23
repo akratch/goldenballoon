@@ -8707,6 +8707,24 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
         SOUND_VOICE_TAJ_WOAH,
         SOUND_VOICE_TAJ_HOHO,
     };
+    static const u16 wizpigPositiveVoices[] = {
+        SOUND_VOICE_WIZPIG_LAUGH_SHORT2,
+        SOUND_VOICE_WIZPIG_LAUGH_SHORT3,
+        SOUND_VOICE_WIZPIG_HA,
+        SOUND_VOICE_WIZPIG_H2,
+        SOUND_VOICE_WIZPIG_LAUGH,
+        SOUND_VOICE_WIZPIG_LAUGH_SHORT,
+        SOUND_VOICE_WIZPIG_LAUGH2,
+        SOUND_VOICE_WIZPIG_LAUGH3,
+        SOUND_VOICE_WIZPIG_LAUGH4,
+    };
+    static const u16 wizpigNegativeVoices[] = {
+        SOUND_VOICE_WIZPIG_GROAN,
+        SOUND_VOICE_WIZPIG_SCREAM,
+        SOUND_VOICE_WIZPIG_SCREAM2,
+        SOUND_VOICE_WIZPIG_SCREAM3,
+        SOUND_VOICE_WIZPIG_DEFEAT,
+    };
 #endif
 
     tempRacer = obj->racer;
@@ -8726,11 +8744,22 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
         if (tempRacer->soundMask == NULL && (flags != 3 || rand_range(0, 1))) {
             tempRacer->unk2A = soundID;
 #ifdef NATIVE_PORT
-            if (taj_physics_is_taj(tempRacer)) {
+            /* Synthetic racer identity, not its retail stat donor, owns the
+             * voice. Keep the ordinary gating, spatial policy and repeat
+             * suppression below; this does not alter retail boss encounters. */
+            if (taj_physics_is_taj(tempRacer) || wizpig_physics_is_wizpig(tempRacer)) {
                 const u16 *voices;
                 s32 voiceCount;
 
-                if (soundID == SOUND_VOICE_CHARACTER_NEGATIVE) {
+                if (wizpig_physics_is_wizpig(tempRacer)) {
+                    if (soundID == SOUND_VOICE_CHARACTER_NEGATIVE) {
+                        voices = wizpigNegativeVoices;
+                        voiceCount = ARRAY_COUNT(wizpigNegativeVoices);
+                    } else {
+                        voices = wizpigPositiveVoices;
+                        voiceCount = ARRAY_COUNT(wizpigPositiveVoices);
+                    }
+                } else if (soundID == SOUND_VOICE_CHARACTER_NEGATIVE) {
                     voices = tajNegativeVoices;
                     voiceCount = ARRAY_COUNT(tajNegativeVoices);
                 } else {
@@ -8743,6 +8772,9 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
                         soundIndex = voices[rand_range(0, voiceCount - 1)];
                     }
                 }
+                MDKR_TRACE("mod_racer_voice: player=%d identity=%d event=%d sound=%d",
+                           tempRacer->playerIndex, mod_racer_physics_identity(tempRacer),
+                           soundID, soundIndex);
             } else {
 #endif
             soundID += tempRacer->characterId;
