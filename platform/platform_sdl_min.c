@@ -624,7 +624,7 @@ int platform_input_load_script(const char *path) {
     char line[256];
     s_scriptCount = 0;
     s_scriptPresentMask = 0;
-    while (fgets(line, sizeof(line), f) && s_scriptCount < MAX_SCRIPT) {
+    while (fgets(line, sizeof(line), f)) {
         /* strip comment */
         char *hash = strchr(line, '#');
         if (hash) *hash = '\0';
@@ -635,6 +635,14 @@ int platform_input_load_script(const char *path) {
         int frame = atoi(ftok);
         char *btok = strtok_r(NULL, " \t\r\n", &save);
         if (!btok) continue;
+        if (s_scriptCount >= MAX_SCRIPT) {
+            fprintf(stderr, "[input-script] too many entries (maximum %d) in %s\n",
+                    MAX_SCRIPT, path);
+            s_scriptCount = 0;
+            s_scriptPresentMask = 0;
+            fclose(f);
+            return -1;
+        }
         struct script_entry e = { frame, 3, 0, 0, 0, 0 };
         /* button field may be TOKEN+TOKEN+... */
         char bcopy[128];
