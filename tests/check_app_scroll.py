@@ -13,10 +13,9 @@ this suite:
   production ``AppHost::processEvent`` -> ``ImGui_ImplSDL2_ProcessEvent`` adapter
   and asserts the panel's ``ScrollY`` actually advances.
 
-* macOS natural-scroll DIRECTION. With natural scrolling on (the default) SDL
-  negates the deltas and sets ``SDL_MOUSEWHEEL_FLIPPED``; a bridge that ignores
-  the flag scrolls the panel the OPPOSITE way to the rest of the desktop. The
-  FLIPPED case asserts the panel still scrolls the way the gesture asks.
+* macOS natural-scroll DIRECTION. SDL marks the event ``SDL_MOUSEWHEEL_FLIPPED``
+  after macOS has applied the user's preference. The bridge must not reverse
+  that already-adjusted delta again.
 
 * Touchscreen drag. A finger drag that begins on non-interactive content pans
   the same panel through the custom ``TouchScrollCurrentWindow`` gesture.
@@ -41,8 +40,15 @@ from harness_utils import resolve_binary
 
 
 def run(executable: Path, environment: dict[str, str], expected: tuple[str, ...]) -> str:
-    merged = os.environ.copy()
+    save_directory = environment.get("MDKR_SAVE_DIR")
+    if not save_directory or not Path(save_directory).is_absolute():
+        raise ValueError("scroll fixture requires an explicit absolute MDKR_SAVE_DIR")
+    merged = {key: value for key, value in os.environ.items()
+              if not key.startswith(("MDKR", "GE007_"))}
     merged.update(environment)
+    # Make the launch boundary fail closed independently of its caller and
+    # keep the pin visible to the intraprocedural hermeticity source gate.
+    merged["MDKR_SAVE_DIR"] = save_directory
     completed = subprocess.run(
         [str(executable)], env=merged, text=True,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
@@ -102,12 +108,6 @@ def check_wheel_flipped(executable: Path, root: Path) -> None:
     as the normal-wheel run and requires the SAME downward result: a bridge that
     negates on the flag scrolls up, clamps at the top, and stays red.
 
-    With natural scrolling on -- the macOS default -- SDL negates the deltas and
-    sets SDL_MOUSEWHEEL_FLIPPED. This run injects that exact event (positive
-    preciseY, FLIPPED) from the top of the panel: only if the flag is honored is
-    the delta re-inverted to scroll the panel DOWN and print scroll=1. A bridge
-    that ignores FLIPPED scrolls up, clamps at the top, and stays red -- the
-    "scrolling goes the wrong way on the trackpad" defect.
     """
     env = common(root, root / "video.ini")
     env.update({
@@ -130,6 +130,27 @@ def check_touch(executable: Path, root: Path) -> None:
         "MDKR_APP_SMOKE_TOUCH_TOKEN": "mdkr64-app-touch-v1",
     })
     run(executable, env, ("[app-ui-test] touch handheld targets=1 scroll=1",))
+
+
+def check_phone_panel(executable: Path, root: Path, touch: bool) -> None:
+    """Exercise the real phone surface's parent scroll region at minimum size.
+
+    The existing party trace relaxes only ROM readiness; it does not fabricate
+    transport availability or open a network room. This does not cover a full
+    connected-phone roster or keyboard/gamepad focus scrolling.
+    """
+    env = common(root, root / "video.ini")
+    env.update(MDKR_APP_PANEL="Play", MDKR_APP_PARTY_TRACE="1",
+               MDKR_APP_SMOKE_WINDOW_SIZE="640x480", MDKR_APP_SMOKE_FRAMES="12")
+    if touch:
+        env.update(MDKR_APP_SMOKE_TOUCH_SCROLL="1",
+                   MDKR_APP_SMOKE_TOUCH_TOKEN="mdkr64-app-touch-v1")
+        marker = "[app-ui-test] touch handheld targets=1 scroll=1"
+    else:
+        env.update(MDKR_APP_SMOKE_WHEEL_SCROLL="1",
+                   MDKR_APP_SMOKE_WHEEL_TOKEN="mdkr64-app-wheel-v1")
+        marker = "[app-ui-test] wheel handheld scroll=1"
+    run(executable, env, ("[app] party:", "phase=closed", marker))
 
 
 def main() -> int:
@@ -158,6 +179,11 @@ def main() -> int:
         touch = temporary / "touch"
         touch.mkdir()
         check_touch(executable, touch)
+
+        for touch_input in (False, True):
+            phone = temporary / ("phone-touch" if touch_input else "phone-wheel")
+            phone.mkdir()
+            check_phone_panel(executable, phone, touch_input)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"app scroll validation failed: {error}")
         return 1
@@ -166,7 +192,8 @@ def main() -> int:
 
     print("app scroll valid: trackpad-shaped fractional wheel (normal and "
           "macOS natural-scroll FLIPPED) and touchscreen drag all advance the "
-          "launcher panel's ScrollY in the right direction")
+          "launcher panel's ScrollY in the right direction; closed phone panel "
+          "also scrolls with wheel and touch at 640x480")
     return 0
 
 

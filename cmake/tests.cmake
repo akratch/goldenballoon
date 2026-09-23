@@ -2733,6 +2733,10 @@ if(BUILD_TESTING)
         NAME check_save_dir_hermeticity
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_check_save_dir_hermeticity.py)
+    add_test(
+        NAME app_scroll_environment
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_app_scroll_environment.py)
     if(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$" AND NOT MSVC)
         add_test(
             NAME taj_music_muted
