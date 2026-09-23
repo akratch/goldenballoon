@@ -23,6 +23,19 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_features(mdkr_rom_browser_test PRIVATE cxx_std_17)
     add_test(NAME rom_browser COMMAND mdkr_rom_browser_test)
 
+    add_executable(mdkr_file_browser_ui_test
+        ${CMAKE_SOURCE_DIR}/tests/test_file_browser_ui.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/file_browser_ui.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_tables.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_widgets.cpp)
+    target_include_directories(mdkr_file_browser_ui_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
+    target_compile_features(mdkr_file_browser_ui_test PRIVATE cxx_std_17)
+    add_test(NAME file_browser_ui COMMAND mdkr_file_browser_ui_test)
+
     add_executable(mdkr_audio_bank_parser_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_bank_parser.c)
     target_include_directories(mdkr_audio_bank_parser_test PRIVATE
