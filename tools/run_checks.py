@@ -180,6 +180,7 @@ GPU_SERIAL_NAMES = frozenset({
     "renderer_backends",
     "gpu_backpressure",
     "resource_plateau",
+    "input_script_capacity",
     "surface_suspension",
     "final_shutdown",
     "webgpu_content_census",
@@ -219,6 +220,8 @@ GPU_SERIAL_NAMES = frozenset({
     "character_test_evidence_ui",
     "custom_character_workshop_preview",
     "bonus_results_portraits",
+    "wizpig_race_voice",
+    "taj_selection_music",
     "bonus_portrait_pack",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -360,6 +363,9 @@ CHECKS = (
           "MacBook-trackpad-shaped fractional-preciseY wheel (integer y zero), "
           "a natural-scroll FLIPPED wheel (scrolls the right way), and a "
           "touchscreen drag all advance ScrollY"),
+    Check("phone_panel_focus", "check_phone_panel_focus.py", "native",
+          "keyboard and gamepad reach Start Local Play in the closed phone "
+          "surface at 640x480; no room is opened"),
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
           "and explicit session-only state"),
@@ -785,6 +791,8 @@ CHECKS = (
           "trace, asserting every music note-on is on bus 0"),
     Check("resource_plateau", "check_resource_plateau.py", "native",
           "repeated GL/WebGPU stage, pool/audio/GPU/registry ownership plateau"),
+    Check("input_script_capacity", "check_input_script_capacity.py", "native",
+          "input-script capacity boundary accepts 512 and rejects 513 entries"),
     Check("raw16_audio", "check_raw16_audio.py", "native",
           "RAW16 bank census, endian oracle, and fixed/legacy PCM A/B"),
     Check("texture_lineswap", "check_texture_lineswap.py", "native",
@@ -864,6 +872,13 @@ CHECKS = (
     Check("bonus_results_portraits", "check_bonus_results_portraits.py", "native",
           "real post-race Wizpig/Terry portrait ownership, retail dimensions, "
           "and distinct card pixels"),
+    Check("wizpig_race_voice", "check_wizpig_race_voice.py", "native",
+          "playable Wizpig positive/negative race cues use his own authored "
+          "voice IDs, with consecutive-repeat suppression"),
+    Check("taj_selection_music", "check_taj_selection_music.py", "native",
+          "Taj music confirmation, reselection, title exit, custom return and multiplayer "
+          "ownership across four unlock layouts with loaded-sequence and "
+          "nonzero MIDI dispatch checks"),
     Check("bonus_portrait_pack", "check_bonus_portrait_pack.py", "native",
           "a pack redraws the generated Taj/Wizpig/Terry cards at their "
           "published digests on GL and on the shipped WebGPU default, the "
@@ -949,12 +964,13 @@ CHECKS = (
     Check("adventure_party_taj", "check_adventure_party_taj.py", "native",
           "AP-11 Taj transaction + shared-scene envelope: a non-host summons Taj "
           "(shared dialogue latched once), the host owns the vehicle choice, and the "
-          "WHOLE party (2P/3P) transforms transactionally to the new vehicle with the "
+          "WHOLE party (2P/3P, car to hovercraft and plane) transforms with the "
           "same seat->character identities and split layout (live==N, never a collapse "
           "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
           "a host CHALLENGE-row selection during the party dialogue is fail-closed "
           "refused (R27: no TAJ_MODE_RACE, no extra racer, transform still works "
-          "after); four positive controls fire and retail 2P Taj "
+          "after); per-seat visibility/input/sound restoration and six positive "
+          "controls are checked, and retail 2P Taj "
           "(check_taj_p2_adventure) is untouched"),
     Check("adventure_party_progress", "check_adventure_party_progress.py",
           "native",
