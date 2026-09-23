@@ -673,7 +673,12 @@ void drawLanActive(MdkrNativePartyHost &host, PhonePartyLanControls &lan) {
  * address shows the reason instead of a dead button -- fail closed. */
 void drawLanEntryCard(PhonePartyLanControls &lan) {
     ui::Gap(ui::kGapM);
-    if (ui::CardBegin("##lan-entry", AppTheme::accent(), 0.0f)) {
+    // Keep the entry in the parent's navigation and scrolling domain. An
+    // off-screen NavFlattened child cannot be scored by directional navigation,
+    // leaving gamepad users unable to reach this action in short windows.
+    ImGui::PushID("##lan-entry");
+    ImGui::BeginGroup();
+    {
         ImGui::PushFont(AppTheme::fonts().title);
         ImGui::TextUnformatted("Local play (no internet)");
         ImGui::PopFont();
@@ -703,7 +708,8 @@ void drawLanEntryCard(PhonePartyLanControls &lan) {
             ImGui::PopStyleColor();
         }
     }
-    ui::CardEnd();
+    ImGui::EndGroup();
+    ImGui::PopID();
 }
 
 void drawFull(MdkrNativePartyHost &host, const char *serviceOrigin) {
