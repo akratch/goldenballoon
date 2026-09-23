@@ -53,7 +53,7 @@ Options:
                       run the US 1.1 retail car-audio RNG authority witness;
                       validate the local-only trace and skip unrelated state scoring
   --audio-dump PATH   capture the ROM's own AI DMA stream as raw LE s16 stereo
-                      on race_state_oracle; validates the local-only capture
+                      on an audio-enabled route; validates the local-only capture
                       and skips state scoring
   -h, --help         show this help
 
@@ -96,17 +96,16 @@ if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
         echo "FAIL: --vehicle-rng-trace cannot reuse an old ares run" >&2; exit 2; }
 fi
 if [[ -n "$AUDIO_DUMP" ]]; then
-    # Same fence as --vehicle-rng-trace above: this lane replaces state scoring
-    # rather than adding to it, so it may only be asked for on the route the
-    # console-audio reference is defined on (docs/ORACLE.md). Without the
-    # route pin, `--audio-dump` on any other route silently turned a scored
-    # comparison into an unscored one.
-    [[ "$ROUTE" == "race_state_oracle" ]] || {
-        echo "FAIL: --audio-dump requires race_state_oracle" >&2; exit 2; }
+    # Audio replaces state scoring; only the historical reference route or an
+    # explicitly audio-enabled route may opt out of scoring this way.
+    [[ "$ROUTE" == "race_state_oracle" ||
+       "$(python3 tools/dkr_oracle_route.py field "$ROUTE" audio_capture)" == 1 ]] || {
+        echo "FAIL: --audio-dump requires an audio-enabled route" >&2; exit 2; }
     [[ "$SKIP_ARES" -eq 0 ]] || {
         echo "FAIL: --audio-dump cannot reuse an old ares run" >&2; exit 2; }
-    [[ ! -d "$AUDIO_DUMP" && ! -d "$AUDIO_DUMP.rate" ]] || {
-        echo "FAIL: --audio-dump path resolves to a directory" >&2; exit 2; }
+    [[ ! -e "$AUDIO_DUMP" && ! -L "$AUDIO_DUMP" &&
+       ! -e "$AUDIO_DUMP.rate" && ! -L "$AUDIO_DUMP.rate" ]] || {
+        echo "FAIL: --audio-dump destination already exists" >&2; exit 2; }
 fi
 
 ROUTE_PY="python3 tools/dkr_oracle_route.py"
@@ -120,6 +119,10 @@ ARES_DUMP_EVERY="$(field ares_dump_every)"
 ARES_DUMP_START="$(field ares_dump_start)"
 COMPARE_FRAMES="$(field compare_frames)"
 STATE_TRACE="$(field state_trace)"
+if [[ "$COMPARE_FRAMES" -eq 0 && "$STATE_TRACE" -eq 0 && -z "$AUDIO_DUMP" ]]; then
+    echo "FAIL: audio-only route requires --audio-dump" >&2
+    exit 2
+fi
 STATE_REQUIRE_FINISH="$(field state_require_finish)"
 FORCED_TRACK="$(field forced_track)"
 FORCED_TRACK_SOURCE="$(field forced_track_source)"
@@ -397,7 +400,6 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
         ARES_ENV+=(MDKR64_ARES_VEHICLE_RNG_TRACE="$VEHICLE_RNG_TRACE")
     fi
     if [[ -n "$AUDIO_DUMP" ]]; then
-        rm -f "$AUDIO_DUMP" "$AUDIO_DUMP.rate"
         ARES_ENV+=(MDKR64_ARES_AUDIO_DUMP="$AUDIO_DUMP")
     fi
     if [[ "$FORCED_TRACK" -ge 0 ]]; then
@@ -416,16 +418,23 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
         "$ROM" >"$ROUTE_DIR/ares.log" 2>&1 &
     APID=$!
     SECS=0
+    ARES_TIMED_OUT=0
     while kill -0 "$APID" 2>/dev/null; do
         sleep 3; SECS=$((SECS+3))
         if [[ "$SECS" -ge "$ARES_TIMEOUT" ]]; then
+            ARES_TIMED_OUT=1
             echo "   ares timeout at ${SECS}s -- terminating"
             kill "$APID" 2>/dev/null || true; sleep 2
             kill -9 "$APID" 2>/dev/null || true
             break
         fi
     done
-    wait "$APID" 2>/dev/null || true
+    ARES_EXIT=0
+    wait "$APID" 2>/dev/null || ARES_EXIT=$?
+    if [[ -n "$AUDIO_DUMP" && ( "$ARES_TIMED_OUT" -ne 0 || "$ARES_EXIT" -ne 0 ) ]]; then
+        echo "FAIL: ares audio capture did not complete (exit=$ARES_EXIT timeout=$ARES_TIMED_OUT)" >&2
+        exit 1
+    fi
     if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         echo "   ares dumped $(find "$ARES_DIR" -maxdepth 1 -type f -name 'frame_*.ppm' | wc -l | tr -d ' ') frame(s) in ~${SECS}s"
     else
@@ -486,12 +495,22 @@ if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
     python3 tools/validate_ares_vehicle_rng.py "$VEHICLE_RNG_TRACE"
 fi
 if [[ -n "$AUDIO_DUMP" ]]; then
-    python3 - "$AUDIO_DUMP" <<'PY'
+    python3 - "$AUDIO_DUMP" "$ROUTE_DIR/ares.log" "$((ARES_FRAMES+5))" "$FORCED_TRACK_SOURCE" "$FORCED_TRACK" <<'PY'
 import hashlib
+import re
 import sys
 from pathlib import Path
 
 audio = Path(sys.argv[1])
+log = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
+expected_frames = int(sys.argv[3])
+completed = re.search(r"reached frame limit (\d+) \(dumped \d+ frame\(s\), (\d+) audio sample-frame\(s\)\), exiting", log)
+if completed is None or int(completed.group(1)) != expected_frames:
+    raise SystemExit("FAIL: missing expected ares audio completion witness")
+source, target = int(sys.argv[4]), int(sys.argv[5])
+if target >= 0 and not re.search(
+        rf"(?:^|\n)(?:mdkr64 oracle: )?forced retail race load {source} -> {target}[ \t]*(?:\n|$)", log):
+    raise SystemExit("FAIL: ares did not load the requested boss race")
 rate_path = Path(str(audio) + ".rate")
 if not audio.is_file() or audio.stat().st_size < 4:
     raise SystemExit(f"FAIL: ares produced no audio capture at {audio}")
@@ -506,10 +525,19 @@ except (OSError, ValueError) as error:
 if not 8000 <= rate <= 96000:
     raise SystemExit(f"FAIL: implausible ares audio rate {rate}")
 frames = size // 4
+reported_frames = int(completed.group(2))
+if frames != reported_frames:
+    raise SystemExit(
+        f"FAIL: ares audio capture length disagrees with completion witness: "
+        f"{frames} stored frames, {reported_frames} reported")
 if frames < rate:
     raise SystemExit(
         f"FAIL: ares audio capture is shorter than one second: {frames} frames")
-digest = hashlib.sha256(audio.read_bytes()).hexdigest()
+hasher = hashlib.sha256()
+with audio.open("rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
+digest = hasher.hexdigest()
 print(
     f"ares audio capture: PASS -- {frames} frames at {rate} Hz "
     f"({frames / rate:.2f}s), sha256={digest}")

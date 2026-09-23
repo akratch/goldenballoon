@@ -158,6 +158,7 @@ oracle_cpp = r'''#include <n64/n64.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace ares::Nintendo64 {
 
@@ -188,6 +189,7 @@ struct MdkrOracleState {
    * reference the port's software mixer has to be measured against.
    */
   FILE* audioDump = nullptr;
+  std::mutex audioMutex;
   u64 audioSamples = 0;
   u32 audioRate = 0;
   char audioPath[1024] = {0};
@@ -457,13 +459,17 @@ struct MdkrOracleState {
    * recorded in a sidecar rather than assumed by the reader.
    */
   auto audioSample(s16 left, s16 right, double frequency) -> void {
+    std::lock_guard<std::mutex> lock(audioMutex);
     configure();
     if(!audioDump) return;
     u8 bytes[4] = {
       (u8)((u16)left  & 0xff), (u8)(((u16)left  >> 8) & 0xff),
       (u8)((u16)right & 0xff), (u8)(((u16)right >> 8) & 0xff),
     };
-    fwrite(bytes, 1, sizeof(bytes), audioDump);
+    if(fwrite(bytes, 1, sizeof(bytes), audioDump) != sizeof(bytes)) {
+      fprintf(stderr, "mdkr64 oracle: audio dump write failed\n");
+      std::_Exit(2);
+    }
     if(audioSamples == 0) {
       audioRate = (u32)(frequency + 0.5);
       char sidecar[1100];
@@ -679,12 +685,19 @@ struct MdkrOracleState {
     }
     videoFrame++;
     if(frameLimit && videoFrame >= frameLimit) {
+      // Presentation can run while the emulation thread delivers AI samples.
+      // Freeze writes through process exit, flush successfully, then report the
+      // exact stable count. A log printed before this boundary can undercount.
+      std::lock_guard<std::mutex> lock(audioMutex);
+      if(audioDump && fflush(audioDump) != 0) {
+        fprintf(stderr, "mdkr64 oracle: audio dump flush failed\n");
+        std::_Exit(2);
+      }
       fprintf(stderr,
         "mdkr64 oracle: reached frame limit %llu (dumped %u frame(s), %llu audio sample-frame(s)), exiting\n",
         (unsigned long long)frameLimit, dumpedCount,
         (unsigned long long)audioSamples);
       if(stateTrace) fflush(stateTrace);
-      if(audioDump) fflush(audioDump);
       fflush(stderr);
       std::_Exit(0);
     }

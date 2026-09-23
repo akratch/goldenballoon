@@ -71,7 +71,7 @@ ARM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # resolve to a default, so the accepted set is closed.
 ROUTE_KEYS = frozenset({
     "schema", "name", "description",
-    "compare_frames", "state_trace", "state_require_finish",
+    "compare_frames", "state_trace", "state_require_finish", "audio_capture",
     "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
     "forced_track", "forced_track_source",
     "state_racer_index", "state_min_common_clocks",
@@ -294,6 +294,7 @@ def route_field(route: dict[str, Any], field: str) -> Any:
         "name": route.get("name", ""),
         "description": route.get("description", ""),
         "compare_frames": int(bool(route.get("compare_frames", True))),
+        "audio_capture": int(bool(route.get("audio_capture", False))),
         "state_trace": int(bool(route.get("state_trace", False))),
         "state_require_finish": int(bool(route.get("state_require_finish", False))),
         "forced_track": int(route.get("forced_track", -1)),
@@ -371,6 +372,7 @@ def validate_route(route: dict[str, Any]) -> None:
             errors.append(f"{runner}.frames must be a positive integer")
     for field in (
         "compare_frames", "state_trace", "state_require_finish",
+        "audio_capture",
         "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
     ):
         if field in route and not isinstance(route[field], bool):
@@ -596,8 +598,9 @@ def validate_route(route: dict[str, Any]) -> None:
         "state_trace", False
     ):
         errors.append("state_require_finish requires state_trace")
-    if not route.get("compare_frames", True) and not route.get("state_trace", False):
-        errors.append("route must enable compare_frames, state_trace, or both")
+    if (not route.get("compare_frames", True) and not route.get("state_trace", False)
+            and not route.get("audio_capture", False)):
+        errors.append("route must enable compare_frames, state_trace, or audio_capture")
     sync = route.get("sync", {})
     if not isinstance(sync, dict) or not is_integer(sync.get("native_frame")) \
             or not is_integer(sync.get("ares_frame")):

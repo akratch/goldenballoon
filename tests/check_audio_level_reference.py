@@ -266,7 +266,9 @@ def dbfs(value):
 def run_capture(build, rom, script, frames, wav, gain_db=None, timeout=600,
                 extra_env=None):
     """One headless run. NEVER without --headless-frames; MDKR_AUDIO=0 on top."""
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MDKR", "GE007_"))}
+    env["MDKR64_HIDDEN"] = "1"
     env["MDKR_AUDIO"] = "0"
     env["MDKR_AUDIO_RMS"] = "1"
     env["MDKR_AUDIO_DUMP"] = wav
@@ -282,6 +284,7 @@ def run_capture(build, rom, script, frames, wav, gain_db=None, timeout=600,
     with tempfile.TemporaryDirectory(
             prefix="mdkr_audio_level_runtime_") as run_dir:
         env["MDKR_VIDEO_CONFIG_PATH"] = os.path.join(run_dir, "video.ini")
+        env["MDKR_APP_PREFS_DIR"] = run_dir
         env["MDKR_SAVE_DIR"] = os.path.join(run_dir, "save")
         if extra_env:
             env.update(extra_env)
@@ -765,6 +768,7 @@ def capture_reference_arm(build, rom, tmp, route, gain_db, fail, note):
     frames = int(spec.get("native", {}).get("frames", 0))
     cadence = spec.get("native_cadence", "original")
     fields = str(spec.get("native_synth_fields", 2))
+    forced_track = int(spec.get("forced_track", -1))
     if frames <= 0:
         fail("oracle route %s declares no native frame count" % route)
         return None, None
@@ -787,17 +791,28 @@ def capture_reference_arm(build, rom, tmp, route, gain_db, fail, note):
     note("console reference: re-running the port on oracle route '%s' "
          "(%d frames, cadence %s, %s synth field(s))"
          % (route, frames, cadence, fields))
+    env = {"MDKR_SIMULATION_CADENCE": cadence,
+           "MDKR_TRACE": "1",
+           "MDKR_SYNTH_FIELDS": fields,
+           "MDKR_PRESENT_RATE": "original",
+           "MDKR_PRESENT_SMOOTHING": "off",
+           "MDKR_SAVE_DIR": saves}
+    if forced_track >= 0:
+        env["MDKR_LOAD_TRACK"] = str(forced_track)
     rc, out = run_capture(build, rom, script, frames, wav, gain_db=gain_db,
-                          extra_env={"MDKR_SIMULATION_CADENCE": cadence,
-                                     "MDKR_SYNTH_FIELDS": fields,
-                                     "MDKR_SAVE_DIR": saves})
+                          extra_env=env)
     if rc != 0 or not os.path.exists(wav):
         fail("oracle-route capture exited %d" % rc)
+        return None, None
+    if forced_track >= 0 and not re.search(
+            r"level_load: levelId=%d numPlayers=0 .*cutscene=0(?:\s|$)" % forced_track, out):
+        fail("oracle-route capture never loaded requested boss race %d" % forced_track)
         return None, None
     return wav, parse_engine(out)
 
 
-def assert_reference(port_samples, port_rate, ref_path, fail, note):
+def assert_reference(port_samples, port_rate, ref_path, fail, note,
+                     reference_window=None):
     ref, ref_rate, ref_ch, ref_width = load_reference(ref_path)
     if (ref_ch, ref_width) != (WANT_CHANNELS, WANT_WIDTH):
         fail("console reference is %d ch / %d-bit, want %d ch / %d-bit"
@@ -872,6 +887,39 @@ def assert_reference(port_samples, port_rate, ref_path, fail, note):
                      "+-%.1f dB)"
                      % (BANDS_HZ[i], BANDS_HZ[i + 1], d, REFERENCE_BAND_TOL_DB))
 
+    if reference_window is not None:
+        start_s, end_s = reference_window
+        # A negative lag means the ROM recording started earlier: for a native
+        # timestamp t, the corresponding ROM timestamp is t - lag. Use each
+        # capture's original sample rate and stereo PCM, not the mono envelope
+        # or its linear resampling, when counting exact full-scale samples.
+        lag_s = lag_samples / float(port_rate)
+        p0, p1 = round(start_s * port_rate), round(end_s * port_rate)
+        r0 = round((start_s - lag_s) * ref_rate)
+        r1 = round((end_s - lag_s) * ref_rate)
+        if (p0 < 0 or p1 > port_frames or r0 < 0 or r1 > ref_frames or
+                p1 <= p0 or r1 <= r0):
+            fail("reference window %.2f-%.2f s has no samples inside both "
+                 "aligned captures"
+                 % (start_s, end_s))
+        else:
+            def window_metrics(samples, first, last):
+                segment = samples[first * 2:last * 2]
+                rms = math.sqrt(sum(value * value for value in segment)
+                                / len(segment))
+                rail = sum(value <= -32768 or value >= 32767
+                           for value in segment) / len(segment) * 100.0
+                return rms, rail
+
+            p_rms, p_rail = window_metrics(port_samples, p0, p1)
+            r_rms, r_rail = window_metrics(ref, r0, r1)
+            note("  window native %.2f-%.2f s / ROM %.2f-%.2f s: "
+                 "RMS port/console %+.3f dB; full-scale samples "
+                 "port %.4f%%, console %.4f%%"
+                 % (start_s, end_s, r0 / ref_rate, r1 / ref_rate,
+                    20.0 * math.log10((p_rms + 1e-12) / (r_rms + 1e-12)),
+                    p_rail, r_rail))
+
 
 # ==========================================================================
 # controls
@@ -924,8 +972,25 @@ def main():
     ap.add_argument("--reference-route", default="race_state_oracle",
                     help="oracle route the console capture was taken on; the port "
                          "arm is re-run on the same route for the comparison")
+    ap.add_argument("--reference-window", default=None, metavar="START:END",
+                    help="report RMS and full-scale samples in an aligned "
+                         "native-route time interval (seconds); requires --reference")
     args = ap.parse_args()
     args.build = resolve_binary(args.build)
+
+    reference_window = None
+    if args.reference_window is not None:
+        if not args.reference:
+            ap.error("--reference-window requires --reference")
+        try:
+            start_text, end_text = args.reference_window.split(":")
+            reference_window = (float(start_text), float(end_text))
+        except ValueError:
+            ap.error("--reference-window must be START:END in seconds")
+        if (not all(math.isfinite(value) for value in reference_window) or
+                reference_window[0] < 0 or
+                reference_window[1] <= reference_window[0]):
+            ap.error("--reference-window requires 0 <= START < END")
 
     for path in (args.build, args.rom, args.script):
         if not os.path.exists(path):
@@ -989,7 +1054,8 @@ def main():
                 fail, note)
             if ref_wav:
                 arm, arm_rate, _, _ = load_wav(ref_wav)
-                assert_reference(arm, arm_rate, args.reference, fail, note)
+                assert_reference(arm, arm_rate, args.reference, fail, note,
+                                 reference_window)
         else:
             note("console reference: SKIPPED (no --reference). This run proves "
                  "the port has not DRIFTED, not that its absolute level is "

@@ -450,6 +450,30 @@ deterministically) is future work.
 
 ## Hygiene
 
+### Boss audio comparisons
+
+`boss_stomp_oracle` and `wizpig_stomp_oracle` are explicitly audio-only routes.
+They retarget the Tracks-menu race load from Ancient Lake to Tricky 1 (38) or
+Wizpig 1 (37). They do not provide a gameplay-state or screenshot score.
+Capture with `tools/run_oracle.sh ROUTE --skip-native --audio-dump NEW_PATH`
+and the usual `--rom` / `--ares-bin` arguments. Both the raw capture path and
+its `.rate` sidecar must be new. Confirm the matching forced-load marker in
+the retained ares log before using the capture as a boss reference.
+The runner also requires successful completion at the requested frame limit
+and an exact match between logged audio sample-frame count and raw PCM length;
+a truncated or enlarged capture cannot pass on a completion message alone.
+
+Compare using `tests/check_audio_level_reference.py --build BUILD --rom ROM
+--reference RAW_PATH --reference-route ROUTE --reference-window 65:140`.
+The native arm verifies the requested boss race loaded; the window reports
+aligned RMS and exact full-scale sample occupancy. Those are aggregate
+measurements, not proof of individual stomp balance or subjective audibility.
+Keep the raw audio, WAV files, and emulator artifacts private. ROM-free schema,
+runner refusal and native route-identity controls live in
+`tests/test_oracle_audio_routes.py` (CTest `oracle_audio_routes`).
+
+### Private artifacts
+
 - The ares checkout/build and all captures are **local-only and git-ignored**
   (`build/ares-oracle/`, `*.ppm`). Never commit ROM-derived frames, saves, or
   the ares source.
