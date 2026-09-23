@@ -15,6 +15,14 @@
 # Keep format-boundary and display math independently runnable: these regressions
 # should fail in milliseconds without booting SDL, WebGPU or copyrighted assets.
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_rom_browser_test
+        ${CMAKE_SOURCE_DIR}/tests/test_rom_browser.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp)
+    target_include_directories(mdkr_rom_browser_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_rom_browser_test PRIVATE cxx_std_17)
+    add_test(NAME rom_browser COMMAND mdkr_rom_browser_test)
+
     add_executable(mdkr_audio_bank_parser_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_bank_parser.c)
     target_include_directories(mdkr_audio_bank_parser_test PRIVATE
