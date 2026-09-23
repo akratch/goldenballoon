@@ -1,0 +1,18 @@
+# 2P non-host Taj summon: host selects PLANE, then dismisses dialogue.
+# Pair with MDKR_AP_SEAT_ROUTE="1=-197,193" and the started Adventure save.
+# Admission matches adventure_party_2p_taj.txt. Two separate DOWN edges move
+# from CAR through HOVERCRAFT to PLANE; no direct vehicle-setting hook is used.
+1250 START 4
+1330 START 4
+1450 A 4 P2
+1560 A 4 P1
+1670 A 4 P2
+1780 A 4 P1
+2050 A 4 P1
+2300 A 4 P1
+2600 A 6 P1
+2720 DOWN 6 P1
+2780 DOWN 6 P1
+2840 A 6 P1
+3200 B 6 P1
+3320 B 6 P1

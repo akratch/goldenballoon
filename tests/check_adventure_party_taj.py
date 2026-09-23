@@ -72,6 +72,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -100,6 +101,9 @@ ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 TRANS_RE = re.compile(r"aparty_transition: seat=(\d+) tick=(\d+)")
 SOUND_RE = re.compile(r"aparty_taj_sound: seat=(\d+) reinit=1")
+VISIBILITY_RE = re.compile(
+    r"aparty_taj_visibility: seat=(\d+) character=(\d+) vehicle=(\d+) "
+    r"transparency=(\d+) hidden=(\d+)")
 # R27: the in-hub Taj CHALLENGE row is fail-closed refused for a party session.
 CHALLENGE_RE = re.compile(r"aparty_taj_challenge: seat=(-?\d+) refused=(\d+) choice=(\d+)")
 # [TAJ] phase=accept fires ONLY from init_racer_for_challenge (a challenge race
@@ -116,9 +120,12 @@ BAD_RE = re.compile(
 
 
 def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
-            eeprom=None, extra_env=None):
+            eeprom=None, extra_env=None, capture_dir=None, texture_pack=None):
     with tempfile.TemporaryDirectory(prefix="mdkr_ap_taj_") as tmp:
         root = Path(tmp)
+        if texture_pack is not None:
+            (root / "mods").mkdir()
+            shutil.copyfile(texture_pack, root / "mods" / "taj-fixture.zip")
         save_dir = root / "save"
         save_dir.mkdir()
         (save_dir / "eeprom.bin").write_bytes(eeprom if eeprom is not None
@@ -126,7 +133,8 @@ def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("MDKR", "GE007_"))}
         env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
-                   MDKR_RACER_INPUT_TRACE="1", MDKR_AP_SEAT_ROUTE=seat_route)
+                   MDKR_RACER_INPUT_TRACE="1", MDKR_AP_SEAT_ROUTE=seat_route,
+                   MDKR_APP_PREFS_DIR=str(root), MDKR64_HIDDEN="1")
         if extra_env:
             env.update(extra_env)
         save_env(env, str(save_dir))
@@ -137,11 +145,24 @@ def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
             "--window-size", "320x240",
             "--video-set", "Enhancements.AdventureParty=1",
         ]
+        if capture_dir is not None:
+            capture_dir = Path(capture_dir).resolve()
+            capture_dir.mkdir(parents=True, exist_ok=False)
+            command += ["--dump-frames", str(capture_dir)]
         if verbose:
             print(f"$ {' '.join(command)}  route={seat_route}", flush=True)
         proc = subprocess.run(command, cwd=root, env=env, text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               timeout=max(240, frames // 8), check=False)
+        if capture_dir is not None:
+            (capture_dir / "run.log").write_text(proc.stdout or "", encoding="utf-8")
+        if proc.returncode != 0:
+            raise RuntimeError(f"Taj arm {fixture} exited {proc.returncode}\n"
+                               + (proc.stdout or "")[-5000:])
+        if texture_pack is not None and not re.search(
+                r"\[MODS\] [1-9][0-9]* high-resolution textures? used this run",
+                proc.stdout or ""):
+            raise RuntimeError("Taj pack arm did not demonstrate replacement texture use")
     return proc.stdout or ""
 
 
@@ -153,7 +174,7 @@ def find_line(lines, regex, start=0, pred=None):
     return -1, None
 
 
-def assert_transform_scene(out, players, label):
+def assert_transform_scene(out, players, label, expected_vehicle=HOVERCRAFT):
     """Returns (failures, transform_line_index). transform_line_index is -1 when
     the scene never reached a clean single party transform."""
     f = []
@@ -198,8 +219,8 @@ def assert_transform_scene(out, players, label):
     if n != players or live != players:
         f.append(f"{label}: transform rebuilt live={live} of n={n}; expected the "
                  f"WHOLE party ({players}) -- a collapse reads live=1")
-    if veh != HOVERCRAFT:
-        f.append(f"{label}: transformed to vehicle {veh}, expected HOVERCRAFT={HOVERCRAFT}")
+    if veh != expected_vehicle:
+        f.append(f"{label}: transformed to vehicle {veh}, expected {expected_vehicle}")
 
     # roster + layout republished by the transform (after the transform line)
     ri, rm = find_line(lines, ROSTER_RE, start=ti)
@@ -221,6 +242,22 @@ def assert_transform_scene(out, players, label):
     # silently). One aparty_taj_sound reinit line per seat, after the transform.
     sound_seats = {int(m.group(1)) for m in
                    (SOUND_RE.search(l) for l in lines[ti:]) if m}
+    visible = {}
+    for line in lines[ti:]:
+        match = VISIBILITY_RE.search(line)
+        if match:
+            seat, character, vehicle, transparency, hidden = map(int, match.groups())
+            visible[seat] = (character, vehicle, transparency, hidden)
+    if set(visible) != set(range(players)):
+        f.append(f"{label}: missing per-seat post-dialogue visibility: {visible}")
+    if any(value[1:] != (expected_vehicle, 255, 0) for value in visible.values()):
+        f.append(f"{label}: transformed racer remained hidden/transparent: {visible}")
+    if rm is not None:
+        expected_characters = {int(seat): int(character) for seat, character
+                               in re.findall(r"c(\d+)=(\d+)", rm.group(3))}
+        if any(expected_characters.get(seat) != value[0]
+               for seat, value in visible.items()):
+            f.append(f"{label}: visibility witness character differs from roster")
     if sound_seats != set(range(players)):
         f.append(f"{label}: engine sound re-init after transform covered seats "
                  f"{sorted(sound_seats)}, expected all of {sorted(range(players))} "
@@ -316,6 +353,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
+    parser.add_argument("--texture-pack", type=Path,
+                        help="ZIP copied into each isolated party arm; actual use required")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -323,9 +362,13 @@ def main():
     rom = str(Path(args.rom).resolve())
     taj3 = "tests/input_scripts/adventure_party_3p_taj.txt"
     taj2 = "tests/input_scripts/adventure_party_2p_taj.txt"
+    plane2 = "tests/input_scripts/adventure_party_2p_taj_plane.txt"
+    plane3 = "tests/input_scripts/adventure_party_3p_taj_plane.txt"
     chal3 = "tests/input_scripts/adventure_party_3p_taj_challenge.txt"
     off = ROOT / "tests" / "check_taj_p2_adventure.py"
-    required = [binary, rom, *(str(ROOT / p) for p in (taj3, taj2, chal3)), str(off)]
+    required = [binary, rom, *(str(ROOT / p) for p in (taj3, taj2, plane2, plane3, chal3)), str(off)]
+    if args.texture_pack is not None:
+        required.append(str(args.texture_pack))
     missing = [p for p in required if not os.path.exists(p)]
     if missing:
         for p in missing:
@@ -335,16 +378,29 @@ def main():
     failures = []
 
     # --- 3P main scene: non-host summon + host-owned whole-party transform ----
-    out3 = run_arm(binary, rom, taj3, TAJ_SEAT_ROUTE, verbose=args.verbose)
+    out3 = run_arm(binary, rom, taj3, TAJ_SEAT_ROUTE, verbose=args.verbose,
+                   texture_pack=args.texture_pack)
     f3, ti3 = assert_transform_scene(out3, 3, "3P transform")
     failures += f3
     if ti3 >= 0:
         failures += assert_identity(out3.splitlines(), 3, ti3, "3P identity")
 
     # --- 2P arm: the same transform at two seats -----------------------------
-    out2 = run_arm(binary, rom, taj2, TAJ_SEAT_ROUTE, verbose=args.verbose)
-    f2, _ = assert_transform_scene(out2, 2, "2P transform")
+    out2 = run_arm(binary, rom, taj2, TAJ_SEAT_ROUTE, verbose=args.verbose,
+                   texture_pack=args.texture_pack)
+    f2, ti2 = assert_transform_scene(out2, 2, "2P transform")
     failures += f2
+    if ti2 >= 0:
+        failures += assert_identity(out2.splitlines(), 2, ti2, "2P identity")
+    for players, fixture in ((2, plane2), (3, plane3)):
+        label = f"{players}P plane"
+        output = run_arm(binary, rom, fixture, TAJ_SEAT_ROUTE, verbose=args.verbose,
+                         texture_pack=args.texture_pack)
+        found, transform_index = assert_transform_scene(output, players, label,
+                                                       expected_vehicle=2)
+        failures += found
+        if transform_index >= 0:
+            failures += assert_identity(output.splitlines(), players, transform_index, label)
 
     # --- R27 challenge refusal: a host CHALLENGE-row selection during a 3P
     #     party dialogue is refused (no TAJ_MODE_RACE, no extra racer, party
@@ -352,7 +408,8 @@ def main():
     #     '[TAJ] phase=accept' would appear IF a race started. ---
     chal_eeprom = eeprom_image(TAJ_FLAGS_CAR_CHAL_UNLOCKED)
     out_chal = run_arm(binary, rom, chal3, TAJ_SEAT_ROUTE, verbose=args.verbose,
-                       eeprom=chal_eeprom, extra_env={"MDKR_TAJ_PROBE": "1"})
+                       eeprom=chal_eeprom, extra_env={"MDKR_TAJ_PROBE": "1"},
+                       texture_pack=args.texture_pack)
     failures += assert_challenge_refusal(out_chal, 3, "3P challenge-refusal")
 
     # --- Positive control 3: strip the refusal diagnostic -> the refusal
@@ -389,6 +446,16 @@ def main():
         failures.append("positive control: output with the SHARED_DIALOGUE latch lines "
                         "stripped PASSED the latch assertion")
 
+    # Recreate the original non-focus fade-in failure in otherwise valid output.
+    invisible = re.sub(r"(aparty_taj_visibility: seat=0 .*?transparency=)\d+",
+                       r"\g<1>0", out3)
+    if not assert_transform_scene(invisible, 3, "PC-invisible")[0]:
+        failures.append("positive control: transparent host PASSED visibility assertion")
+    missing_visibility = "\n".join(line for line in out3.splitlines()
+                                   if "aparty_taj_visibility:" not in line)
+    if not assert_transform_scene(missing_visibility, 3, "PC-no-visibility")[0]:
+        failures.append("positive control: missing visibility evidence PASSED")
+
     # --- OFF arm: retail JOINTVENTURE 2P Taj is untouched --------------------
     off_proc = subprocess.run(
         [sys.executable, str(off), "--build", args.build, "--rom", args.rom],
@@ -396,7 +463,7 @@ def main():
         timeout=900, check=False)
     off_out = (off_proc.stdout or "").strip()
     off_pass = "check_taj_p2_adventure: PASS" in off_out
-    if not off_pass:
+    if off_proc.returncode != 0 or not off_pass:
         failures.append(f"OFF arm: check_taj_p2_adventure did not pass -- {off_out[-300:]}")
 
     if failures:
@@ -414,7 +481,10 @@ def main():
           "firing during it; a host CHALLENGE-row selection during the party dialogue "
           "is fail-closed refused (R27: aparty_taj_challenge refused, no '[TAJ] "
           "phase=accept', no extra racer, party intact, transform still works after); "
-          "four positive controls fired")
+          "all seats restored opaque/unhidden; six positive controls fired")
+    print("  Party matrix: 2P/3P car->hovercraft and car->plane; " +
+          ("replacement textures used in every party arm" if args.texture_pack else
+           "isolated no-pack baseline"))
     print(f"  OFF arm: {off_quote}")
     return 0
 

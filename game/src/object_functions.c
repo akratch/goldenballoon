@@ -3190,10 +3190,9 @@ static void adventure_party_taj_maybe_complete(Object *taj) {
     }
 }
 
-/* Fade every party racer EXCEPT the focus in lock-step with the focus racer, so
- * the whole party dissolves together before the transactional rebuild (the
- * retail fade only touches the focus racer's transparency). */
-static void adventure_party_taj_fade_others(s32 focus, s32 amount) {
+/* Mirror the focus fade for every other party racer, on both sides of the
+ * transactional rebuild. Retail only updates the focus racer's transparency. */
+static void adventure_party_taj_fade_others(s32 focus, s32 transparency) {
     AdventurePartySession *s = adventure_party_runtime_session();
     s32 count;
     s32 i;
@@ -3213,11 +3212,7 @@ static void adventure_party_taj_fade_others(s32 focus, s32 amount) {
             continue;
         }
         rr = r->racer;
-        if (rr->transparency > amount) {
-            rr->transparency -= amount;
-        } else {
-            rr->transparency = 0;
-        }
+        rr->transparency = transparency;
     }
 }
 
@@ -3251,6 +3246,12 @@ static void adventure_party_taj_reinit_sounds(void) {
             if (mdkr_trace_enabled()) {
                 mdkr_trace("aparty_taj_sound: seat=%d reinit=1", (int) i);
             }
+        }
+        if (mdkr_trace_enabled()) {
+            mdkr_trace("aparty_taj_visibility: seat=%d character=%d vehicle=%d transparency=%d hidden=%d",
+                       (int)i, (int)rr->characterId, (int)rr->vehicleID,
+                       (int)rr->transparency,
+                       !!(r->trans.flags & (OBJ_FLAGS_INVISIBLE | OBJ_FLAGS_SHADOW_ONLY)));
         }
     }
 }
@@ -3592,7 +3593,7 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
 #if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
                     /* Fade the rest of the party in lock-step so the whole roster
                      * dissolves together before the transactional rebuild. */
-                    adventure_party_taj_fade_others(TAJ_FOCUS, updateRate * 16);
+                    adventure_party_taj_fade_others(TAJ_FOCUS, racer->transparency);
 #endif
                 } else {
                     racer->transparency = 0;
@@ -3661,6 +3662,12 @@ void obj_loop_parkwarden(Object *obj, s32 updateRate) {
                         }
                     }
                 }
+#if defined(NATIVE_PORT) && !defined(MDKR_ADVENTURE_PARTY_OMIT)
+                /* Rebuilt racers all start transparent. Copy the actual
+                 * retail fade result, including its saturated endpoint, so
+                 * the other seats cannot remain invisible or drift from it. */
+                adventure_party_taj_fade_others(TAJ_FOCUS, racer->transparency);
+#endif
             }
             break;
         case TAJ_MODE_END_DIALOGUE:

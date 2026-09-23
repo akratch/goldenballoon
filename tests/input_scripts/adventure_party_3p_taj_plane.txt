@@ -1,0 +1,18 @@
+# Three-player non-host summon; host changes CAR to PLANE through Taj's menu.
+# Same admission as adventure_party_3p_taj.txt; two distinct DOWN edges.
+1250 START 4
+1330 START 4
+1450 A 4 P2
+1490 A 4 P3
+1580 A 4 P1
+1640 A 4 P2
+1700 A 4 P3
+1800 A 4 P1
+2050 A 4 P1
+2300 A 4 P1
+2600 A 6 P1
+2720 DOWN 6 P1
+2780 DOWN 6 P1
+2840 A 6 P1
+3200 B 6 P1
+3320 B 6 P1
