@@ -243,12 +243,15 @@ struct GfxRenderingAPI {
      * fog_* mirror the N64 per-vertex fog curve (see gfx_pc.c fog math). */
     void (*draw_modern_mesh)(struct GfxModernMesh *mesh, const float mvp[4][4],
                              const float fog_color[3], float fog_mul,
-                             float fog_offset, int fog_enabled);
+                             float fog_offset, int fog_enabled, const float tint[4]);
     void (*draw_modern_skinned)(const struct GfxModernSkinnedDraw *draw,
                                 const float mvp[4][4],
                                 const float fog_color[3], float fog_mul,
                                 float fog_offset, int fog_enabled);
     void (*release_modern_asset)(uint64_t asset_id);
+    /* Optional static-mesh cache retirement before pack CPU storage is freed.
+     * Does not retire skinned-character resources. */
+    void (*clear_modern_mesh_cache)(void);
     /* OPTIONAL (NULL when the backend has no mip support — call sites must
      * guard). Uploads a complete mip chain built by platform/fast3d/gfx_mipgen.c. */
     bool (*upload_texture_mipped)(const uint8_t *const *level_rgba,

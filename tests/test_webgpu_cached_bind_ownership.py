@@ -36,7 +36,6 @@ RAW_RELEASE_ALLOWLIST = {
     "wgpu_release_shadow_resources": "private",
     "wgpu_shadow_ensure_pipeline_resources": "private",
     "wgpu_ensure_minimap": "private",
-    "wgpu_modern_resources": "modern",
     "wgpu_draw_modern_mesh": "modern",
     "wgpu_release_device_objects": "teardown",
 }
@@ -272,6 +271,15 @@ class WebGpuCachedBindOwnershipTests(unittest.TestCase):
         body = function_body(self.source, "wgpu_pipe_reserve_slot")
         self.assertIn("wgpu_release_cached_pipeline(", body)
         self.assertNotIn("wgpuRenderPipelineRelease(", body)
+
+    def test_static_mesh_retirement_does_not_retire_character_resources(self) -> None:
+        body = function_body(self.source, "wgpu_modern_cache_clear")
+        self.assertIn("wgpu_release_cached_bind_group(e->bg)", body)
+        self.assertIn("wgpuTextureViewRelease(e->view)", body)
+        self.assertIn("wgpuTextureRelease(e->tex)", body)
+        self.assertNotIn("s_skinned", body)
+        self.assertNotIn("wgpu_release_modern_asset", body)
+        self.assertRegex(body, r"s_modern_count\s*=\s*0")
 
     def test_device_teardown_resets_pass_tracking_before_raw_releases(self) -> None:
         body = function_body(self.source, "wgpu_release_device_objects")

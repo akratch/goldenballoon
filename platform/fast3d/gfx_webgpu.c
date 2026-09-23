@@ -9601,7 +9601,7 @@ static bool wgpu_read_framebuffer_rgb(int x, int y, int width, int height, uint8
  * ---------------------------------------------------------------------- */
 static const char *kModernWGSL =
     "struct DVin { @location(0) pos : vec3<f32>, @location(1) nrm : vec3<f32>, @location(2) uv : vec2<f32>, @location(3) col : vec4<f32> };\n"
-    "struct DU { mvp : mat4x4<f32>, fog : vec4<f32>, fogMul : f32, fogOffset : f32, fogOn : f32, farClamp : f32 };\n"
+    "struct DU { mvp : mat4x4<f32>, fog : vec4<f32>, fogMul : f32, fogOffset : f32, fogOn : f32, farClamp : f32, tint : vec4<f32> };\n"
     "@group(0) @binding(0) var<uniform> u : DU;\n"
     "@group(0) @binding(1) var dtex : texture_2d<f32>;\n"
     "@group(0) @binding(2) var dsmp : sampler;\n"
@@ -9622,27 +9622,29 @@ static const char *kModernWGSL =
     "  o.position = clip; o.uv = in.uv; o.col = in.col; o.fogA = fogA;\n"
     "  return o;\n}\n"
     "fn decorShade(o : DOut, t : vec4<f32>) -> vec4<f32> {\n"
-    "  var c = t.rgb * o.col.rgb;\n"
+    "  var c = t.rgb * o.col.rgb * u.tint.rgb;\n"
     "  c = mix(c, vec3<f32>(0.88, 0.91, 0.96), o.col.a);\n"   /* snow cover in vertex alpha */
     "  c = mix(c, u.fog.rgb, o.fogA);\n"
-    "  return vec4<f32>(c, t.a);\n}\n"
+    "  return vec4<f32>(c, t.a * u.tint.a);\n}\n"
     "@fragment fn fs_opaque(in : DOut) -> @location(0) vec4<f32> {\n"
     "  let c = decorShade(in, textureSample(dtex, dsmp, in.uv));\n"
-    "  return vec4<f32>(c.rgb, 1.0);\n}\n"
+    "  return c;\n}\n"
     "@fragment fn fs_cutout(in : DOut) -> @location(0) vec4<f32> {\n"
     "  let t = textureSample(dtex, dsmp, in.uv);\n"
     "  if (t.a < 0.45) { discard; }\n"
     "  let c = decorShade(in, t);\n"
-    "  return vec4<f32>(c.rgb, 1.0);\n}\n";
+    "  return c;\n}\n";
 
 static WGPUShaderModule    s_modern_mod = NULL;
 static WGPUBindGroupLayout s_modern_bgl = NULL;
 static WGPUPipelineLayout  s_modern_pl = NULL;
-static WGPURenderPipeline  s_modern_pipe[2] = {NULL, NULL};   /* [cutout] */
+static WGPURenderPipeline  s_modern_pipe[8] = {0}; /* cutout/compare/write */
 static WGPUSampler         s_modern_sampler = NULL;
 
 struct WgpuModernEntry {
     uint32_t mesh_id;
+    uint32_t texture_id;
+    int tex_w, tex_h;
     WGPUBuffer vbuf, ibuf;
     WGPUTexture tex;
     WGPUTextureView view;
@@ -9656,10 +9658,39 @@ struct WgpuModernEntry {
 };
 static struct WgpuModernEntry s_modern_cache[64];
 static int s_modern_count = 0;
+/* Logical payload bytes retained by this cache, not driver allocation sizes.
+ * Shared atlas payload is counted once; geometry is distinct per mesh. */
+static uint64_t s_modern_texture_uploads, s_modern_texture_reuses;
+static uint64_t s_modern_texture_payload, s_modern_geometry_payload;
+
+static void wgpu_modern_cache_clear(void) {
+    if (s_modern_count != 0) {
+        fprintf(stderr, "[WGPU-MODELS] textureUploads=%llu textureReuses=%llu "
+                "textureUploadBytes=%llu geometryBytes=%llu entries=%d\n",
+                (unsigned long long)s_modern_texture_uploads,
+                (unsigned long long)s_modern_texture_reuses,
+                (unsigned long long)s_modern_texture_payload,
+                (unsigned long long)s_modern_geometry_payload, s_modern_count);
+    }
+    for (int i = 0; i < s_modern_count; ++i) {
+        struct WgpuModernEntry *e = &s_modern_cache[i];
+        if (e->bg) wgpu_release_cached_bind_group(e->bg);
+        if (e->view) wgpuTextureViewRelease(e->view);
+        if (e->tex) wgpuTextureRelease(e->tex);
+        if (e->vbuf) wgpuBufferRelease(e->vbuf);
+        if (e->ibuf) wgpuBufferRelease(e->ibuf);
+    }
+    memset(s_modern_cache, 0, sizeof(s_modern_cache));
+    s_modern_count = 0;
+    s_modern_texture_uploads = s_modern_texture_reuses = 0;
+    s_modern_texture_payload = s_modern_geometry_payload = 0;
+}
 
 static WGPURenderPipeline wgpu_modern_pipe(int cutout) {
-    if (s_modern_pipe[cutout] != NULL) {
-        return s_modern_pipe[cutout];
+    const int key = (cutout != 0) | ((s_depth_test && s_depth_compare) ? 2 : 0) |
+                    ((s_depth_test && s_depth_update) ? 4 : 0);
+    if (s_modern_pipe[key] != NULL) {
+        return s_modern_pipe[key];
     }
     if (s_modern_mod == NULL) {
         WGPUShaderModule new_mod = NULL;
@@ -9676,7 +9707,7 @@ static WGPURenderPipeline wgpu_modern_pipe(int cutout) {
 
         WGPUBindGroupLayoutEntry e[3] = {0};
         e[0].binding = 0; e[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        e[0].buffer.type = WGPUBufferBindingType_Uniform; e[0].buffer.minBindingSize = 96;
+        e[0].buffer.type = WGPUBufferBindingType_Uniform; e[0].buffer.minBindingSize = 112;
         e[0].buffer.hasDynamicOffset = true;   /* WEB-052: ring slot via dynamic offset */
         e[1].binding = 1; e[1].visibility = WGPUShaderStage_Fragment;
         e[1].texture.sampleType = WGPUTextureSampleType_Float; e[1].texture.viewDimension = WGPUTextureViewDimension_2D;
@@ -9724,7 +9755,15 @@ init_done:
 
     WGPUColorTargetState color = {0};
     color.format = s_surface_format;
-    color.writeMask = WGPUColorWriteMask_All;   /* opaque (frag outputs a=1) */
+    color.writeMask = WGPUColorWriteMask_All;
+    WGPUBlendState blend = {0};
+    blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = WGPUBlendFactor_One;
+    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    color.blend = &blend;
     WGPUFragmentState fs = {0};
     fs.module = s_modern_mod;
     fs.entryPoint = wgpu_sv(cutout ? "fs_cutout" : "fs_opaque");
@@ -9732,8 +9771,8 @@ init_done:
 
     WGPUDepthStencilState ds = {0};
     ds.format = WGPU_DEPTH_FORMAT;
-    ds.depthCompare = WGPUCompareFunction_LessEqual;
-    ds.depthWriteEnabled = WGPUOptionalBool_True;
+    ds.depthCompare = (key & 2) ? WGPUCompareFunction_LessEqual : WGPUCompareFunction_Always;
+    ds.depthWriteEnabled = (key & 4) ? WGPUOptionalBool_True : WGPUOptionalBool_False;
     ds.stencilFront.compare = WGPUCompareFunction_Always;
     ds.stencilFront.failOp = WGPUStencilOperation_Keep;
     ds.stencilFront.depthFailOp = WGPUStencilOperation_Keep;
@@ -9752,15 +9791,15 @@ init_done:
     pd.depthStencil = &ds;
     pd.multisample.count = 1; pd.multisample.mask = 0xFFFFFFFFu;
     pd.fragment = &fs;
-    s_modern_pipe[cutout] = WGPU_FAULT_CREATE(
+    s_modern_pipe[key] = WGPU_FAULT_CREATE(
         MODERN_PIPELINE, wgpuDeviceCreateRenderPipeline(s_device, &pd));
-    if (s_modern_pipe[cutout] == NULL) {
+    if (s_modern_pipe[key] == NULL) {
         fprintf(stderr, "[webgpu] modern render-pipeline creation failed\n");
         wgpu_runtime_fatal(
             "The graphics backend could not compile its modern-mesh pipeline. "
             "Reload the page to continue from the last persisted save.");
     }
-    return s_modern_pipe[cutout];
+    return s_modern_pipe[key];
 }
 
 static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh) {
@@ -9769,14 +9808,7 @@ static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh)
     }
     if (s_modern_count >= (int)(sizeof(s_modern_cache) / sizeof(s_modern_cache[0]))) {
         /* Level churn: ids never repeat, so releasing everything is safe. */
-        for (int i = 0; i < s_modern_count; i++) {
-            if (s_modern_cache[i].bg)   wgpuBindGroupRelease(s_modern_cache[i].bg);
-            if (s_modern_cache[i].view) wgpuTextureViewRelease(s_modern_cache[i].view);
-            if (s_modern_cache[i].tex)  wgpuTextureRelease(s_modern_cache[i].tex);
-            if (s_modern_cache[i].vbuf) wgpuBufferRelease(s_modern_cache[i].vbuf);
-            if (s_modern_cache[i].ibuf) wgpuBufferRelease(s_modern_cache[i].ibuf);
-        }
-        s_modern_count = 0;
+        wgpu_modern_cache_clear();
     }
 
     uint64_t vbytes64 = (uint64_t)mesh->vtx_count * 36u;
@@ -9814,44 +9846,68 @@ static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh)
     wgpuQueueWriteBuffer(s_queue, vb, 0, mesh->vtx, vbytes);
     wgpuQueueWriteBuffer(s_queue, ib, 0, mesh->idx, ibytes);
 
-    WGPUTextureDescriptor td = {0};
-    td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    td.dimension = WGPUTextureDimension_2D;
-    td.size.width = (uint32_t)mesh->tex_w; td.size.height = (uint32_t)mesh->tex_h; td.size.depthOrArrayLayers = 1;
-    td.format = WGPUTextureFormat_RGBA8Unorm;
-    td.mipLevelCount = 1; td.sampleCount = 1;   /* single-level (no mip gen) */
-    WGPUTexture tex = WGPU_FAULT_CREATE(
-        MODERN_TEXTURE, wgpuDeviceCreateTexture(s_device, &td));
+    WGPUTexture tex = NULL;
+    WGPUTextureView view = NULL;
+    if (mesh->texture_id != 0) {
+        for (int i = 0; i < s_modern_count; ++i) {
+            const struct WgpuModernEntry *shared = &s_modern_cache[i];
+            if (shared->texture_id == mesh->texture_id &&
+                shared->tex_w == mesh->tex_w && shared->tex_h == mesh->tex_h) {
+                tex = shared->tex;
+                view = shared->view;
+                /* Every mesh owns one reference, even for a shared atlas. */
+                wgpuTextureAddRef(tex);
+                wgpuTextureViewAddRef(view);
+                ++s_modern_texture_reuses;
+                break;
+            }
+        }
+    }
     if (tex == NULL) {
-        wgpuBufferRelease(vb);
-        wgpuBufferRelease(ib);
-        fprintf(stderr, "[webgpu] modern-mesh texture allocation failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not allocate a modern-mesh texture. "
-            "Reload the page to continue from the last persisted save.");
-        return NULL;
-    }
-    WGPUTexelCopyTextureInfo dst = {0};
-    dst.texture = tex; dst.aspect = WGPUTextureAspect_All;
-    WGPUTexelCopyBufferLayout lay = {0};
-    lay.bytesPerRow = (uint32_t)mesh->tex_w * 4u; lay.rowsPerImage = (uint32_t)mesh->tex_h;
-    WGPUExtent3D ext = { (uint32_t)mesh->tex_w, (uint32_t)mesh->tex_h, 1 };
-    wgpuQueueWriteTexture(s_queue, &dst, mesh->tex_rgba, (size_t)mesh->tex_w * mesh->tex_h * 4u, &lay, &ext);
+        WGPUTextureDescriptor td = {0};
+        td.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        td.dimension = WGPUTextureDimension_2D;
+        td.size.width = (uint32_t)mesh->tex_w; td.size.height = (uint32_t)mesh->tex_h; td.size.depthOrArrayLayers = 1;
+        td.format = WGPUTextureFormat_RGBA8Unorm;
+        td.mipLevelCount = 1; td.sampleCount = 1;   /* single-level (no mip gen) */
+        tex = WGPU_FAULT_CREATE(
+            MODERN_TEXTURE, wgpuDeviceCreateTexture(s_device, &td));
+        if (tex == NULL) {
+            wgpuBufferRelease(vb);
+            wgpuBufferRelease(ib);
+            fprintf(stderr, "[webgpu] modern-mesh texture allocation failed\n");
+            wgpu_runtime_fatal(
+                "The graphics backend could not allocate a modern-mesh texture. "
+                "Reload the page to continue from the last persisted save.");
+            return NULL;
+        }
+        WGPUTexelCopyTextureInfo dst = {0};
+        dst.texture = tex; dst.aspect = WGPUTextureAspect_All;
+        WGPUTexelCopyBufferLayout lay = {0};
+        lay.bytesPerRow = (uint32_t)mesh->tex_w * 4u; lay.rowsPerImage = (uint32_t)mesh->tex_h;
+        WGPUExtent3D ext = { (uint32_t)mesh->tex_w, (uint32_t)mesh->tex_h, 1 };
+        wgpuQueueWriteTexture(s_queue, &dst, mesh->tex_rgba, (size_t)mesh->tex_w * mesh->tex_h * 4u, &lay, &ext);
 
-    WGPUTextureView view = WGPU_FAULT_CREATE(
-        MODERN_VIEW, wgpuTextureCreateView(tex, NULL));
-    if (view == NULL) {
-        wgpuTextureRelease(tex);
-        wgpuBufferRelease(vb);
-        wgpuBufferRelease(ib);
-        fprintf(stderr, "[webgpu] modern-mesh texture-view allocation failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not allocate a modern-mesh texture "
-            "view. Reload the page to continue from the last persisted save.");
-        return NULL;
+        view = WGPU_FAULT_CREATE(
+            MODERN_VIEW, wgpuTextureCreateView(tex, NULL));
+        if (view == NULL) {
+            wgpuTextureRelease(tex);
+            wgpuBufferRelease(vb);
+            wgpuBufferRelease(ib);
+            fprintf(stderr, "[webgpu] modern-mesh texture-view allocation failed\n");
+            wgpu_runtime_fatal(
+                "The graphics backend could not allocate a modern-mesh texture "
+                "view. Reload the page to continue from the last persisted save.");
+            return NULL;
+        }
+        ++s_modern_texture_uploads;
+        s_modern_texture_payload += (uint64_t)mesh->tex_w * mesh->tex_h * 4u;
     }
+    s_modern_geometry_payload += vbytes64 + ibytes64;
     struct WgpuModernEntry *e = &s_modern_cache[s_modern_count++];
     e->mesh_id = mesh->mesh_id;
+    e->texture_id = mesh->texture_id;
+    e->tex_w = mesh->tex_w; e->tex_h = mesh->tex_h;
     e->vbuf = vb; e->ibuf = ib; e->tex = tex;
     e->view = view;
     e->idx_count = mesh->idx_count;
@@ -9897,7 +9953,7 @@ static bool wgpu_modern_ubo_reserve(int need_slots) {
 
 static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4][4],
                                   const float fog_color[3], float fog_mul,
-                                  float fog_offset, int fog_enabled) {
+                                  float fog_offset, int fog_enabled, const float tint[4]) {
     if (!s_ready || !s_frame_open || s_pass == NULL || mesh == NULL ||
         mesh->vtx == NULL || mesh->idx == NULL || mesh->tex_rgba == NULL ||
         mesh->tex_w <= 0 || mesh->tex_h <= 0) {
@@ -9927,9 +9983,9 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
         }
     }
 
-    /* Uniform (96 bytes): row-major MP memcpy'd into the mat4x4 (columns == MP
+    /* Uniform (112 bytes): row-major MP memcpy'd into the mat4x4 (columns == MP
      * rows, so u.mvp * v == the CPU row-vector T&L), fog params. */
-    float u[24];
+    float u[28];
     memset(u, 0, sizeof(u));
     memcpy(u, mvp, 16 * sizeof(float));
     u[16] = fog_color[0]; u[17] = fog_color[1]; u[18] = fog_color[2]; u[19] = 0.0f;
@@ -9937,6 +9993,7 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
     u[21] = fog_offset;
     u[22] = fog_enabled ? 1.0f : 0.0f;
     u[23] = s_unclipped_depth_supported ? 0.0f : 1.0f;
+    for (int i = 0; i < 4; ++i) u[24 + i] = tint != NULL ? tint[i] : 1.0f;
 
     /* WEB-052: claim a FRESH ring slot (never a slot already written this frame),
      * write the uniform there, and bind it via a dynamic offset — instead of
@@ -13122,11 +13179,7 @@ static void wgpu_release_device_objects(void) {
             wgpuBindGroupRelease(s_bg_cache_tab[i].bg);
         }
     }
-    for (int i = 0; i < s_modern_count; i++) {
-        if (s_modern_cache[i].bg != NULL) {
-            wgpuBindGroupRelease(s_modern_cache[i].bg);
-        }
-    }
+    wgpu_modern_cache_clear();
     for (int i = 0; i < s_skinned_count; i++) {
         wgpu_skinned_entry_release(&s_skinned_cache[i]);
     }
@@ -13147,7 +13200,7 @@ static void wgpu_release_device_objects(void) {
     if (s_resolve_pipe != NULL) wgpuRenderPipelineRelease(s_resolve_pipe);
     if (s_post_pipe != NULL) wgpuRenderPipelineRelease(s_post_pipe);
     if (s_mm_pipe != NULL) wgpuRenderPipelineRelease(s_mm_pipe);
-    for (int i = 0; i < 2; i++) {
+    for (size_t i = 0; i < sizeof(s_modern_pipe) / sizeof(s_modern_pipe[0]); i++) {
         if (s_modern_pipe[i] != NULL) {
             wgpuRenderPipelineRelease(s_modern_pipe[i]);
         }
@@ -13174,20 +13227,6 @@ static void wgpu_release_device_objects(void) {
     }
     if (s_skinned_mod != NULL) wgpuShaderModuleRelease(s_skinned_mod);
 
-    for (int i = 0; i < s_modern_count; i++) {
-        if (s_modern_cache[i].view != NULL) {
-            wgpuTextureViewRelease(s_modern_cache[i].view);
-        }
-        if (s_modern_cache[i].tex != NULL) {
-            wgpuTextureRelease(s_modern_cache[i].tex);
-        }
-        if (s_modern_cache[i].vbuf != NULL) {
-            wgpuBufferRelease(s_modern_cache[i].vbuf);
-        }
-        if (s_modern_cache[i].ibuf != NULL) {
-            wgpuBufferRelease(s_modern_cache[i].ibuf);
-        }
-    }
     for (int i = 0; i < 5; i++) {
         if (s_skinned_fallback_view[i] != NULL) wgpuTextureViewRelease(s_skinned_fallback_view[i]);
         if (s_skinned_fallback_tex[i] != NULL) wgpuTextureRelease(s_skinned_fallback_tex[i]);
@@ -13875,6 +13914,7 @@ struct GfxRenderingAPI gfx_webgpu_api = {
     .draw_modern_mesh = wgpu_draw_modern_mesh,
     .draw_modern_skinned = wgpu_draw_modern_skinned,
     .release_modern_asset = wgpu_release_modern_asset,
+    .clear_modern_mesh_cache = wgpu_modern_cache_clear,
     .upload_texture_mipped = wgpu_upload_texture_mipped,
     .shutdown = wgpu_shutdown,
     .get_status = wgpu_get_status,
