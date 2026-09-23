@@ -3020,6 +3020,27 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME sprite_model_mesh COMMAND mdkr_sprite_model_mesh_test)
 
+    add_executable(mdkr_sprite_models_test
+        ${CMAKE_SOURCE_DIR}/tests/test_sprite_models.c
+        ${CMAKE_SOURCE_DIR}/platform/sprite_models.c
+        ${CMAKE_SOURCE_DIR}/platform/sprite_model_mesh.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/stb/stb_image_impl.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_sprite_models_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/stb
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_sprite_models_test PRIVATE m)
+    endif()
+    add_test(NAME sprite_models COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/tests/check_sprite_models.py
+        $<TARGET_FILE:mdkr_sprite_models_test>)
+
     # Compile the actual launcher sampler against a deterministic device seam;
     # the fixture supplies SDL boundary functions and links no SDL runtime.
     add_executable(mdkr_app_launch_hold_test

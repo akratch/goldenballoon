@@ -53,6 +53,8 @@ enum GfxRenderingStatus {
  * uv float2 @24, rgba u8x4 (normalized) @32. `backend_handle` starts NULL;
  * the backend uploads GPU resources on first draw and caches them there. */
 struct GfxModernMesh {
+    uint32_t texture_id;   /* immutable shared atlas identity; zero retains the
+                             legacy per-mesh texture ownership contract */
     uint32_t mesh_id;      /* loader-assigned, monotonic, never reused --
                               the backend caches GPU resources by this id
                               (struct addresses recycle across level loads) */
