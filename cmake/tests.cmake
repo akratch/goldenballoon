@@ -3009,6 +3009,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     set_tests_properties(audio_sink_contract PROPERTIES
         ENVIRONMENT "SDL_AUDIODRIVER=dummy")
 
+    # Synthetic replacement geometry and placement; no ROM, pack or GPU needed.
+    add_executable(mdkr_sprite_model_mesh_test
+        ${CMAKE_SOURCE_DIR}/tests/test_sprite_model_mesh.c
+        ${CMAKE_SOURCE_DIR}/platform/sprite_model_mesh.c)
+    target_include_directories(mdkr_sprite_model_mesh_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_sprite_model_mesh_test PRIVATE m)
+    endif()
+    add_test(NAME sprite_model_mesh COMMAND mdkr_sprite_model_mesh_test)
+
     # Compile the actual launcher sampler against a deterministic device seam;
     # the fixture supplies SDL boundary functions and links no SDL runtime.
     add_executable(mdkr_app_launch_hold_test
