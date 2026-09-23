@@ -12,7 +12,8 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 
-SOURCE_AREAS = {"game", "platform", "tests", "tools", "cmake", ".github"}
+SOURCE_AREAS = {"game", "platform", "tests", "tools", "cmake", ".github",
+                "services", "lib"}
 ROOT_INPUTS = {"CMakeLists.txt"}
 
 

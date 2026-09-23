@@ -48,6 +48,24 @@ class SourceCustodyTests(unittest.TestCase):
         self.assertEqual(custody.inventory(self.repo),
                          [{"path": "CMakeLists.txt", "status": "untracked"}])
 
+    def test_service_and_library_dependencies_are_release_inputs(self):
+        names = ["services/party/package.json", "services/party/package-lock.json",
+                 "services/party/src/worker.ts", "lib/fixture/reader.c"]
+        for name in names:
+            source = self.repo / name
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("fixture\n")
+        expected = [{"path": name, "status": "untracked"} for name in sorted(names)]
+        self.assertEqual(custody.inventory(self.repo), expected)
+        self.git("add", "services", "lib")
+        self.assertEqual(custody.inventory(self.repo),
+                         [{**item, "status": "index-only"} for item in expected])
+        self.commit()
+        self.assertEqual(custody.inventory(self.repo), [])
+        (self.repo / names[0]).unlink()
+        self.assertEqual(custody.inventory(self.repo),
+                         [{"path": names[0], "status": "missing-worktree"}])
+
     def test_git_failure_does_not_become_an_empty_inventory(self):
         with patch.object(custody, "git", side_effect=subprocess.CalledProcessError(73, "git")):
             with self.assertRaises(subprocess.CalledProcessError):
