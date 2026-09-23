@@ -2,6 +2,7 @@
 #include "sprite_model_mesh.h"
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int failures;
@@ -39,6 +40,31 @@ static void test_format(void) {
     mdkr_sprite_model_mesh_free(&mesh);
     check(!mesh.vtx && !mesh.idx, "free clears ownership");
     mdkr_sprite_model_mesh_free(&mesh);
+    {
+        size_t length;
+        for (length = 0; length < sizeof bytes; ++length) {
+            /* Allocate only the advertised prefix so ASan can detect reads
+             * beyond it, rather than hiding them inside the complete fixture. */
+            unsigned char *prefix = malloc(length ? length : 1);
+            check(prefix != NULL, "allocate bounded truncation fixture");
+            if (!prefix) continue;
+            memcpy(prefix, bytes, length);
+            check(!mdkr_sprite_model_parse(prefix, length, &mesh),
+                  "every truncated mesh prefix is rejected");
+            check(!mesh.vtx && !mesh.idx && !mesh.vtx_count && !mesh.idx_count,
+                  "truncated parse leaves empty output unchanged");
+            mdkr_sprite_model_mesh_free(&mesh);
+            free(prefix);
+        }
+        {
+            unsigned char extended[sizeof bytes + 1];
+            memcpy(extended, bytes, sizeof bytes);
+            extended[sizeof bytes] = 0;
+            check(!mdkr_sprite_model_parse(extended, sizeof extended, &mesh),
+                  "trailing payload is rejected rather than ignored");
+            mdkr_sprite_model_mesh_free(&mesh);
+        }
+    }
     check(!mdkr_sprite_model_parse(NULL, sizeof bytes, &mesh), "rejects null data");
     check(!mdkr_sprite_model_parse(bytes, sizeof bytes, NULL), "rejects null output");
     check(!mdkr_sprite_model_parse(bytes, 15, &mesh), "rejects short header");
