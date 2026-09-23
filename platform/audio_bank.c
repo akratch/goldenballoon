@@ -235,7 +235,7 @@ static ALWaveTable *bank_make_wavetable(const u8 *ctl, u32 ctl_size,
 
     if (wave->type == AL_ADPCM_WAVE) {
         if (!bank_ctl_has(ctl_size, offset, 20)) {
-            free(wave);
+            /* Arena allocations are retired with the audio heap, never free(). */
             return NULL;
         }
         loop_offset = bank_ctl_u32(ctl + offset + 12);
@@ -243,20 +243,22 @@ static ALWaveTable *bank_make_wavetable(const u8 *ctl, u32 ctl_size,
         if (loop_offset != 0) {
             wave->waveInfo.adpcmWave.loop =
                 bank_make_adpcm_loop(ctl, ctl_size, loop_offset);
+            if (wave->waveInfo.adpcmWave.loop == NULL) return NULL;
         }
         if (book_offset != 0) {
             wave->waveInfo.adpcmWave.book =
                 bank_make_adpcm_book(ctl, ctl_size, book_offset);
+            if (wave->waveInfo.adpcmWave.book == NULL) return NULL;
         }
     } else if (wave->type == AL_RAW16_WAVE) {
         if (!bank_ctl_has(ctl_size, offset, 16)) {
-            free(wave);
             return NULL;
         }
         loop_offset = bank_ctl_u32(ctl + offset + 12);
         if (loop_offset != 0) {
             wave->waveInfo.rawWave.loop =
                 bank_make_raw_loop(ctl, ctl_size, loop_offset);
+            if (wave->waveInfo.rawWave.loop == NULL) return NULL;
         }
     }
 
@@ -285,13 +287,16 @@ static ALSound *bank_make_sound(const u8 *ctl, u32 ctl_size, u32 offset,
     wavetable_offset = bank_ctl_u32(ctl + offset + 8);
     if (envelope_offset != 0) {
         sound->envelope = bank_make_envelope(ctl, ctl_size, envelope_offset);
+        if (sound->envelope == NULL) return NULL;
     }
     if (keymap_offset != 0) {
         sound->keyMap = bank_make_keymap(ctl, ctl_size, keymap_offset);
+        if (sound->keyMap == NULL) return NULL;
     }
     if (wavetable_offset != 0) {
         sound->wavetable =
             bank_make_wavetable(ctl, ctl_size, wavetable_offset, table_base);
+        if (sound->wavetable == NULL) return NULL;
     }
     sound->samplePan = ctl[offset + 12];
     sound->sampleVolume = ctl[offset + 13];
@@ -345,6 +350,7 @@ static ALInstrument *bank_make_instrument(const u8 *ctl, u32 ctl_size,
         if (sound_offset != 0) {
             instrument->soundArray[i] =
                 bank_make_sound(ctl, ctl_size, sound_offset, table_base);
+            if (instrument->soundArray[i] == NULL) return NULL;
         }
     }
 
@@ -385,6 +391,7 @@ static ALBank *bank_make_bank(const u8 *ctl, u32 ctl_size, u32 offset,
     if (percussion_offset != 0) {
         bank->percussion =
             bank_make_instrument(ctl, ctl_size, percussion_offset, table_base);
+        if (bank->percussion == NULL) return NULL;
     }
 
     for (i = 0; i < instrument_count; i++) {
@@ -393,6 +400,7 @@ static ALBank *bank_make_bank(const u8 *ctl, u32 ctl_size, u32 offset,
             bank->instArray[i] =
                 bank_make_instrument(ctl, ctl_size, instrument_offset,
                                      table_base);
+            if (bank->instArray[i] == NULL) return NULL;
         }
     }
 

@@ -15,6 +15,20 @@
 # Keep format-boundary and display math independently runnable: these regressions
 # should fail in milliseconds without booting SDL, WebGPU or copyrighted assets.
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_audio_bank_parser_test
+        ${CMAKE_SOURCE_DIR}/tests/test_audio_bank_parser.c)
+    target_include_directories(mdkr_audio_bank_parser_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    mdkr_add_legacy_game_quote_includes(mdkr_audio_bank_parser_test)
+    target_compile_definitions(mdkr_audio_bank_parser_test PRIVATE
+        _LANGUAGE_C NATIVE_PORT=1 MODERN_CC)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_audio_bank_parser_test PRIVATE m)
+    endif()
+    add_test(NAME audio_bank_parser COMMAND mdkr_audio_bank_parser_test)
+
     add_executable(mdkr_display_config_test
         ${CMAKE_SOURCE_DIR}/tests/test_display_config.c
         ${CMAKE_SOURCE_DIR}/platform/display_config.c)
