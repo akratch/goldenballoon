@@ -2733,6 +2733,13 @@ if(BUILD_TESTING)
         NAME check_save_dir_hermeticity
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_check_save_dir_hermeticity.py)
+    if(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$" AND NOT MSVC)
+        add_test(
+            NAME taj_music_muted
+            COMMAND ${CMAKE_COMMAND} -E env "CC=${CMAKE_C_COMPILER}"
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_taj_music_muted.py)
+    endif()
     add_test(
         NAME check_adventure_party_performance_plateau
         COMMAND ${Python3_EXECUTABLE}

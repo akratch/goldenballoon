@@ -3,6 +3,7 @@
 #include "memory.h"
 #ifdef NATIVE_PORT
 #include "gameplay_event_trace.h"
+#include "mdkr_trace.h"
 #include "rollback/rollback_game_runtime.h"
 #include <stdlib.h>   /* getenv (MDKR_AUDIO_REVERB toggle) */
 #include <string.h>
@@ -1655,6 +1656,11 @@ void music_sequence_init(ALCSPlayer *seqp, void *sequence, u8 *seqID, ALCSeq *se
         alCSeqNew(seq, sequence);
         alCSPSetSeq(seqp, seq);
         alCSPPlay(seqp);
+#ifdef NATIVE_PORT
+        MDKR_TRACE("music_sequence_loaded: player=%s sequence=%u curTime=%d",
+                   seqp == gMusicPlayer ? "music" : "jingle",
+                   (unsigned)*seqID, (int)seqp->curTime);
+#endif
         if (seqp == gMusicPlayer) {
             music_volume_set(gSeqSoundTable[*seqID].volume);
             if (gSeqSoundTable[*seqID].tempo != 0) {

@@ -1283,9 +1283,9 @@ static ModRacerIdentity charselect_identity_for_index(s32 index) {
     return MOD_RACER_RETAIL;
 }
 
-/* The virtual row keeps Diddy only as a safe retail-table donor. Taj has no
- * retail character-music channel, so hovering him preserves the neutral
- * Choose Your Racer arrangement instead of audibly turning into Diddy. */
+/* The virtual row keeps Diddy only as a safe retail-table donor. Bonus racers
+ * have no retail instrument channel; the separate sequence owner below selects
+ * Taj's standalone tune without treating the donor as his musical identity. */
 static s32 charselect_music_channel_for_index(s32 index) {
     return charselect_identity_for_index(index) != MOD_RACER_RETAIL
                ? -1
@@ -1298,6 +1298,76 @@ static s32 charselect_music_channel_for_player(s32 player) {
         return -1;
     }
     return charselect_music_channel_for_index(gPlayersCharacterArray[player]);
+}
+
+/* Sequence ownership is distinct from a retail instrument channel: custom
+ * characters and all bonus racers share the -1 channel sentinel. */
+static s32 sCharselectMusicOwner = -1;
+static s32 sCharselectMusicSequence = SEQUENCE_CHOOSE_YOUR_RACER;
+static s32 sCharselectMusicObserved;
+static s32 sCharselectMusicActive[MAXCONTROLLERS];
+static s32 sCharselectMusicIndex[MAXCONTROLLERS];
+static s32 sCharselectMusicCustom[MAXCONTROLLERS];
+
+static void charselect_music_sequence_set(s32 sequence) {
+    s32 i;
+    if (sequence == sCharselectMusicSequence) return;
+    /* music_play declines requests while the player's slider is zero. Keep
+     * the applied sequence unchanged so observing this cursor after unmute
+     * retries the handoff instead of treating a rejected request as loaded. */
+    if (music_volume_config() == 0) return;
+    music_change_on();
+    music_play(sequence);
+    music_channel_reset_all();
+    gMenuSelectedCharacter.channelIndex = -1;
+    D_801263B8.channelIndex = -1;
+    if (sequence == SEQUENCE_CHOOSE_YOUR_RACER) {
+        for (i = 0; i < NUM_CHARACTERS; i++) {
+            music_channel_off(gCharacterVolumes[i][0]);
+            music_channel_off(gCharacterVolumes[i][1]);
+        }
+        music_channel_off(6);
+        gMenuCurrentCharacter.unk1 = 1;
+        gMenuCurrentCharacter.unk2 = 0;
+    }
+    music_change_off();
+    sCharselectMusicSequence = sequence;
+    MDKR_TRACE("charselect_music: owner=%d sequence=%d",
+               sCharselectMusicOwner, sequence);
+}
+
+static s32 charselect_music_observe(void) {
+    s32 i;
+    s32 owner = sCharselectMusicOwner;
+    for (i = 0; i < MAXCONTROLLERS; i++) {
+        if (gActivePlayersArray[i] &&
+            ((!sCharselectMusicObserved && owner < 0) ||
+             (sCharselectMusicObserved &&
+              (sCharselectMusicActive[i] != gActivePlayersArray[i] ||
+               sCharselectMusicIndex[i] != gPlayersCharacterArray[i] ||
+               sCharselectMusicCustom[i] != sCustomCharacterSelection[i])))) {
+            owner = i;
+        }
+        sCharselectMusicActive[i] = gActivePlayersArray[i];
+        sCharselectMusicIndex[i] = gPlayersCharacterArray[i];
+        sCharselectMusicCustom[i] = sCustomCharacterSelection[i];
+    }
+    if (owner < 0 || !gActivePlayersArray[owner]) {
+        owner = -1;
+        for (i = 0; i < MAXCONTROLLERS; i++) {
+            if (gActivePlayersArray[i]) { owner = i; break; }
+        }
+    }
+    sCharselectMusicOwner = owner;
+    sCharselectMusicObserved = TRUE;
+    /* Last-player departure starts the menu's existing exit fade. Do not
+     * insert a new selection tune during that fade; the exit owns the handoff. */
+    if (owner < 0) return sCharselectMusicSequence == SEQUENCE_UNK27;
+    charselect_music_sequence_set(
+        owner >= 0 && sCustomCharacterSelection[owner] < 0 &&
+                charselect_index_is_taj(gPlayersCharacterArray[owner])
+            ? SEQUENCE_UNK27 : SEQUENCE_CHOOSE_YOUR_RACER);
+    return sCharselectMusicSequence == SEQUENCE_UNK27;
 }
 
 static s32 charselect_taj_is_selectable(void) {
@@ -9739,6 +9809,11 @@ void menu_character_select_init(void) {
 #endif
 
     breakTheLoop = FALSE;
+#ifdef NATIVE_PORT
+    sCharselectMusicOwner = -1;
+    sCharselectMusicObserved = FALSE;
+    sCharselectMusicSequence = SEQUENCE_CHOOSE_YOUR_RACER;
+#endif
     input_assign_players();
 #ifdef NATIVE_PORT
     ttUnlocked = is_tt_unlocked();
@@ -10895,6 +10970,12 @@ void charselect_move(s32 playerID, s8 *direction, s32 bounds, u16 menuPickSoundI
  */
 void charselect_free(void) {
 #ifdef NATIVE_PORT
+    if (sCharselectMusicSequence != SEQUENCE_CHOOSE_YOUR_RACER) {
+        charselect_music_sequence_set(SEQUENCE_CHOOSE_YOUR_RACER);
+        /* Exit callers own the next menu's music policy (the title exit has
+         * already unblocked music; Adventure re-blocks it after this call). */
+        music_change_on();
+    }
     taj_visual_select_end();
 #endif
     menu_assetgroup_free(gCharSelectObjectIndices);
@@ -10911,6 +10992,9 @@ void charselect_free(void) {
  */
 void charselect_music_channels(s32 updateRate) {
     const u8 *characterVolumes = (const u8 *)(const void *)gCharacterVolumes;
+#ifdef NATIVE_PORT
+    if (charselect_music_observe()) return;
+#endif
 
     if (gMenuCurrentCharacter.unk1 > 0) {
         gMenuCurrentCharacter.unk1 -= updateRate;
