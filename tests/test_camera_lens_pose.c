@@ -35,6 +35,7 @@ static void expect_vec(const char *name, Vec3f actual, Vec3f expected) {
     expect_near(label, actual.z, expected.z);
 }
 
+#ifndef MDKR_CAMERA_PRODUCTION_MATH
 static s32 test_sine(s16 angle) {
     const u16 turn = (u16)angle;
 
@@ -51,6 +52,7 @@ s32 sins_s16(s16 angle) {
 s32 coss_s16(s16 angle) {
     return test_sine((s16)(angle + 0x4000));
 }
+#endif
 
 
 static Vec3f vec3(float x, float y, float z) {
@@ -191,10 +193,129 @@ static void test_invalid_input(void) {
     expect_true("null output rejected", !cam_lens_pose_from_camera_snapshot(&camera, FALSE, NULL));
 }
 
+static void test_shake_eye_chord(void) {
+    Camera before = {0}, after = {0}, sample;
+    MdkrCameraLensPose first, last, actual;
+    before.trans.x_position = -16.0f;
+    before.trans.y_position = 32.0f;
+    before.trans.z_position = 64.0f;
+    before.shakeMagnitude = -8.0f;
+    after.trans.x_position = 48.0f;
+    after.trans.y_position = 16.0f;
+    after.trans.z_position = -32.0f;
+    after.shakeMagnitude = 12.0f;
+    for (int enabled = 0; enabled <= 1; enabled++) {
+        expect_true("chord start builds",
+                    cam_lens_pose_from_camera_snapshot(&before, enabled, &first));
+        expect_true("chord end builds",
+                    cam_lens_pose_from_camera_snapshot(&after, enabled, &last));
+        for (int step = 0; step <= 8; step++) {
+            const float t = step / 8.0f;
+            sample = before;
+            sample.trans.x_position += t * (after.trans.x_position - before.trans.x_position);
+            sample.trans.y_position += t * (after.trans.y_position - before.trans.y_position);
+            sample.trans.z_position += t * (after.trans.z_position - before.trans.z_position);
+            sample.shakeMagnitude += t * (after.shakeMagnitude - before.shakeMagnitude);
+            // Rotation changes the lens basis, not the world-space eye chord.
+            sample.trans.rotation.y_rotation = (s16)(step * 1024);
+            expect_true("chord sample builds",
+                        cam_lens_pose_from_camera_snapshot(&sample, enabled, &actual));
+            expect_vec("shake eye follows swept chord", actual.eye,
+                       vec3(first.eye.x + t * (last.eye.x - first.eye.x),
+                            first.eye.y + t * (last.eye.y - first.eye.y),
+                            first.eye.z + t * (last.eye.z - first.eye.z)));
+        }
+    }
+}
+
+/* A transition guard must consume the composed view-pitch arc used by
+ * presentation, not independently interpolate the two authored components. */
+static void test_composed_pitch_equivalence(void) {
+    static const u16 angles[] = {0, 1, 0x1000, 0x7fff, 0x8000, 0xffff};
+    for (unsigned x = 0; x < sizeof(angles) / sizeof(angles[0]); ++x) {
+        for (unsigned p = 0; p < sizeof(angles) / sizeof(angles[0]); ++p) {
+            Camera split = {0}, composed;
+            MdkrCameraLensPose a, b;
+            split.trans.rotation.x_rotation = (s16)angles[x];
+            split.pitch = (s16)angles[p];
+            split.trans.rotation.y_rotation = (s16)0x9123;
+            split.trans.rotation.z_rotation = 0x1234;
+            composed = split;
+            composed.trans.rotation.x_rotation =
+                (s16)(u16)(angles[x] + angles[p]);
+            composed.pitch = 0;
+            expect_true("split pitch builds",
+                        cam_lens_pose_from_camera_snapshot(&split, 0, &a));
+            expect_true("composed pitch builds",
+                        cam_lens_pose_from_camera_snapshot(&composed, 0, &b));
+            expect_vec("composed pitch forward", a.forward, b.forward);
+            expect_vec("composed pitch right", a.right, b.right);
+            expect_vec("composed pitch up", a.up, b.up);
+        }
+    }
+}
+
+static void test_rotation_envelope(void) {
+    Camera before = {0}, after, sample;
+    before.trans.rotation.y_rotation = (s16)0xfffd;
+    before.trans.rotation.x_rotation = 0x7fff;
+    before.pitch = 0x7fff;
+    before.trans.rotation.z_rotation = 2;
+    after = before;
+    after.trans.rotation.y_rotation = 4;
+    after.trans.rotation.x_rotation = (s16)0x8002;
+    after.pitch = (s16)0x8002;
+    after.trans.rotation.z_rotation = -2;
+    float bound = -1;
+    expect_true("rotation product budget rejects without writes",
+        !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 279, &bound) && bound == -1);
+    expect_true("rotation product exact budget accepted",
+        cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 280, &bound));
+    expect_true("small rotation bound is tighter than enclosing sphere",
+                bound > 0 && bound < 0.1f);
+    MdkrCameraLensPose base, current;
+    expect_true("envelope reference", cam_lens_pose_from_camera_snapshot(&before, 0, &base));
+    for (int step = 0; step <= 97; ++step) {
+        sample = before;
+        sample.trans.rotation.y_rotation = (s16)(u16)(0xfffd + 7 * step / 97);
+        sample.trans.rotation.x_rotation = (s16)(u16)(0xfffe + 6 * step / 97);
+        sample.pitch = 0;
+        sample.trans.rotation.z_rotation = (s16)(2 - 4 * step / 97);
+        expect_true("envelope sampled renderer basis",
+                    cam_lens_pose_from_camera_snapshot(&sample, 0, &current));
+        for (int h = -1; h <= 1; h += 2)
+        for (int v = -1; v <= 1; v += 2) {
+            const double a[3] = {
+                10.0*base.forward.x + h*8.0*base.right.x + v*6.0*base.up.x,
+                10.0*base.forward.y + h*8.0*base.right.y + v*6.0*base.up.y,
+                10.0*base.forward.z + h*8.0*base.right.z + v*6.0*base.up.z};
+            const double b[3] = {
+                10.0*current.forward.x + h*8.0*current.right.x + v*6.0*current.up.x,
+                10.0*current.forward.y + h*8.0*current.right.y + v*6.0*current.up.y,
+                10.0*current.forward.z + h*8.0*current.right.z + v*6.0*current.up.z};
+            double distance = sqrt((a[0]-b[0])*(a[0]-b[0]) +
+                                   (a[1]-b[1])*(a[1]-b[1]) +
+                                   (a[2]-b[2])*(a[2]-b[2]));
+            expect_true("sampled corner within envelope", distance <= bound);
+        }
+    }
+    bound = -1;
+    expect_true("invalid dimensions preserve output",
+        !cam_lens_rotation_envelope(&before, &after, NAN, 8, 6, 280, &bound) && bound == -1);
+    expect_true("null output rejected",
+        !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 280, NULL));
+    after.trans.rotation.y_rotation = (s16)(u16)(0xfffd + 0x8000);
+    expect_true("half-turn oversized domain rejected",
+        !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 4096, &bound) && bound == -1);
+}
+
 int main(void) {
     test_zero_golden_and_shake();
     test_renderer_recipe_and_handedness();
     test_invalid_input();
+    test_shake_eye_chord();
+    test_composed_pitch_equivalence();
+    test_rotation_envelope();
     if (sFailures != 0) {
         fprintf(stderr, "test_camera_lens_pose: %d failure(s)\n", sFailures);
         return 1;

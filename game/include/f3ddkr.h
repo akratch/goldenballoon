@@ -177,6 +177,7 @@
 #define G_MW_DKR_WORLD_REGION 0x10
 #define G_MW_DKR_MODERN_CHARACTER 0x12
 #define G_MW_DKR_CHARACTER_OCCLUDER 0x14
+#define G_MW_DKR_SPRITE_MODEL 0x16
 #define G_DKR_CHARACTER_OCCLUDER_NONE 0
 #define G_DKR_CHARACTER_OCCLUDER_VEHICLE_BODY 1
 #define G_DKR_CHARACTER_OCCLUDER_VEHICLE_PARTS 2
@@ -213,6 +214,8 @@
     gMoveWd(pkt, G_MW_DKR_SMOOTH_NORMALS, 0, (normals))
 #define gDkrDrawModernCharacter(pkt, drawToken) \
     gMoveWd(pkt, G_MW_DKR_MODERN_CHARACTER, 0, (drawToken))
+#define gDkrDrawSpriteModel(pkt, spriteId) \
+    gMoveWd(pkt, G_MW_DKR_SPRITE_MODEL, 0, (spriteId))
 #define gDkrSetCharacterOccluder(pkt, occluder) \
     gMoveWd(pkt, G_MW_DKR_CHARACTER_OCCLUDER, 0, (occluder))
 #endif

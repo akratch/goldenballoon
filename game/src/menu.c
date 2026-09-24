@@ -9454,6 +9454,10 @@ void titlescreen_controller_assign(s32 controllerIndex) {
     s32 i;
 
     gNumberOfActivePlayers = 1;
+#ifdef NATIVE_PORT
+    MDKR_TRACE("[PLAYER_ASSIGN] source=title controller=%d players=%d",
+               (int)controllerIndex, (int)gNumberOfActivePlayers);
+#endif
 
     for (i = 0; i < ARRAY_COUNT(gPlayersCharacterArray); i++) {
         gPlayersCharacterArray[i] = (i == controllerIndex) ? 1 : -1;
@@ -10178,6 +10182,10 @@ void charselect_new_player(void) {
                 gPlayersCharacterArray[i] = var_a2;
                 gActivePlayersArray[i] = TRUE;
                 gNumberOfActivePlayers++;
+#ifdef NATIVE_PORT
+                MDKR_TRACE("[PLAYER_ASSIGN] source=join controller=%d players=%d",
+                           (int)i, (int)gNumberOfActivePlayers);
+#endif
 #ifdef NATIVE_PORT
                 {
                     char error[192];

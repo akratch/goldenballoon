@@ -222,6 +222,7 @@ GPU_SERIAL_NAMES = frozenset({
     "bonus_results_portraits",
     "wizpig_race_voice",
     "taj_selection_music",
+    "sprite_models_gpu",
     "bonus_portrait_pack",
     "taj_character_select",
     "taj_character_select_webgpu",
@@ -385,6 +386,13 @@ CHECKS = (
     Check("subentry_bounds", "check_subentry_bounds.py", "native",
           "an out-of-range asset sub-entry index aborts loudly with the "
           "section, index and count, instead of resolving to the section base"),
+    Check("custom_track_loader", "check_custom_track_loader.py", "native",
+          "five installed synthetic custom-track sections preserve retail tails, "
+          "table ownership, checked mixed reads and detach restoration; "
+          "not authored-course gameplay qualification"),
+    Check("custom_track_loader_asan", "check_custom_track_loader.py", "asan",
+          "sanitizer coverage of installed synthetic sections, native DMA host "
+          "destinations and session detachment before retail boot continues"),
     Check("dev_tools_purity", "check_dev_tools_purity.py", "native",
           "every registered developer tool leaves the authoritative state "
           "stream byte-identical when opened"),
@@ -879,6 +887,9 @@ CHECKS = (
           "Taj music confirmation, reselection, title exit, custom return and multiplayer "
           "ownership across four unlock layouts with loaded-sequence and "
           "nonzero MIDI dispatch checks"),
+    Check("sprite_models_gpu", "check_sprite_models_gpu.py", "native",
+          "synthetic replacement model draws and eleven one-shot/persistent "
+          "GPU allocation failure recovery paths"),
     Check("bonus_portrait_pack", "check_bonus_portrait_pack.py", "native",
           "a pack redraws the generated Taj/Wizpig/Terry cards at their "
           "published digests on GL and on the shipped WebGPU default, the "
@@ -1318,6 +1329,7 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    "check_sprite_models.py",  # synthetic packs consumed by sprite_models CTest
     "check_ai_difficulty_ui.py",
     "check_match_transport_tls_io.py",
     "check_online_resolver_budget.py",

@@ -4,8 +4,8 @@
 // native open-panel here: GTK/Qt/portal each mean a new hard build dependency
 // (the xdg-desktop-portal route needs libdbus at configure time), and this
 // launcher otherwise needs nothing but SDL2. Rather than add that weight or
-// ship a button that fails at runtime, isAvailable() returns false and the ROM
-// panel does not draw a Browse button at all.
+// ship a native-panel button that fails at runtime, isAvailable() returns false.
+// Linux ROM and ZIP-pack selection use a separate in-window browser.
 //
 // Acquisition on these platforms is drag-and-drop onto the window plus the
 // manual path field, both of which are permission-free and always present.

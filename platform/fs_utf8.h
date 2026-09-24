@@ -19,6 +19,39 @@ extern "C" {
 #endif
 
 FILE *mdkr_fopen_utf8(const char *path, const char *mode);
+#ifdef _WIN32
+/* Windows read-only directory capability used by pack sources. Invalid handle
+ * is -1. Child opens accept one UTF-8 component, never a path, and reject
+ * reparse points after a non-following handle open. The chosen root may resolve
+ * through a link. A directory child named "." creates an independent scan.
+ * file_stream consumes its handle on both success and failure. */
+intptr_t mdkr_directory_handle_open_utf8(const char *path);
+intptr_t mdkr_directory_handle_child_utf8(intptr_t parent, const char *name,
+                                        int directory);
+/* Exclusive child creation relative to an opened parent. Refuses existing
+ * names and reparse points. New handles permit writing/deletion and deny
+ * write/delete sharing until closed. Caller owns the returned handle. */
+intptr_t mdkr_directory_handle_create_utf8(intptr_t parent, const char *name,
+                                         int directory);
+/* Open an existing child for owned publication/cleanup, with DELETE access
+ * and no write/delete sharing. Never creates or follows a reparse point. */
+intptr_t mdkr_directory_handle_owned_child_utf8(intptr_t parent, const char *name,
+                                              int directory);
+void mdkr_directory_handle_close(intptr_t handle);
+FILE *mdkr_read_handle_stream(intptr_t handle);
+/* Consumes a writable regular-file handle on success and failure. Caller
+ * fclose()s the returned stream and checks its result for buffered I/O errors. */
+FILE *mdkr_write_handle_stream(intptr_t handle);
+/* Borrow DELETE-capable handles. Rename uses a single child name and refuses
+ * replacement atomically; delete marks this exact object for deletion on close.
+ * Return 0 on success, -1 with errno on failure. No pathname fallback. */
+int mdkr_handle_rename_child_utf8(intptr_t handle, intptr_t parent, const char *name);
+int mdkr_handle_mark_delete(intptr_t handle);
+/* 0 complete, 1 error, 2 visitor stopped. Skips reparse points. */
+typedef int (*MdkrDirectoryHandleVisit)(const char *name, int directory, void *user);
+int mdkr_directory_handle_visit(intptr_t handle, MdkrDirectoryHandleVisit visit,
+                                void *user);
+#endif
 int mdkr_remove_utf8(const char *path);
 int mdkr_unlink_utf8(const char *path);
 int mdkr_mkdir_utf8(const char *path);

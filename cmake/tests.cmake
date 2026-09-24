@@ -15,6 +15,21 @@
 # Keep format-boundary and display math independently runnable: these regressions
 # should fail in milliseconds without booting SDL, WebGPU or copyrighted assets.
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_custom_track_decode_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_decode.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_custom_track_decode_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/miniz)
+    add_test(NAME custom_track_decode COMMAND mdkr_custom_track_decode_test)
+    add_executable(mdkr_dma_destination_test ${CMAKE_SOURCE_DIR}/tests/test_dma_destination.c)
+    target_include_directories(mdkr_dma_destination_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME dma_destination COMMAND mdkr_dma_destination_test)
+    add_executable(mdkr_custom_track_table_test ${CMAKE_SOURCE_DIR}/tests/test_custom_track_table.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_section.c)
+    target_include_directories(mdkr_custom_track_table_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_custom_track_table_test PRIVATE MDKR_CUSTOM_TRACK_TEST_ALLOCATOR=1)
+    add_test(NAME custom_track_table COMMAND mdkr_custom_track_table_test)
     add_executable(mdkr_rom_browser_test
         ${CMAKE_SOURCE_DIR}/tests/test_rom_browser.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp)
@@ -35,6 +50,26 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
     target_compile_features(mdkr_file_browser_ui_test PRIVATE cxx_std_17)
     add_test(NAME file_browser_ui COMMAND mdkr_file_browser_ui_test)
+
+    add_executable(mdkr_pack_installer_test
+        ${CMAKE_SOURCE_DIR}/tests/test_pack_installer.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/pack_installer.cpp
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_pack_installer_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    target_compile_features(mdkr_pack_installer_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_pack_installer_test PRIVATE Threads::Threads)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_pack_installer_test PRIVATE m)
+    endif()
+    add_test(NAME pack_installer COMMAND mdkr_pack_installer_test)
 
     add_executable(mdkr_audio_bank_parser_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_bank_parser.c)
@@ -273,6 +308,25 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_camera_lens_pose_test PRIVATE m)
     endif()
     add_test(NAME camera_lens_pose COMMAND mdkr_camera_lens_pose_test)
+    add_executable(mdkr_camera_lens_pose_native_test
+        ${CMAKE_SOURCE_DIR}/tests/test_camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
+        ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
+        ${CMAKE_SOURCE_DIR}/game/src/camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/math_util_native.c)
+    foreach(property IN ITEMS INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS)
+        get_target_property(camera_test_property mdkr_camera_lens_pose_test ${property})
+        if(camera_test_property)
+            set_property(TARGET mdkr_camera_lens_pose_native_test PROPERTY ${property} "${camera_test_property}")
+        endif()
+    endforeach()
+    target_compile_definitions(mdkr_camera_lens_pose_native_test PRIVATE MDKR_CAMERA_PRODUCTION_MATH=1)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_camera_lens_pose_native_test PRIVATE m)
+    endif()
+    add_test(NAME camera_lens_pose_native COMMAND mdkr_camera_lens_pose_native_test)
+    set_tests_properties(camera_lens_pose_native PROPERTIES
+        ENVIRONMENT "MDKR_TRIG=table;MDKR_DEV_RUNTIME_TRIG=0")
 
 
     add_executable(mdkr_endian_utils_test
@@ -2766,6 +2820,18 @@ if(BUILD_TESTING)
         NAME app_scroll_environment
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_app_scroll_environment.py)
+    add_test(
+        NAME clean_room_guard
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_clean_room_guard.py)
+    add_test(
+        NAME source_custody
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_source_custody.py)
+    add_test(
+        NAME pack_install_order
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_pack_install_order.py)
     if(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$" AND NOT MSVC)
         add_test(
             NAME taj_music_muted

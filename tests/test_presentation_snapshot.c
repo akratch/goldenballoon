@@ -521,6 +521,89 @@ static void test_discontinuity(void) {
 
 /* ---- 4b. discrete fields through the resolver ---------------------------- */
 
+static void test_camera_shake_chord(void) {
+    PresentationCameraEntry sample;
+    PresentationCameraPose pose;
+    for (int enabled = 0; enabled <= 1; enabled++) {
+        begin();
+        presentation_snapshot_capture_begin();
+        sample = make_camera(0, -16.0f, 32.0f, 64.0f);
+        sample.apply_shake = enabled;
+        sample.shake_magnitude = -8.0f;
+        presentation_snapshot_capture_camera(&sample);
+        presentation_snapshot_capture_commit();
+        presentation_snapshot_capture_begin();
+        sample = make_camera(0, 48.0f, 16.0f, -32.0f);
+        sample.apply_shake = enabled;
+        sample.shake_magnitude = 12.0f;
+        presentation_snapshot_capture_camera(&sample);
+        presentation_snapshot_capture_commit();
+        for (int step = 0; step <= 8; step++) {
+            const float t = step / 8.0f;
+            expect(presentation_snapshot_resolve_camera(0, step, 8, &pose),
+                   "shake chord: camera resolves");
+            expect(pose.apply_shake == enabled &&
+                       pose.shake_magnitude == -8.0f + t * 20.0f,
+                   "shake chord: amplitude interpolates with stable enable flag");
+            expect(pose.position[0] == -16.0f + t * 64.0f &&
+                       pose.position[2] == 64.0f - t * 96.0f &&
+                       pose.position[1] + (enabled ? pose.shake_magnitude : 0.0f) ==
+                           32.0f - enabled * 8.0f + t * (-16.0f + enabled * 20.0f),
+                   "shake chord: rendered eye lies on endpoint sweep");
+        }
+    }
+}
+
+static void test_sprite_phase_lifecycle(void) {
+    static const struct { uint8_t before, after; float midpoint; } cases[] = {
+        {255, 0, 255.5f}, {0, 255, -0.5f}, {12, 20, 16.0f},
+        {20, 12, 16.0f}, {0, 128, -64.0f}, {128, 0, 64.0f},
+        {73, 73, 73.0f}
+    };
+    size_t i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        PresentationObjectEntry sample;
+        PresentationObjectPose pose;
+        begin();
+        presentation_snapshot_note_spawn(s_slot_a);
+        sample = make_object(s_slot_a, 0, 0, 0);
+        sample.sprite_phase = cases[i].before;
+        presentation_snapshot_capture_begin();
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+        sample.sprite_phase = cases[i].after;
+        presentation_snapshot_capture_begin();
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+        expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose) &&
+                   pose.sprite_phase == cases[i].midpoint,
+               "sprite phase: shortest cyclic midpoint, including half turns");
+        expect(presentation_snapshot_resolve_object(s_slot_a, 0, 2, &pose) &&
+                   pose.sprite_phase == cases[i].before,
+               "sprite phase: exact previous endpoint");
+        expect(presentation_snapshot_resolve_object(s_slot_a, 2, 2, &pose) &&
+                   pose.sprite_phase == cases[i].after,
+               "sprite phase: exact current endpoint");
+        expect(presentation_snapshot_resolve_object(s_slot_a, 1, 0, &pose) &&
+                   pose.sprite_phase == cases[i].after,
+               "sprite phase: zero denominator uses current endpoint");
+        presentation_snapshot_note_free(s_slot_a);
+        presentation_snapshot_note_spawn(s_slot_a);
+        sample.sprite_phase = 41;
+        presentation_snapshot_capture_begin();
+        presentation_snapshot_capture_object(&sample);
+        presentation_snapshot_capture_commit();
+        expect(presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose) &&
+                   pose.sprite_phase == 41 && !pose.interpolated,
+               "sprite phase: reused address never blends the previous life");
+        presentation_snapshot_note_free(s_slot_a);
+        presentation_snapshot_capture_begin();
+        presentation_snapshot_capture_commit();
+        expect(!presentation_snapshot_resolve_object(s_slot_a, 1, 2, &pose),
+               "sprite phase: removed object cannot resolve from old snapshot");
+    }
+}
+
 static void test_resolved_fields(void) {
     PresentationObjectPose pose;
     PresentationObjectEntry sample;
@@ -538,6 +621,7 @@ static void test_resolved_fields(void) {
     sample.model_index = 0;
     sample.animation_id = 7;
     sample.animation_frame = 11;
+    sample.sprite_phase = 255;
     presentation_snapshot_capture_object(&sample);
     camera_sample = make_camera(0, 0.0f, 0.0f, 0.0f);
     camera_sample.rotation_y = 0;
@@ -553,6 +637,7 @@ static void test_resolved_fields(void) {
     sample.model_index = 2;
     sample.animation_id = 9;
     sample.animation_frame = 13;
+    sample.sprite_phase = 0;
     presentation_snapshot_capture_object(&sample);
     camera_sample = make_camera(0, 40.0f, 0.0f, 0.0f);
     camera_sample.rotation_y = 2000;
@@ -570,6 +655,7 @@ static void test_resolved_fields(void) {
     expect(pose.scale == 2.0f, "fields: scale is a continuous scalar");
     expect(pose.rotation_y == 2000, "fields: rotation is shortest-arc blended");
     expect(pose.opacity == 100, "fields: opacity is a continuous scalar");
+    expect(pose.sprite_phase == 255.5f, "fields: sprite phase crosses wrap forward");
     expect(pose.model_index == 0 && pose.animation_id == 7 &&
                pose.animation_frame == 11,
            "fields: discrete state holds PREVIOUS at alpha 0.5");
@@ -577,6 +663,7 @@ static void test_resolved_fields(void) {
     /* At alpha 1 every field is the current tick's, exactly. */
     expect(presentation_snapshot_resolve_object(s_slot_a, 2, 2, &pose),
            "fields: resolves at alpha 1");
+    expect(pose.sprite_phase == 0, "fields: sprite phase reaches exact current endpoint");
     expect(bits_equal(pose.position[0], 8.0f) &&
                bits_equal(pose.position[1], 16.0f) &&
                bits_equal(pose.position[2], -8.0f) &&
@@ -1695,6 +1782,8 @@ int main(void) {
     test_identity_ensure_generation();
     test_discontinuity();
     test_resolved_fields();
+    test_sprite_phase_lifecycle();
+    test_camera_shake_chord();
     test_camera_fast_pan_snaps();
     test_camera_pitch_axis_snap_still_backstops();
     test_camera_composed_pitch_uses_one_arc();

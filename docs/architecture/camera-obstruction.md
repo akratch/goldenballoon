@@ -1265,6 +1265,20 @@ These are falsifiable starting bounds, not magic constants. CAM-00 may revise th
 once, with traces and side-by-side captures recorded in this document. Later tuning
 requires the same evidence and may not weaken hard clearance.
 
+Recovery implementation follow-up (release candidate): the runtime now also
+applies the documented 25%-of-remaining-error limit; previously it applied only
+speed and absolute-step limits. The pure resolver exposes an optional fraction
+(zero preserves its constant-speed diagnostic callers). Reduced comfort scales
+the fraction as well as speed/step. Numerical settling within four float epsilons
+at the endpoint world-coordinate scale prevents asymptotic recovery from sticking
+one representable step short; speed/absolute limits and the final clearance query
+still apply, and zero-time validation never advances recovery. This is numerical
+precision handling, not an enlarged collision tolerance. ROM-free tests cover
+small/250/400-unit recovery at 20/30/50/60 Hz, signed large world coordinates,
+95% timing, exact eventual settling, invalid fractions and paused recovery.
+Retraction, release hysteresis and the hard re-engagement gate are unchanged.
+This implementation alone does not establish motion-quality acceptance.
+
 #### 7.3.1 Per-family correction profiles
 
 Every authored camera family resolves to exactly one profile, and the profile
@@ -1525,8 +1539,24 @@ MDKR_CAMERA_OBSTRUCTION=center-ray intentionally incomplete diagnostic control
 MDKR_CAMERA_OBSTRUCTION=legacy   original direct placement + void detector
 MDKR_CAMERA_COMFORT=reduced      presentation-only reduced motion (§7.9)
 MDKR_CAMERA_TRACE=1|2             summaries / per-query detail
+MDKR_CAMERA_REENGAGEMENT_PROBE=1  extra candidate queries; requires TRACE=2
 MDKR_CAMERA_EXACT_SHADOW=1        non-publishing promoted-sphere/exact corridor comparison
 ```
+
+Trace level 2 includes paired `camera_resolver input` / `camera_resolver result`
+rows keyed by tick and physical slot. Input records the caller's candidate,
+boom anchor, desired eye and prior latch state; result records accepted pose,
+contact fraction and last-safe fallback use before soft-occluder processing.
+The input candidate is not necessarily the resolver's final sweep anchor:
+stationary revalidation can choose another safe anchor. These diagnostics do
+not add collision queries or change camera policy. Keep ROM-derived traces
+outside public source and release archives.
+
+The separate `MDKR_CAMERA_REENGAGEMENT_PROBE=1` opt-in adds candidate collision
+and visibility queries at verbose trace level. It isolates per-slot camera
+flags but still affects query caches, performance counters and fault-injection
+consumption. Do not enable it for performance or fault-injection qualification.
+It does not select or publish a candidate camera pose.
 
 Unknown values fail to Observe, the default and the only arm that measures
 without moving a camera: a typo may neither silently correct nor silently select
@@ -1704,6 +1734,29 @@ thresholds must be recalibrated against this verdict** — the specific play the
 owner rejected has to become a case the gate can fail on — and a device
 acceptance pass has to be a named row in the ladder rather than a step after
 it. A rerun of the same numbers is not new evidence for the same decision.
+
+**2026-09-23 candidate revalidation:** the Ancient Lake route currently fails
+the hard re-engagement gate at tick 2136 (release 2125, contact 212→317).
+Historical green/default-on evidence below does not qualify this candidate.
+Per-tick tracing also showed that the transition's published cuts excluded its
+movement from smooth derivatives. The census now reports `cut_pos_step` and
+`cut_ang_step` separately over adjacent valid poses; they are measurements,
+not new pass thresholds. The 12-tick hard gate is unchanged.
+
+The candidate now permits changing shake amplitude through transition collision
+validation rather than declaring an unconditional tuple cut. Presentation
+interpolates world position and shake amplitude linearly; with the discrete
+shake-enable flag unchanged, the effective eye follows the chord between the
+two validated endpoint eyes. The existing fixed-basis exact or rotated-basis
+conservative sweep still has to prove that chord safe. Shake-enable changes,
+projection changes, invalid poses and unprovable sweeps still cut. ROM-free
+renderer-pose and snapshot tests cover the eye-chord identity with shake enabled
+and disabled, including sign-changing amplitudes and both endpoints.
+
+On the pinned 5,200-frame Ancient Lake route, this reduced published cuts from
+718 to 410 while preserving the same correction events and tick-2136 hard
+failure. This does not resolve re-engagement or establish camera default-on
+readiness; rotating-lens conservatism and motion quality remain open.
 
 The tables below are kept as written, and are the record of the flip that was
 taken. They are no longer a description of the shipped default.

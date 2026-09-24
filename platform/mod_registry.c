@@ -456,6 +456,47 @@ static void registry_sort(MdkrModRegistry *reg) {
 
 /* ------------------------------------------------------------------- API */
 
+int mdkr_mod_registry_probe_source(MdkrModSource *source, const char *name,
+    MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size) {
+    char text[MDKR_MOD_REGISTRY_MANIFEST_READ_MAX];
+    size_t length = 0;
+    int result;
+    if (!manifest || !is_rice || !reason || !reason_size) return 0;
+    memset(manifest, 0, sizeof(*manifest));
+    *is_rice = 0;
+    reason[0] = '\0';
+    if (!source || !name || !mdkr_mod_source_path_is_safe(name)) {
+        copy_bounded(reason, reason_size, "the pack source or name is unavailable");
+        return 0;
+    }
+    result = mdkr_mod_source_read(source, "pack.ini", text, sizeof text, &length);
+    if (result == MDKR_MOD_SOURCE_ABSENT) {
+        RiceScan probe;
+        memset(&probe, 0, sizeof probe);
+        probe.probe_only = 1;
+        (void)mdkr_mod_source_enumerate(source, rice_visit, &probe);
+        if (!probe.textures) {
+            copy_bounded(reason, reason_size, "this pack has no pack.ini");
+            return 0;
+        }
+        copy_bounded(manifest->name, sizeof manifest->name, name);
+        manifest->priority = 100;
+        manifest->enabled = 1;
+        *is_rice = 1;
+        return 1;
+    }
+    if (result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL || result == MDKR_MOD_SOURCE_TOO_LARGE) {
+        snprintf(reason, reason_size, "its pack.ini is larger than %d bytes",
+                 MDKR_MOD_REGISTRY_MANIFEST_READ_MAX);
+        return 0;
+    }
+    if (result != MDKR_MOD_SOURCE_OK) {
+        copy_bounded(reason, reason_size, "this pack's pack.ini could not be read");
+        return 0;
+    }
+    return mdkr_mod_manifest_parse(text, length, manifest, reason, reason_size) == 0;
+}
+
 int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
     DIR *directory;
     struct dirent *entry;
@@ -473,11 +514,9 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
     while ((entry = readdir(directory)) != NULL) {
         const char *name = entry->d_name;
         char pack_root[MDKR_MOD_PATH_MAX];
-        char text[MDKR_MOD_REGISTRY_MANIFEST_READ_MAX];
         char error[128];
         MdkrModManifest manifest;
         MdkrModSource *source;
-        size_t length = 0;
         int is_zip = 0;
         int read_result;
 
@@ -512,63 +551,11 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
             continue;
         }
 
-        read_result = mdkr_mod_source_read(source, "pack.ini", text,
-                                           sizeof text, &length);
+        int is_rice = 0;
+        read_result = mdkr_mod_registry_probe_source(source, name, &manifest,
+                                                     &is_rice, error, sizeof error);
         mdkr_mod_source_close(source);
-        if (read_result == MDKR_MOD_SOURCE_ABSENT) {
-            /* A Rice/GLideN64 high-resolution pack has no pack.ini and never
-             * will: it is a different format, not a broken one, and saying
-             * "this pack has no pack.ini" told the player their pack was
-             * malformed when it was perfectly well formed. Admit it when its
-             * contents actually look like one. */
-            RiceScan probe;
-            MdkrModSource *again = open_pack_root(pack_root, name, &is_zip);
-            int is_rice = 0;
-            memset(&probe, 0, sizeof probe);
-            probe.reg = reg;
-            probe.probe_only = 1;
-            if (again != NULL) {
-                mdkr_mod_source_enumerate(again, rice_visit, &probe);
-                mdkr_mod_source_close(again);
-                is_rice = probe.textures > 0;
-            }
-            if (!is_rice) {
-                registry_add_skip(reg, name, "this pack has no pack.ini");
-                continue;
-            }
-            if (reg->count >= MDKR_MOD_MAX_PACKS) {
-                registry_add_skip(reg, name, "too many packs are installed");
-                continue;
-            }
-            memset(&manifest, 0, sizeof manifest);
-            copy_bounded(manifest.name, sizeof manifest.name, name);
-            /* The same default a pack.ini omitting priority would get. */
-            manifest.priority = 100;
-            manifest.enabled = 1;
-            reg->entries[reg->count].manifest = manifest;
-            memcpy(reg->entries[reg->count].root, pack_root,
-                   strlen(pack_root) + 1);
-            reg->entries[reg->count].is_zip = is_zip;
-            reg->entries[reg->count].is_rice = 1;
-            reg->count++;
-            continue;
-        }
-        if (read_result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL ||
-            read_result == MDKR_MOD_SOURCE_TOO_LARGE) {
-            char reason[128];
-            snprintf(reason, sizeof reason,
-                     "its pack.ini is larger than %d bytes",
-                     MDKR_MOD_REGISTRY_MANIFEST_READ_MAX);
-            registry_add_skip(reg, name, reason);
-            continue;
-        }
-        if (read_result != MDKR_MOD_SOURCE_OK) {
-            registry_add_skip(reg, name,
-                              "this pack's pack.ini could not be read");
-            continue;
-        }
-        if (mdkr_mod_manifest_parse(text, length, &manifest, error,
-                                    sizeof error) != 0) {
+        if (!read_result) {
             registry_add_skip(reg, name, error);
             continue;
         }
@@ -586,6 +573,7 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
         memcpy(reg->entries[reg->count].root, pack_root,
                strlen(pack_root) + 1);
         reg->entries[reg->count].is_zip = is_zip;
+        reg->entries[reg->count].is_rice = is_rice;
         reg->count++;
     }
     closedir(directory);

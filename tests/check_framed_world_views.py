@@ -133,6 +133,18 @@ POST_RACE_ENV = (
 )
 
 SCENES = (
+    # Issue #67 uses the distinct single-player FIRST-place banner, not the
+    # smaller second-place banner exercised by POST_RACE_ENV. Tracks autopilot
+    # naturally finishes first at 7831. Advance the recap's BEGIN stage using
+    # the existing presence-only seam; a nonnumeric value does not select an
+    # option. This scene qualifies the framed-region contract, not the banner
+    # silhouette: visually inspect that separately when investigating #67.
+    Scene(
+        "post-race-first-place-framed", 7901, 7900, TRACK_RACE_SCRIPT,
+        "safe-aperture",
+        (("MDKR_AUTOPILOT", "1"), ("MDKR_TEST_POSTRACE_OPTION", "inspect")),
+        gutter_bleed=False,
+    ),
     Scene("opening-logos", 701, 700, TRACK_SCRIPT, "presentation"),
     Scene("track-select", 2300, 2299, TRACK_SCRIPT, "safe-aperture",
           gutter_bleed=False),

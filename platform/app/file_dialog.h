@@ -21,9 +21,9 @@
 //   Windows  GetOpenFileNameW/comdlg32  (file_dialog_win.cpp)
 //   other    unavailable                (file_dialog_stub.cpp)
 //
-// On a platform without an implementation, isAvailable() returns false and the
-// UI simply does not draw the button — drag-and-drop and the manual path field
-// are the documented paths there. Nothing is silently non-functional.
+// isAvailable() describes native panels only. Linux ROM/ZIP intake has a
+// separate explicit in-window browser; other callers must retain their
+// typed-path/drop fallback rather than infer native-panel support from it.
 #ifndef MDKR64_FILE_DIALOG_H
 #define MDKR64_FILE_DIALOG_H
 
@@ -31,8 +31,8 @@
 
 namespace filedialog {
 
-// True when this build has a native panel to show. When false, callers must not
-// offer a "Browse" affordance at all.
+// True when this build has a native panel to show. False does not forbid a
+// caller with its own in-window picker from offering that separate capability.
 bool isAvailable();
 
 // Show a modal native open-panel filtered to N64 ROM images. Returns true and

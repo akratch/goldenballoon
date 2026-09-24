@@ -22,6 +22,101 @@ static void expect(int condition, const char *message) {
     }
 }
 
+#ifdef _WIN32
+static int visit_unicode_file(const char *name, int directory, void *user) {
+    if (!strcmp(name, ".") || !strcmp(name, "..")) return 0;
+    expect(!directory && !strcmp(name, (const char *)user),
+           "handle enumeration preserves the Unicode filename");
+    return 1;
+}
+
+static void test_directory_capability(const char *root, const char *filename) {
+    const char *bad[] = {NULL, "", "..", "../payload", "a/b", "a\\b", "C:payload"};
+    intptr_t handle = mdkr_directory_handle_open_utf8(root);
+    intptr_t child;
+    FILE *file;
+    char bytes[4];
+    expect(handle != -1, "retain a Unicode extended-length directory handle");
+    if (handle == -1) return;
+    child = mdkr_directory_handle_child_utf8(handle, filename, 0);
+    expect(child != -1, "open a Unicode child relative to the retained handle");
+    file = mdkr_read_handle_stream(child);
+    expect(file && fread(bytes, 1, sizeof bytes, file) == sizeof bytes &&
+               !memcmp(bytes, "mdkr", sizeof bytes),
+           "read bytes through the handle-backed CRT stream");
+    if (file) fclose(file);
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
+        child = mdkr_directory_handle_child_utf8(handle, bad[i], 0);
+        expect(child == -1, "child capability rejects path syntax");
+        mdkr_directory_handle_close(child);
+        child = mdkr_directory_handle_create_utf8(handle, bad[i], 0);
+        expect(child == -1, "exclusive creation rejects path syntax");
+        mdkr_directory_handle_close(child);
+    }
+    child = mdkr_directory_handle_create_utf8(handle, filename, 0);
+    expect(child == -1 && errno == EEXIST,
+           "exclusive handle creation refuses an existing payload");
+    mdkr_directory_handle_close(child);
+    for (int pass = 0; pass < 2; ++pass) {
+        child = mdkr_directory_handle_child_utf8(handle, ".", 1);
+        expect(child != -1 &&
+                   mdkr_directory_handle_visit(child, visit_unicode_file, (void *)filename) == 2,
+               "independent Unicode enumeration propagates visitor stop");
+        mdkr_directory_handle_close(child);
+    }
+    {
+        const char *created = "created-\xe6\x96\xb0.bin";
+        char created_path[2048];
+        snprintf(created_path, sizeof created_path, "%s/%s", root, created);
+        child = mdkr_directory_handle_create_utf8(handle, created, 0);
+        expect(child != -1, "exclusive relative creation accepts a Unicode filename");
+        file = mdkr_write_handle_stream(child);
+        expect(file != NULL, "created handle transfers into a write stream");
+        if (file) {
+            expect(fwrite("data", 1, 4, file) == 4, "owned stream writes payload");
+            expect(fclose(file) == 0, "owned stream flushes and closes successfully");
+        }
+        child = mdkr_directory_handle_child_utf8(handle, created, 0);
+        file = mdkr_read_handle_stream(child);
+        expect(file && fread(bytes, 1, sizeof bytes, file) == sizeof bytes &&
+                   !memcmp(bytes, "data", sizeof bytes),
+               "created payload reads back through parent capability");
+        if (file) fclose(file);
+        expect(mdkr_remove_utf8(created_path) == 0, "remove created fixture payload");
+        child = mdkr_directory_handle_child_utf8(handle, ".", 1);
+        expect(mdkr_write_handle_stream(child) == NULL,
+               "write-stream conversion consumes and rejects a directory handle");
+        expect(mdkr_write_handle_stream(-1) == NULL, "invalid write handle is refused");
+    }
+    {
+        intptr_t renamed;
+        child = mdkr_directory_handle_create_utf8(handle, "rename-source.bin", 0);
+        expect(child != -1, "create handle-owned rename fixture");
+        if (child != -1) {
+            expect(mdkr_handle_rename_child_utf8(child, handle, filename) == -1 && errno == EEXIST,
+                   "handle rename refuses to replace an existing payload");
+            expect(mdkr_handle_rename_child_utf8(child, handle, "../escape.bin") == -1,
+                   "handle rename rejects traversal");
+            expect(mdkr_handle_rename_child_utf8(child, handle, "renamed.bin") == 0,
+                   "handle rename publishes within pinned parent");
+            renamed = mdkr_directory_handle_child_utf8(handle, "renamed.bin", 0);
+            expect(renamed != -1, "renamed fixture is visible through parent handle");
+            mdkr_directory_handle_close(renamed);
+            expect(mdkr_handle_mark_delete(child) == 0,
+                   "delete disposition targets the owned renamed file");
+            mdkr_directory_handle_close(child);
+            renamed = mdkr_directory_handle_child_utf8(handle, "renamed.bin", 0);
+            expect(renamed == -1 && errno == ENOENT,
+                   "closing deleted fixture removes its directory entry");
+            mdkr_directory_handle_close(renamed);
+        }
+        expect(mdkr_handle_mark_delete(-1) == -1,
+               "invalid deletion handle is refused");
+    }
+    mdkr_directory_handle_close(handle);
+}
+#endif
+
 int main(void) {
     char root[128];
     char directories[8][1024];
@@ -81,9 +176,17 @@ int main(void) {
     expect(mdkr_mkdir_utf8(root) == 0, "create a Unicode directory");
     snprintf(directories[depth++], sizeof(directories[0]), "%s", root);
     while (strlen(directories[depth - 1]) < 320u && depth < 8) {
-        snprintf(directories[depth], sizeof(directories[depth]),
-                 "%s/segment_0123456789_0123456789_0123456789_%d",
-                 directories[depth - 1], depth);
+        char suffix[64];
+        const size_t prefix = strlen(directories[depth - 1]);
+        const int count = snprintf(suffix, sizeof suffix,
+            "/segment_0123456789_0123456789_0123456789_%d", depth);
+        if (count < 0 || (size_t)count >= sizeof suffix ||
+            prefix + (size_t)count + 1 > sizeof directories[depth]) {
+            expect(0, "extended-length fixture path fits its buffer");
+            return 1;
+        }
+        memcpy(directories[depth], directories[depth - 1], prefix);
+        memcpy(directories[depth] + prefix, suffix, (size_t)count + 1);
         expect(mdkr_mkdir_utf8(directories[depth]) == 0,
                "create an extended-length path segment");
         depth++;
@@ -113,6 +216,9 @@ int main(void) {
     expect(mdkr_path_query_utf8(path, &exists, &regular, &directory) == 0 &&
                exists && regular && !directory,
            "query the Unicode file");
+#ifdef _WIN32
+    test_directory_capability(directories[depth - 1], rom_suffix + 1);
+#endif
     expect(mdkr_move_utf8(path, moved, 0, 1) == 0,
            "move the Unicode file without replacement");
     file = mdkr_fopen_utf8(moved, "rb");

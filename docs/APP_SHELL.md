@@ -377,13 +377,67 @@ orphaned pipe. `check_restart_apply.py` drives Restart & Apply and Return to
 Launcher through real process replacements and asserts each replacement's
 invocation shape.
 
-**No native file dialog on Linux.** macOS uses NSOpenPanel and Windows uses
-GetOpenFileNameW (see "Getting a ROM in" above). There is no permission-free
-native panel on Linux without a new hard build dependency — the
-xdg-desktop-portal route needs libdbus at configure time — so `isAvailable()`
-returns false there and the ROM panel draws no Browse button at all rather than
-one that fails at runtime. Drag-and-drop and the typed path are the documented
-paths on Linux, and both are always present on every platform.
+**Linux in-window file selection.** macOS uses NSOpenPanel and Windows uses
+GetOpenFileNameW (see "Getting a ROM in" above). Linux ROM selection and Content
+→ Install pack use an explicitly opened controller-navigable browser. It lists
+folders plus ROMs or ZIPs, offers parent/home/root navigation for mounted
+drives, and does not enumerate anything until opened. Native-panel
+`isAvailable()` stays false on Linux; Workshop native-dialog actions do not
+inherit unsupported capabilities. ROM drag-and-drop and typed paths remain.
+
+ZIP and native-picker folder installation copy to hidden staging on a worker, then validate and
+publish on the launcher thread, even if the player has left Content. Existing
+filenames are never replaced. While the engine runs, publication waits until
+the launcher resumes. Cancel installation discards the pending copy; quitting
+signals cancellation and joins the worker before launcher teardown. Copying
+and publication are separate cancellation boundaries: a ready copy is consumed
+only after the launcher's current-frame input, including Cancel and Quit.
+Finalize checks cancellation before validation and immediately before its
+exclusive move. After that atomic publication succeeds, cancellation does not
+remove the installed pack. Copying
+checks cancellation between 256 KiB operations, so blocked filesystem calls
+can still delay shutdown. Folder intake rejects links, special files, excessive
+nesting and sources containing the mods destination. Publication uses an
+exclusive move and fails safely if the filesystem cannot support it; it never
+falls back to an overwriting rename. Reads use a pinned source-directory handle
+and refuse descendant links/reparse points, so replacing a source pathname after
+opening does not redirect copied file bytes. Directory files enforce the
+runtime's per-entry size cap before and during streaming. Intake defaults to at most 8 GiB of copied bytes and
+65,536 entries (files and directories, including empty directories). The ZIP
+itself counts as one copied entry and its compressed bytes count toward the copy
+budget. After copying, the worker inspects the staged ZIP central directory:
+at most 65,536 members, 256 MiB declared uncompressed per member, and 8 GiB
+declared uncompressed in total. This does not inflate payloads or verify every
+CRC; runtime reads still enforce entry bounds and check extracted data. The
+worker's ZIP parser uses a 64 MiB live-allocation budget, including accounting
+headers, before parsing its central directory. Allocation failure refuses the
+installation. This is not an RSS limit, a bound on later registry/runtime
+allocations, or a substitute for parser hardening. Reader cleanup is scoped to
+the operation, including exceptions during validation or cancellation checks.
+Folder data is counted across all files; streaming checks also bound files
+that grow after sizing. Exceeding either budget refuses publication and the
+prepared object's destructor normally cleans partial staging. These intake limits
+do not freeze an author editing an ordinary file in place. Destination writes,
+staged ZIP reads and final admission use retained directory descriptors/handles;
+admission shares the manifest/Rice checks used by normal pack discovery.
+Cleanup traverses through directory handles without following links/reparse
+points. On POSIX, detected staging or payload identity loss preserves displaced
+and replacement data instead of deleting an entry the transaction no longer
+owns; this may leave hidden staging for manual inspection. POSIX publication
+uses a descriptor-relative exclusive rename and checks the validated payload's
+device/inode after the final callback. That does not close the remaining
+check-to-rename race, creation-to-open race, in-place edits, or descendant
+directory replacement. On Windows, staging is created with a retained handle
+that denies write/delete sharing; final validation and rename retain the same
+DELETE-capable payload handle. The Windows implementation and its sharing/
+rename/cleanup fixtures cross-compile but have not been executed on Windows.
+Concurrent destination-ancestor changes and root relocation reporting also
+remain unqualified. Do not infer full hostile-filesystem safety from the local
+callback-substitution regressions.
+Successful installs
+refresh the cached Content inventory. End-to-end cancellation/UI, visible refresh and Linux/Deck
+package validation remain open. Linux's in-window picker currently selects ZIPs;
+folder selection is offered by the supported native panels.
 
 ---
 

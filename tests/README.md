@@ -1,5 +1,27 @@
 # Regression fixtures
 
+`ctest --test-dir build-rel -R '^sprite_model_mesh$' --output-on-failure`
+checks the recovered static-replacement mesh decoder and placement layer using
+synthetic geometry only. It covers malformed records, ownership refusal,
+supported sprite identities, transforms and trunk attachment. It does not prove
+pack loading, renderer integration, visual parity or GPU resource lifetime.
+
+The adjacent `sprite_models` CTest generates synthetic directory and ZIP packs
+to check loader atlas sharing, priority isolation, incomplete/malformed family
+fallback, toggles, and repeated reload/shutdown. It does not exercise GPU cache
+retirement or constitute real-pack visual acceptance.
+
+`python3 tests/check_sprite_models_gpu.py --build build-rel --rom /path/to/ROM`
+creates a disposable synthetic palm pack and requires actual model draws. It
+also executes eleven one-shot GPU allocation failures (one native recovery)
+and eleven persistent failures (bounded clean exit), followed by a healthy run.
+Both modes also run with replacements disabled and compare complete 3,400-tick
+simulation-hash streams. `--smoke-only` runs just the healthy and disabled pair.
+The healthy synthetic run also requires one shared atlas upload, reuse by the
+remaining mesh entries, and exact logical geometry payload bytes. These are
+cache payload counters, not physical VRAM measurements. Visual placement,
+presentation replay equivalence and real replacement artwork need separate checks.
+
 Follow the maintainer's current local validation authorization in `AGENTS.md`.
 The maintainer authorized this workstation for behavioral validation on
 2026-09-06, including native, GPU, browser, ROM, and compiled tests. That
@@ -6882,6 +6904,56 @@ python3 tests/check_character_test_evidence_ui.py \
 The rendered gate is registered as `app_character_test_evidence` in CTest and
 `character_test_evidence_ui` in `tools/run_checks.py`; it requires no ROM.
 
+## In-window file intake backends
+
+`file_browser_ui` drives the real ImGui browser with synthetic gamepad events
+at 100% and 200% scale. It checks initial focus, folder entry, literal `##`
+filenames, file selection, Escape cancellation and finite draw vertices.
+Accessibility speech labels are observed through a stub; it does not validate
+device speech, GPU pixels, the primary launcher action or Linux packaging.
+
+`rom_browser` and `pack_installer` are ROM-free CTest targets. Browser coverage
+includes case-insensitive filtering, directory ordering, navigation and failed
+directory recovery. Installer coverage includes manifest/Rice ZIP discovery,
+invalid ZIP refusal, Unicode filenames, exclusive publication under races,
+move/cancellation cleanup and dangling destination symlink refusal.
+Cancellation coverage includes a request before staging and after the first
+256 KiB copy chunk, with no publication or surviving partial staging.
+Folder cases cover nested content, existing and concurrently-created empty
+destinations, self-containing mods paths, cancellation and symlink refusal.
+These are host-specific publication tests: macOS success does not qualify
+the Linux exclusive-rename syscall or the Windows move implementation.
+
+```bash
+cmake --build build-rel --target mdkr_rom_browser_test mdkr_pack_installer_test
+ctest --test-dir build-rel -R '^(rom_browser|pack_installer)$' --output-on-failure
+```
+
+`mdkr_pack_installer_test` optionally accepts a local ZIP path as its sole
+argument. It copies and validates that fixture in disposable temporary storage,
+checks the published length, and cleans up without modifying the original or
+live mods directory. Backend success does not establish rendered controller
+navigation, pack rendering/performance or Linux/Deck package readiness.
+
+## Playable Wizpig race voice — `tests/check_wizpig_race_voice.py`
+
+Runs the real Hot Top Volcano plane route with playable Wizpig, isolated saves
+and muted device output (synthesis remains active). Independently pinned retail
+sound IDs must own both positive zipper reactions and negative reactions; the
+gate rejects missing event coverage, donor cues, consecutive repeated cues and
+sanitizer/fatal diagnostics. It checks dispatch identity, not perceived sound
+quality, retail boss encounter voices or the boss-footstep report.
+
+```bash
+python3 tests/check_wizpig_race_voice.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Registered as `wizpig_race_voice` in `tools/run_checks.py`. A bounded 8,000-frame
+run uses a 240-second process timeout. Logs and saves stay in a temporary
+evidence directory (printed on completion), or `--evidence-dir`; do not include
+private ROM-derived evidence in source/release archives.
+
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 
 This real-ROM gate completes a time-trial post-race flow once as Wizpig and
@@ -7002,6 +7074,25 @@ python3 tests/check_taj_theme.py --build build --rom baserom.us.v80.z64
 The gate is registered as `taj_theme` in `tools/run_checks.py`.
 
 ## Adventure trophy series — `tests/check_trophy_series.py`
+
+`check_trophy_adventure_two.py --build BUILD --rom ROM` separately selects
+Adventure Two through its menu and exercises Future Fun Land's championship.
+It checks all four mirrored race loads, production gold award and cabinet
+display, plus checksum-valid EEPROM trophy bits and Adventure Two identity.
+The fixture uses the shared championship completion/order seams; it is not a
+manual four-race drive or a fresh-process Future Fun Land cabinet reload.
+
+`check_trophy_ffl_reload.py --build BUILD --rom ROM` covers that fresh-process
+reload in both Adventure modes. Its starting checkpoint supplies other-world
+golds, campaign prerequisites and already-seen Taj offers, but no FFL trophy.
+Production awards FFL gold, then a second process receives the exact EEPROM
+bytes without rewriting fields and follows the lighthouse route to the cabinet.
+It checks the race schedule/mode, award transition, both saved checksums and
+campaign identity, hub load and cabinet display. Controls reject unearned
+trophy bits and missing load/display witnesses. As with the series gate,
+championship timing and finish ordering use existing test seams.
+The cabinet DISPLAY witness is emitted only after successful trophy object
+creation. It is not a pixel-level visibility or occlusion check.
 
 ```bash
 python3 tests/check_trophy_series.py -v
@@ -7142,7 +7233,7 @@ because its manifest cross-check covers `tests/test_*.py`, and these are C.
 |---|---|---|
 | `mod_manifest` | One `pack.ini`, parsed and validated | Over-long name/author/version is **rejected**, not truncated |
 | `mod_registry` | Pack discovery, load order, path resolution | Traversal rejected against a bait file that genuinely exists; equal-priority tie-break pinned to an explicit ASCII case fold, so load order cannot shift with locale |
-| `mod_source_zip` | One read interface over directory and zip packs | Both kinds go through **one** path validator — mutating only the zip arm fails only the *directory* assertions; and every traversal bait file genuinely exists, so an unguarded implementation would return it |
+| `mod_source_zip` | One read interface over directory and zip packs | Shared lexical path validation with existing traversal bait; leaf/ancestor symlink refusal, root identity after replacement and repeated enumeration; POSIX nonblocking special-file rejection; Windows handle implementation/tests cross-compiled, runtime qualification pending |
 | `mod_texture_key` | The published texture digest | An exact pinned value, plus a `0xaa`-filled union proving padding bytes are not hashed |
 | `dev_command` | Console command parsing | `set` refuses any key outside the schema, so a console cannot become an arbitrary-write primitive |
 | `enhancement_registry` | The enhancement table and its authority classes | The table and `mdkr_video_key_is_enhancement()` describe exactly the same set |
@@ -7156,6 +7247,16 @@ Each of these was mutation-checked when it landed — the implementation was
 deliberately broken and the suite confirmed to fail — because several of them
 guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
+
+Directory-containment follow-up: five new POSIX assertions failed against the
+old reader before its fix. Windows now uses directory-relative handles, with
+the same root-replacement and link-bait tests enabled rather than compiled out.
+Windows link fixtures require Developer Mode or the OS symlink privilege;
+fixture creation failure is a test failure, never a silently skipped security
+witness. `fs_utf8` additionally checks handle-backed Unicode/extended-length
+reads, component rejection and independent enumeration. These Windows-specific
+arms have been cross-compiled and linked, but not yet executed on Windows;
+the older mutation statement above does not qualify these new arms.
 
 ## Draw distance and model detail — `tests/check_enh_draw_distance.py`
 
@@ -7416,6 +7517,29 @@ a tool that merely slows the frame loop enough to shift pacing is also caught.
 **Parsing zero rows is a failure.** Every tool is an observer with no body until
 its own task lands, so an empty table would otherwise sail through.
 
+## Custom-track loader integration — `tests/check_custom_track_loader.py`
+
+Run with `--build BUILD --rom PRIVATE_ROM_PATH`, or select
+`--only custom_track_loader` in `tools/run_checks.py`. Repeat against the
+sanitizer build. The test isolates saves/settings and runs ordinary boot plus
+the opt-in `MDKR_CUSTOM_TRACK_LOADER_SELFTEST=1` fixture. It requires one success
+marker only in the enabled arm and a clean process exit in both arms.
+
+All five sections use the active ROM's bounded, normalized tables with synthetic
+appended bytes. Checks cover logical sizes, independent caller-owned table
+copies, mixed retail/custom reads, invalid-read destination preservation and
+retail restoration after detachment. Actual ROM bytes stay in memory, not in
+fixtures or output. The enabled arm also requires successful bounded decoding
+of all nonempty retail object-map and level-model compressed entries, with
+separate positive corpus counts; synthetic-only or older loader fixtures do
+not satisfy this gate. `dma_destination` separately tests full host-pointer
+preservation versus legacy 32-bit token reconstruction, including NULL and
+boundary values. This test exposed the prior stack-destination DMA crash.
+
+This does not validate package admission, authored model formats, importer/UI,
+live reload or playable custom tracks. The fixture detaches before game asset
+consumers initialize; production session ownership remains a separate gate.
+
 ## Asset sub-entry bounds — `tests/check_subentry_bounds.py`
 
 ```bash
@@ -7625,6 +7749,26 @@ path and requires CPU pool, audio, GPU, and pointer-registry generations to reac
 a plateau. The first generations may warm persistent caches; the later ones may
 not grow.
 
+Pass `--texture-pack /path/to/pack.zip` to copy a real pack into the run's
+isolated preferences/mods directory. This arm requires nonzero rendered
+replacement-texture evidence, not merely successful indexing. Use
+`--artifacts-dir /private/path` to retain logs and the copied pack privately.
+The counters cover engine pools, renderer ownership, and retained decoded
+texture pixels/lookup-table bytes. The final three equivalent texture-cache
+samples must match and decoded pixels must remain within the reported budget.
+They do not measure process RSS, registry/ZIP memory, or frame-time spikes and
+cannot alone prove that total process memory has plateaued.
+
+For a longer cache-warmup check, use `--frames 75000`; generated retry pulses
+remain within the native loader's 512-entry capacity. A short run may legitimately
+fail the strict cache plateau requirement while still discovering new textures.
+Keep that result and compare it with an actually repeated longer route.
+
+`python3 tests/check_input_script_capacity.py --binary build/mdkr64 --rom
+baserom.us.v80.z64` checks that exactly 512 entries are accepted and 513 fail
+instead of silently truncating. It creates a hidden native window and uses
+isolated temporary preferences; the ROM remains local.
+
 ### Rolling attract demo — `tests/check_attract_demo.py`
 
 ```bash
@@ -7668,6 +7812,11 @@ than being shown as one of the two named pairs.
 
 ### Launcher panel scrolling — `tests/check_app_scroll.py`
 
+The ROM-free `app_scroll_environment` CTest checks this harness's launch boundary:
+missing, empty and relative save paths must refuse to launch even if an inherited
+save path exists. An explicit temporary fixture retains its save/preferences/
+video paths while unrelated inherited engine controls are removed.
+
 ```bash
 python3 tests/check_app_scroll.py --build build --rom baserom.us.v80.z64
 ```
@@ -7682,16 +7831,23 @@ panel's `ScrollY` actually advances:
   integer field scrolls nothing on a trackpad; this run stays RED until the
   bridge reads `preciseY`.
 * The **macOS natural-scroll direction** — the same wheel marked
-  `SDL_MOUSEWHEEL_FLIPPED` with an inverted sign (`MDKR_APP_SMOKE_WHEEL_FLIPPED`),
-  the exact shape SDL delivers when natural scrolling is on. It only scrolls the
-  panel the way the gesture asks if the FLIPPED flag is honored before ImGui;
-  otherwise the panel scrolls backwards (the "trackpad scrolls the wrong way"
-  defect) and the run stays RED.
+  `SDL_MOUSEWHEEL_FLIPPED` (`MDKR_APP_SMOKE_WHEEL_FLIPPED`). The input retains
+  the same downward delta; macOS already applied the user's preference, so
+  negating it again would incorrectly reverse the gesture.
 * A **touchscreen drag** (`MDKR_APP_SMOKE_TOUCH_SCROLL`) on non-interactive
   content, which pans the same panel through the custom touch gesture.
 
 Each sub-run owns private app preferences, video config (`MDKR_VIDEO_CONFIG_PATH`),
 and save roots, so a repo-root `mdkr64.ini` can never reach it.
+
+### Phone panel focus — `tests/check_phone_panel_focus.py`
+
+Runs the production SDL keyboard and gamepad accessibility walks at 640x480
+and requires the focused-item announcement for Start Local Play. Use `--size`
+to exercise additional window sizes. The private, asset-free fixture relaxes
+ROM readiness only; it does not open a room or certify connected-room or
+ready-ROM navigation. This guards the compact-window regression where an
+off-screen flattened child prevented directional navigation to local play.
 
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 
@@ -8469,6 +8625,30 @@ game-side branch this would be BLOCKED (it did not).
 
 ### Adventure Party Taj transaction — `tests/check_adventure_party_taj.py`
 
+Separate selection-music check: `python3 tests/check_taj_selection_music.py
+--build build-rel --rom baserom.us.v80.z64` requires actual loaded sequence
+27 followed by 26 and nonzero-volume MIDI notes in both intervals. Empty,
+missing-load and zero-volume evidence must fail. This muted native GPU check
+does not establish audible quality or complete authored instrumentation.
+By default all six scenarios run with fresh isolated preferences: confirmation,
+reselection (27→26→27→26), title exit (27→7), and multiplayer join/leave
+(27→26→27→26, with exact controller ownership checks), and custom selection
+(27→26, with a generated package and an actual Diddy-donor selection witness),
+plus custom-to-Taj return (27→26→27→26, requiring custom identity cleanup).
+The custom fixture uses the existing test-only synthetic GLB validator, not a
+change to the shipped importer. Select one with
+`--scenario confirm|reselect|title|multiplayer|custom|custom-return`. Each loaded interval must
+emit nonzero-volume MIDI notes. These scenarios run across all four retail
+unlock layouts (base, Drumstick, T.T., complete), for twenty-four independent arms.
+Use `--layout base|drumstick|tt|complete` to restrict a diagnostic run.
+Complete authored instrumentation and audible quality remain separate acceptance work.
+
+Includes 2P/3P hovercraft and 2P plane changes after a non-host summon. At
+dialogue exit, every live seat must match its roster character, target vehicle,
+full opacity and non-hidden flags. Synthetic missing/transparent-seat witnesses
+must fail. These diagnostics complement, rather than replace, retained visual
+captures; they caught the party-wide fade-out/focus-only fade-in asymmetry.
+
 ```bash
 python3 tests/check_adventure_party_taj.py            # ~5-6 min, muted + headless
 python3 tests/check_adventure_party_taj.py -v
@@ -8478,6 +8658,15 @@ The AP-11 gate: Taj's vehicle transform rebuilds the WHOLE party transactionally
 instead of the retail single racer, and the shared dialogue is a proper
 SHARED_DIALOGUE envelope. Read from the running binary's `aparty_` traces plus the
 `aparty_transform` diagnostic:
+
+The default matrix includes both car-to-hovercraft and car-to-plane in 2P and
+3P, with per-seat post-transform input identity and opaque/unhidden state.
+`--texture-pack /path/to/pack.zip` repeats those party arms and challenge refusal
+with the ZIP copied into private preferences; every party arm must demonstrate
+actual replacement-texture use. Run once without this option for the isolated
+no-pack baseline. The retail off-arm remains an isolated no-pack control.
+These traces prove state restoration, not pixel-level visual correctness or
+physical-controller acceptance; actual rendered inspection is separate.
 
 - **Non-host summon, host choice.** Seat 1 drives into Taj (`MDKR_AP_SEAT_ROUTE`);
   any occupied seat may trigger the interaction (`aparty_interaction seat=1
@@ -8870,3 +9059,45 @@ which is what makes a single-digit result readable as noise and a three-digit
 one readable as the answer. All-zero across the four means the input is wrong
 before the arithmetic is; the skip counts printed above the table say which.
 `--out` must be outside the repository and is refused otherwise, twice.
+
+## Release-guard failure controls
+
+Pack-install cancellation is also checked by `pack_installer`: callbacks stop
+a completed copy before validation or after validation but before publication.
+Neither case may create the destination. `pack_install_order` checks the source
+ordering of both launcher return paths and rejects mutations that publish
+before drawing, publish from the Content panel, or drop Quit handling. This is
+not an end-to-end pending-job mouse/gamepad cancellation witness; that acceptance
+remains separate from the app-shell, quit and lobby-takeover smoke tests.
+
+`python3 tests/test_source_custody.py` checks the release dependency inventory
+in disposable repositories. Untracked and staged-but-uncommitted source inputs
+must both fail: `git archive HEAD` contains neither. Missing working-tree inputs
+also fail. Source areas are game/platform/tests/tools/cmake/.github/services/lib
+plus the root CMake recipe, including service manifests, lockfiles and vendored
+library inputs; ignored build output and private planning docs are not swept into
+the publication inventory. `python3 tools/ci/check_source_custody.py --json`
+produces a review list without staging, committing or deleting anything. The
+check runs from the release-readiness guard and its controls are the
+`source_custody` CTest. It checks path custody, not modified-file content
+equivalence, transitive build dependencies, licensing or clean-archive build
+success. Those remain separate release requirements. Never bulk-add private
+artifacts simply to make the inventory pass.
+
+`python3 tests/test_clean_room_guard.py` exercises the public Bash entry point
+in disposable Git repositories, without ROMs or windows. It checks clean input,
+failed Git inventory/read commands, malformed metadata, truncated blob streams,
+all three four-byte header signatures (including tiny synthetic files), deleted
+historical texture-dump names (including merge-only additions), forced pack
+additions, missing ignore rules,
+oversized untracked files and shell-shaped filenames. The test is also registered
+as `clean_room_guard` in CTest. Scratch repositories are temporary; Git identity
+and configuration are isolated from the maintainer's settings.
+
+The implementation uses NUL-delimited Git paths and checked subprocesses, not
+filename interpolation into shell commands. Blob contents are streamed in
+64 KiB chunks through one `git cat-file --batch` process. Git/protocol/read
+errors fail closed; Python-owned temporary stderr storage replaces predictable
+scratch filenames. Blob-size warnings remain provenance-review prompts rather
+than automatic failures. These heuristics are not a complete license audit or
+proof that arbitrary content is non-derived.

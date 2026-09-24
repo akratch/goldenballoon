@@ -1,6 +1,7 @@
 #include "camera_obstruction_resolver.h"
 
 #include <math.h>
+#include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,7 +88,7 @@ static void test_immediate_retract_has_skin_and_no_penetration(void) {
     const MdkrCameraOcclusionTriangle triangles[] = { { 1U, 1U, 1U, 0U } };
     const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
     const MdkrCameraProjection projection = test_projection(1U);
-    const MdkrCameraObstructionResolverConfig config = test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverConfig config = test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
     MdkrCameraObstructionResolverInput input = resolver_input(
         &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
         (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
@@ -111,6 +112,15 @@ static void test_immediate_retract_has_skin_and_no_penetration(void) {
         .desired_eye = result.resolved_eye,
     }, &hit);
     expect_true("retracted eye is not penetrating", sweep == MDKR_CAMERA_SWEEP_CLEAR);
+
+    const float unbounded_retraction = result.resolved_eye.x;
+    config.max_recovery_fraction = 0.25f;
+    mdkr_camera_obstruction_resolver_reset(&state);
+    expect_true("fractional recovery never delays retraction",
+                mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+                    MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED);
+    expect_near("fraction leaves contact solution unchanged", result.resolved_eye.x,
+                unbounded_retraction, TEST_EPSILON);
 
     input.desired_eye.x = 20.0f;
     expect_true("larger desired boom still retracts",
@@ -562,7 +572,84 @@ static void test_zero_release_hold_is_the_pre_hysteresis_control(void) {
     expect_true("no hold: nothing is reported as held", !result.release_held);
 }
 
+static void test_fractional_recovery_bound(void) {
+    const MdkrCameraOcclusionWorld world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    MdkrCameraObstructionResolverConfig config = test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverState state = { 0 };
+    MdkrCameraObstructionResolverResult result;
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0, 0, 0 },
+        (MdkrCameraVec3){ 4, 0, 0 });
+    config.recovery_speed = 600.0f;
+    config.max_recovery_step = 20.0f;
+    config.max_recovery_fraction = 0.25f;
+    input.fixed_delta_seconds = 1.0f / 30.0f;
+    expect_true("fractional small correction remains recovering",
+        mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+        MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING);
+    expect_near("fractional first step is 25 percent", result.resolved_eye.x, 1.0f, TEST_EPSILON);
+    input.start_safe_eye = result.resolved_eye;
+    input.fixed_delta_seconds = 0.0f;
+    (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+    expect_near("fractional paused recovery is frozen", result.resolved_eye.x, 1.0f, TEST_EPSILON);
+    const float invalid[] = { -0.1f, 1.01f, INFINITY, NAN };
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        config.max_recovery_fraction = invalid[i];
+        expect_true("invalid fraction rejected",
+            mdkr_camera_obstruction_resolve(&config, &input, &state, &result) ==
+            MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID);
+    }
+}
+
+static void test_fractional_recovery_converges_at_authored_rates(void) {
+    const int rates[] = { 20, 30, 50, 60 };
+    const float offsets[] = { 0.0f, 10000.0f, -10000.0f };
+    const float lengths[] = { 4.0f, 250.0f, 400.0f };
+    const MdkrCameraOcclusionWorld world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    for (unsigned r = 0; r < 4; r++) for (unsigned o = 0; o < 3; o++)
+    for (unsigned d = 0; d < 3; d++) {
+        MdkrCameraObstructionResolverConfig config = test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+        MdkrCameraObstructionResolverState state = { 0 };
+        MdkrCameraObstructionResolverResult result;
+        const float target = offsets[o] + lengths[d];
+        MdkrCameraObstructionResolverInput input = resolver_input(
+            &world, &projection, (MdkrCameraVec3){ offsets[o], 0, 0 },
+            (MdkrCameraVec3){ target, 0, 0 });
+        config.recovery_speed = 600.0f;
+        config.max_recovery_step = 20.0f;
+        config.max_recovery_fraction = 0.25f;
+        input.fixed_delta_seconds = 1.0f / rates[r];
+        const float tolerance = 4.0f * FLT_EPSILON * fmaxf(1.0f, fmaxf(fabsf(offsets[o]), fabsf(target)));
+        int reached95 = 0;
+        for (int tick = 1; tick <= 256; tick++) {
+            const float previous = input.start_safe_eye.x;
+            const float remaining = target - previous;
+            (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+            const float step = result.resolved_eye.x - previous;
+            expect_true("fractional result accepted", result.accepted);
+            expect_true("fractional recovery monotonic without overshoot",
+                step >= 0.0f && result.resolved_eye.x <= target);
+            expect_true("fractional recovery speed and absolute bounds",
+                step <= fminf(20.0f, 600.0f / rates[r]) + tolerance);
+            expect_true("fractional error bound with numerical settling",
+                step <= 0.25f * remaining + tolerance);
+            if (!reached95 && target - result.resolved_eye.x <= lengths[d] * 0.05f)
+                reached95 = tick;
+            input.start_safe_eye = result.resolved_eye;
+            if (result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR) break;
+        }
+        expect_true("fractional recovery eventually settles exactly",
+                    result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR && result.resolved_eye.x == target);
+        expect_true("fractional recovery meets 95 percent timing",
+                    reached95 > 0 && reached95 <= (int)ceilf(rates[r] * (lengths[d] <= 250.0f ? 0.75f : 1.25f)));
+    }
+}
+
 int main(void) {
+    test_fractional_recovery_bound();
+    test_fractional_recovery_converges_at_authored_rates();
     test_immediate_retract_has_skin_and_no_penetration();
     test_recovery_is_monotonic_and_bounded();
     test_zero_time_revalidates_without_recovery_motion();

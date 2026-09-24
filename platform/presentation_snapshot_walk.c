@@ -94,6 +94,10 @@ static void capture_object(const Object *object) {
     sample.opacity = object->opacity;
     sample.animation_id = -1;
     sample.animation_frame = 0;
+    if (object->header != NULL &&
+        object->header->modelType == OBJECT_MODEL_TYPE_SPRITE_BILLBOARD) {
+        sample.sprite_phase = (uint8_t)object->animFrame;
+    }
     sample.discontinuity = (uint8_t)
         mdkr_camera_dynamic_occlusion_object_discontinuous(object);
 

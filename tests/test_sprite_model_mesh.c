@@ -144,6 +144,38 @@ static void test_attachment(void) {
     check(!mdkr_sprite_model_trunk_tip(signed_zero_duplicates,3,anchor,tip),
           "signed zero variants are not three distinct trunk vertices");
     check(!mdkr_sprite_model_trunk_tip(scattered,3,anchor,tip), "does not bridge separate trunks");
+    /* The runtime feeds this incrementally across level batches. Invalid
+     * vertices must not poison the retained nearest points, and batch order
+     * must not change a tip when the nearest set is unambiguous. */
+    for (unsigned reverse = 0; reverse < 2; ++reverse) {
+        MdkrSpriteModelTrunkCandidates candidates;
+        const float invalid[][3] = {{NAN,100,0}, {0,INFINITY,0}, {0,100,-INFINITY}};
+        mdkr_sprite_model_trunk_candidates_init(&candidates);
+        for (unsigned k = 0; k < 5; ++k) {
+            unsigned index = reverse ? 4-k : k;
+            mdkr_sprite_model_trunk_candidates_add(&candidates, vertices + index*3, anchor);
+            for (unsigned bad = 0; bad < 3; ++bad)
+                mdkr_sprite_model_trunk_candidates_add(&candidates, invalid[bad], anchor);
+        }
+        check(mdkr_sprite_model_trunk_candidates_finish(&candidates, tip) &&
+              close_to(tip[0],0) && close_to(tip[1],99.666667f),
+              "streaming trunk scan ignores nonfinite input and batch order");
+    }
+    {
+        const float radius_edge[] = {-1,99,0, 1,99,0, 0,0,0};
+        const float just_outside[] = {-1,99,0, 1,99,0, 0,-0.01f,0};
+        MdkrSpriteModelTrunkCandidates candidates;
+        mdkr_sprite_model_trunk_candidates_init(&candidates);
+        for (unsigned k = 0; k < 3; ++k)
+            mdkr_sprite_model_trunk_candidates_add(&candidates, radius_edge+k*3, anchor);
+        check(candidates.found == 3,
+              "trunk search includes exact 100-unit radius boundary");
+        mdkr_sprite_model_trunk_candidates_init(&candidates);
+        for (unsigned k = 0; k < 3; ++k)
+            mdkr_sprite_model_trunk_candidates_add(&candidates, just_outside+k*3, anchor);
+        check(candidates.found == 2,
+              "trunk search rejects points beyond its radius");
+    }
 }
 int main(void) {
     test_format(); test_placement(); test_attachment();

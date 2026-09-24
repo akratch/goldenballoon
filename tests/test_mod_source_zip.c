@@ -20,6 +20,8 @@
  * which is removed before the first case and after the last.
  */
 #include "mod_source.h"
+#include "mod_source_stream.h"
+#include "fs_utf8.h"
 
 #include "miniz.h"
 
@@ -32,9 +34,11 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <windows.h>
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #define TEST_MKDIR(path) mkdir((path), 0777)
 #define TEST_RMDIR(path) rmdir(path)
@@ -103,8 +107,14 @@ static void write_file(const char *path, const void *data, size_t size) {
 }
 
 static void remove_tree(const char *path) {
-    DIR *dir = opendir(path);
+    DIR *dir;
     struct dirent *entry;
+
+    if (mdkr_path_is_link_or_reparse_utf8(path) == 1) {
+        if (TEST_RMDIR(path) != 0) remove(path);
+        return;
+    }
+    dir = opendir(path);
 
     if (dir == NULL) {
         remove(path);
@@ -758,6 +768,177 @@ static void test_open_and_close_are_total(void) {
            "a null source holds nothing");
 }
 
+static void test_directory_stream_boundary(void) {
+    MdkrModSource *dir = open_dir();
+    MdkrModSource *zip = open_zip();
+    unsigned char buffered[4096], streamed[4096];
+    size_t length = 0;
+    FILE *stream;
+    expect(mdkr_mod_source_open_directory_file(NULL, ENTRY_STORED) == NULL,
+           "directory stream rejects a null source");
+    expect(mdkr_mod_source_open_directory_file(zip, ENTRY_STORED) == NULL,
+           "directory stream does not expose archive container bytes");
+    expect(mdkr_mod_source_open_directory_file(dir, "../outside") == NULL &&
+           mdkr_mod_source_open_directory_file(dir, "/absolute") == NULL,
+           "directory stream applies the shared path validator");
+    expect(mdkr_mod_source_read(dir, ENTRY_STORED, buffered, sizeof buffered,
+                               &length) == MDKR_MOD_SOURCE_OK,
+           "directory stream comparison has a valid buffered reference");
+    stream = mdkr_mod_source_open_directory_file(dir, ENTRY_STORED);
+    expect(stream != NULL, "directory stream opens an ordinary member");
+    if (stream != NULL) {
+        size_t count = fread(streamed, 1, sizeof streamed, stream);
+        expect(!ferror(stream) && count == length &&
+               memcmp(buffered, streamed, count) == 0,
+               "directory stream and buffered API return identical bytes");
+        expect(fclose(stream) == 0, "caller can close its owned stream");
+    }
+    mdkr_mod_source_close(dir);
+    mdkr_mod_source_close(zip);
+}
+
+static int visit_identity(const char *rel, void *user) {
+    unsigned *seen = (unsigned *)user;
+    if (!strcmp(rel, "payload.bin")) *seen |= 1;
+    if (!strcmp(rel, "original-only.bin")) *seen |= 2;
+    if (!strcmp(rel, "replacement-only.bin")) *seen |= 4;
+    if (!strncmp(rel, "linked", 6)) *seen |= 8;
+    return 0;
+}
+
+static void make_test_link(const char *target, const char *link, int directory) {
+#ifdef _WIN32
+    DWORD flags = (directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0) | 0x2U;
+    char native_target[1024];
+    if (strlen(target) >= sizeof native_target) fatal("link target too long", target);
+    strcpy(native_target, target);
+    for (char *p = native_target; *p; ++p) if (*p == '/') *p = '\\';
+    if (!CreateSymbolicLinkA(link, native_target, flags)) {
+        if (GetLastError() != ERROR_INVALID_PARAMETER ||
+            !CreateSymbolicLinkA(link, native_target, flags & ~0x2U)) {
+            /* This is a required security witness, not a silent skipped pass.
+             * Windows needs Developer Mode or the symlink privilege. */
+            fatal("symlink fixture requires Windows Developer Mode or privilege", link);
+        }
+    }
+#else
+    (void)directory;
+    if (symlink(target, link) != 0) fatal("symlink fixture", link);
+#endif
+}
+
+static void prove_link_bait(const char *path) {
+    char bytes[7];
+    FILE *file = fopen(path, "rb");
+    if (!file) fatal("link bait is not reachable by an unsafe open", path);
+    expect(fread(bytes, 1, sizeof bytes, file) == sizeof bytes &&
+               memcmp(bytes, "OUTSIDE", sizeof bytes) == 0,
+           "unsafe pathname open really reaches outside-pack bait");
+    fclose(file);
+}
+
+static void test_directory_links(void) {
+    char outside[1024], link[1024], nested[1024];
+    unsigned char bytes[64];
+    size_t size = 0;
+    unsigned seen = 0;
+    MdkrModSource *source = open_dir();
+    path2(outside, sizeof outside, g_scratch, "outside-payload.bin");
+    write_file(outside, "OUTSIDE", 7);
+    path2(link, sizeof link, g_dir_root, "linked.bin");
+    make_test_link("../outside-payload.bin", link, 0);
+    prove_link_bait(link);
+    expect(!mdkr_mod_source_has(source, "linked.bin"), "symlink leaf is not served");
+    expect(mdkr_mod_source_read(source, "linked.bin", bytes, sizeof bytes, &size) !=
+               MDKR_MOD_SOURCE_OK && size == 0,
+           "symlink leaf cannot disclose outside bytes");
+    if (mdkr_unlink_utf8(link) != 0) fatal("unlink fixture", link);
+    path2(outside, sizeof outside, g_scratch, "outside-dir/payload.bin");
+    write_file(outside, "OUTSIDE", 7);
+    path2(link, sizeof link, g_dir_root, "linked-dir");
+    make_test_link("../outside-dir", link, 1);
+    path2(nested, sizeof nested, link, "payload.bin");
+    prove_link_bait(nested);
+    expect(!mdkr_mod_source_has(source, "linked-dir/payload.bin"),
+           "symlink ancestor is not served");
+    expect(mdkr_mod_source_read(source, "linked-dir/payload.bin", bytes, sizeof bytes, &size) !=
+               MDKR_MOD_SOURCE_OK && size == 0,
+           "symlink ancestor cannot disclose outside bytes");
+    expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 && !(seen & 8),
+           "enumeration does not enter linked directories");
+#ifdef _WIN32
+    if (mdkr_rmdir_utf8(link) != 0) fatal("unlink directory fixture", link);
+#else
+    if (unlink(link) != 0) fatal("unlink fixture", link);
+    path2(link, sizeof link, g_dir_root, "fifo");
+    if (mkfifo(link, 0600) != 0) fatal("FIFO fixture", link);
+    expect(mdkr_mod_source_read(source, "fifo", bytes, sizeof bytes, &size) !=
+               MDKR_MOD_SOURCE_OK && size == 0,
+           "special file is rejected without waiting for a writer");
+    if (unlink(link) != 0) fatal("unlink FIFO fixture", link);
+#endif
+    mdkr_mod_source_close(source);
+}
+
+static void test_directory_root_identity(void) {
+    char pack[1024], retired[1024], payload[1024], link[1024];
+    unsigned char bytes[64];
+    size_t size = 0;
+    unsigned seen;
+    MdkrModSource *source;
+    path2(pack, sizeof pack, g_scratch, "anchor-pack");
+    path2(retired, sizeof retired, g_scratch, "anchor-retired");
+    path2(payload, sizeof payload, pack, "payload.bin");
+    write_file(payload, "ORIGINAL", 8);
+    path2(link, sizeof link, pack, "original-only.bin");
+    write_file(link, "ORIGINAL", 8);
+    source = mdkr_mod_source_open(pack, 0);
+    if (!source) fatal("open anchored source", pack);
+    if (rename(pack, retired) != 0) fatal("rename fixture", pack);
+    write_file(payload, "REPLACED", 8);
+    path2(link, sizeof link, pack, "replacement-only.bin");
+    write_file(link, "REPLACED", 8);
+    expect(mdkr_mod_source_read(source, "payload.bin", bytes, sizeof bytes, &size) ==
+               MDKR_MOD_SOURCE_OK && size == 8 && memcmp(bytes, "ORIGINAL", 8) == 0,
+           "opened directory source retains its root identity after replacement");
+    for (int pass = 0; pass < 2; ++pass) {
+        seen = 0;
+        expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 && seen == 3,
+               "repeated enumeration retains the opened root and resets its offset");
+    }
+    mdkr_mod_source_close(source);
+}
+
+static void test_opened_source_adapters(void) {
+    MdkrModSource *source = mdkr_mod_source_from_zip_stream(mdkr_fopen_utf8(g_zip_path, "rb"));
+    expect(source != NULL && mdkr_mod_source_has(source, ENTRY_STORED),
+           "opened ZIP stream admits fixture payload");
+    mdkr_mod_source_close(source);
+    expect(mdkr_mod_source_from_zip_stream(NULL) == NULL,
+           "null ZIP stream is refused");
+#ifndef _WIN32
+    int fd = open(g_dir_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    expect(fd >= 0, "directory adapter fixture opens");
+    source = mdkr_mod_source_from_directory_fd(fd);
+    if (fd >= 0) close(fd);
+    expect(source != NULL && mdkr_mod_source_has(source, ENTRY_STORED),
+           "directory source owns independent descriptor after caller closes");
+    mdkr_mod_source_close(source);
+    expect(mdkr_mod_source_from_directory_fd(-1) == NULL,
+           "invalid borrowed directory descriptor is refused");
+#else
+    intptr_t handle = mdkr_directory_handle_open_utf8(g_dir_root);
+    expect(handle != -1, "Windows directory adapter fixture opens");
+    source = mdkr_mod_source_from_directory_handle(handle);
+    mdkr_directory_handle_close(handle);
+    expect(source != NULL && mdkr_mod_source_has(source, ENTRY_STORED),
+           "Windows source retains independent ownership after caller closes");
+    mdkr_mod_source_close(source);
+    expect(mdkr_mod_source_from_directory_handle(-1) == NULL,
+           "invalid borrowed Windows handle is refused");
+#endif
+}
+
 int main(int argc, char **argv) {
     const char *scratch = argc > 1 ? argv[1] : "mod_source_scratch";
 
@@ -765,6 +946,7 @@ int main(int argc, char **argv) {
     fixture_build(scratch);
 
     test_stored_and_deflated_round_trip();
+    test_opened_source_adapters();
     check_hostile(HOSTILE_ESCAPE, "B2");
     check_hostile(HOSTILE_ABSOLUTE, "B3");
     check_hostile(HOSTILE_BACKSLASH, "B4");
@@ -776,6 +958,9 @@ int main(int argc, char **argv) {
     test_short_buffer_refuses_and_reports();
     test_absent_is_not_an_error();
     test_open_and_close_are_total();
+    test_directory_stream_boundary();
+    test_directory_links();
+    test_directory_root_identity();
 
     fixture_free();
     remove_tree(scratch);

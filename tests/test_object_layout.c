@@ -230,6 +230,35 @@ static int test_object_tail(void) {
     return 0;
 }
 
+static int test_map_admission(void) {
+    uint8_t map[36] = {0};
+    size_t count = 999;
+    map[3] = 16;
+    map[17] = 8;
+    map[24] = 1;
+    map[25] = 8;
+    uint8_t original[sizeof(map)];
+    memcpy(original, map, sizeof(map));
+    REQUIRE(mdkr_level_object_map_validate(map, sizeof(map), 2, &count));
+    REQUIRE(count == 2 && memcmp(original, map, sizeof(map)) == 0);
+    count = 999;
+    for (size_t length = 0; length < 32; ++length)
+        REQUIRE(!mdkr_level_object_map_validate(map, length, 2, &count));
+    REQUIRE(!mdkr_level_object_map_validate(map, sizeof(map), 1, &count));
+    map[25] = 0;
+    REQUIRE(!mdkr_level_object_map_validate(map, sizeof(map), 2, &count));
+    map[25] = 9;
+    REQUIRE(!mdkr_level_object_map_validate(map, sizeof(map), 2, &count));
+    map[25] = 10;
+    REQUIRE(!mdkr_level_object_map_validate(map, sizeof(map), 2, &count));
+    map[0] = 0x80;
+    REQUIRE(!mdkr_level_object_map_validate(map, sizeof(map), 2, &count));
+    REQUIRE(count == 999);
+    memset(map, 0, sizeof(map));
+    REQUIRE(mdkr_level_object_map_validate(map, 16, 2, &count) && count == 0);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--legacy-mem02") == 0) {
         return run_legacy_mem02();
@@ -246,7 +275,7 @@ int main(int argc, char **argv) {
                 argv[0]);
         return 2;
     }
-    if (test_level_records() != 0 || test_object_tail() != 0) {
+    if (test_level_records() != 0 || test_object_tail() != 0 || test_map_admission() != 0) {
         return 1;
     }
     puts("object_layout: all checks passed");

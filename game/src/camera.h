@@ -103,6 +103,14 @@ typedef struct MdkrCameraLensPose {
  */
 int cam_lens_pose_from_camera_snapshot(
     const Camera *camera, s32 apply_shake, MdkrCameraLensPose *out);
+/* Experimental geometry helper, not camera policy. Bounds displacement of the
+ * four near-plane corners from the before basis over the Cartesian set of
+ * shortest-arc integer yaw/composed-pitch/roll states. Eye translation is
+ * excluded. Projection geometry must remain fixed. Fails without writing out
+ * if the exhaustive state count exceeds max_states or inputs are invalid. */
+int cam_lens_rotation_envelope(const Camera *before, const Camera *after,
+    float near_distance, float half_width, float half_height,
+    unsigned max_states, float *out);
 #endif
 
 /* Size: 0x34 bytes. */
@@ -232,6 +240,8 @@ void render_ortho_triangle_image_transform(Gfx **dList, Mtx **mtx, Vertex **vtx,
 s32 render_sprite_billboard_transform(Gfx **dList, Mtx **mtx, Vertex **vtx,
                                       const ObjectTransform *transform, s16 animFrame,
                                       Sprite *sprite, s32 flags);
+s32 render_sprite_model(Gfx **dList, Mtx **mtx, Object *obj, Sprite *sprite, s32 flags);
+void mdkr_sprite_model_reset_attachments(void);
 #endif
 s32 mtx_cam_push(Gfx **dList, Mtx **mtx, ObjectTransform *trans, f32 scaleY, f32 offsetY);
 #ifdef NATIVE_PORT

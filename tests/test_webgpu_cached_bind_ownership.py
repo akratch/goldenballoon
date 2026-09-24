@@ -182,6 +182,17 @@ def function_body(source: str, name: str) -> str:
 
 
 class WebGpuCachedBindOwnershipTests(unittest.TestCase):
+    def test_pack_resource_retirement_invalidates_retained_commands_first(self) -> None:
+        source = (ROOT / "platform/platform_sdl_min.c").read_text()
+        for name in ("platform_content_packs_init", "platform_content_packs_shutdown"):
+            with self.subTest(function=name):
+                body = code_only(function_body(source, name))
+                calls = ("gfx_dkr_replay_invalidate();",
+                         "gfx_clear_modern_mesh_cache();",
+                         "mdkr_sprite_models_shutdown();")
+                positions = [body.index(call) for call in calls]
+                self.assertEqual(positions, sorted(positions))
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = BACKEND.read_text(encoding="utf-8")

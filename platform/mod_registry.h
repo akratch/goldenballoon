@@ -101,6 +101,12 @@ typedef struct MdkrModRegistry {
  * The registry itself owns no open file handles: a source is opened for the
  * manifest read and closed again before this returns. */
 int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir);
+
+/* Read-only admission through an already-open source; never reopens a path.
+ * Borrows source. Returns 1 for an admitted manifest or Rice texture pack,
+ * otherwise 0 with a bounded reason. Outputs are required. */
+int mdkr_mod_registry_probe_source(MdkrModSource *source, const char *name,
+    MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size);
 void mdkr_mod_registry_shutdown(MdkrModRegistry *reg);
 
 int  mdkr_mod_registry_count(const MdkrModRegistry *reg);

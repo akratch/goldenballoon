@@ -22,10 +22,9 @@
 //      anything. An unsigned fan-made emulator asking for your Documents folder
 //      on first launch is alarming, and rightly so.
 //
-// So discovery is gone, root and branch — rom_scan.{h,cpp} is deleted, not
-// disabled. This panel never enumerates a directory, which is what makes "no
-// permission prompt can ever fire" a property of the code rather than a
-// promise. Three manual, permission-free paths remain:
+// Automatic discovery is gone. Linux offers an explicitly opened in-window
+// browser; macOS retains its native panel so normal launches do not enumerate
+// protected folders here. The other manual paths remain:
 //
 //   a) drag-and-drop onto the window (SDL_DROPFILE — user-initiated, no TCC),
 //   b) a native open-panel (NSOpenPanel / GetOpenFileNameW; a user-selected
@@ -40,6 +39,7 @@
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "file_dialog.h"
+#include "file_browser_ui.h"
 #include "ui_common.h"
 #include "ui_hero.h"
 #include "../mod_registry.h"
@@ -64,6 +64,15 @@
 namespace {
 
 std::string g_pathInput;
+FileBrowserUi g_romFileBrowser;
+
+bool canChooseRom() {
+#if defined(__linux__)
+    return true;
+#else
+    return filedialog::isAvailable();
+#endif
+}
 
 // Set when the player asks to replace a ROM that is already working, so the
 // acquisition controls stay behind an explicit "Change ROM" rather than
@@ -247,14 +256,14 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
      * line under it, and the path field is behind a disclosure for the player
      * who already has a path on the clipboard.
      */
-    if (filedialog::isAvailable()) {
+    if (canChooseRom()) {
         const ImVec2 size(ui::kControlWidth(1.1f), ui::kBtnPrimary().y);
         const bool pressed = ui::BrandPrimaryButton(
             haveRom ? "Choose a different file…" : "Choose your game file…",
             size);
         ui::SpeakFocusedItem(
             haveRom ? "Choose a different file" : "Choose your game file",
-            nullptr, "Opens your system file picker to choose a ROM.");
+            nullptr, "Opens a file browser to choose a ROM.");
         if (pressed) RomPanel_chooseRom(s);
         ui::Gap(ui::kGapS);
         drawDropHint(haveRom);
@@ -279,7 +288,7 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
 
     // Closed by default: a player who needs it knows they need it, and a player
     // who does not should never have to read past it to reach Play.
-    const bool openByDefault = !filedialog::isAvailable();
+    const bool openByDefault = !canChooseRom();
     if (openByDefault) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode("Paste a path instead")) {
         ui::SpeakFocusedItem("Paste a path instead", nullptr,
@@ -316,12 +325,17 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
 }  // namespace
 
 bool RomPanel_chooseRom(LauncherState &s) {
+#if defined(__linux__)
+    g_romFileBrowser.open(s.romPath, BrowserFileKind::Rom);
+    return true;
+#else
     if (!filedialog::isAvailable()) return false;
     std::string picked;
     if (!filedialog::openRom(picked)) return false;
     g_note.clear();
     RomPanel_setRom(s, picked.c_str());
     return true;
+#endif
 }
 
 static void applySelectionResult(LauncherState &s,
@@ -1024,6 +1038,10 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
         }
         drawAcquisition(s, haveRom);
     }
+
+    std::string pickedRom;
+    if (g_romFileBrowser.draw("Choose a ROM file", pickedRom))
+        RomPanel_setRom(s, pickedRom.c_str());
 
     bool keepPopupOpen = true;
     ui::ConfirmModalSize();

@@ -162,6 +162,7 @@ def run_engine(binary: str, rom: str, name: str, schedule: str, frames: int,
             # --headless-frames is the guarantee; the digit 0 is what silences
             # the audio device, and only the digit ("off" is not a value).
             MDKR_AUDIO="0",
+            MDKR_TRACE="1",
             MDKR_TEST_PAD_HOTPLUG=schedule,
             # Never inherit a repo-local mdkr64.ini: a developer's chosen
             # presentation pace changes how many game ticks a frame budget
@@ -268,6 +269,8 @@ def survived(run: Run) -> list[str]:
 # queued the device-added event that the first input pump will deliver.
 ARM_JOIN = ("attach=1@0,hold=1:a@10,hold=1:neutral@20,"
             "hold=1:start@25,hold=1:neutral@35,hold=1:right@40,"
+            "hold=1:neutral@70,key=0:1@80,hold=1:a@95,"
+            "key=0:0@105,hold=1:right@110,"
             "attach=2@120,hold=2:left@160,detach=2@220,"
             "rumble=1:1@260,rumble=3:1@262,"
             "attach=3@300,hold=3:up@340")
@@ -277,6 +280,46 @@ ARM_OVERFLOW = ("attach=1@60,attach=2@62,attach=3@64,attach=4@66,attach=5@68,"
                 "hold=1:left@110,hold=3:right@112,hold=4:down@114,"
                 "detach=1@200,rumble=0:1@240,rumble=0:0@242")
 ARM_OVERFLOW_FRAMES = 320
+
+ARM_SINGLE_MENU = (
+    "attach=1@0,key=0:1@1250,key=0:0@1254,"
+    "hold=1:start@1330,hold=1:neutral@1334,"
+    "hold=1:a@1450,hold=1:neutral@1454,hold=1:a@1540,hold=1:neutral@1544")
+ARM_TWO_MENU = ARM_SINGLE_MENU + ",attach=2@1400,hold=2:a@1450,hold=2:neutral@1454"
+
+
+def assert_single_menu(run: Run) -> dict[str, list[str]]:
+    problems = []
+    if run.returncode != 0:
+        problems.append(f"menu route exited {run.returncode}")
+    if "[PLAYER_ASSIGN] source=title controller=0 players=1" not in run.output:
+        problems.append("title screen did not assign exactly one player to P1")
+    if "[PLAYER_ASSIGN] source=join" in run.output:
+        problems.append("another player joined with only one physical pad")
+    for menu in (3, 28):
+        if f"menu_init: menuId={menu} " not in run.output:
+            problems.append(f"single-player route did not reach menu {menu}")
+    for port in (1, 2, 3):
+        problems += expect_neutral(run, port, 0, 1999, "single-player menu", present=0)
+    return {"7 single-player menu": problems}
+
+
+def assert_two_menu(run: Run) -> dict[str, list[str]]:
+    problems = []
+    if run.returncode != 0:
+        problems.append(f"two-controller menu route exited {run.returncode}")
+    joins = re.findall(r"\[PLAYER_ASSIGN\] source=join controller=(\d+) players=(\d+)",
+                       run.output)
+    if joins != [("1", "2")]:
+        problems.append(f"expected exactly one genuine P2 join; got {joins}")
+    second = run.op_at("attach", 2)
+    problems += expect_bound(run, 1, second.instance, 1400 + SETTLE, 1999,
+                             "two-controller menu")
+    # A single-player oracle must reject this real, expected multiplayer run.
+    control = assert_single_menu(run)["7 single-player menu"]
+    if "another player joined with only one physical pad" not in control:
+        problems.append("single-player oracle failed to detect the positive join control")
+    return {"8 two-controller menu": problems}
 
 
 def assert_join(run: Run) -> dict[str, list[str]]:
@@ -290,11 +333,24 @@ def assert_join(run: Run) -> dict[str, list[str]]:
 
     scored: dict[str, list[str]] = {}
 
+    assignments = re.findall(
+        r"\[SDL\] gamepad P(\d+): .* instance=(-?\d+) guid=([0-9a-fA-F]{32})",
+        run.output)
+    boot_assignments = [(int(port), int(instance))
+                        for port, instance, _ in assignments
+                        if int(instance) == boot.instance]
+    scored["1 assignment diagnostics"] = (
+        [] if boot_assignments == [(1, boot.instance)] else
+        [f"expected one P1 assignment for boot instance {boot.instance}; "
+         f"got {boot_assignments}"])
+
     # A single boot-attached pad must not publish join buttons to a second
     # game port, even while SDL's initial device-added event is being drained.
     button_problems: list[str] = []
     for first, last, expected in ((10 + SETTLE, 19, 0x8000),
-                                   (25 + SETTLE, 34, 0x1000)):
+                                   (25 + SETTLE, 34, 0x1000),
+                                   (80 + SETTLE, 94, 0x1000),
+                                   (95 + SETTLE, 104, 0x8000)):
         rows, missing = require_rows(run, 0, first, last, "single-pad buttons")
         button_problems += missing
         if any(row.buttons != expected for row in rows):
@@ -304,6 +360,10 @@ def assert_join(run: Run) -> dict[str, list[str]]:
             button_problems += expect_neutral(run, port, first, last,
                                               "single-pad buttons", present=0)
     scored["1 single-pad buttons"] = button_problems
+    key_events = [op for op in run.ops if op.op == "key"]
+    scored["1 keyboard event delivery"] = (
+        [] if len(key_events) == 2 and all(op.result == 0 for op in key_events)
+        else ["keyboard press/release were not both accepted by SDL"])
 
     # 1. The boot pad owns exactly ONE channel, and the pad that joins later
     #    takes the next one.  Both halves matter: a boot pad bound twice makes
@@ -455,7 +515,9 @@ def main() -> int:
     scored: dict[str, list[str]] = {}
     for name, schedule, frames, judge in (
             ("join", ARM_JOIN, ARM_JOIN_FRAMES, assert_join),
-            ("overflow", ARM_OVERFLOW, ARM_OVERFLOW_FRAMES, assert_overflow)):
+            ("overflow", ARM_OVERFLOW, ARM_OVERFLOW_FRAMES, assert_overflow),
+            ("single-menu", ARM_SINGLE_MENU, 2000, assert_single_menu),
+            ("two-menu", ARM_TWO_MENU, 2000, assert_two_menu)):
         run = run_engine(binary, args.rom, name, schedule, frames,
                          args.verbose)
         if not run.channels:

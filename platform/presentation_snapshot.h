@@ -146,6 +146,7 @@ typedef struct PresentationObjectEntry {
     int16_t rotation_z;
     int16_t animation_id;     /* active ModelInstance; -1 when not a 3D model */
     int16_t animation_frame;  /* active ModelInstance; 0 when not a 3D model */
+    uint8_t sprite_phase;     /* authored cyclic billboard phase, period 256 */
     int8_t model_index;       /* obj->modelIndex (LOD select); -1 for particles */
     uint8_t opacity;
     uint8_t is_particle;      /* read through Particle, not Object (see .c) */
@@ -324,6 +325,7 @@ typedef struct PresentationObjectPose {
     int16_t rotation_z;
     int16_t animation_id;
     int16_t animation_frame;
+    float sprite_phase;       /* continuous shortest-arc replacement rotation */
     int8_t model_index;
     uint8_t opacity;
     uint8_t is_particle;

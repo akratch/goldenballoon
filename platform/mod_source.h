@@ -23,6 +23,8 @@
  * checked against `MDKR_MOD_SOURCE_ENTRY_MAX`. The same cap applies to files
  * in a directory pack, because a rule the two kinds do not share is a rule
  * that will eventually only be enforced on one of them.
+ * The optional FILE-stream primitive is isolated in mod_source_stream.h;
+ * its installer caller enforces the entry cap while copying in bounded chunks.
  */
 #ifndef MDKR64_MOD_SOURCE_H
 #define MDKR64_MOD_SOURCE_H
@@ -38,6 +40,8 @@ extern "C" {
  * process, which is the whole job of the number. It bounds the declared size
  * of an archive entry as well as the on-disk size of a loose file. */
 #define MDKR_MOD_SOURCE_ENTRY_MAX (256u * 1024u * 1024u)
+/* Shared by folder enumeration and staged folder intake. */
+#define MDKR_MOD_SOURCE_WALK_DEPTH_MAX 24
 
 /* Every way a lookup can end. "Absent" is deliberately not an error: the
  * common case by far is a pack that simply does not override the file being
@@ -71,7 +75,14 @@ typedef struct MdkrModSource MdkrModSource;
  * narrow CRT, which on Windows would be a second UTF-8 boundary with different
  * behaviour from the one this port already has; there is exactly one such
  * boundary and it stays in fs_utf8. */
+/* Directory sources pin an opened root descriptor/handle. Reads and enumeration
+ * use directory-relative opens and refuse descendant symlinks/reparse points;
+ * replacing the root pathname does not redirect an existing source. The
+ * caller-selected root itself may resolve through a link. Windows behavior
+ * requires qualification on the shipping OS/CRT; cross-compilation alone is
+ * not runtime evidence. */
 MdkrModSource *mdkr_mod_source_open(const char *path, int is_zip);
+
 
 /* 1 when `rel` names something this source can actually serve. Exactly
  * equivalent to `mdkr_mod_source_read()` returning MDKR_MOD_SOURCE_OK given a

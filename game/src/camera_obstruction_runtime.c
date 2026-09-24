@@ -493,6 +493,13 @@ static int camera_obstruction_trace_level(void) {
     return value[0] >= '2' ? 2 : 1;
 }
 
+static int camera_obstruction_reengagement_probe_enabled(void) {
+    const char *value;
+    if (camera_obstruction_trace_level() < 2) return FALSE;
+    value = getenv("MDKR_CAMERA_REENGAGEMENT_PROBE");
+    return value != NULL && strcmp(value, "1") == 0;
+}
+
 static int camera_obstruction_test_projection_failure(uint64_t tick) {
     const char *value = getenv("MDKR_TEST_CAMERA_PROJECTION_FAIL_TICK");
     char *end = NULL;
@@ -1771,8 +1778,6 @@ static void camera_obstruction_validate_presentation_transition(
         !camera_obstruction_projection_geometry_equal(
             &observe->last_validated_projection, &pose->projection) ||
         observe->last_validated_apply_shake != pose->apply_shake ||
-        observe->last_validated_camera.shakeMagnitude !=
-            pose->camera.shakeMagnitude ||
         !cam_lens_pose_from_camera_snapshot(
             &observe->last_validated_camera,
             observe->last_validated_apply_shake,
@@ -1782,6 +1787,11 @@ static void camera_obstruction_validate_presentation_transition(
         observe->transition_tuple_cut = TRUE;
         return;
     }
+    /* Shake amplitude is continuous, not a projection tuple boundary.
+     * Presentation linearly interpolates both world position and shake;
+     * cam_lens_pose_from_camera_snapshot adds shake on world Y. With the
+     * discrete apply_shake flag unchanged, their sum follows this same eye
+     * chord. The sweep below must still prove the entire interval clear. */
     transition = (MdkrCameraSweepInput) {
         .guard = observe->guard,
         .start_eye = {
@@ -1835,6 +1845,63 @@ static void camera_obstruction_validate_presentation_transition(
         return;
     }
     observe->transition_invoked = TRUE;
+    if (camera_obstruction_trace_level() >= 2 &&
+        status != MDKR_CAMERA_SWEEP_CLEAR) {
+        if (camera_obstruction_reengagement_probe_enabled()) {
+            float envelope = NAN;
+            const int available = cam_lens_rotation_envelope(
+                &observe->last_validated_camera, &pose->camera,
+                pose->guard.near_distance, pose->guard.half_width,
+                pose->guard.half_height, 4096, &envelope);
+            MdkrCameraSweepStatus bounded_status = MDKR_CAMERA_SWEEP_INVALID;
+            if (available && observe->last_validated_exact_guard.near_distance == pose->guard.near_distance &&
+                observe->last_validated_exact_guard.half_width == pose->guard.half_width &&
+                observe->last_validated_exact_guard.half_height == pose->guard.half_height) {
+                /* Shadow query only. Callback state belongs to this copy;
+                 * shared query caches/counters still make this unsuitable for
+                 * production performance or fault-injection qualification. */
+                MdkrCameraObstructionObserveSlot probe = *observe;
+                const MdkrCameraObstructionQuerySource sources[] = {
+                    {camera_obstruction_track_sweep_adapter, NULL},
+                    {camera_obstruction_dynamic_sweep_adapter, &probe},
+                };
+                const MdkrCameraObstructionCombinedQuery combined = {
+                    sources, ARRAY_COUNT(sources), ARRAY_COUNT(sources)};
+                const MdkrCameraObstructionRoundedLensQuerySource exact_sources[] = {
+                    {camera_obstruction_track_rounded_sweep_adapter, NULL},
+                    {camera_obstruction_dynamic_rounded_sweep_adapter, &probe},
+                };
+                const MdkrCameraObstructionRoundedLensCombinedQuery exact = {
+                    exact_sources, ARRAY_COUNT(exact_sources), ARRAY_COUNT(exact_sources)};
+                MdkrCameraRoundedLensGuard expanded = observe->last_validated_exact_guard;
+                expanded.skin = nextafterf(fmaxf(expanded.skin, pose->guard.skin) + envelope, INFINITY);
+                double expanded_radius;
+                if (mdkr_camera_rounded_lens_guard_conservative_radius(&expanded, &expanded_radius) &&
+                    expanded_radius < FLT_MAX) {
+                    expanded.broadphase_radius = nextafterf((float)expanded_radius, INFINITY);
+                    const MdkrCameraObstructionLensQuery query = {&combined, &exact, &expanded, &probe};
+                    MdkrCameraSweepHit bounded_hit;
+                    bounded_status = camera_obstruction_lens_sweep(&query, &transition, &bounded_hit);
+                    if (probe.query_source_degraded != degraded_before)
+                        bounded_status = MDKR_CAMERA_SWEEP_INVALID;
+                }
+            }
+            fprintf(stderr,
+                "camera_rotation_envelope_probe tick=%llu available=%d "
+                "margin=%.6f sphere=%.6f bounded_status=%d\n",
+                (unsigned long long)sCameraObstructionRuntime.tick_serial,
+                available, envelope, transition.guard.radius, bounded_status);
+        }
+        fprintf(stderr,
+            "camera_transition_witness tick=%llu status=%d rotating=%d "
+            "radius=%.5f contact={kind=%u id=%u}\n",
+            (unsigned long long)sCameraObstructionRuntime.tick_serial,
+            status, !camera_obstruction_exact_basis_equal(
+                &observe->last_validated_exact_guard, &pose->guard),
+            transition.guard.radius,
+            status == MDKR_CAMERA_SWEEP_HIT ? (unsigned)hit.kind : 0u,
+            status == MDKR_CAMERA_SWEEP_HIT ? (unsigned)hit.stable_id : 0u);
+    }
     if (status != MDKR_CAMERA_SWEEP_CLEAR ||
         observe->query_source_degraded != degraded_before) {
         if (status == MDKR_CAMERA_SWEEP_INVALID) {
@@ -2567,6 +2634,8 @@ typedef enum MdkrCameraMotionStatId {
     MDKR_CAMERA_MOTION_STAT_ANG_VELOCITY,
     MDKR_CAMERA_MOTION_STAT_ANG_ACCEL,
     MDKR_CAMERA_MOTION_STAT_ANG_JERK,
+    MDKR_CAMERA_MOTION_STAT_CUT_POS_STEP,
+    MDKR_CAMERA_MOTION_STAT_CUT_ANG_STEP,
     MDKR_CAMERA_MOTION_STAT_COUNT,
 } MdkrCameraMotionStatId;
 
@@ -2574,12 +2643,14 @@ static const char *const kCameraMotionStatNames[MDKR_CAMERA_MOTION_STAT_COUNT] =
     "retract_latency", "recovery_duration", "blocked_span", "emergency_dwell",
     "pos_velocity", "pos_accel", "pos_jerk",
     "ang_velocity", "ang_accel", "ang_jerk",
+    "cut_pos_step", "cut_ang_step",
 };
 
 static const char *const kCameraMotionStatUnits[MDKR_CAMERA_MOTION_STAT_COUNT] = {
     "ticks", "ticks", "ticks", "ticks",
     "wu/tick", "wu/tick^2", "wu/tick^3",
     "deg/tick", "deg/tick^2", "deg/tick^3",
+    "wu/cut", "deg/cut",
 };
 
 typedef struct MdkrCameraMotionStat {
@@ -2969,6 +3040,7 @@ static void camera_obstruction_resolve_slot(
         .recovery_speed = 600.0f * comfort_recovery_scale,
         .max_recovery_step = 20.0f * comfort_recovery_scale,
         .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
+        .max_recovery_fraction = 0.25f * comfort_recovery_scale,
     };
     MdkrCameraObstructionResolverInput input;
     MdkrCameraObstructionResolverResult result;
@@ -3098,6 +3170,137 @@ static void camera_obstruction_resolve_slot(
         return;
     }
 
+    if (camera_obstruction_reengagement_probe_enabled() && status == MDKR_CAMERA_SWEEP_HIT &&
+        observe->resolver.last_safe_valid && observe->previous_pivot_valid) {
+        /* Diagnostic only: establish whether retaining the old eye, either
+         * world-fixed or subject-relative, is geometrically possible before
+         * considering any change to immediate safety retraction. */
+        for (int translated = 0; translated < 2; ++translated) {
+            MdkrCameraObstructionObserveSlot probe = *observe;
+            const MdkrCameraObstructionQuerySource probe_sources[] = {
+                { camera_obstruction_track_sweep_adapter, NULL },
+                { camera_obstruction_dynamic_sweep_adapter, &probe },
+            };
+            const MdkrCameraObstructionCombinedQuery combined = {
+                probe_sources, ARRAY_COUNT(probe_sources), ARRAY_COUNT(probe_sources),
+            };
+            const MdkrCameraObstructionRoundedLensQuerySource probe_exact_sources[] = {
+                { camera_obstruction_track_rounded_sweep_adapter, NULL },
+                { camera_obstruction_dynamic_rounded_sweep_adapter, &probe },
+            };
+            const MdkrCameraObstructionRoundedLensCombinedQuery exact_combined = {
+                probe_exact_sources, ARRAY_COUNT(probe_exact_sources),
+                ARRAY_COUNT(probe_exact_sources),
+            };
+            MdkrCameraObstructionLensQuery probe_lens_query = {
+                &combined, &exact_combined, &probe.exact_guard, &probe,
+            };
+            const MdkrCameraObstructionQuery active_query = {
+                use_exact ? camera_obstruction_lens_sweep_adapter :
+                            mdkr_camera_obstruction_combined_sweep_adapter,
+                use_exact ? (const void *)&probe_lens_query : (const void *)&combined,
+            };
+            MdkrCameraVec3 previous = observe->resolver.last_safe_eye;
+            MdkrCameraSweepHit witness_hit;
+            if (translated) {
+                previous.x += observe->intent.pivot.x - observe->previous_pivot.x;
+                previous.y += observe->intent.pivot.y - observe->previous_pivot.y;
+                previous.z += observe->intent.pivot.z - observe->previous_pivot.z;
+            }
+            MdkrCameraSweepInput witness = {
+                .guard = observe->guard,
+                .start_eye = previous,
+                .desired_eye = previous,
+                .mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK,
+            };
+            memset(&witness_hit, 0, sizeof witness_hit);
+            MdkrCameraSweepStatus witness_status = active_query.sweep(
+                active_query.context, &witness, &witness_hit);
+            MdkrCameraSweepHit path_hit;
+            witness.start_eye = observe->resolver.last_safe_eye;
+            memset(&path_hit, 0, sizeof path_hit);
+            MdkrCameraSweepStatus move_status = active_query.sweep(
+                active_query.context, &witness, &path_hit);
+            witness.start_eye = boom_anchor;
+            memset(&path_hit, 0, sizeof path_hit);
+            MdkrCameraSweepStatus boom_status = active_query.sweep(
+                active_query.context, &witness, &path_hit);
+            int visibility = observe->intent.target_valid ?
+                (int)mdkr_camera_target_visibility_query(&combined,
+                    observe->intent.target, previous,
+                    MDKR_CAMERA_OBSTRUCTION_HARD_MASK |
+                        MDKR_CAMERA_DYNAMIC_OCCLUSION_QUERY_CURRENT_POSE, NULL) : -1;
+            /* Use a copy: transition validation sets publication flags. A
+             * diagnostic must not turn the actual camera into a cut. */
+            MdkrCameraFinalPose probe_pose;
+            probe.transition_cut = FALSE;
+            probe.transition_clear = FALSE;
+            probe.transition_invoked = FALSE;
+            probe.transition_tuple_cut = FALSE;
+            int pose_valid = camera_obstruction_build_final_pose(
+                &probe, previous, FALSE, &probe_pose);
+            if (pose_valid) {
+                camera_obstruction_validate_presentation_transition(
+                    &probe, &combined, &exact_combined, &probe_pose);
+            }
+            fprintf(stderr,
+                "camera_reengagement_probe tick=%llu physical_slot=%d translated=%d "
+                "status=%d eye=(%.5f,%.5f,%.5f) contact={kind=%u id=%u} "
+                "move_status=%d boom_status=%d visibility=%d "
+                "pose_valid=%d transition_clear=%d transition_cut=%d "
+                "invoked=%d tuple_cut=%d degraded=%d\n",
+                (unsigned long long)sCameraObstructionRuntime.tick_serial, physical_slot,
+                translated, witness_status, previous.x, previous.y, previous.z,
+                (unsigned)witness_hit.kind, (unsigned)witness_hit.stable_id,
+                move_status, boom_status, visibility, pose_valid,
+                probe.transition_clear, probe.transition_cut,
+                probe.transition_invoked, probe.transition_tuple_cut,
+                probe.query_source_degraded);
+            if (observe->last_validated_camera_valid) {
+                probe = *observe;
+                probe.authored.trans.rotation = observe->last_validated_camera.trans.rotation;
+                probe.authored.pitch = observe->last_validated_camera.pitch;
+                probe.transition_cut = FALSE;
+                probe.transition_clear = FALSE;
+                probe.transition_invoked = FALSE;
+                probe.transition_tuple_cut = FALSE;
+                int held_valid = camera_obstruction_build_final_pose(
+                    &probe, previous, FALSE, &probe_pose);
+                if (held_valid) {
+                    held_valid = camera_obstruction_final_pose_stationary_clear(
+                        &probe, &combined, &exact_combined, &probe_pose, use_exact, &path_hit);
+                }
+                float target_x = NAN, target_y = NAN, target_depth = NAN;
+                if (held_valid && observe->intent.target_valid) {
+                    const MdkrCameraVec3 offset = {
+                        observe->intent.target.x - probe_pose.rendered_eye.x,
+                        observe->intent.target.y - probe_pose.rendered_eye.y,
+                        observe->intent.target.z - probe_pose.rendered_eye.z,
+                    };
+                    const MdkrCameraRoundedLensGuard *g = &probe_pose.guard;
+                    target_depth = offset.x * g->forward.x + offset.y * g->forward.y +
+                                   offset.z * g->forward.z;
+                    if (target_depth > 0 && g->half_width > 0 && g->half_height > 0) {
+                        target_x = (offset.x * g->right.x + offset.y * g->right.y +
+                                    offset.z * g->right.z) * g->near_distance /
+                                   (target_depth * g->half_width);
+                        target_y = (offset.x * g->up.x + offset.y * g->up.y +
+                                    offset.z * g->up.z) * g->near_distance /
+                                   (target_depth * g->half_height);
+                    }
+                }
+                fprintf(stderr,
+                    "camera_held_orientation_probe tick=%llu translated=%d "
+                    "endpoint_clear=%d transition_clear=%d transition_cut=%d "
+                    "target=(%.5f,%.5f) depth=%.5f yaw_lag=%d\n",
+                    (unsigned long long)sCameraObstructionRuntime.tick_serial,
+                    translated, held_valid, probe.transition_clear, probe.transition_cut,
+                    target_x, target_y, target_depth,
+                    (int)(s16)((u16)observe->authored.trans.rotation.y_rotation -
+                               (u16)probe.authored.trans.rotation.y_rotation));
+            }
+        }
+    }
     start = boom_anchor;
     if (status == MDKR_CAMERA_SWEEP_CLEAR) {
         if (observe->was_obstructed && observe->previous_pivot_valid &&
@@ -3147,8 +3350,37 @@ static void camera_obstruction_resolve_slot(
     input.fixed_delta_seconds = fixed_delta_seconds;
     input.mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK;
     input.discontinuity = observe->intent.discontinuity;
+    /* Diagnostic only: record the caller's candidate separately from the
+     * accepted result. The resolver may reject this candidate and use its
+     * last-safe eye or pivot; do not label it the accepted sweep anchor. */
+    if (camera_obstruction_trace_level() >= 2) {
+        fprintf(stderr,
+            "camera_resolver input tick=%llu physical_slot=%d corridor_status=%d "
+            "pivot=(%.5f,%.5f,%.5f) start=(%.5f,%.5f,%.5f) desired=(%.5f,%.5f,%.5f) "
+            "prior={valid=%u eye=(%.5f,%.5f,%.5f) latch=%u clear_ticks=%u} dt=%.6f\n",
+            (unsigned long long)sCameraObstructionRuntime.tick_serial, physical_slot, status,
+            input.pivot.x, input.pivot.y, input.pivot.z,
+            start.x, start.y, start.z, desired.x, desired.y, desired.z,
+            (unsigned)observe->resolver.last_safe_valid,
+            observe->resolver.last_safe_eye.x, observe->resolver.last_safe_eye.y,
+            observe->resolver.last_safe_eye.z,
+            (unsigned)observe->resolver.retraction_latched,
+            (unsigned)observe->resolver.clear_run_ticks, fixed_delta_seconds);
+    }
     observe->resolver_status = mdkr_camera_obstruction_resolve(
         &config, &input, &observe->resolver, &result);
+    if (camera_obstruction_trace_level() >= 2) {
+        fprintf(stderr,
+            "camera_resolver result tick=%llu physical_slot=%d status=%d "
+            "accepted=%u blocked=%u held=%u used_last_safe=%u "
+            "eye=(%.5f,%.5f,%.5f) contact={kind=%u id=%u fraction=%.6f}\n",
+            (unsigned long long)sCameraObstructionRuntime.tick_serial, physical_slot,
+            result.status, (unsigned)result.accepted, (unsigned)result.path_was_blocked,
+            (unsigned)result.release_held, (unsigned)result.used_last_safe,
+            result.resolved_eye.x, result.resolved_eye.y, result.resolved_eye.z,
+            (unsigned)result.blocker_kind, (unsigned)result.blocker_stable_id,
+            result.blocker_fraction);
+    }
     /*
      * Soft-occluder mitigation. A small dynamic prop that fails both the
      * proximity and minimum-boom gates does not get to move a race camera --
@@ -3410,8 +3642,9 @@ static void camera_obstruction_motion_sample(
     recovering =
         observe->resolver_status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING;
     held = retracted && observe->release_held != 0;
-    /* Correction is engaged whenever the published eye is not free to sit on
-     * the authored desired pose, however that came about. */
+    /* This census measures active retraction/alternate/emergency constraints.
+     * Recovery is tracked separately below: a lingering recovery offset must
+     * not hide a newly re-engaged obstruction from the chatter gate. */
     blocked = retracted || alternate || emergency;
     cut = observe->presentation_discontinuity != 0;
     continuous = pose_valid && !cut && motion->continuity_run != 0U &&
@@ -3439,6 +3672,25 @@ static void camera_obstruction_motion_sample(
     if (degenerate) {
         sCameraMotion.degenerate_ticks++;
         motion->block_span_degenerate = TRUE;
+    }
+
+    /* Cuts intentionally do not contribute to smooth-motion derivatives, but
+     * their visible step must not disappear from the quality report. Sample
+     * only adjacent validated poses, separately from velocity/acceleration. */
+    if (cut && pose_valid && motion->continuity_run != 0U &&
+        motion->previous_tick + 1U == tick) {
+        const double dx = (double)eye.x - motion->previous_eye.x;
+        const double dy = (double)eye.y - motion->previous_eye.y;
+        const double dz = (double)eye.z - motion->previous_eye.z;
+        double dot = (double)forward.x * motion->previous_forward.x +
+                     (double)forward.y * motion->previous_forward.y +
+                     (double)forward.z * motion->previous_forward.z;
+        if (dot > 1.0) dot = 1.0;
+        if (dot < -1.0) dot = -1.0;
+        camera_obstruction_motion_record(MDKR_CAMERA_MOTION_STAT_CUT_POS_STEP,
+                                          sqrt(dx * dx + dy * dy + dz * dz));
+        camera_obstruction_motion_record(MDKR_CAMERA_MOTION_STAT_CUT_ANG_STEP,
+                                          acos(dot) * (180.0 / 3.14159265358979323846));
     }
 
     /*

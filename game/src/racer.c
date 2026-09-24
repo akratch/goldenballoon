@@ -7853,6 +7853,10 @@ void mdkr_boss_cadence_clamp(Object_Racer *racer) {
 #endif
 
 void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
+#ifdef NATIVE_PORT
+    const s16 probePitchBefore = racerObj->trans.rotation.x_rotation;
+    const s16 probeRollBefore = racer->x_rotation_vel;
+#endif
     s32 pad[3];
     s32 numCollisions;
     s32 flags;
@@ -8086,6 +8090,18 @@ void func_80054FD0(Object *racerObj, Object_Racer *racer, s32 updateRate) {
         CLAMP(racerObj->trans.rotation.x_rotation, -0x3400, 0x3400);
     }
 #ifdef NATIVE_PORT
+    if (mdkr_trace_enabled()) {
+        /* x_rotation_vel is the contact-derived roll contribution, not the
+         * final visual roll (which also includes drift/animation offsets). */
+        mdkr_trace("[TILT_CONTACT] pi=%d ri=%d vehicle=%d rate=%d wall=%d gw=%d "
+                   "pitch=%d->%d contactRoll=%d->%d pos=%.3f,%.3f,%.3f",
+                   (int)racer->playerIndex, (int)racer->racerIndex,
+                   (int)racer->vehicleID, (int)updateRate, (int)sp184,
+                   (int)racer->groundedWheels, (int)probePitchBefore,
+                   (int)racerObj->trans.rotation.x_rotation, (int)probeRollBefore,
+                   (int)racer->x_rotation_vel, (double)racerObj->trans.x_position,
+                   (double)racerObj->trans.y_position, (double)racerObj->trans.z_position);
+    }
     mdkr_boss_cadence_clamp(racer);
 #endif
 }

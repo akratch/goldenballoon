@@ -1145,10 +1145,9 @@ s32 osPiStartDma(OSIoMesg *mb, s32 pri, s32 dir, u32 devAddr,
                  void *dramAddr, u32 size, OSMesgQueue *mq) {
     int readStatus;
     (void)pri; (void)dir;
-    /* dramAddr arrives 32-bit-truncated (game does `(u32)ptr`); widen it back
-     * to a host pointer inside the arena, then serve the read from the ROM. */
-    void *dst = dkr_lo32_to_ptr(mdkr_arena_token_from_host(dramAddr));
-    if (!dst) dst = dramAddr;
+    /* Preserve full native destinations; widen only legacy arena tokens. */
+    void *dst = mdkr_dma_destination(dramAddr, g_dkrArenaHi,
+                                    g_dkrArenaBase, g_dkrArenaSize);
     readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
     if (mq) osSendMesg(mq, mb ? (OSMesg)mb : (OSMesg)0, OS_MESG_NOBLOCK);
     return readStatus;
@@ -1156,8 +1155,8 @@ s32 osPiStartDma(OSIoMesg *mb, s32 pri, s32 dir, u32 devAddr,
 s32 osPiRawStartDma(s32 dir, u32 devAddr, void *dramAddr, u32 size) {
     int readStatus;
     (void)dir;
-    void *dst = dkr_lo32_to_ptr(mdkr_arena_token_from_host(dramAddr));
-    if (!dst) dst = dramAddr;
+    void *dst = mdkr_dma_destination(dramAddr, g_dkrArenaHi,
+                                    g_dkrArenaBase, g_dkrArenaSize);
     readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
     return readStatus;
 }

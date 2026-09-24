@@ -98,6 +98,7 @@
 #include "gfx_pc_dkr.h"
 #include "modern_character_render.h"
 #include "modern_character_draw_store.h"
+#include "sprite_models.h"
 #include "modern_character_limits.h"
 #ifdef MDKR_WEBGPU_BACKEND
 #include "gfx_webgpu.h"
@@ -124,6 +125,16 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 
 static GfxFontRegistry dkr_font_registry;
 static struct GfxRenderingAPI *gfx_rapi;
+
+int gfx_sprite_models_supported(void) {
+    return gfx_rapi != NULL && gfx_rapi->draw_modern_mesh != NULL;
+}
+
+void gfx_clear_modern_mesh_cache(void) {
+    if (gfx_rapi != NULL && gfx_rapi->clear_modern_mesh_cache != NULL) {
+        gfx_rapi->clear_modern_mesh_cache();
+    }
+}
 static void gfx_flush(void);
 
 /*
@@ -1513,6 +1524,7 @@ static void dkr_replay_bind_opacity_owner(
     if (owner != NULL && owner->valid &&
         (owner->matrix_class == GFX_PRESENTATION_MATRIX_ROOT ||
          owner->matrix_class == GFX_PRESENTATION_MATRIX_CHILD ||
+         owner->matrix_class == GFX_PRESENTATION_MATRIX_SPRITE_MODEL ||
          owner->matrix_class == GFX_PRESENTATION_MATRIX_BILLBOARD ||
          owner->matrix_class ==
              GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES ||
@@ -3528,6 +3540,37 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     return bind_ok[0] && bind_ok[1];
 }
 
+static void dkr_draw_sprite_model(uint32_t sprite) {
+    struct GfxModernMesh *mesh;
+    float fog[3], tint[4], mvp[4][4];
+    int far;
+    if (!gfx_sprite_models_supported() || rsp.active_slot < 0 || rsp.active_slot >= 3) return;
+    far = fabsf(rsp.mtx[rsp.active_slot][3][3]) > (sprite == 156 ? 650.0f : 1800.0f);
+    mesh = mdkr_sprite_models_mesh(sprite, far);
+    if (!mesh) return;
+    if (!dkr_setup_draw_state(false)) return;
+    gfx_flush();
+    memcpy(mvp, rsp.mtx[rsp.active_slot], sizeof(mvp));
+    /* Adventure Two's negative viewport scale applies to GPU meshes just as
+     * it does to the CPU triangle emitter. Keep the later HUD viewport separate. */
+    if (rdp.view.viewport_flip_x) {
+        for (int row = 0; row < 4; ++row) mvp[row][0] = -mvp[row][0];
+    }
+    if (rdp.view.clip_expanded) {
+        for (int row = 0; row < 4; ++row) {
+            mvp[row][0] = mvp[row][0] * rdp.view.clip_scale_x + mvp[row][3] * rdp.view.clip_bias_x;
+            mvp[row][1] = mvp[row][1] * rdp.view.clip_scale_y + mvp[row][3] * rdp.view.clip_bias_y;
+        }
+    }
+    fog[0] = rdp.fog_color.r / 255.0f; fog[1] = rdp.fog_color.g / 255.0f; fog[2] = rdp.fog_color.b / 255.0f;
+    tint[0] = rdp.prim_color.r / 255.0f; tint[1] = rdp.prim_color.g / 255.0f;
+    tint[2] = rdp.prim_color.b / 255.0f; tint[3] = rdp.prim_color.a / 255.0f;
+    dkr_begin_primitive(false);
+    gfx_rapi->draw_modern_mesh(mesh, mvp, fog,
+        (float)rsp.fog_mul, (float)rsp.fog_offset, (rdp.other_mode_l >> 30) == G_BL_CLR_FOG, tint);
+    mdkr_sprite_models_note_draw(sprite, far);
+}
+
 static void dkr_draw_modern_character(uint32_t token) {
     const struct GfxModernSkinnedDraw *retained;
     struct GfxModernSkinnedDraw resolved;
@@ -4546,6 +4589,9 @@ static void dkr_sp_moveword(uint8_t index, uint16_t offset, uint32_t data) {
         }
         case G_MW_DKR_MODERN_CHARACTER:
             dkr_draw_modern_character(data);
+            break;
+        case G_MW_DKR_SPRITE_MODEL:
+            dkr_draw_sprite_model(data);
             break;
         case G_MW_DKR_CHARACTER_OCCLUDER:
             /* The buffered ordinary triangle stream belongs wholly to the old

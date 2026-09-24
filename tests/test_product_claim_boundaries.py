@@ -132,11 +132,15 @@ def main() -> int:
     )
     require_contains(
         "docs/APP_SHELL.md",
-        "**No native file dialog on Linux.**",
+        "**Linux in-window file selection.**",
     )
     require_contains(
         "docs/APP_SHELL.md",
-        "Drag-and-drop and the typed path are the documented\npaths on Linux",
+        "`isAvailable()` stays false on Linux",
+    )
+    require_contains(
+        "docs/APP_SHELL.md",
+        "ROM drag-and-drop and typed paths remain.",
     )
     # Online boundaries: the same six facts pinned in both places a player
     # reads them (RELEASE_NOTES.md's current release section, README.md's

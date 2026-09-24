@@ -8,9 +8,15 @@
 #include "net/network_lifetime.h"
 #include "app_ui_policy.h"
 #include "file_dialog.h"
+#include "file_browser_ui.h"
+#include "pack_installer.h"
+#include <future>
+#include <atomic>
+#include <memory>
 
 extern "C" {
 #include "../user_paths.h"
+#include "../platform_os.h"
 }
 #include <filesystem>
 #include <system_error>
@@ -49,6 +55,9 @@ struct Panel {
 void drawSettingsPanel(LauncherState &s, LauncherAction &out);
 void drawCharacterWorkshopPanel(LauncherState &s, LauncherAction &out);
 void drawContentPanel(LauncherState &s, LauncherAction &out);
+void servicePackInstall(bool quitting);
+void cancelPackInstall();
+void finishPackInstallForExit();
 void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
@@ -1237,6 +1246,7 @@ void Launcher::applyLanStop() {
 }
 
 Launcher::~Launcher() {
+    finishPackInstallForExit();
     // Explicit terminal paths run this before host/log shutdown. Also cover
     // an early scope exit: never let a retirement worker outlive its tracker.
     if (!networkShutdown_->started) finishCharacterWorkForExit();
@@ -1252,6 +1262,7 @@ void Launcher::beginNetworkShutdown() {
     auto &shutdown = *networkShutdown_;
     if (shutdown.started) return;
     shutdown.started = true;
+    cancelPackInstall();
 #if MDKR_ENABLE_ONLINE_BETA
     OnlineRoom_beginAppExit();
 #endif
@@ -1498,84 +1509,82 @@ void acceptCharacterPreviewRequest(
  * did not say why" is the failure this whole destination exists to end.
  */
 std::string g_packInstallNote;
+struct PackInstallJob {
+    std::shared_ptr<std::atomic<bool>> cancel;
+    std::future<PreparedPackInstall> result;
+    ~PackInstallJob() {
+        // Signal before future destruction joins the worker. Its token remains
+        // alive until copying and partial-file cleanup have finished.
+        if (cancel) cancel->store(true);
+    }
+} g_packInstallJob;
+FileBrowserUi g_packBrowser;
+
+void cancelPackInstall() {
+    if (g_packInstallJob.cancel) g_packInstallJob.cancel->store(true);
+}
+
+void finishPackInstallForExit() {
+    cancelPackInstall();
+    if (!g_packInstallJob.result.valid()) return;
+    try {
+        // Explicit owner cleanup, before launcher/host teardown. Never publish
+        // a completed-but-unconsumed pack as a side effect of quitting.
+        auto discarded = g_packInstallJob.result.get();
+    } catch (const std::exception &) {
+        // Worker-local staging is RAII-owned, including exceptional exits.
+    }
+}
+
+void startPackInstall(const std::string &source, const std::string &modsDirectory) {
+    if (g_packInstallJob.result.valid()) return;
+    try {
+        auto cancel = std::make_shared<std::atomic<bool>>(false);
+        g_packInstallJob.cancel = cancel;
+        g_packInstallJob.result = std::async(std::launch::async, [source, modsDirectory, cancel] {
+            return PreparedPackInstall::copyPack(std::filesystem::u8path(source),
+                                               std::filesystem::u8path(modsDirectory),
+                                               [cancel] { return cancel->load(); });
+        });
+        g_packInstallNote = "Copying pack… You can continue using the launcher.";
+    } catch (const std::exception &error) {
+        g_packInstallNote = std::string("Could not start pack installation: ") + error.what();
+    }
+}
+
+void servicePackInstall(bool quitting) {
+    if (quitting) cancelPackInstall();
+    if (!g_packInstallJob.result.valid() ||
+        g_packInstallJob.result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    try {
+        // Registry validation/publication stays on the launcher thread. While
+        // the engine is running the completed copy remains hidden staging.
+        auto prepared = g_packInstallJob.result.get();
+        if (g_packInstallJob.cancel->load()) {
+            g_packInstallNote = "Pack installation cancelled. Nothing was installed.";
+        } else {
+            const auto installed = prepared.finalize([cancel = g_packInstallJob.cancel] {
+                return cancel && cancel->load();
+            });
+            g_packInstallNote = installed.message;
+            // This service runs only while the launcher owns the frame, not
+            // inside a live engine session. Refresh the cached inventory so
+            // successful installation cannot leave Content showing no packs.
+            if (installed.installed) platform_content_packs_init();
+        }
+    } catch (const std::exception &error) {
+        g_packInstallNote = std::string("Could not install pack: ") + error.what();
+    }
+}
 
 void installContentPack(const char *modsDirectory) {
+#if defined(__linux__)
+    g_packBrowser.open("", BrowserFileKind::ZipPack);
+#else
     std::string picked;
-    if (!filedialog::openContentPack(picked)) return;   // cancelled
-
-    namespace fs = std::filesystem;
-    std::error_code failure;
-    fs::create_directories(modsDirectory, failure);
-
-    const fs::path source(picked);
-    const fs::path destination = fs::path(modsDirectory) / source.filename();
-
-    if (fs::equivalent(source, destination, failure)) {
-        g_packInstallNote = source.filename().string() +
-            " is already in your mods folder.";
-        return;
-    }
-    failure.clear();
-
-    /*
-     * Refuse a source that CONTAINS the destination. "Open mods folder" sits
-     * beside this button, so picking the mods folder itself is one slip away,
-     * and std::filesystem::copy does not guard the case: a recursive copy of a
-     * directory into itself walks mods/mods/mods/... until the path limit or
-     * the disk gives out, with the launcher frozen on the render thread for
-     * every second of it.
-     */
-    {
-        std::error_code resolving;
-        const fs::path sourceReal = fs::weakly_canonical(source, resolving);
-        const fs::path modsReal =
-            fs::weakly_canonical(fs::path(modsDirectory), resolving);
-        if (!resolving) {
-            auto within = [](const fs::path &child, const fs::path &parent) {
-                auto c = child.begin(), cend = child.end();
-                for (auto p = parent.begin(), pend = parent.end(); p != pend;
-                     ++p, ++c) {
-                    if (c == cend || *c != *p) return false;
-                }
-                return true;
-            };
-            if (within(modsReal, sourceReal)) {
-                g_packInstallNote =
-                    "That folder contains your mods folder, so copying it into "
-                    "itself would never finish. Choose the pack itself.";
-                return;
-            }
-        }
-    }
-
-    const bool directory = fs::is_directory(source, failure);
-    failure.clear();
-    if (directory) {
-        fs::copy(source, destination,
-                 fs::copy_options::recursive |
-                     fs::copy_options::overwrite_existing,
-                 failure);
-    } else {
-        fs::copy_file(source, destination,
-                      fs::copy_options::overwrite_existing, failure);
-    }
-
-    if (failure) {
-        g_packInstallNote = "Could not install " +
-            source.filename().string() + ": " + failure.message();
-        return;
-    }
-    /*
-     * Press Play -- not "restart Golden Balloon", which is what this used to
-     * say and is more work than the game asks for.
-     * platform_engine_session_begin() clears the scanned flag on every
-     * launcher -> engine handoff, so the engine rescans mods/ each time the
-     * player presses Play. Overstating the cost is not the safe direction
-     * here: it makes installing a pack feel like a chore the moment a player
-     * has finally got one installed.
-     */
-    g_packInstallNote = source.filename().string() +
-        " installed. Press Play to load it.";
+    if (filedialog::openContentPack(picked)) startPackInstall(picked, modsDirectory);
+#endif
 }
 
 void drawContentPanel(LauncherState &s, LauncherAction &out) {
@@ -1610,29 +1619,49 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
     char modsDirectory[1024] = {0};
     const bool haveModsDirectory =
         mdkr_user_mods_directory(modsDirectory, sizeof modsDirectory) != 0;
-    if (haveModsDirectory && filedialog::isAvailable()) {
+    bool canChoosePack = filedialog::isAvailable();
+#if defined(__linux__)
+    canChoosePack = true;
+#endif
+    if (haveModsDirectory && canChoosePack) {
+        ImGui::BeginDisabled(g_packInstallJob.result.valid());
         if (ui::BrandPrimaryButton("Install pack…", ui::kBtnWide())) {
             installContentPack(modsDirectory);
         }
+        ImGui::EndDisabled();
         ui::SpeakFocusedItem(
             "Install pack", nullptr,
             "Choose a pack to copy into your mods folder.");
-        ImGui::SameLine();
-        if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
-            std::error_code created;
-            std::filesystem::create_directories(modsDirectory, created);
-            (void)filedialog::revealInFileManager(modsDirectory);
+        if (g_packInstallJob.result.valid()) {
+            if (ImGui::Button("Cancel installation", ui::kBtnWide())) {
+                g_packInstallJob.cancel->store(true);
+                g_packInstallNote = "Cancelling pack installation…";
+            }
+            ui::SpeakFocusedItem("Cancel installation", nullptr,
+                                 "Discard the pending copy without installing it.");
         }
-        ui::SpeakFocusedItem(
-            "Open mods folder", nullptr,
-            "Opens the folder packs are installed into, creating it if it "
-            "does not exist yet.");
+        if (filedialog::isAvailable()) {
+            if (ImGui::GetContentRegionAvail().x > ui::kBtnWide().x * 2.0f)
+                ImGui::SameLine();
+            if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
+                std::error_code created;
+                std::filesystem::create_directories(modsDirectory, created);
+                (void)filedialog::revealInFileManager(modsDirectory);
+            }
+            ui::SpeakFocusedItem(
+                "Open mods folder", nullptr,
+                "Opens the folder packs are installed into, creating it if it "
+                "does not exist yet.");
+        }
         ui::Gap(ui::kGapS);
         if (!g_packInstallNote.empty()) {
             ui::TextSubtleUnformattedWrapped(g_packInstallNote.c_str());
             ui::Gap(ui::kGapS);
         }
     }
+    std::string pickedPack;
+    if (haveModsDirectory && g_packBrowser.draw("Choose a ZIP content pack", pickedPack))
+        startPackInstall(pickedPack, modsDirectory);
     if (haveModsDirectory) {
         ImGui::PushFont(AppTheme::fonts().small);
         // A packaged build resolves this beside the save directory; a
@@ -2129,6 +2158,7 @@ LauncherAction Launcher::draw(AppHost &host) {
         state_.requestTab = -1;
         state_.requestTabPriority = 0;
         emitLobbyTakeoverProbe(true, true);
+        servicePackInstall(state_.quitRequested || action.type == LauncherActionType::Quit);
         return action;
     }
 #endif
@@ -2187,6 +2217,10 @@ LauncherAction Launcher::draw(AppHost &host) {
 #if MDKR_ENABLE_ONLINE_BETA
     emitLobbyTakeoverProbe(onlineActiveTakeover, false);
 #endif
+    // Process Cancel/Quit before consuming a ready copy. Publishing at the top
+    // of the frame could remove the Cancel button before its click is handled.
+    // Refreshing the content registry here also cannot invalidate panel readers.
+    servicePackInstall(state_.quitRequested || action.type == LauncherActionType::Quit);
     return action;
 }
 

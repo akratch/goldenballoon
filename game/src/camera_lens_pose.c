@@ -5,6 +5,7 @@
 #include "math_util.h"
 
 #include <math.h>
+#include <float.h>
 #include <string.h>
 
 static int camera_lens_pose_finite(Vec3f value) {
@@ -109,6 +110,71 @@ int cam_lens_pose_from_camera_snapshot(
     }
 
     *out = pose;
+    return TRUE;
+}
+
+int cam_lens_rotation_envelope(const Camera *before, const Camera *after,
+    float near_distance, float half_width, float half_height,
+    unsigned max_states, float *out) {
+    if (!before || !after || !out || !max_states ||
+        !isfinite(near_distance) || near_distance <= 0 ||
+        !isfinite(half_width) || half_width <= 0 ||
+        !isfinite(half_height) || half_height <= 0) return FALSE;
+    const u16 start[3] = {
+        (u16)before->trans.rotation.y_rotation,
+        (u16)((u16)before->trans.rotation.x_rotation + (u16)before->pitch),
+        (u16)before->trans.rotation.z_rotation
+    };
+    const u16 end[3] = {
+        (u16)after->trans.rotation.y_rotation,
+        (u16)((u16)after->trans.rotation.x_rotation + (u16)after->pitch),
+        (u16)after->trans.rotation.z_rotation
+    };
+    int delta[3];
+    unsigned counts[3], states = 1;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        delta[axis] = (s16)(u16)(end[axis] - start[axis]);
+        counts[axis] = (unsigned)(delta[axis] < 0 ? -delta[axis] : delta[axis]) + 1;
+        if (counts[axis] > max_states / states) return FALSE;
+        states *= counts[axis];
+    }
+    Camera sample = {0};
+    sample.trans.rotation.y_rotation = (s16)start[0];
+    sample.trans.rotation.x_rotation = (s16)start[1];
+    sample.trans.rotation.z_rotation = (s16)start[2];
+    MdkrCameraLensPose reference, pose;
+    if (!cam_lens_pose_from_camera_snapshot(&sample, FALSE, &reference)) return FALSE;
+    double largest_squared = 0;
+    for (unsigned y = 0; y < counts[0]; ++y)
+    for (unsigned p = 0; p < counts[1]; ++p)
+    for (unsigned r = 0; r < counts[2]; ++r) {
+        sample.trans.rotation.y_rotation = (s16)(u16)(start[0] + (delta[0] < 0 ? -(int)y : (int)y));
+        sample.trans.rotation.x_rotation = (s16)(u16)(start[1] + (delta[1] < 0 ? -(int)p : (int)p));
+        sample.trans.rotation.z_rotation = (s16)(u16)(start[2] + (delta[2] < 0 ? -(int)r : (int)r));
+        if (!cam_lens_pose_from_camera_snapshot(&sample, FALSE, &pose)) return FALSE;
+        for (int horizontal = -1; horizontal <= 1; horizontal += 2)
+        for (int vertical = -1; vertical <= 1; vertical += 2) {
+#define CORNER_DELTA(component) \
+            (((double)pose.forward.component - reference.forward.component) * near_distance + \
+             ((double)pose.right.component - reference.right.component) * half_width * horizontal + \
+             ((double)pose.up.component - reference.up.component) * half_height * vertical)
+            double dx = CORNER_DELTA(x), dy = CORNER_DELTA(y), dz = CORNER_DELTA(z);
+#undef CORNER_DELTA
+            double squared = dx * dx + dy * dy + dz * dz;
+            if (!isfinite(squared)) return FALSE;
+            if (squared > largest_squared) largest_squared = squared;
+        }
+    }
+    /* Basis components are the actual normalized float outputs above. Reserve
+     * extra float arithmetic slack for downstream corner construction; always
+     * round the final bound outward, not toward a potentially smaller float. */
+    double bound = sqrt(largest_squared) + 32.0 * FLT_EPSILON *
+        ((double)near_distance + half_width + half_height);
+    if (!isfinite(bound) || bound >= FLT_MAX) return FALSE;
+    float result = (float)bound;
+    if ((double)result < bound) result = nextafterf(result, INFINITY);
+    if (!isfinite(result)) return FALSE;
+    *out = result;
     return TRUE;
 }
 

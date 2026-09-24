@@ -161,6 +161,26 @@ const char *mdkr_object_layout_error_string(
     return "unknown error";
 }
 
+bool mdkr_level_object_map_validate(const void *bytes, size_t size,
+                                    size_t object_id_count, size_t *record_count) {
+    const uint8_t *map = bytes;
+    size_t walked = 0, count = 0;
+    if (!map || size < 16 || !object_id_count || !record_count) return false;
+    uint32_t entry_bytes = ((uint32_t)map[0] << 24) | ((uint32_t)map[1] << 16) |
+                           ((uint32_t)map[2] << 8) | map[3];
+    if (entry_bytes > INT32_MAX || entry_bytes > size - 16) return false;
+    while (walked < entry_bytes) {
+        MdkrLevelObjectRecordView view;
+        if (mdkr_level_object_record_parse(map + 16 + walked, entry_bytes - walked,
+                                           object_id_count, &view) != MDKR_LEVEL_OBJECT_RECORD_OK)
+            return false;
+        walked += view.size;
+        ++count;
+    }
+    *record_count = count;
+    return true;
+}
+
 MdkrLevelObjectRecordError mdkr_level_object_record_parse(
     const void *bytes,
     size_t bytes_remaining,

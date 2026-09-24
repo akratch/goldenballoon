@@ -176,6 +176,7 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "video_config.h"
 #include "mod_registry.h"
 #include "mod_texture_store.h"
+#include "sprite_models.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
 #ifdef MDKR_APP
@@ -2128,6 +2129,13 @@ void platform_content_packs_init(void) {
 
     s_contentPacksActive = 0;
     s_contentPacksScanned = 1;
+    /* Reload runs on the engine/shell owner thread, outside draw submission.
+     * Retire GPU children before freeing their CPU source, including failure
+     * paths that leave an empty registry. Retained commands address models by
+     * sprite ID, so they must not resolve against a different pack generation. */
+    gfx_dkr_replay_invalidate();
+    gfx_clear_modern_mesh_cache();
+    mdkr_sprite_models_shutdown();
     if (!mdkr_user_mods_directory(mods_dir, sizeof mods_dir)) {
         /* Only reachable when the packaged preference directory could not be
          * prepared, which mdkr_user_paths_init() has already reported. Content
@@ -2177,6 +2185,7 @@ void platform_content_packs_init(void) {
 
     mdkr_mod_texture_store_init(&s_contentPacks);
     mdkr_mod_texture_set_enabled(packs_enabled);
+    mdkr_sprite_models_init(&s_contentPacks);
 
     registry_skipped = mdkr_mod_registry_skipped(&s_contentPacks);
     if (count == 0 && registry_skipped == 0) {
@@ -2256,6 +2265,9 @@ const MdkrModRegistry *platform_content_packs_registry(void) {
 }
 
 void platform_content_packs_shutdown(void) {
+    gfx_dkr_replay_invalidate();
+    gfx_clear_modern_mesh_cache();
+    mdkr_sprite_models_shutdown();
     /* Store first: it borrows the registry, so unbinding it before the registry
      * is cleared is the only order in which no lookup can see a dead scan. */
     mdkr_mod_texture_store_shutdown();
@@ -2320,8 +2332,20 @@ static void gc_try_open(int deviceIndex) {
                 s_rumbleRequested[i] = 0;
                 memset(&s_controllerSource[i], 0,
                        sizeof(s_controllerSource[i]));
-                printf("[SDL] gamepad P%d: %s\n", i + 1,
-                       SDL_GameControllerName(s_gc[i]));
+                {
+                    SDL_Joystick *joystick = SDL_GameControllerGetJoystick(s_gc[i]);
+                    const char *name = SDL_GameControllerName(s_gc[i]);
+                    char guid[33] = {0};
+                    SDL_JoystickGetGUIDString(SDL_JoystickGetGUID(joystick),
+                                              guid, sizeof(guid));
+                    /* Instance identifies this connection; GUID identifies a
+                     * device class, NOT a physical pad. Never deduplicate by
+                     * GUID: two legitimate controllers can share it. Avoid
+                     * logging serial numbers or host-specific device paths. */
+                    printf("[SDL] gamepad P%d: %s instance=%d guid=%s\n",
+                           i + 1, name ? name : "(unknown)",
+                           (int)SDL_JoystickInstanceID(joystick), guid);
+                }
             }
             return;
         }
@@ -2371,6 +2395,7 @@ static void gc_close_instance(SDL_JoystickID which) {
  *   detach=ID          remove it, whatever channel it landed in
  *   hold=ID:POSE       pose in {neutral,left,right,up,down,a,start}
  *   rumble=PORT:0|1    call platform_pad_rumble() on a DKR channel directly
+ *   key=0:0|1         release/press keyboard Return through SDL's event queue
  *
  * TICK 0 MEANS BOOT, and it is not a synonym for "very early". Entries at tick
  * 0 fire from platform_input_init() BEFORE its startup enumeration, so the
@@ -2395,7 +2420,8 @@ enum {
     MDKR_HOTPLUG_ATTACH,
     MDKR_HOTPLUG_DETACH,
     MDKR_HOTPLUG_HOLD,
-    MDKR_HOTPLUG_RUMBLE
+    MDKR_HOTPLUG_RUMBLE,
+    MDKR_HOTPLUG_KEY
 };
 
 typedef struct MdkrTestHotplug {
@@ -2420,6 +2446,7 @@ static const char *hotplug_op_name(int op) {
         case MDKR_HOTPLUG_ATTACH: return "attach";
         case MDKR_HOTPLUG_DETACH: return "detach";
         case MDKR_HOTPLUG_HOLD:   return "hold";
+        case MDKR_HOTPLUG_KEY:    return "key";
         default:                  return "rumble";
     }
 }
@@ -2479,6 +2506,18 @@ static void hotplug_fire(const MdkrTestHotplug *entry, uint64_t now) {
     int instance = -1;
     int port = -1;
     int result = -1;
+
+    if (entry->op == MDKR_HOTPLUG_KEY) {
+        SDL_Event event;
+        memset(&event, 0, sizeof(event));
+        event.type = entry->value ? SDL_KEYDOWN : SDL_KEYUP;
+        event.key.state = entry->value ? SDL_PRESSED : SDL_RELEASED;
+        event.key.keysym.scancode = SDL_SCANCODE_RETURN;
+        event.key.keysym.sym = SDLK_RETURN;
+        result = SDL_PushEvent(&event) == 1 ? 0 : -1;
+        hotplug_report(now, entry->op, 0, 0, -1, result);
+        return;
+    }
 
     if (entry->op == MDKR_HOTPLUG_RUMBLE) {
         /* Deliberately not filtered by presence: the point of the arm is that
@@ -2590,8 +2629,9 @@ static void pad_hotplug_lazy_init(void) {
                 if (parsed) {
                     memcpy(entry.pose, colon + 1, (size_t)(at - colon - 1));
                 }
-            } else if (name_len == 6 && memcmp(cursor, "rumble", 6) == 0) {
-                entry.op = MDKR_HOTPLUG_RUMBLE;
+            } else if ((name_len == 6 && memcmp(cursor, "rumble", 6) == 0) ||
+                       (name_len == 3 && memcmp(cursor, "key", 3) == 0)) {
+                entry.op = name_len == 3 ? MDKR_HOTPLUG_KEY : MDKR_HOTPLUG_RUMBLE;
                 parsed = colon != NULL && colon < at;
                 if (parsed) {
                     entry.value = atoi(colon + 1);
@@ -3662,6 +3702,11 @@ static void input_dispatch_events(uint64_t target_tick) {
                      */
                     if (!e.key.repeat && e.key.keysym.sym == SDLK_TAB) {
                         platform_content_packs_toggle();
+                    }
+                    /* F8 compares replacement geometry without toggling pack
+                     * textures; the same overlay capture/repeat rules apply. */
+                    if (!e.key.repeat && e.key.keysym.sym == SDLK_F8) {
+                        mdkr_sprite_models_toggle();
                     }
                     /*
                      * F9: presentation-defect capture toggle. While active,

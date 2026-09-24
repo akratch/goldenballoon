@@ -550,6 +550,14 @@ s32 homing_rocket_get_next_direction(Object *obj, s32 checkpoint, u8 isOnAlterna
                                      f32 checkpointDist, f32 *outX, f32 *outY, f32 *outZ);
 void func_80016500(Object *obj, Object_Racer *racer);
 void track_spawn_objects(s32, s32);
+#ifdef NATIVE_PORT
+/* Read-only validation of entry bytes (map header excluded). Object translation
+ * and header tables must be initialized for the active ROM; call on the game
+ * thread. Resolves behavior headers through the shared cache, checking the same
+ * minimum record sizes as spawning. No coordinate/body normalization needed.
+ * Returns FALSE on invalid input; does not validate behavior field semantics. */
+s32 mdkr_objmap_validate_bodies(const u8 *entries, s32 totalSize);
+#endif
 u8 timetrial_init_staff_ghost(s32 trackId);
 s8 set_course_finish_flags(Settings *settings);
 void process_object_interactions(void);

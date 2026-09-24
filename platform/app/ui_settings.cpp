@@ -6120,9 +6120,9 @@ void drawDonorGameplayComparison(uint32_t donor, uint32_t &vehicle) {
             "##donor-gameplay-comparison", 3,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Coefficient");
-        ImGui::TableSetupColumn("Exact value");
-        ImGui::TableSetupColumn("Built-in roster range");
+        ImGui::TableSetupColumn("Coefficient", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn("Exact value", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Built-in roster range", ImGuiTableColumnFlags_WidthStretch, 1.5f);
         ImGui::TableHeadersRow();
         drawDonorMetricRow("Effective weight", profile.weight,
                            weightMinimum, weightMaximum);
@@ -6198,8 +6198,8 @@ void drawDonorGameplayComparison(uint32_t donor, uint32_t &vehicle) {
         if (ImGui::BeginTable("##donor-acceleration-values", 2,
                               ImGuiTableFlags_RowBg |
                               ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Speed index");
-            ImGui::TableSetupColumn("Multiplier");
+            ImGui::TableSetupColumn("Speed index", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Multiplier", ImGuiTableColumnFlags_WidthStretch, 1.0f);
             ImGui::TableHeadersRow();
             for (uint32_t sample = 0u;
                  sample < MDKR_DONOR_ACCELERATION_SAMPLES; ++sample) {
@@ -8930,9 +8930,9 @@ void drawCharacterContactDiagnostics(
     } else if (ImGui::BeginTable("##contact-witness-values", 3,
                                  ImGuiTableFlags_RowBg |
                                  ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Contact");
-        ImGui::TableSetupColumn("Endpoint error");
-        ImGui::TableSetupColumn("Target to endpoint (X, Y, Z m)");
+        ImGui::TableSetupColumn("Contact", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Endpoint error", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Target to endpoint (X, Y, Z m)", ImGuiTableColumnFlags_WidthStretch, 2.0f);
         ImGui::TableHeadersRow();
         for (unsigned contact = 0u;
              contact < MDKR_CHARACTER_PREVIEW_CONTACTS; ++contact) {
@@ -9498,9 +9498,11 @@ void drawCharacterJointExcursionTable(
             tableId, 3,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Joint role");
-        ImGui::TableSetupColumn("Largest travel");
-        ImGui::TableSetupColumn("State");
+        // Explicit weights avoid deriving 0/0 from unmeasured first-frame
+        // contents when this table appears below the visible region.
+        ImGui::TableSetupColumn("Joint role", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn("Largest travel", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 1.2f);
         ImGui::TableHeadersRow();
         for (unsigned role = 0u;
              role < MDKR_CHARACTER_PREVIEW_JOINTS; ++role) {
@@ -9731,14 +9733,14 @@ void drawCharacterMotionReviewSummary(
             compact ? 3 : vehicle ? 7 : 4,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("State");
-        ImGui::TableSetupColumn("Framing");
-        ImGui::TableSetupColumn("Visible");
-        if (!compact) ImGui::TableSetupColumn("Peak joint");
+        ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn("Framing", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        if (!compact) ImGui::TableSetupColumn("Peak joint", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         if (!compact && vehicle) {
-            ImGui::TableSetupColumn("Vehicle body");
-            ImGui::TableSetupColumn("Parts / item");
-            ImGui::TableSetupColumn("Contacts");
+            ImGui::TableSetupColumn("Vehicle body", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Parts / item", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Contacts", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         }
         ImGui::TableHeadersRow();
         for (unsigned index = 0u; index < sampleCount; ++index) {
@@ -12271,10 +12273,10 @@ void drawCharacterPerformanceAssembly(
                    "##lod-transition-bands", 4,
                    ImGuiTableFlags_RowBg |
                        ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Projected-height interval");
-        ImGui::TableSetupColumn("Selected authored level");
-        ImGui::TableSetupColumn("Triangles");
-        ImGui::TableSetupColumn("Vertices");
+        ImGui::TableSetupColumn("Projected-height interval", ImGuiTableColumnFlags_WidthStretch, 1.6f);
+        ImGui::TableSetupColumn("Selected authored level", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+        ImGui::TableSetupColumn("Triangles", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Vertices", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableHeadersRow();
         for (size_t band = 0u; band < lodBandCount; ++band) {
             const CharacterWorkshopLodBand &range = lodBands[band];
@@ -19112,7 +19114,8 @@ bool drawPortraitSubjectMask(CharacterIdentityEdit &edit) {
     ui::SpeakFocusedItem(
         "Freeform subject mask canvas", maskState.c_str(),
         "Pointer painting is optional. The numeric coordinates and Apply mask brush button below provide the same operation for keyboard and controller users.");
-    if (hovered) {
+    // Keyboard navigation can report hover with the finite -FLT_MAX sentinel.
+    if (hovered && ImGui::IsMousePosValid()) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
         const int x = std::clamp(
             static_cast<int>((mouse.x - origin.x) / pixelSize), 0, size - 1);
@@ -20116,7 +20119,7 @@ bool drawPortraitPixelEditor(const MdkrModernCharacterEntry *entry,
         "Portrait pixel canvas", canvasState.c_str(),
         "Pointer painting is optional. Keyboard and controller users can edit the numeric pixel coordinates below.");
     const bool hovered = ImGui::IsItemHovered();
-    if (hovered) {
+    if (hovered && ImGui::IsMousePosValid()) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
         const int x = std::clamp(
             static_cast<int>((mouse.x - origin.x) / pixelSize), 0, size - 1);
@@ -24097,7 +24100,9 @@ void drawCharacterReadiness(
             stacked ? 1 : 3,
             ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                 ImGuiTableFlags_SizingStretchProp)) {
-        if (!stacked) {
+        if (stacked) {
+            ImGui::TableSetupColumn("Readiness", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        } else {
             ImGui::TableSetupColumn("Area", ImGuiTableColumnFlags_WidthStretch, 1.1f);
             ImGui::TableSetupColumn("State", ImGuiTableColumnFlags_WidthFixed, 100.0f * AppTheme::uiScale());
             ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthStretch, 2.0f);
@@ -24437,10 +24442,10 @@ bool drawCharacterPackageInspector(const MdkrModernCharacterEntry *entry,
                         4,
                         ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
                             ImGuiTableFlags_SizingStretchProp)) {
-                    ImGui::TableSetupColumn("Role");
-                    ImGui::TableSetupColumn("Source joint");
-                    ImGui::TableSetupColumn("Mapping");
-                    ImGui::TableSetupColumn("Solver basis");
+                    ImGui::TableSetupColumn("Role", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                    ImGui::TableSetupColumn("Source joint", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+                    ImGui::TableSetupColumn("Mapping", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                    ImGui::TableSetupColumn("Solver basis", ImGuiTableColumnFlags_WidthStretch, 1.5f);
                     ImGui::TableHeadersRow();
                     for (size_t slot = 0u;
                          slot < std::size(kHumanoidRigRoles);
@@ -28102,7 +28107,7 @@ bool drawCustomCharactersSection(bool compact) {
             "Library",
             ImGuiTableColumnFlags_WidthFixed,
             320.0f * AppTheme::uiScale());
-        ImGui::TableSetupColumn("Editor", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Editor", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::BeginChild(

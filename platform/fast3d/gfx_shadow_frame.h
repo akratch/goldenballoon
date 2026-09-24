@@ -48,6 +48,7 @@ typedef enum GfxPresentationMatrixClass {
     GFX_PRESENTATION_MATRIX_BILLBOARD = 4,
     GFX_PRESENTATION_MATRIX_PARTICLE_VERTICES = 5,
     GFX_PRESENTATION_MATRIX_PROJECTED_SHADOW_VERTICES = 6,
+    GFX_PRESENTATION_MATRIX_SPRITE_MODEL = 7,
 } GfxPresentationMatrixClass;
 
 /*
@@ -102,6 +103,11 @@ typedef struct GfxPresentationMatrixOwner {
     int16_t source_rotation[3]; /* y, x, z in DKR fixed-angle order */
     float scale_y;
     float offset_y;
+    /* Static replacement recipe: copied values, never model asset pointers. */
+    uint16_t sprite_model_id;
+    float sprite_model_phase;
+    bool sprite_model_attached;
+    float sprite_model_attachment[3];
     /* Parent world at the root push. A child binding additionally uses
      * child_local: replay rebuilds child_local x interpolated_root_world. */
     float parent_world[GFX_SHADOW_MATRIX_DIM][GFX_SHADOW_MATRIX_DIM];

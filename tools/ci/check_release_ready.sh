@@ -193,11 +193,17 @@ fi
 echo
 echo "== Release dependency tracking =="
 if [ "$HAVE_GIT" -eq 1 ]; then
+  if python3 tools/ci/check_source_custody.py; then
+    :
+  else
+    note "source-area inputs are missing from HEAD or the working tree"
+  fi
   # Every path below is consumed directly by CMake, a hosted release workflow,
   # or the release check runner. A local untracked file can make a dirty
   # checkout appear healthy while disappearing from git archive; fail that
   # condition explicitly instead of waiting for a clean-clone build to fail.
   for required_path in \
+    tools/check_clean_room.py \
     docs/FPS_UNCAP_RELEASE_AUDIT.md \
     macos/Scripts/build_release_sdl2.sh \
     macos/Scripts/dmg_mount_cleanup.sh \
@@ -456,6 +462,7 @@ for f in \
   .github/PULL_REQUEST_TEMPLATE.md \
   .github/ISSUE_TEMPLATE/config.yml \
   .github/ISSUE_TEMPLATE/bug_report.md \
+  .github/ISSUE_TEMPLATE/feature_request.md \
   .github/ISSUE_TEMPLATE/build_failure.md \
   .github/ISSUE_TEMPLATE/parity_report.md \
   .github/ISSUE_TEMPLATE/platform_validation.md \

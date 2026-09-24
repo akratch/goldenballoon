@@ -767,7 +767,8 @@ bool gfx_shadow_matrix_register(
             s_presentation_owner_stats.registrations++;
             if (!owner_valid) {
                 s_presentation_owner_stats.unowned++;
-            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+            } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT ||
+                       owner.matrix_class == GFX_PRESENTATION_MATRIX_SPRITE_MODEL) {
                 s_presentation_owner_stats.roots++;
             } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
                 s_presentation_owner_stats.children++;
@@ -841,7 +842,8 @@ bool gfx_shadow_matrix_register(
     s_presentation_owner_stats.registrations++;
     if (!owner_valid) {
         s_presentation_owner_stats.unowned++;
-    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT) {
+    } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_ROOT ||
+               owner.matrix_class == GFX_PRESENTATION_MATRIX_SPRITE_MODEL) {
         s_presentation_owner_stats.roots++;
     } else if (owner.matrix_class == GFX_PRESENTATION_MATRIX_CHILD) {
         s_presentation_owner_stats.children++;

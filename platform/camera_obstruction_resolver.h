@@ -52,6 +52,11 @@ typedef struct MdkrCameraObstructionResolverConfig {
      * hold and restores release-on-first-clear-tick.
      */
     uint32_t release_hold_ticks;
+    /* Optional expansion cap as a fraction of remaining error, [0, 1].
+     * Zero preserves constant-speed recovery. Positive values ease arrival;
+     * numerical settling may finish within four float epsilons at world scale.
+     * This never limits collision retraction or advances zero-time recovery. */
+    float max_recovery_fraction;
 } MdkrCameraObstructionResolverConfig;
 
 /* Caller-owned state. Zero-initialize or call mdkr_camera_obstruction_resolver_reset. */

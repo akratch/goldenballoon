@@ -449,6 +449,8 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c     # one pack's pack.ini
     ${CMAKE_SOURCE_DIR}/platform/mod_source.c       # directory/zip pack byte source
     ${CMAKE_SOURCE_DIR}/platform/mod_registry.c     # ordered set of installed packs
+    ${CMAKE_SOURCE_DIR}/platform/sprite_model_mesh.c
+    ${CMAKE_SOURCE_DIR}/platform/sprite_models.c
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_key.c  # published texture content digest
     ${CMAKE_SOURCE_DIR}/platform/mod_texture_store.c # decoded override textures (stb PNG)
     ${CMAKE_SOURCE_DIR}/platform/rice_crc.c        # Rice/GLideN64 texture identity
@@ -475,6 +477,8 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/enh_ai_difficulty.c # opponent skill (gameplay; authored by default)
     ${CMAKE_SOURCE_DIR}/platform/save_state.c       # practice save states (NOT the progress save)
     ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_section.c # immutable custom-track asset sessions
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c # bounded rzip admission decode
     # The console command parser. It was reachable only from cmake/tests.cmake
     # until the console shipped -- a unit-tested island the engine never linked.
     ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing
@@ -1081,6 +1085,9 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/engine_boot.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/main_app.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/rom_validate.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/file_browser_ui.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/pack_installer.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_common.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_diag.cpp
@@ -1896,6 +1903,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/app
             ${CMAKE_SOURCE_DIR}/lib/glad/include
+            ${CMAKE_SOURCE_DIR}/lib/miniz
             ${CMAKE_SOURCE_DIR}/lib/stb
             ${SDL2_INCLUDE_DIRS})
         target_link_directories(mdkr64_app PRIVATE ${SDL2_LIBRARY_DIRS})

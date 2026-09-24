@@ -3,6 +3,18 @@
 
 #include "types.h"
 
+#ifdef NATIVE_PORT
+struct MdkrCustomTrackSession;
+/* Borrowed session, prepared against this ROM's normalized retail tables.
+ * Call only with the engine stopped, before asset consumers initialize (or
+ * after all consumers unload). Detach before destroying the session. This is
+ * not a live-reload API; the DMA mutex alone cannot invalidate cached IDs.
+ * After pi_init only. Returns 1 on success; mismatched active-ROM tables or
+ * read/allocation failure return 0 and preserve the installed session. NULL
+ * detaches. Table matching is not authored-asset or ROM-content validation. */
+int asset_custom_track_session_set(const struct MdkrCustomTrackSession *session);
+#endif
+
 void pi_init(void);
 u32 *asset_table_load(u32 assetIndex);
 s32 asset_load(u32 assetIndex, uintptr_t address, s32 assetOffset, s32 size);

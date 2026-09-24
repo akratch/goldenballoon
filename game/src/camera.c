@@ -18,6 +18,7 @@
 #include "fast3d/gfx_presentation_packet.h"
 #include "fast3d/gfx_shadow_frame.h"
 #include "presentation_snapshot.h"
+#include "sprite_models.h"
 #include "rcp_dkr.h"
 #include "thread3_main.h"
 #include <math.h>
@@ -587,7 +588,8 @@ bool mdkr_camera_replay_object_world(
 
     if (owner == NULL || !owner->valid || outWorld == NULL ||
         (owner->matrix_class != GFX_PRESENTATION_MATRIX_ROOT &&
-         owner->matrix_class != GFX_PRESENTATION_MATRIX_CHILD)) {
+         owner->matrix_class != GFX_PRESENTATION_MATRIX_CHILD &&
+         owner->matrix_class != GFX_PRESENTATION_MATRIX_SPRITE_MODEL)) {
         return false;
     }
     if (!presentation_snapshot_resolve_object_generation(
@@ -637,6 +639,23 @@ bool mdkr_camera_replay_object_world(
         transform.scale = target.scale;
     }
 
+    if (owner->matrix_class == GFX_PRESENTATION_MATRIX_SPRITE_MODEL) {
+        MdkrSpriteModelPose pose = {0};
+        memcpy(pose.position, transform.position.f, sizeof(pose.position));
+        pose.scale = transform.scale;
+        pose.rotation[0] = transform.rotation.y_rotation;
+        pose.rotation[1] = transform.rotation.x_rotation;
+        pose.rotation[2] = transform.rotation.z_rotation;
+        pose.sprite = owner->sprite_model_id;
+        pose.phase = mdkr_camera_replay_tick_agreement(owner)
+            ? owner->sprite_model_phase + target.sprite_phase - authored.sprite_phase
+            : target.sprite_phase;
+        pose.attached = owner->sprite_model_attached;
+        memcpy(pose.attachment, owner->sprite_model_attachment, sizeof(pose.attachment));
+        if (!mdkr_sprite_model_matrix(&pose, rootLocal)) return false;
+        mtxf_mul(&rootLocal, (MtxF *)&owner->parent_world, (MtxF *)outWorld);
+        return true;
+    }
     mtxf_from_transform(&rootLocal, &transform);
     if (owner->offset_y != 0.0f) {
         mtxf_translate_y(&rootLocal, owner->offset_y);
@@ -3228,6 +3247,205 @@ s32 render_sprite_billboard_transform(Gfx **dList, Mtx **mtx, Vertex **vtx,
                                       Sprite *sprite, s32 flags) {
     return render_sprite_billboard_transform_impl(
         dList, mtx, vtx, transform, animFrame, sprite, flags);
+}
+typedef struct SpriteModelAttachment {
+    const Object *object;
+    u64 generation;
+    int valid;
+    float anchor[3], tip[3];
+} SpriteModelAttachment;
+static SpriteModelAttachment sSpriteModelAttachments[256];
+static unsigned sSpriteModelNextAttachment;
+static float *sSpriteModelBarkVertices;
+static size_t sSpriteModelBarkVertexCount;
+static size_t sSpriteModelBarkVertexCapacity;
+static LevelModel *sSpriteModelBarkLevel;
+
+#define MDKR_SPRITE_MODEL_BARK_VERTEX_MAX 100000u
+
+static int sprite_model_trace_enabled(void) {
+    const char *trace = getenv("MDKR_TRACE_MODELS");
+    return trace != NULL && trace[0] == '1';
+}
+
+void mdkr_sprite_model_reset_attachments(void) {
+    free(sSpriteModelBarkVertices);
+    sSpriteModelBarkVertices = NULL;
+    sSpriteModelBarkVertexCount = 0;
+    sSpriteModelBarkVertexCapacity = 0;
+    sSpriteModelBarkLevel = NULL;
+    memset(sSpriteModelAttachments, 0, sizeof(sSpriteModelAttachments));
+    sSpriteModelNextAttachment = 0;
+}
+
+static int sprite_model_is_bark_texture(const LevelModel *level, int texture_index,
+                                        const TextureInfo *textures) {
+    extern s32 *gTextureCache;
+    extern s32 gNumberOfLoadedTextures;
+    dkrptr32 texture;
+    int cache_index;
+    if (level == NULL || textures == NULL || gTextureCache == NULL ||
+        texture_index < 0 || texture_index >= level->numberOfTextures ||
+        gNumberOfLoadedTextures <= 0 || gNumberOfLoadedTextures > 1024) return 0;
+    texture = textures[texture_index].texture;
+    if (texture == 0) return 0;
+    for (cache_index = 0; cache_index < gNumberOfLoadedTextures; ++cache_index) {
+        const s32 id = gTextureCache[cache_index * 2];
+        if ((id == (0x8000 | 236) || id == (0x8000 | 238) ||
+             id == (0x8000 | 240) || id == (0x8000 | 1046)) &&
+            (u32)gTextureCache[cache_index * 2 + 1] == texture) return 1;
+    }
+    return 0;
+}
+
+/* Build the bark point cloud once per level. The old implementation allocated
+ * 1.2 MiB on every canopy cache miss and then rescanned every level segment;
+ * this keeps the same source geometry while moving both costs to level load. */
+static int sprite_model_build_bark_vertices(LevelModel *level) {
+    const LevelModelSegment *segments;
+    const TextureInfo *textures;
+    size_t segment_index;
+    if (sSpriteModelBarkLevel == level) return sSpriteModelBarkVertexCount != 0;
+    free(sSpriteModelBarkVertices);
+    sSpriteModelBarkVertices = NULL;
+    sSpriteModelBarkVertexCount = 0;
+    sSpriteModelBarkVertexCapacity = 0;
+    sSpriteModelBarkLevel = level;
+    if (level == NULL || level->numberOfSegments <= 0 || level->numberOfSegments > 1024 ||
+        level->numberOfTextures <= 0 || level->numberOfTextures > 255 ||
+        level->segments == 0 || level->textures == 0) return 0;
+    segments = DKR_PTR(LevelModelSegment, level->segments);
+    textures = DKR_PTR(TextureInfo, level->textures);
+    if (segments == NULL || textures == NULL) goto fail;
+    for (segment_index = 0; segment_index < (size_t)level->numberOfSegments; ++segment_index) {
+        const LevelModelSegment *segment = &segments[segment_index];
+        const TriangleBatchInfo *batches;
+        const Vertex *vertices;
+        int batch_index;
+        if (segment->numberOfVertices < 0 || segment->numberOfVertices > 8192 ||
+            segment->numberOfBatches < 0 || segment->numberOfBatches > 4096 ||
+            segment->vertices == 0 || segment->batches == 0) {
+            goto fail;
+        }
+        batches = DKR_PTR(TriangleBatchInfo, segment->batches);
+        vertices = DKR_PTR(Vertex, segment->vertices);
+        if (batches == NULL || vertices == NULL) goto fail;
+        for (batch_index = 0; batch_index < segment->numberOfBatches; ++batch_index) {
+            const int texture_index = batches[batch_index].textureIndex;
+            int first, last, vertex_index;
+            if (!sprite_model_is_bark_texture(level, texture_index, textures)) continue;
+            /* Level batches have a sentinel at [numberOfBatches], matching the
+             * renderer's existing batch walk. Validate both offsets before any
+             * vertex read so malformed content fails closed. */
+            first = batches[batch_index].verticesOffset;
+            last = batches[batch_index + 1].verticesOffset;
+            if (first < 0 || last < first || last > segment->numberOfVertices) goto fail;
+            for (vertex_index = first; vertex_index < last; ++vertex_index) {
+                if (sSpriteModelBarkVertexCount >= MDKR_SPRITE_MODEL_BARK_VERTEX_MAX) goto fail;
+                if (sSpriteModelBarkVertexCount == sSpriteModelBarkVertexCapacity) {
+                    size_t next = sSpriteModelBarkVertexCapacity == 0 ? 1024u :
+                        sSpriteModelBarkVertexCapacity * 2u;
+                    float *grown;
+                    if (next > MDKR_SPRITE_MODEL_BARK_VERTEX_MAX)
+                        next = MDKR_SPRITE_MODEL_BARK_VERTEX_MAX;
+                    grown = realloc(sSpriteModelBarkVertices, next * 3u * sizeof(float));
+                    if (grown == NULL) goto fail;
+                    sSpriteModelBarkVertices = grown;
+                    sSpriteModelBarkVertexCapacity = next;
+                }
+                sSpriteModelBarkVertices[sSpriteModelBarkVertexCount * 3u + 0] = vertices[vertex_index].x;
+                sSpriteModelBarkVertices[sSpriteModelBarkVertexCount * 3u + 1] = vertices[vertex_index].y;
+                sSpriteModelBarkVertices[sSpriteModelBarkVertexCount * 3u + 2] = vertices[vertex_index].z;
+                sSpriteModelBarkVertexCount++;
+            }
+        }
+    }
+    return sSpriteModelBarkVertexCount != 0;
+
+fail:
+    /* A failed scan must never be cached as a valid level.  In particular,
+     * leaving a partial cloud behind would make a later call reuse geometry
+     * from only the segments visited before the malformed batch or OOM. */
+    free(sSpriteModelBarkVertices);
+    sSpriteModelBarkVertices = NULL;
+    sSpriteModelBarkVertexCount = 0;
+    sSpriteModelBarkVertexCapacity = 0;
+    return 0;
+}
+
+/* Reuse the source port's bark-only attachment search. Level initialization
+ * resets this cache even when motion smoothing and its identity registry are
+ * disabled. Object generation and anchor also guard reuse within the map. */
+static void sprite_model_attachment(const Object *obj, u64 generation, MdkrSpriteModelPose *pose) {
+    SpriteModelAttachment *cached;
+    unsigned entry;
+    LevelModel *level;
+    MdkrSpriteModelTrunkCandidates candidates;
+    if (pose->sprite != 114 && pose->sprite != 116) return;
+    /* Level-arena objects often have matching low address bits. Searching this
+     * small lifetime cache avoids rescanning all bark every frame on collision. */
+    for (entry = 0; entry < 256; ++entry) {
+        cached = &sSpriteModelAttachments[entry];
+        if (cached->object == obj && cached->generation == generation &&
+            !memcmp(cached->anchor, pose->position, sizeof(cached->anchor))) {
+            pose->attached = cached->valid;
+            memcpy(pose->attachment, cached->tip, sizeof(pose->attachment));
+            return;
+        }
+    }
+    cached = &sSpriteModelAttachments[sSpriteModelNextAttachment++ & 255];
+    memset(cached, 0, sizeof(*cached)); cached->object = obj; cached->generation = generation;
+    memcpy(cached->anchor, pose->position, sizeof(cached->anchor));
+    level = get_current_level_model();
+    if (!sprite_model_build_bark_vertices(level)) return;
+    mdkr_sprite_model_trunk_candidates_init(&candidates);
+    for (size_t vertex = 0; vertex < sSpriteModelBarkVertexCount; ++vertex)
+        mdkr_sprite_model_trunk_candidates_add(&candidates,
+            &sSpriteModelBarkVertices[vertex * 3u], pose->position);
+    cached->valid = mdkr_sprite_model_trunk_candidates_finish(&candidates, cached->tip);
+    pose->attached = cached->valid;
+    memcpy(pose->attachment, cached->tip, sizeof(pose->attachment));
+    if (sprite_model_trace_enabled()) fprintf(stderr, "[MODELS] canopy sprite=%u attached=%d\n", pose->sprite, pose->attached);
+}
+
+s32 render_sprite_model(Gfx **dList, Mtx **mtx, Object *obj, Sprite *sprite, s32 flags) {
+    MdkrSpriteModelPose pose = {0};
+    GfxPresentationMatrixOwner owner;
+    MtxF local, world, mvp;
+    u64 generation = 0;
+    s32 id;
+    bool owned;
+    if (!obj || !sprite || !obj->header || !gfx_sprite_models_supported() ||
+        gModelMatrixStackPos != 0 || obj->modelIndex < 0 ||
+        obj->modelIndex >= obj->header->numberOfModelIds || !obj->header->modelIds) return FALSE;
+    id = DKR_PTR(s32, obj->header->modelIds)[obj->modelIndex];
+    if (!mdkr_sprite_model_supported(id, obj->header->modelType, obj->header->behaviorId, obj->behaviorId) ||
+        !mdkr_sprite_models_ready(id)) return FALSE;
+    pose.sprite = (u16)id; pose.scale = obj->trans.scale;
+    memcpy(pose.position, obj->trans.position.f, sizeof(pose.position));
+    pose.rotation[0] = obj->trans.rotation.y_rotation;
+    pose.rotation[1] = obj->trans.rotation.x_rotation;
+    pose.rotation[2] = obj->trans.rotation.z_rotation;
+    pose.phase = (u8)obj->animFrame;
+    (void)presentation_snapshot_identity_ensure_generation(obj, &generation);
+    sprite_model_attachment(obj, generation, &pose);
+    if (!mdkr_sprite_model_matrix(&pose, local)) return FALSE;
+    mtxf_mul(&local, gModelMatrixF[gModelMatrixStackPos], &world);
+    mtxf_mul(&world, &gViewProjMatrixF, &mvp);
+    mtxf_to_mtx(&mvp, *mtx);
+    owned = mdkr_presentation_owner_root(&owner, &obj->trans, 1.0f, 0.0f, gModelMatrixF[gModelMatrixStackPos]);
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_SPRITE_MODEL;
+    owner.sprite_model_id = pose.sprite; owner.sprite_model_phase = pose.phase;
+    owner.sprite_model_attached = pose.attached;
+    memcpy(owner.sprite_model_attachment, pose.attachment, sizeof(pose.attachment));
+    mdkr_shadow_register_matrix(*mtx, &world, GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owned ? &owner : NULL);
+    material_load_simple(dList, sprite->drawFlags | (flags & (RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT |
+                         RENDER_Z_COMPARE | RENDER_ANTI_ALIASING)));
+    gDkrDisableBillboard((*dList)++);
+    gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_1, G_MTX_DKR_SPACE_WORLD);
+    gDkrDrawSpriteModel((*dList)++, id);
+    gSPSelectMatrixDKR((*dList)++, G_MTX_DKR_INDEX_0);
+    return TRUE;
 }
 #endif
 

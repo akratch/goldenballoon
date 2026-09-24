@@ -1138,6 +1138,9 @@ void init_track(u32 geometry, u32 skybox, s32 numberOfPlayers, Vehicle vehicle, 
     s32 i;
 
     gCurrentLevelHeader2 = level_header();
+#ifdef NATIVE_PORT
+    mdkr_sprite_model_reset_attachments();
+#endif
     D_8011B0F8 = FALSE;
     gTTCamPlayerID = 0;
     gTTCamID = 0;
@@ -6304,6 +6307,7 @@ void free_track(void) {
      * released. Queries after this point fail closed rather than dereferencing
      * stale geometry. */
     mdkr_track_occlusion_cache_free();
+    mdkr_sprite_model_reset_attachments();
 #endif
     if (gWaveBlockCount != 0) {
         waves_free();

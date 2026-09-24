@@ -291,6 +291,13 @@ def inspect(route: Route, output: str) -> tuple[dict, dict, list[str]]:
     stats = parse_stats(output)
 
     failures: list[str] = []
+    # Smooth derivatives intentionally omit published cuts. Require separate
+    # cut-step reporting so a cut-heavy route cannot appear motionless simply
+    # because all its large movements were excluded from that chain.
+    for metric, unit in (("cut_pos_step", "wu/cut"), ("cut_ang_step", "deg/cut")):
+        values = stats.get(metric)
+        if values is None or values["unit"] != unit:
+            failures.append(f"{route.name}: missing or invalid {metric} census")
 
     # The route has to have actually resolved cameras under Modern. A silent
     # zero-sample run must never read as a clean one.

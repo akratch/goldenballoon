@@ -85,4 +85,12 @@ MdkrLevelObjectRecordError mdkr_level_object_record_parse(
 const char *mdkr_level_object_record_error_string(
     MdkrLevelObjectRecordError error);
 
+/* Read-only structural admission of a decoded, still big-endian object map.
+ * Checks its 16-byte header, declared entry bytes and every record boundary/ID.
+ * Trailing section padding is allowed. Does NOT validate translated behavior
+ * headers, behavior-specific minimum sizes or semantic cross-references.
+ * Failure leaves record_count unchanged. */
+bool mdkr_level_object_map_validate(const void *bytes, size_t size,
+                                    size_t object_id_count, size_t *record_count);
+
 #endif

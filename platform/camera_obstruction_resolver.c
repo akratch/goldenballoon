@@ -42,7 +42,9 @@ static int mdkr_camera_resolver_config_valid(
             config->policy == MDKR_CAMERA_OBSTRUCTION_POLICY_CENTER_RAY) &&
            isfinite(config->clearance_skin) && config->clearance_skin >= 0.0f &&
            isfinite(config->recovery_speed) && config->recovery_speed > 0.0f &&
-           isfinite(config->max_recovery_step) && config->max_recovery_step > 0.0f;
+           isfinite(config->max_recovery_step) && config->max_recovery_step > 0.0f &&
+           isfinite(config->max_recovery_fraction) &&
+           config->max_recovery_fraction >= 0.0f && config->max_recovery_fraction <= 1.0f;
 }
 
 static int mdkr_camera_resolver_input_valid(
@@ -295,6 +297,19 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
             }
             if (recovery > config->max_recovery_step) {
                 recovery = config->max_recovery_step;
+            }
+            if (config->max_recovery_fraction > 0.0f) {
+                /* At large world coordinates a fraction of a one-ULP error
+                 * can round to the same eye forever. Settle only at numerical
+                 * precision, still subject to speed/step caps and the normal
+                 * final safety query. A paused solve has recovery == 0. */
+                float scale = fmaxf(1.0f, fmaxf(fabsf(anchor.x), fabsf(input->desired_eye.x)));
+                scale = fmaxf(scale, fmaxf(fabsf(anchor.y), fabsf(input->desired_eye.y)));
+                scale = fmaxf(scale, fmaxf(fabsf(anchor.z), fabsf(input->desired_eye.z)));
+                const float settle = 4.0f * FLT_EPSILON * scale;
+                if (distance > settle) {
+                    recovery = fminf(recovery, config->max_recovery_fraction * distance);
+                }
             }
             if (recovery > distance) {
                 recovery = distance;

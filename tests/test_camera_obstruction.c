@@ -1147,6 +1147,38 @@ static void test_adversarial_coordinate_scales(void) {
     expect_near("large finite coordinates fraction", hit.fraction, 0.45f, 0.02f);
 }
 
+static void test_rotating_lens_clear_endpoints_are_not_a_proof(void) {
+    const MdkrCameraVec3 vertices[] = {
+        {8.0f, -0.2f, -0.2f}, {8.0f, 0.2f, -0.2f}, {8.0f, 0.0f, 0.2f},
+    };
+    const uint32_t indices[] = {0, 1, 2};
+    const MdkrCameraOcclusionTriangle triangles[] = {{901, 1, 1, 0}};
+    MdkrCameraOcclusionWorld world = world_for(vertices, 3, indices, triangles, 1);
+    MdkrCameraSweepHit hit;
+    MdkrCameraRoundedLensGuard guard;
+    /* A stationary eye turns through a thin obstacle. Both endpoint lenses
+     * clear it; the intermediate orientation contains it. This synthetic
+     * witness prevents replacing continuous rotation proof with endpoints. */
+    for (int sample = -1; sample <= 1; ++sample) {
+        const float angle = sample * 0.7853981633974483f;
+        expect_true("rotating witness guard", mdkr_camera_rounded_lens_guard_from_projection(
+            10.0f, 0.3490658503988659f, 1.0f, 0.05f,
+            (MdkrCameraVec3){cosf(angle), sinf(angle), 0.0f},
+            (MdkrCameraVec3){0.0f, 0.0f, 1.0f}, &guard));
+        MdkrCameraRoundedLensSweepInput exact = {
+            .guard = guard, .start_eye = {0, 0, 0}, .desired_eye = {0, 0, 0},
+        };
+        expect_true("rotating witness endpoints clear but midpoint hits",
+            mdkr_camera_rounded_lens_sweep(&world, &exact, &hit) ==
+                (sample == 0 ? MDKR_CAMERA_SWEEP_HIT : MDKR_CAMERA_SWEEP_CLEAR));
+    }
+    MdkrCameraSweepInput sphere = sweep_input(
+        (MdkrCameraVec3){0, 0, 0}, (MdkrCameraVec3){0, 0, 0}, guard.broadphase_radius);
+    expect_true("rotation enclosing sphere retains intermediate obstacle",
+        mdkr_camera_sweep(&world, &sphere, &hit) == MDKR_CAMERA_SWEEP_HIT &&
+        hit.stable_id == 901);
+}
+
 int main(void) {
     test_no_hit_and_endpoint_touch();
     test_face_edge_vertex_and_two_sided();
@@ -1164,6 +1196,7 @@ int main(void) {
     test_seeded_rounded_analytic_against_reference();
     test_seeded_metamorphic_sweeps();
     test_adversarial_coordinate_scales();
+    test_rotating_lens_clear_endpoints_are_not_a_proof();
 
     if (s_failures != 0) {
         fprintf(stderr, "%d camera-obstruction assertion(s) failed\n", s_failures);

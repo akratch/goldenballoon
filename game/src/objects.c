@@ -2037,10 +2037,19 @@ s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model) {
  * Allocate memory for objects and object related systems.
  * This includes the objects themselves, particles, and all of the pointer lists for tracking objects.
  */
+#ifdef NATIVE_PORT
+/* These values describe the active object-header tables, not the process.
+ * Reinitialize with the object pools even if a later ROM uses identical table
+ * addresses/counts. Never use allocation addresses as content identity. */
+#define MDKR_OBJ_BHV_CACHE_N 1024
+static s16 sObjectBehaviorCache[MDKR_OBJ_BHV_CACHE_N];
+#endif
+
 void allocate_object_pools(void) {
     s32 i;
 #ifdef NATIVE_PORT
     s32 translationTableBytes;
+    for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; ++i) sObjectBehaviorCache[i] = -3;
 #endif
 
     set_world_shading(0.67f, 0.33f, 0, -0x2000, 0);
@@ -2895,38 +2904,28 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
 }
 
 /* Resolve a header type -> behaviourId. An object header's behaviour is a static
- * property of the asset, so the result is cached for the whole program lifetime:
+ * property of the asset, so the result is cached for the object-pool lifetime:
  * load_object_header() gzip-decompresses on a cache miss, so resolving per map
  * entry (with many repeats, every level load) is prohibitively slow. With the
- * cache each unique header type is decompressed at most once ever, and since the
+ * cache each unique header type is decompressed at most once per pool lifetime, and since the
  * spawn loop loads the same headers anyway this adds ~no cost. -3 = unknown. */
-#define MDKR_OBJ_BHV_CACHE_N 1024
 static s16 mdkr_obj_behavior_of(s16 hdrType) {
-    static s16 cache[MDKR_OBJ_BHV_CACHE_N];
-    static s32 inited = 0;
     ObjectHeader *hdr;
     s16 bhv;
-    if (!inited) {
-        s32 i;
-        for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; i++) {
-            cache[i] = -3;
-        }
-        inited = 1;
-    }
     if (hdrType < 0 || hdrType >= MDKR_OBJ_BHV_CACHE_N) {
         return -1;
     }
-    if (cache[hdrType] != -3) {
-        return cache[hdrType];
+    if (sObjectBehaviorCache[hdrType] != -3) {
+        return sObjectBehaviorCache[hdrType];
     }
     hdr = load_object_header(hdrType);
     if (hdr == NULL) {
-        cache[hdrType] = -1;
+        /* A transient load failure must not poison future admissions. */
         return -1;
     }
     bhv = hdr->behaviorId;
     try_free_object_header(hdrType); /* keep the refcount balanced (spawn loop reloads). */
-    cache[hdrType] = bhv;
+    sObjectBehaviorCache[hdrType] = bhv;
     return bhv;
 }
 
@@ -2937,8 +2936,12 @@ static s16 mdkr_obj_behavior_of(s16 hdrType) {
  * every embedded stride, object id, translated header, and behaviour minimum
  * has been checked against the actual remaining byte count.
  */
-static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
+s32 mdkr_objmap_validate_bodies(const u8 *entries, s32 totalSize) {
     size_t walked = 0;
+
+    if (gAssetsLvlObjTranslationTable == NULL ||
+        gAssetsLvlObjTranslationTableCapacity == 0 ||
+        gAssetsObjectHeadersTableLength <= 0) return FALSE;
 
     if (entries == NULL || totalSize < 0) {
         fprintf(stderr,
@@ -2996,12 +2999,28 @@ static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
             return FALSE;
         }
 
-        mdkr_objmap_swap_entry_body(
-            behaviorId, entries + walked, (s32) view.size);
         walked += view.size;
     }
 
     return walked == (size_t) totalSize;
+}
+
+static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
+    size_t walked = 0;
+    /* Validate the entire stream before modifying any record. The resolver's
+     * cache makes this second traversal cheap; no object is spawned here. */
+    if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;
+    while (walked < (size_t)totalSize) {
+        MdkrLevelObjectRecordView view;
+        if (mdkr_level_object_record_parse(entries + walked, (size_t)totalSize - walked,
+                gAssetsLvlObjTranslationTableCapacity, &view) != MDKR_LEVEL_OBJECT_RECORD_OK)
+            return FALSE;
+        s16 header = gAssetsLvlObjTranslationTable[view.object_id];
+        s16 behavior = mdkr_obj_behavior_of(header);
+        mdkr_objmap_swap_entry_body(behavior, entries + walked, (s32)view.size);
+        walked += view.size;
+    }
+    return TRUE;
 }
 #endif
 
@@ -7506,6 +7525,9 @@ void render_3d_billboard(Object *obj) {
             RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_Z_UPDATE);
 #endif
     } else {
+#ifdef NATIVE_PORT
+        if (!render_sprite_model(&gObjectCurrDisplayList, &gObjectCurrMatrix, obj, sprite, flags))
+#endif
         render_sprite_billboard(&gObjectCurrDisplayList, &gObjectCurrMatrix, &gObjectCurrVertexList, obj, sprite,
                                 flags);
     }

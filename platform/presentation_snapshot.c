@@ -1567,6 +1567,7 @@ static void object_pose_from_entry(const PresentationObjectEntry *entry,
     out->rotation_z = entry->rotation_z;
     out->animation_id = entry->animation_id;
     out->animation_frame = entry->animation_frame;
+    out->sprite_phase = entry->sprite_phase;
     out->model_index = entry->model_index;
     out->opacity = entry->opacity;
     out->is_particle = entry->is_particle;
@@ -1654,6 +1655,16 @@ static bool resolve_object_pair(const PresentationSnapshot *current,
                        numerator, denominator);
     out->opacity = presentation_lerp_u8(
         before->opacity, entry->opacity, numerator, denominator);
+
+    /* Preserve the short cyclic arc (255 -> 0 moves forward). Avoid signed
+     * narrowing so wrap behavior is independent of compiler conventions. */
+    {
+        int delta = ((int)entry->sprite_phase - (int)before->sprite_phase + 256) % 256;
+        if (delta >= 128) delta -= 256;
+        out->sprite_phase = denominator == 0 || numerator >= denominator
+            ? entry->sprite_phase
+            : before->sprite_phase + (float)delta * ((float)numerator / denominator);
+    }
 
     /* Discrete: previous until the tick completes (see the header). */
     use_current = presentation_discrete_use_current(numerator, denominator);

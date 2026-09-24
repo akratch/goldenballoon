@@ -597,6 +597,79 @@ int main(void) {
         stats.frames_begun == 0 && stats.peak_vertices == 0,
         "shutdown releases and resets all ownership");
 
+    /* Replacement meshes retain a value recipe, never the caller's temporary
+     * attachment storage. The end-of-walk registry reset retires the recipe. */
+    gfx_shadow_stage_begin(100);
+    memset(&owner, 0, sizeof(owner));
+    owner.address = &owner_key;
+    owner.generation = 91;
+    owner.valid = true;
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_SPRITE_MODEL;
+    owner.sprite_model_id = 114;
+    owner.sprite_model_phase = 255.5f;
+    owner.sprite_model_attached = 1;
+    owner.sprite_model_attachment[0] = 11.0f;
+    owner.sprite_model_attachment[1] = 22.0f;
+    owner.sprite_model_attachment[2] = 33.0f;
+    gfx_shadow_matrix_set_presentation_owner(&owner);
+    expect(gfx_shadow_matrix_register(&owner_key, world, view_projection,
+                                      GFX_SHADOW_MOBILITY_DYNAMIC),
+           "sprite model recipe registers");
+    memset(&owner, 0, sizeof(owner));
+    memset(&binding, 0, sizeof(binding));
+    expect(gfx_shadow_matrix_lookup(&owner_key, &binding) &&
+               binding.presentation_owner.valid &&
+               binding.presentation_owner.generation == 91 &&
+               binding.presentation_owner.matrix_class == GFX_PRESENTATION_MATRIX_SPRITE_MODEL &&
+               binding.presentation_owner.sprite_model_id == 114 &&
+               binding.presentation_owner.sprite_model_phase == 255.5f &&
+               binding.presentation_owner.sprite_model_attached == 1 &&
+               binding.presentation_owner.sprite_model_attachment[0] == 11.0f &&
+               binding.presentation_owner.sprite_model_attachment[1] == 22.0f &&
+               binding.presentation_owner.sprite_model_attachment[2] == 33.0f,
+           "sprite model recipe owns its copied attachment and phase");
+    gfx_shadow_presentation_owner_get_stats(&owner_stats);
+    expect(owner_stats.roots == 1 && owner_stats.unowned == 0,
+           "sprite model recipe is classified as an owned root");
+    gfx_shadow_replay_freeze();
+    expect(gfx_shadow_replay_frozen() &&
+               gfx_shadow_replay_frozen_matrix_count() == 1,
+           "sprite model recipe freezes with the retained walk");
+    gfx_shadow_matrix_registry_reset();
+    expect(!gfx_shadow_matrix_lookup(&owner_key, &binding),
+           "end-of-walk reset retires the sprite model recipe");
+    /* Use a completely explicit next-life recipe: failed lookup output is
+     * intentionally not part of the API contract. */
+    memset(&owner, 0, sizeof(owner));
+    owner.address = &owner_key;
+    owner.generation = 92;
+    owner.valid = true;
+    owner.matrix_class = GFX_PRESENTATION_MATRIX_SPRITE_MODEL;
+    owner.sprite_model_id = 116;
+    owner.sprite_model_phase = 4.0f;
+    owner.sprite_model_attachment[0] = 77.0f;
+    gfx_shadow_matrix_set_presentation_owner(&owner);
+    expect(gfx_shadow_matrix_register(&owner_key, world, view_projection,
+                                      GFX_SHADOW_MOBILITY_DYNAMIC),
+           "next-life sprite recipe registers at the same matrix address");
+    expect(gfx_shadow_replay_restore(NULL, 0),
+           "sprite model frozen recipe restores over next-life live recipe");
+    expect(gfx_shadow_matrix_lookup(&owner_key, &binding) &&
+               binding.presentation_owner.generation == 91 &&
+               binding.presentation_owner.sprite_model_id == 114 &&
+               binding.presentation_owner.sprite_model_phase == 255.5f &&
+               binding.presentation_owner.sprite_model_attachment[0] == 11.0f,
+           "replay retains old identity and attachment without borrowing next life");
+    expect(gfx_shadow_replay_release(),
+           "sprite model replay releases registry custody");
+    expect(gfx_shadow_matrix_lookup(&owner_key, &binding) &&
+               binding.presentation_owner.generation == 92 &&
+               binding.presentation_owner.sprite_model_id == 116 &&
+               binding.presentation_owner.sprite_model_phase == 4.0f &&
+               binding.presentation_owner.sprite_model_attachment[0] == 77.0f,
+           "replay release preserves the next-life model recipe");
+    gfx_shadow_frame_shutdown();
+
     if (failures != 0) {
         fprintf(stderr, "%d shadow-frame test(s) failed\n", failures);
         return 1;

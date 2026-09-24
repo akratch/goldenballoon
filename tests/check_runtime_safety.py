@@ -100,6 +100,9 @@ REQUIRED = {
         "mdkr_model_index_resolve(",
     ),
     "game/src/objects.c": (
+        "s32 translationTableBytes;\n    for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; ++i) sObjectBehaviorCache[i] = -3;",
+        "if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;",
+        "if (hdr == NULL) {\n        /* A transient load failure must not poison future admissions. */\n        return -1;\n    }",
         "mdkr_model_load_selection(",
         "mdkr_trophy_state(settings->trophies, settings->worldId,",
         "uintptr_t objectEntryAddress = (uintptr_t) obj->level_entry;",
