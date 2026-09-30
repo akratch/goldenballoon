@@ -765,9 +765,12 @@ options and SDL as `build-rel` and built with `--target mdkr64`.
 `previous_release_parity` requires both builds to produce identical `[SIMHASH]`
 streams on the retail AI, boss and challenge-arena routes (US and PAL), and has
 the old build write a Time Trial record and ghost that this build must read
-back. Without the flag that task is SKIPPED and the verdict reads `PASS WITH
-SKIPS`, which is not release evidence. A diverging route is a finding: bisect
-it over `v1.7.0..HEAD`, then document the change as intended or fix it.
+back. Without the flag that task is SKIPPED, and because this command passes
+`--require-fresh`/`--require-shipping-sdl` the runner then fails the run and
+names `--reference-build`. A run without those flags may end `PASS WITH SKIPS`,
+labelled `INCOMPLETE` rather than `complete suite`; neither is release evidence.
+A diverging route is a finding: bisect it over `v1.7.0..HEAD`, then document
+the change as intended or fix it.
 
 `--roms` must point at a directory holding BOTH source revisions, US and PAL
 v80. Its default, `build/roms`, is normally empty, and the runner's help calls

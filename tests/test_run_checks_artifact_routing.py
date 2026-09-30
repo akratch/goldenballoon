@@ -237,5 +237,80 @@ class PreviousReleaseReferenceRouting(unittest.TestCase):
         self.assertFalse(run_checks.was_skipped(other, run_checks.SKIP_EXIT))
 
 
+class SkippedTaskVerdict(unittest.TestCase):
+    """A skipped task never reads as a complete suite, and fails a release run.
+
+    The release checklist accepts only a verdict carrying `complete suite, N/N
+    tasks`, and release runs are the ones passing --require-fresh or
+    --require-shipping-sdl. A parity task that compared nothing must not let
+    such a run look like qualification.
+    """
+
+    def setUp(self) -> None:
+        self.gate = next(check for check in run_checks.CHECKS
+                         if check.name == "previous_release_parity")
+        self.other = next(check for check in run_checks.CHECKS
+                          if check.name == "state_hash")
+
+    def args(self, **release):
+        values = dict(only=None, role=None, primary_only=False,
+                      skip_instrumented=False, skip_wasm=False,
+                      require_fresh=False, require_shipping_sdl=False)
+        values.update(release)
+        return SimpleNamespace(**values)
+
+    def verdict(self, args, gate_returncode):
+        results = [(self.other, 0, 1.0), (self.gate, gate_returncode, 0.0)]
+        code, lines = run_checks.final_verdict(results, len(results), args, 1.0)
+        return code, "\n".join(text for text, _stderr in lines)
+
+    def test_a_complete_run_still_says_complete_suite(self):
+        code, text = self.verdict(self.args(require_fresh=True), 0)
+        self.assertEqual(code, 0)
+        self.assertIn(f"complete suite, 2/{len(run_checks.CHECKS)} tasks", text)
+
+    def test_a_skip_is_never_labelled_complete_suite(self):
+        code, text = self.verdict(self.args(), run_checks.SKIP_EXIT)
+        self.assertEqual(code, 0)
+        self.assertNotIn("complete suite", text)
+        self.assertIn("1 SKIPPED", text)
+        self.assertIn("previous_release_parity", text)
+        self.assertNotIn("complete suite",
+                         run_checks.subset_label(self.args(), 2, [self.gate]))
+
+    def test_a_skip_is_counted_in_a_subset_label_too(self):
+        label = run_checks.subset_label(self.args(only=["previous_release_parity"]),
+                                        1, [self.gate])
+        self.assertIn("SUBSET", label)
+        self.assertIn("1 SKIPPED", label)
+
+    def test_a_skip_fails_a_release_run_and_names_the_missing_input(self):
+        for flag in ("require_fresh", "require_shipping_sdl"):
+            with self.subTest(flag=flag):
+                code, text = self.verdict(self.args(**{flag: True}),
+                                          run_checks.SKIP_EXIT)
+                self.assertEqual(code, 1)
+                self.assertIn("FAIL", text)
+                self.assertIn("--reference-build", text)
+                self.assertIn("previous_release_parity", text)
+                self.assertNotIn("complete suite", text)
+                self.assertNotIn("PASS", text)
+
+    def test_fail_fast_treats_a_skip_as_a_failure_only_in_a_release_run(self):
+        skip = run_checks.SKIP_EXIT
+        self.assertFalse(run_checks.counts_as_failure(self.gate, skip, self.args()))
+        self.assertTrue(run_checks.counts_as_failure(
+            self.gate, skip, self.args(require_fresh=True)))
+        self.assertTrue(run_checks.counts_as_failure(self.other, skip, self.args()))
+        self.assertFalse(run_checks.counts_as_failure(self.gate, 0,
+                                                      self.args(require_fresh=True)))
+
+    def test_every_skippable_check_names_the_input_it_needs(self):
+        for name, contract in run_checks.SKIPPABLE_CHECKS.items():
+            with self.subTest(check=name):
+                self.assertTrue(contract.missing_input.startswith("--"))
+                self.assertIn(contract.missing_input, contract.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

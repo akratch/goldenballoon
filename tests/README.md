@@ -4286,7 +4286,9 @@ the change is intended. A `MDKR_RNGSEED=legacy` arm must diverge, the reference
 must be a clean checkout of the tag configured like this build, and the old
 build writes a Time Trial record and Controller Pak ghost that this build must
 decode, re-encode and play back. Without `--reference-build` the gate exits 77
-and `tools/run_checks.py` reports it as SKIPPED, never as passed. Pure helpers
+and `tools/run_checks.py` reports it as SKIPPED, never as passed and never as a
+complete suite; a release run (`--require-fresh` or `--require-shipping-sdl`)
+fails on the skip and names the missing flag. Pure helpers
 are unit-tested by `test_previous_release_parity.py`; the stream capture and
 comparator are shared with the cross-architecture gate in `simhash_streams.py`.
 

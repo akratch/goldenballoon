@@ -310,19 +310,43 @@ TIMEOUT_EXIT = 124
 # A check that cannot run without an input only the operator can supply exits
 # with this status and says why. Only the checks named here may use it; from
 # any other check it is an ordinary failure. A SKIPPED task is never counted as
-# passed: the summary and the verdict line name it.
+# passed: the summary and the verdict line name it, the verdict never calls
+# such a run a complete suite, and in a release run (--require-fresh or
+# --require-shipping-sdl) a skip is a failure naming the missing input.
 SKIP_EXIT = 77
+
+
+@dataclass(frozen=True)
+class SkipContract:
+    reason: str
+    missing_input: str
+
+
 SKIPPABLE_CHECKS = {
-    # Needs --reference-build: a build of the previous published release.
-    "previous_release_parity": "no --reference-build (a build of the previous "
-                               "published release) was supplied",
+    "previous_release_parity": SkipContract(
+        "no --reference-build (a build of the previous published release) "
+        "was supplied", "--reference-build"),
 }
 # Checks that are handed --reference-build when the operator supplies one.
-REFERENCE_BUILD_CHECKS = frozenset(SKIPPABLE_CHECKS)
+REFERENCE_BUILD_CHECKS = frozenset(
+    name for name, contract in SKIPPABLE_CHECKS.items()
+    if contract.missing_input == "--reference-build")
 
 
 def was_skipped(check: "Check", returncode: int) -> bool:
     return returncode == SKIP_EXIT and check.name in SKIPPABLE_CHECKS
+
+
+def release_mode(args: argparse.Namespace) -> bool:
+    """A run that asks for release qualification, and so may not skip."""
+    return bool(args.require_fresh or args.require_shipping_sdl)
+
+
+def counts_as_failure(check: "Check", returncode: int,
+                      args: argparse.Namespace) -> bool:
+    """Whether a task result fails the run (a skip does in a release run)."""
+    return returncode != 0 and (not was_skipped(check, returncode)
+                                or release_mode(args))
 
 
 @dataclass(frozen=True)
@@ -1682,8 +1706,15 @@ def split_values(values: list[str] | None) -> list[str]:
     ]
 
 
-def subset_label(args: argparse.Namespace, count: int) -> str:
-    """Name every restriction applied to the manifest, for the verdict line."""
+def subset_label(args: argparse.Namespace, count: int,
+                 skipped: "list[Check] | tuple[Check, ...]" = ()) -> str:
+    """Name every restriction applied to the manifest, for the verdict line.
+
+    A run in which any task was SKIPPED is not a complete suite even when
+    nothing restricted the selection: it says how many tasks were checked and
+    how many were skipped instead.
+    """
+    skip_note = f", {len(skipped)} SKIPPED" if skipped else ""
     restrictions: list[str] = []
     if args.only:
         restrictions.append("--only " + ",".join(split_values(args.only)))
@@ -1695,11 +1726,65 @@ def subset_label(args: argparse.Namespace, count: int) -> str:
         restrictions.append("--skip-instrumented")
     if args.skip_wasm:
         restrictions.append("--skip-wasm")
-    if not restrictions:
+    if not restrictions and not skipped:
         return f"complete suite, {count}/{len(CHECKS)} tasks"
+    if not restrictions:
+        return (f"INCOMPLETE {count - len(skipped)}/{len(CHECKS)} tasks checked"
+                f"{skip_note}")
     return (
-        f"SUBSET {count}/{len(CHECKS)} tasks: " + " ".join(restrictions)
+        f"SUBSET {count}/{len(CHECKS)} tasks{skip_note}: "
+        + " ".join(restrictions)
     )
+
+
+def final_verdict(
+    results: "list[tuple[Check, int, float]]",
+    selected: int,
+    args: argparse.Namespace,
+    total: float,
+) -> tuple[int, list[tuple[str, bool]]]:
+    """The run's exit status and closing lines as (text, to_stderr).
+
+    Skips are named before any verdict. In a release run a skip is a failure
+    that names the input the operator must supply; otherwise the run may pass,
+    but only as PASS WITH SKIPS and never as a complete suite.
+    """
+    skipped = [check for check, rc, _elapsed in results if was_skipped(check, rc)]
+    failures = [(check, rc) for check, rc, _elapsed in results
+                if rc != 0 and not was_skipped(check, rc)]
+    scope = subset_label(args, selected, skipped)
+    lines: list[tuple[str, bool]] = []
+    for check in skipped:
+        lines.append((f"run_checks: SKIPPED — {check.name}: "
+                      f"{SKIPPABLE_CHECKS[check.name].reason}; it compared "
+                      "nothing and is not a pass", True))
+    if release_mode(args):
+        for check in skipped:
+            lines.append((
+                f"run_checks: FAIL — {check.name} was SKIPPED in a release run "
+                "(--require-fresh/--require-shipping-sdl); supply "
+                f"{SKIPPABLE_CHECKS[check.name].missing_input}", True))
+        failed = len(failures) + len(skipped)
+    else:
+        failed = len(failures)
+    if failed:
+        lines.append((f"run_checks: FAIL — {failed}/{len(results)} task(s) failed "
+                      f"in {format_duration(total)} [{scope}]", True))
+        return 1, lines
+    if len(results) != selected:
+        lines.append((f"run_checks: FAIL — ran {len(results)}/{selected} selected "
+                      f"tasks [{scope}]", True))
+        return 1, lines
+    if skipped:
+        lines.append((
+            f"run_checks: PASS WITH SKIPS — {len(results) - len(skipped)}/"
+            f"{len(results)} tasks passed, {len(skipped)} SKIPPED "
+            f"({', '.join(check.name for check in skipped)}) in "
+            f"{format_duration(total)} [{scope}]", False))
+        return 0, lines
+    lines.append((f"run_checks: PASS — all {len(results)} tasks passed in "
+                  f"{format_duration(total)} [{scope}]", False))
+    return 0, lines
 
 
 def selected_roles(role_values: list[str] | None, checks: list[Check]) -> list[Check]:
@@ -2244,7 +2329,8 @@ def main() -> int:
         default=None,
         help="a build of the previous published release, configured like "
              "--release-build, for previous_release_parity; without it that "
-             "task is SKIPPED (named in the verdict), never passed",
+             "task is SKIPPED (named in the verdict), never passed, and a "
+             "release run (--require-fresh/--require-shipping-sdl) FAILS",
     )
     parser.add_argument(
         "--only",
@@ -2382,6 +2468,12 @@ def main() -> int:
     wasm = resolve_path(args.wasm)
     reference_build = (resolve_path(args.reference_build)
                        if args.reference_build else None)
+    if release_mode(args) and reference_build is None:
+        for check in checks:
+            if check.name in REFERENCE_BUILD_CHECKS:
+                print(f"run_checks: RELEASE RUN WITHOUT --reference-build — "
+                      f"{check.name} will be SKIPPED and this run will FAIL",
+                      file=sys.stderr, flush=True)
     try:
         preflight(checks, native, release, asan, rom, wasm,
                   require_shipping_sdl=args.require_shipping_sdl)
@@ -2493,7 +2585,7 @@ def main() -> int:
         if returncode == 0:
             label = "PASS"
         elif was_skipped(check, returncode):
-            label = f"SKIPPED ({SKIPPABLE_CHECKS[check.name]})"
+            label = f"SKIPPED ({SKIPPABLE_CHECKS[check.name].reason})"
         elif returncode == TIMEOUT_EXIT:
             label = f"FAIL (timeout after {format_duration(timeout)})"
         else:
@@ -2550,8 +2642,7 @@ def main() -> int:
             for index, check in enumerate(checks, 1):
                 returncode, elapsed = run_streaming(index, check)
                 results.append((check, returncode, elapsed))
-                if (returncode != 0 and not was_skipped(check, returncode)
-                        and args.fail_fast):
+                if counts_as_failure(check, returncode, args) and args.fail_fast:
                     break
         else:
             from concurrent.futures import ThreadPoolExecutor
@@ -2581,13 +2672,13 @@ def main() -> int:
                     done += 1
                     results.append((check, returncode, elapsed))
                     label = "PASS" if returncode == 0 else (
-                        f"SKIPPED ({SKIPPABLE_CHECKS[check.name]})"
+                        f"SKIPPED ({SKIPPABLE_CHECKS[check.name].reason})"
                         if was_skipped(check, returncode)
                         else "FAIL (timeout)" if returncode == TIMEOUT_EXIT
                         else f"FAIL (exit {returncode})")
                     print(f"[{done}/{len(checks)}] {check.name}: {label} in "
                           f"{format_duration(elapsed)}", flush=True)
-                    if returncode != 0 and not was_skipped(check, returncode):
+                    if counts_as_failure(check, returncode, args):
                         # A harness fault (or a task that raised before opening
                         # its log) may leave no file. Replay whatever exists;
                         # never let a missing log crash the whole run.
@@ -2631,8 +2722,7 @@ def main() -> int:
                     done += 1
                     returncode, elapsed = run_streaming(done, check)
                     results.append((check, returncode, elapsed))
-                    if (returncode != 0 and not was_skipped(check, returncode)
-                            and args.fail_fast):
+                    if counts_as_failure(check, returncode, args) and args.fail_fast:
                         break
             # Manifest order keeps the summary comparable across runs.
             order = {c.name: i for i, c in enumerate(checks)}
@@ -2641,9 +2731,6 @@ def main() -> int:
         print("\nrun_checks: interrupted", file=sys.stderr)
         return 130
 
-    skipped = [check for check, rc, _elapsed in results if was_skipped(check, rc)]
-    failures = [(check, rc, elapsed) for check, rc, elapsed in results
-                if rc != 0 and not was_skipped(check, rc)]
     print("\nrun_checks: summary", flush=True)
     for check, returncode, elapsed in results:
         if returncode == 0:
@@ -2658,39 +2745,11 @@ def main() -> int:
     total = time.monotonic() - suite_start
     # A subset can never read as a completed suite: the verdict line names the
     # restriction that produced it and how much of the manifest it covered.
-    scope = subset_label(args, len(checks))
-    for check in skipped:
-        print(f"run_checks: SKIPPED — {check.name}: "
-              f"{SKIPPABLE_CHECKS[check.name]}; it compared nothing and "
-              "is not a pass", file=sys.stderr, flush=True)
-    if failures:
-        print(
-            f"run_checks: FAIL — {len(failures)}/{len(results)} task(s) failed "
-            f"in {format_duration(total)} [{scope}]",
-            file=sys.stderr,
-        )
-        return 1
-    if len(results) != len(checks):
-        print(
-            f"run_checks: FAIL — ran {len(results)}/{len(checks)} selected tasks "
-            f"[{scope}]",
-            file=sys.stderr,
-        )
-        return 1
-    if skipped:
-        print(
-            f"run_checks: PASS WITH SKIPS — {len(results) - len(skipped)}/"
-            f"{len(results)} tasks passed, {len(skipped)} SKIPPED "
-            f"({', '.join(check.name for check in skipped)}) in "
-            f"{format_duration(total)} [{scope}]"
-        )
-        return 0
-    print(
-        f"run_checks: PASS — all {len(results)} tasks passed in "
-        f"{format_duration(total)} [{scope}]"
-    )
-    return 0
-
+    # Neither can a run that skipped a task (final_verdict).
+    code, lines = final_verdict(results, len(checks), args, total)
+    for text, to_stderr in lines:
+        print(text, file=sys.stderr if to_stderr else sys.stdout, flush=True)
+    return code
 
 if __name__ == "__main__":
     sys.exit(main())
