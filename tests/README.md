@@ -4321,6 +4321,25 @@ target of the three arenas, the original always finished within 234 pops. The
 same unit pins the AI-node rebuild guards by behaviour (duplicate IDs, stale and
 out-of-domain links, over-budget costs) and the search's stale-link checks.
 
+## Time Trial record bytes — `save_records` (ctest)
+
+Each 192-byte Time Trial record block holds a checksum and one (time, initials)
+pair per retail (course, vehicle): 190 bytes. The two bytes after the last pair,
+and the Controller Pak times file past its two blocks, are not the codec's, and
+the writers used to encode into a fresh memory-pool block, so a save carried
+whatever the pool held there (and summed it into the checksum): 1.7.0 wrote
+`0a 00`/`c3 00` on one route and `ff 00`/`4c ff` on another. The writers now
+zero their buffers first. The ROM-free `save_records` unit links the production
+`save_data.c` with a pool that hands out blocks full of `0x00`, `0xA5` or
+`0x5A`, and requires the EEPROM record blocks and the Controller Pak times file
+to be identical across the three and zero past the codec's bytes. A block
+written the old way (residue in the tail, checksum over it) must still load with
+every record, and every progress and record codec must size itself from the
+retail save inventory, never the live level table: appended courses cannot
+change the encoded bytes or be written by a decode (mutating any one of the
+four codecs to the live table turns it red). The 1.7.0 save itself stays pinned
+by `save_v170_fixture` and `save_v170_compat`.
+
 ## Saves written by 1.7.0 — `tests/check_save_v170_compat.py`
 
 `tests/fixtures/save_v170/` holds the EEPROM the published 1.7.0 build wrote

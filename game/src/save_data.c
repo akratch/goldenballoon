@@ -967,6 +967,12 @@ s32 write_time_data_to_controller_pak(s32 controllerIndex, Settings *arg1) {
 
     fileSize = get_time_data_file_size(); // 512 bytes
     timeData = mempool_alloc_safe(fileSize, COLOUR_TAG_WHITE);
+#ifdef NATIVE_PORT
+    /* The record codec writes a checksum and 4 bytes per (course, vehicle)
+     * into each block; zero the rest of the file so it never carries old
+     * memory-pool contents. */
+    bzero(timeData, fileSize);
+#endif
     *((s32 *) timeData) = TIMD;
     func_800738A4(arg1, timeData + 4);
     ret = get_file_extension(controllerIndex, 4, (char *) &fileExt);
@@ -1239,6 +1245,13 @@ s32 write_eeprom_data(Settings *settings, u8 flags) {
     }
 
     alloc = mempool_alloc_safe(COURSE_TIMES_START + sizeof(CourseRecords), COLOUR_TAG_WHITE);
+#ifdef NATIVE_PORT
+    /* Each 192-byte record block ends in bytes the codec never writes (two
+     * for the retail courses), and the block checksum covers them. Zero them
+     * so a save does not persist old memory-pool contents. Readers accept
+     * any value there, so blocks written with that residue still load. */
+    bzero(alloc, COURSE_TIMES_START + sizeof(CourseRecords));
+#endif
 
     func_800738A4(settings, (u8 *) alloc);
 

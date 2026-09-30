@@ -2847,6 +2847,13 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/tests/test_ainode_route.c
             ${CMAKE_SOURCE_DIR}/game/src/objects.c
             ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
+        # Time Trial record saves: identical bytes whatever the memory pool
+        # held, 1.7.0 residue still loads, codecs use the retail inventory.
+        mdkr_add_engine_unit_test(mdkr_save_records_test save_records
+            ${CMAKE_SOURCE_DIR}/tests/test_save_records.c
+            ${CMAKE_SOURCE_DIR}/game/src/save_data.c
+            ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c
+            ${CMAKE_SOURCE_DIR}/platform/save_codec.c)
     endif()
 
     # PAL video-mode height-raise idempotency (Return-to-Launcher -> Play
