@@ -11,6 +11,7 @@
 #include "rice_crc.h"
 
 #include <stdio.h>
+#include <limits.h>
 
 static int failures = 0;
 
@@ -70,6 +71,19 @@ int main(void) {
            "a span too short for the walk is refused");
     expect(mdkr_rice_crc32(kData0, sizeof kData0, 4, 4, 0, 0, &key) == 0,
            "a row shorter than one accumulator read is refused");
+
+    key = 0x12345678u;
+    expect(!mdkr_rice_crc32(kData0, sizeof kData0, INT_MAX, 1, 3, 0, &key) &&
+               key == 0x12345678u,
+           "huge row refuses without signed-long overflow or output mutation");
+    expect(!mdkr_rice_crc32(kData0, sizeof kData0, 8, INT_MAX, 1, INT_MAX, &key) &&
+               key == 0x12345678u,
+           "huge pitched span refuses before multiplying dimensions");
+    const uint8_t odd_row[] = {0, 1, 2, 3, 4};
+    expect(mdkr_rice_crc32(odd_row, sizeof odd_row, 5, 1, 1, 0, &key) && key == 0x0204060Au,
+           "non-DWORD row preserves final backward accumulator offset");
+    expect(!mdkr_rice_crc32(odd_row, sizeof odd_row - 1, 5, 1, 1, 0, &key),
+           "one-byte-short odd row refuses");
 
     if (failures) { printf("%d rice crc failure(s)\n", failures); return 1; }
     printf("rice crc matches the reference over 9 vectors\n");
