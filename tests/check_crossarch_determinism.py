@@ -87,24 +87,31 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import NamedTuple
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+# The stream capture, parsing, comparison, report and configuration guards live
+# in simhash_streams.py for any two-binary gate; they are re-exported here
+# because tests/test_crossarch_determinism.py unit-tests them through this gate.
+from simhash_streams import (  # noqa: F401
+    HASH_VERSION, SHARED_CACHE_KEYS, SIMHASH_RE, SOURCE_SUFFIXES, SOURCE_TREES,
+    SimHashRow, configuration_problems, control_problem, divergence_report,
+    first_divergence, newest_source_mtime, parse_cmake_cache,
+    parse_simhash_rows, read_cmake_cache, run_hashed, staleness_problems,
+    stream_problems)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
 
-# The same route, field set and tick budget check_state_hash.py anchors on, so a
+# The same route and tick budget check_state_hash.py anchors on, so a
 # divergence found here is expressed in the same coordinates as every other
-# authoritative-state finding in the tree.
+# authoritative-state finding in the tree. The field set is simhash_streams.py's
+# HASH_VERSION.
 DEFAULT_FRAMES = 3600
-HASH_VERSION = "3"
 
 # Levels whose authoritative state is known to depend on memory the engine did
 # not write. They are the measured host-dependence hotspots from
@@ -114,41 +121,6 @@ HASH_VERSION = "3"
 DEFAULT_LEVELS = (5, 37, 11)
 
 WINDOW = "320x240"
-
-# sim_hash.c formats the digest with %016llx, so a well-formed row carries
-# exactly 16 hex characters. Pinning the WIDTH is what makes a torn final line
-# -- the tail a killed or disk-full run leaves behind -- fail to match instead
-# of parsing into a short digest that then "differs" from its peer for an I/O
-# reason rather than an architectural one.
-SIMHASH_RE = re.compile(
-    r"^\[SIMHASH\] tick=(\d+) objs=(-?\d+) h=([0-9a-f]{16})\s*$")
-
-# Cache entries that must agree between the two build trees. Anything that can
-# change generated code changes what a float computes, so a mismatch here is
-# reported as a configuration failure rather than an architecture finding.
-SHARED_CACHE_KEYS = (
-    "CMAKE_BUILD_TYPE",
-    "CMAKE_C_FLAGS",
-    "CMAKE_CXX_FLAGS",
-    "CMAKE_C_FLAGS_RELEASE",
-    "CMAKE_CXX_FLAGS_RELEASE",
-    "CMAKE_INTERPROCEDURAL_OPTIMIZATION",
-)
-
-# Trees whose contents compile into the executable. A binary older than the
-# newest file here was built from different source than the one on disk.
-SOURCE_TREES = ("game", "platform", "include", "src", "lib")
-SOURCE_SUFFIXES = (".c", ".h", ".cpp", ".hpp", ".m", ".mm", ".inc")
-
-
-class SimHashRow(NamedTuple):
-    """One authoritative tick as sim_hash.c published it."""
-
-    tick: int
-    objs: int
-    digest: str
-    raw: str
-
 
 # --------------------------------------------------------------------------- #
 #  Pure helpers (unit-tested by tests/test_crossarch_determinism.py)
@@ -235,228 +207,6 @@ def architecture_problems(arm_archs: tuple[str, ...],
     return problems
 
 
-def parse_cmake_cache(text: str) -> dict[str, str]:
-    """``NAME:TYPE=value`` entries from a CMakeCache.txt, as ``{NAME: value}``.
-
-    Comment and blank lines are skipped, and so are the internal ``NAME-ADVANCED``
-    bookkeeping rows, which carry no configuration meaning and would otherwise
-    double the size of every mismatch report.
-    """
-
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith(("#", "//")):
-            continue
-        name, separator, value = line.partition("=")
-        if not separator or ":" not in name:
-            continue
-        key = name.split(":", 1)[0]
-        if key.endswith("-ADVANCED"):
-            continue
-        values[key] = value
-    return values
-
-
-def configuration_problems(arm_cache: dict[str, str],
-                           x86_cache: dict[str, str]) -> list[str]:
-    """Configuration differences that would confound the architecture claim.
-
-    Compares the shared keys above plus every ``MDKR_*`` project option, so a
-    new option is covered the day it is added rather than the day someone
-    remembers to list it here. Architecture-selecting keys are deliberately NOT
-    compared: they are supposed to differ, and that difference is the point.
-    """
-
-    problems: list[str] = []
-    keys = set(SHARED_CACHE_KEYS)
-    keys.update(k for k in arm_cache if k.startswith("MDKR_"))
-    keys.update(k for k in x86_cache if k.startswith("MDKR_"))
-    for key in sorted(keys):
-        arm = arm_cache.get(key)
-        x86 = x86_cache.get(key)
-        if arm == x86:
-            continue
-        problems.append(
-            f"{key} differs: arm64={arm!r} x86_64={x86!r}. The two trees must "
-            "be configured identically apart from the architecture, or this "
-            "gate measures the configuration difference")
-    return problems
-
-
-def newest_source_mtime(root: Path) -> tuple[float, Path | None]:
-    """The most recently modified compiled source under ``root``.
-
-    Returns ``(mtime, path)``; ``(0.0, None)`` when nothing matched, which a
-    caller treats as "cannot judge staleness" rather than "fresh".
-    """
-
-    newest = 0.0
-    newest_path: Path | None = None
-    for tree in SOURCE_TREES:
-        base = root / tree
-        if not base.is_dir():
-            continue
-        for path in base.rglob("*"):
-            if path.suffix not in SOURCE_SUFFIXES or not path.is_file():
-                continue
-            mtime = path.stat().st_mtime
-            if mtime > newest:
-                newest, newest_path = mtime, path
-    return newest, newest_path
-
-
-def staleness_problems(binaries: dict[str, Path], newest: float,
-                       newest_path: Path | None) -> list[str]:
-    """Binaries older than the newest source file they are supposed to contain.
-
-    A stale x86_64 executable is the most likely way this gate reports a
-    spectacular architecture divergence that is really "you edited the
-    simulation and only rebuilt one tree".
-    """
-
-    if newest_path is None:
-        return []
-    problems: list[str] = []
-    for label, path in binaries.items():
-        if path.stat().st_mtime < newest:
-            problems.append(
-                f"{label} ({path}) is older than {newest_path}. Rebuild both "
-                "trees from the same source before comparing them; a stale "
-                "binary makes a source difference look architectural")
-    return problems
-
-
-def parse_simhash_rows(text: str) -> list[SimHashRow]:
-    """Every ``[SIMHASH]`` row in ``text``, oldest first.
-
-    Matching the whole line rather than a prefix is deliberate: a truncated
-    final line (a killed run, a full disk) must be dropped rather than parsed
-    into a short digest that then "differs" from its peer for an I/O reason.
-    """
-
-    rows: list[SimHashRow] = []
-    for line in text.splitlines():
-        match = SIMHASH_RE.match(line)
-        if match is None:
-            continue
-        rows.append(SimHashRow(int(match.group(1)), int(match.group(2)),
-                               match.group(3), line.strip()))
-    return rows
-
-
-def stream_problems(rows: list[SimHashRow], expected: int,
-                    label: str) -> list[str]:
-    """Whether a captured stream is evidence at all.
-
-    An empty stream, a short stream, or one whose ticks are not 0..N-1 cannot
-    support an identity claim -- two empty streams are equal, and equality over
-    nothing is the failure mode this project has been bitten by before. So the
-    contract is checked before the comparison, not instead of it.
-    """
-
-    problems: list[str] = []
-    if not rows:
-        problems.append(
-            f"{label}: no [SIMHASH] rows. The instrument did not arm "
-            f"(MDKR_STATE_HASH={HASH_VERSION} must reach the process), so "
-            "there is nothing to compare and an identity claim would be "
-            "vacuous")
-        return problems
-    if len(rows) != expected:
-        problems.append(
-            f"{label}: {len(rows)} [SIMHASH] rows, expected {expected}")
-    ticks = [row.tick for row in rows]
-    if ticks != list(range(len(rows))):
-        first_bad = next(i for i, tick in enumerate(ticks) if tick != i)
-        problems.append(
-            f"{label}: tick numbering is not contiguous from 0; row "
-            f"{first_bad} carries tick={ticks[first_bad]}")
-    return problems
-
-
-def first_divergence(arm: list[SimHashRow],
-                     x86: list[SimHashRow]) -> int | None:
-    """Index of the first tick whose published row differs, or ``None``.
-
-    Compares the published fields rather than the raw text so a future
-    formatting change to the row cannot turn into a false divergence.
-    """
-
-    for index, (a, b) in enumerate(zip(arm, x86)):
-        if (a.tick, a.objs, a.digest) != (b.tick, b.objs, b.digest):
-            return index
-    if len(arm) != len(x86):
-        return min(len(arm), len(x86))
-    return None
-
-
-def divergence_report(route: str, arm: list[SimHashRow],
-                      x86: list[SimHashRow], index: int) -> list[str]:
-    """The triage a maintainer needs from a red run, without a second run.
-
-    Names the first divergent tick, both rows, whether the POPULATION or only
-    the state digest moved, and how the streams behave afterwards. The
-    population distinction matters: a differing ``objs=`` means the two
-    architectures disagree about which objects exist, which is a spawn/despawn
-    or allocation-order defect, while an identical population with a different
-    digest is a value defect -- typically a float. They have disjoint suspect
-    lists.
-    """
-
-    lines = [f"{route}: architecture divergence at tick {index}"]
-    if index >= len(arm) or index >= len(x86):
-        lines.append(
-            f"    the streams have different lengths (arm64 {len(arm)} rows, "
-            f"x86_64 {len(x86)} rows); one run ended early")
-        return lines
-    a, b = arm[index], x86[index]
-    lines.append(f"    arm64  {a.raw}")
-    lines.append(f"    x86_64 {b.raw}")
-    if a.objs != b.objs:
-        lines.append(
-            f"    the authoritative POPULATION differs ({a.objs} vs {b.objs}): "
-            "the two architectures disagree about which objects exist, so look "
-            "at spawn/despawn conditions and allocation order before float "
-            "arithmetic")
-    else:
-        lines.append(
-            f"    the population agrees ({a.objs} objects) and only the state "
-            "digest moved: a field VALUE differs. Float arithmetic, an "
-            "uninitialised read, or a pointer-derived value are the candidates")
-    tail = list(zip(arm[index:], x86[index:]))
-    differing = sum(1 for x, y in tail
-                    if (x.tick, x.objs, x.digest) != (y.tick, y.objs, y.digest))
-    lines.append(
-        f"    {index} ticks were identical; {differing} of the {len(tail)} "
-        "remaining ticks differ")
-    lines.append(
-        f"    bisect with: MDKR_STATE_HASH={HASH_VERSION} "
-        f"MDKR_HASH_DUMP_TICK={max(index - 1, 0)} MDKR_HASH_DUMP_UNTIL={index} "
-        "MDKR_HASH_DUMP_IDS=1 on both binaries, then diff the [HASHOBJ] and "
-        "[HASHOBJID] rows to name the object and field that moved")
-    return lines
-
-
-def control_problem(base: list[SimHashRow],
-                    control: list[SimHashRow]) -> str | None:
-    """The positive control: a deliberately different simulation must differ.
-
-    ``MDKR_RNGSEED=legacy`` restores the pre-fix boot seeds
-    (platform/math_util_native.c), so its stream provably is not the base
-    stream. If this comparator reports them identical, then the identical
-    result it reported for the cross-architecture arms means nothing: the
-    capture, the parse or the comparison is broken.
-    """
-
-    if first_divergence(base, control) is None:
-        return ("positive control failed: the MDKR_RNGSEED=legacy arm produced "
-                "a stream identical to the base arm. The capture or the "
-                "comparison is broken, so every 'identical' verdict above is "
-                "unsupported")
-    return None
-
-
 # --------------------------------------------------------------------------- #
 #  Process-facing helpers
 # --------------------------------------------------------------------------- #
@@ -481,85 +231,23 @@ def binary_architectures(path: Path) -> tuple[str, ...]:
     return parse_lipo_archs(proc.stdout)
 
 
-def read_cmake_cache(binary: Path) -> dict[str, str]:
-    """The CMakeCache.txt beside ``binary``, parsed; empty when absent."""
-
-    cache = binary.parent / "CMakeCache.txt"
-    if not cache.is_file():
-        return {}
-    return parse_cmake_cache(cache.read_text(encoding="utf-8",
-                                             errors="replace"))
-
-
 def run_arm(binary: Path, rom: Path, label: str, root: Path, level: int,
             frames: int, extra_env: dict[str, str], timeout: int,
             verbose: bool, script: Path = SCRIPT) -> list[SimHashRow]:
-    """One headless run; returns its [SIMHASH] stream.
+    """One headless run on ``level``; returns its [SIMHASH] stream.
 
-    The environment is scrubbed of MDKR*/GE007_* first and rebuilt from
-    literals, exactly as check_state_hash.py does, so a maintainer's exported
-    renderer, pacing or diagnostic preference cannot reach one arm and not the
-    other -- which on this gate would look like an architecture difference.
-    LC_ALL and TZ are pinned for the same reason at the libc layer.
-
-    The stream is read from MDKR_STATE_HASH_FILE rather than stdout. The file
-    sink is flushed per tick, so a run killed by the timeout still leaves a
-    line-aligned prefix that names how far the two arms agreed, and a stdout
-    pipe cannot lose or interleave rows behind the engine's other logging.
+    simhash_streams.run_hashed() owns the hermetic environment and the file
+    sink; this gate adds only the retargeted level.
     """
 
-    run_dir = root / label
-    save_dir = run_dir / "save"
-    save_dir.mkdir(parents=True)
-    stream_path = run_dir / "simhash.txt"
-    env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("MDKR", "GE007_"))}
-    env.update(
-        LC_ALL="C",
-        LANG="C",
-        TZ="UTC",
-        MDKR_AUDIO="0",
-        MDKR_STATE_HASH=HASH_VERSION,
-        MDKR_STATE_HASH_FILE=str(stream_path),
-        MDKR_AUTOPILOT="1",
-        MDKR_LOAD_TRACK=str(level),
-        MDKR_RENDERER="gl",
-        MDKR_SAVE_DIR=str(save_dir),
-        MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
-    )
+    env = {"MDKR_LOAD_TRACK": str(level)}
     env.update(extra_env)
-    command = [
-        str(binary), "--headless-frames", str(frames),
-        "--input-script", str(script), "--rom", str(rom),
-        "--window-size", WINDOW,
-    ]
-    if verbose:
-        print(f"$ ({label}) {' '.join(command)}", flush=True)
-    try:
-        process = subprocess.run(
-            command, cwd=run_dir, env=env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as expired:
-        captured = len(parse_simhash_rows(
-            stream_path.read_text(encoding="utf-8", errors="replace")
-            if stream_path.is_file() else ""))
-        raise RuntimeError(
-            f"{label}: timed out after {timeout}s with {captured} of {frames} "
-            "ticks captured. The x86_64 arm runs under Rosetta 2 and is "
-            "materially slower than the native one, so raise --timeout rather "
-            "than reading this as a failure") from expired
-    if process.returncode != 0:
-        raise RuntimeError(
-            f"{label}: exit {process.returncode}\n"
-            f"{(process.stdout or '')[-3000:]}")
-    if not stream_path.is_file():
-        raise RuntimeError(
-            f"{label}: MDKR_STATE_HASH_FILE was never created. The build "
-            "predates the sim_hash.c file sink, or the run never reached a "
-            "hashing tick")
-    return parse_simhash_rows(
-        stream_path.read_text(encoding="utf-8", errors="replace"))
+    return run_hashed(
+        binary, rom, root / label, label, frames, script, env, timeout,
+        verbose, window=WINDOW,
+        timeout_hint="The x86_64 arm runs under Rosetta 2 and is materially "
+                     "slower than the native one, so raise --timeout rather "
+                     "than reading this as a failure").rows
 
 
 def rosetta_available() -> bool:
