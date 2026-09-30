@@ -709,6 +709,25 @@ int mdkr_camera_rounded_lens_guard_conservative_radius(
     return isfinite(*out_radius);
 }
 
+int mdkr_camera_rounded_lens_guard_expand_skin(
+    const MdkrCameraRoundedLensGuard *guard, float skin,
+    MdkrCameraRoundedLensGuard *out_guard) {
+    MdkrCameraRoundedLensGuard expanded;
+    double radius;
+    if (out_guard == NULL || !mdkr_camera_rounded_lens_guard_valid(guard) ||
+        !isfinite(skin) || skin < guard->skin) return 0;
+    expanded = *guard;
+    expanded.skin = skin;
+    radius = sqrt((double)guard->near_distance * guard->near_distance +
+                  (double)guard->half_width * guard->half_width +
+                  (double)guard->half_height * guard->half_height) + skin;
+    if (!isfinite(radius) || radius >= FLT_MAX) return 0;
+    expanded.broadphase_radius = nextafterf((float)radius, INFINITY);
+    if (!mdkr_camera_rounded_lens_guard_valid(&expanded)) return 0;
+    *out_guard = expanded;
+    return 1;
+}
+
 static int mdkr_camera_rounded_lens_corners(
     const MdkrCameraRoundedLensGuard *guard,
     MdkrCameraDVec3 eye,

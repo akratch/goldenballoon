@@ -647,7 +647,49 @@ static void test_fractional_recovery_converges_at_authored_rates(void) {
     }
 }
 
+static void test_recovery_transport(void) {
+    const MdkrCameraVec3 origin = {0,0,0}, desired = {0,0,10}, eye = {3,2,8};
+    MdkrCameraVec3 out = {9,8,7};
+    expect_true("transport rotates and translates", mdkr_camera_recovery_transport(
+        eye, origin, desired, (MdkrCameraVec3){100,7,50}, (MdkrCameraVec3){110,7,50}, &out));
+    expect_near("transport longitudinal", out.x, 108, TEST_EPSILON);
+    expect_near("transport vertical", out.y, 9, TEST_EPSILON);
+    expect_near("transport lateral", out.z, 47, TEST_EPSILON);
+    expect_true("transport half turn", mdkr_camera_recovery_transport(
+        eye, origin, desired, origin, (MdkrCameraVec3){0,0,-10}, &out));
+    expect_near("half turn x", out.x, -3, TEST_EPSILON);
+    expect_near("half turn z", out.z, -8, TEST_EPSILON);
+    MdkrCameraVec3 moving_eye = eye, moving_pivot = origin;
+    for (int degree = 1; degree <= 360; ++degree) {
+        const double angle = degree * 0.01745329251994329577;
+        const MdkrCameraVec3 next_pivot = {
+            (float)(-10 * sin(angle)), 0, (float)(10 - 10 * cos(angle))};
+        expect_true("moving target transport", mdkr_camera_recovery_transport(
+            moving_eye, moving_pivot, desired, next_pivot, desired, &out));
+        const double bx = (double)desired.x - next_pivot.x;
+        const double bz = (double)desired.z - next_pivot.z;
+        const double lateral = (((double)out.x - desired.x) * bz -
+                                ((double)out.z - desired.z) * bx) / hypot(bx, bz);
+        expect_near("moving target retains shoulder", (float)lateral, 3, 0.005f);
+        moving_eye = out;
+        moving_pivot = next_pivot;
+    }
+    const MdkrCameraVec3 before = out;
+    expect_true("degenerate transport refuses unchanged", !mdkr_camera_recovery_transport(
+        eye, origin, origin, origin, desired, &out) && memcmp(&out, &before, sizeof(out)) == 0);
+    expect_true("nonfinite transport refuses unchanged", !mdkr_camera_recovery_transport(
+        (MdkrCameraVec3){NAN,0,0}, origin, desired, origin, desired, &out) &&
+        memcmp(&out, &before, sizeof(out)) == 0);
+    expect_true("overflow transport refuses unchanged", !mdkr_camera_recovery_transport(
+        (MdkrCameraVec3){0,FLT_MAX,10}, origin, desired,
+        (MdkrCameraVec3){0,FLT_MAX,0}, (MdkrCameraVec3){0,FLT_MAX,10}, &out) &&
+        memcmp(&out, &before, sizeof(out)) == 0);
+    expect_true("null transport output rejected", !mdkr_camera_recovery_transport(
+        eye, origin, desired, origin, desired, NULL));
+}
+
 int main(void) {
+    test_recovery_transport();
     test_fractional_recovery_bound();
     test_fractional_recovery_converges_at_authored_rates();
     test_immediate_retract_has_skin_and_no_penetration();

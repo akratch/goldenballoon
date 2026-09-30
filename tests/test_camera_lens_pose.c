@@ -1,11 +1,14 @@
 #include "camera.h"
 #include "math_util.h"
+#include "presentation_snapshot.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 static int sFailures;
+/* Standalone presentation module's unused capture telemetry dependency. */
+int g_frameCounter;
 
 #define EPSILON 0.0002f
 #define DKR_ANGLE_TO_RAD (6.28318530717958647692f / 65536.0f)
@@ -277,10 +280,14 @@ static void test_rotation_envelope(void) {
     expect_true("envelope reference", cam_lens_pose_from_camera_snapshot(&before, 0, &base));
     for (int step = 0; step <= 97; ++step) {
         sample = before;
-        sample.trans.rotation.y_rotation = (s16)(u16)(0xfffd + 7 * step / 97);
-        sample.trans.rotation.x_rotation = (s16)(u16)(0xfffe + 6 * step / 97);
+        sample.trans.rotation.y_rotation = presentation_lerp_angle(
+            before.trans.rotation.y_rotation, after.trans.rotation.y_rotation, step, 97);
+        sample.trans.rotation.x_rotation = presentation_lerp_angle(
+            (s16)(u16)((u16)before.trans.rotation.x_rotation + (u16)before.pitch),
+            (s16)(u16)((u16)after.trans.rotation.x_rotation + (u16)after.pitch), step, 97);
         sample.pitch = 0;
-        sample.trans.rotation.z_rotation = (s16)(2 - 4 * step / 97);
+        sample.trans.rotation.z_rotation = presentation_lerp_angle(
+            before.trans.rotation.z_rotation, after.trans.rotation.z_rotation, step, 97);
         expect_true("envelope sampled renderer basis",
                     cam_lens_pose_from_camera_snapshot(&sample, 0, &current));
         for (int h = -1; h <= 1; h += 2)
@@ -305,8 +312,73 @@ static void test_rotation_envelope(void) {
     expect_true("null output rejected",
         !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 280, NULL));
     after.trans.rotation.y_rotation = (s16)(u16)(0xfffd + 0x8000);
-    expect_true("half-turn oversized domain rejected",
-        !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 4096, &bound) && bound == -1);
+    expect_true("snapped yaw retains other axes' budget",
+        !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 69, &bound) && bound == -1);
+    expect_true("snapped yaw endpoint product accepted",
+        cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 70, &bound) && isfinite(bound));
+    before = (Camera){0};
+    after = before;
+    for (int sign = -1; sign <= 1; sign += 2) {
+        after.trans.rotation.y_rotation = (s16)(sign * PRESENTATION_SNAPSHOT_ROTATION_SNAP);
+        bound = -1;
+        expect_true("exact quarter turn does not snap",
+            !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 2, &bound) && bound == -1);
+        after.trans.rotation.y_rotation = (s16)(sign * (PRESENTATION_SNAPSHOT_ROTATION_SNAP + 1));
+        expect_true("past quarter turn requires both endpoints",
+            !cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 1, &bound) && bound == -1);
+        expect_true("past quarter turn fits endpoint budget",
+            cam_lens_rotation_envelope(&before, &after, 10, 8, 6, 2, &bound) && isfinite(bound));
+    }
+}
+
+static void test_rotation_envelope_varied_poses(void) {
+    /* Deterministic orientation/size breadth, including wrapped split pitch
+     * and mixed snapped/unsnapped axes. Sampling consumes the real renderer
+     * interpolation helper; the envelope itself exhausts its angle domain. */
+    for (unsigned trial = 0; trial < 64; ++trial) {
+        Camera before = {0}, after, sample;
+        before.trans.rotation.y_rotation = (s16)(u16)(trial * 7919u);
+        before.trans.rotation.x_rotation = (s16)(u16)(trial * 4051u);
+        before.pitch = (s16)(u16)(trial * 8191u);
+        before.trans.rotation.z_rotation = (s16)(u16)(trial * 2063u);
+        after = before;
+        const int dy = trial % 5 == 0 ? 0x4001 : (int)(trial % 13) - 6;
+        const int dp = trial % 7 == 0 ? -0x4001 : (int)((trial * 3) % 13) - 6;
+        const int dr = (int)((trial * 7) % 13) - 6;
+        after.trans.rotation.y_rotation = (s16)(u16)((u16)before.trans.rotation.y_rotation + dy);
+        after.pitch = (s16)(u16)((u16)before.pitch + dp);
+        after.trans.rotation.z_rotation = (s16)(u16)((u16)before.trans.rotation.z_rotation + dr);
+        const float near = 1.0f + trial;
+        const float width = 0.5f + (trial % 9) * 7.0f;
+        const float height = 0.25f + (trial % 11) * 3.0f;
+        float bound = -1;
+        expect_true("varied envelope fits budget", cam_lens_rotation_envelope(
+            &before, &after, near, width, height, 4096, &bound));
+        MdkrCameraLensPose base, current;
+        expect_true("varied reference builds", cam_lens_pose_from_camera_snapshot(&before, 0, &base));
+        for (unsigned step = 0; step <= 17; ++step) {
+            sample = before;
+            sample.trans.rotation.y_rotation = presentation_lerp_angle(
+                before.trans.rotation.y_rotation, after.trans.rotation.y_rotation, step, 17);
+            sample.trans.rotation.z_rotation = presentation_lerp_angle(
+                before.trans.rotation.z_rotation, after.trans.rotation.z_rotation, step, 17);
+            sample.trans.rotation.x_rotation = presentation_lerp_angle(
+                (s16)(u16)((u16)before.trans.rotation.x_rotation + (u16)before.pitch),
+                (s16)(u16)((u16)after.trans.rotation.x_rotation + (u16)after.pitch), step, 17);
+            sample.pitch = 0;
+            expect_true("varied sample builds", cam_lens_pose_from_camera_snapshot(&sample, 0, &current));
+            for (int h = -1; h <= 1; h += 2)
+            for (int v = -1; v <= 1; v += 2) {
+#define DELTA(axis) (((double)current.forward.axis - base.forward.axis) * near + \
+                    ((double)current.right.axis - base.right.axis) * width * h + \
+                    ((double)current.up.axis - base.up.axis) * height * v)
+                const double dx = DELTA(x), dy_corner = DELTA(y), dz = DELTA(z);
+#undef DELTA
+                expect_true("sampled corner within envelope",
+                    sqrt(dx*dx + dy_corner*dy_corner + dz*dz) <= bound);
+            }
+        }
+    }
 }
 
 int main(void) {
@@ -316,6 +388,7 @@ int main(void) {
     test_shake_eye_chord();
     test_composed_pitch_equivalence();
     test_rotation_envelope();
+    test_rotation_envelope_varied_poses();
     if (sFailures != 0) {
         fprintf(stderr, "test_camera_lens_pose: %d failure(s)\n", sFailures);
         return 1;

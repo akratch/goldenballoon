@@ -10,6 +10,35 @@ static int mdkr_camera_resolver_vec3_finite(MdkrCameraVec3 value) {
     return isfinite(value.x) && isfinite(value.y) && isfinite(value.z);
 }
 
+int mdkr_camera_recovery_transport(MdkrCameraVec3 previous_eye,
+    MdkrCameraVec3 previous_pivot, MdkrCameraVec3 previous_desired,
+    MdkrCameraVec3 pivot, MdkrCameraVec3 desired, MdkrCameraVec3 *out_eye) {
+    if (!out_eye || !mdkr_camera_resolver_vec3_finite(previous_eye) ||
+        !mdkr_camera_resolver_vec3_finite(previous_pivot) ||
+        !mdkr_camera_resolver_vec3_finite(previous_desired) ||
+        !mdkr_camera_resolver_vec3_finite(pivot) ||
+        !mdkr_camera_resolver_vec3_finite(desired)) return 0;
+    double old_x = (double)previous_desired.x - previous_pivot.x;
+    double old_z = (double)previous_desired.z - previous_pivot.z;
+    double new_x = (double)desired.x - pivot.x;
+    double new_z = (double)desired.z - pivot.z;
+    const double old_length = hypot(old_x, old_z), new_length = hypot(new_x, new_z);
+    if (!(old_length > 0) || !(new_length > 0)) return 0;
+    old_x /= old_length; old_z /= old_length;
+    new_x /= new_length; new_z /= new_length;
+    const double dx = (double)previous_eye.x - previous_desired.x;
+    const double dz = (double)previous_eye.z - previous_desired.z;
+    const double lateral = dx * old_z - dz * old_x;
+    const double longitudinal = dx * old_x + dz * old_z;
+    const double x = desired.x + lateral * new_z + longitudinal * new_x;
+    const double y = (double)desired.y + previous_eye.y - previous_desired.y;
+    const double z = desired.z - lateral * new_x + longitudinal * new_z;
+    if (!isfinite(x) || !isfinite(y) || !isfinite(z) ||
+        fabs(x) > FLT_MAX || fabs(y) > FLT_MAX || fabs(z) > FLT_MAX) return 0;
+    *out_eye = (MdkrCameraVec3){(float)x, (float)y, (float)z};
+    return 1;
+}
+
 static MdkrCameraVec3 mdkr_camera_resolver_lerp(
     MdkrCameraVec3 a,
     MdkrCameraVec3 b,

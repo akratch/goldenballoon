@@ -3,6 +3,7 @@
 #ifdef NATIVE_PORT
 
 #include "math_util.h"
+#include "presentation_snapshot.h"
 
 #include <math.h>
 #include <float.h>
@@ -113,6 +114,11 @@ int cam_lens_pose_from_camera_snapshot(
     return TRUE;
 }
 
+static s16 camera_envelope_angle(u16 start, u16 end, int delta, unsigned step, int snapped) {
+    if (snapped) return (s16)(step ? end : start);
+    return (s16)(u16)(start + (delta < 0 ? -(int)step : (int)step));
+}
+
 int cam_lens_rotation_envelope(const Camera *before, const Camera *after,
     float near_distance, float half_width, float half_height,
     unsigned max_states, float *out) {
@@ -131,10 +137,16 @@ int cam_lens_rotation_envelope(const Camera *before, const Camera *after,
         (u16)after->trans.rotation.z_rotation
     };
     int delta[3];
+    int snapped[3];
     unsigned counts[3], states = 1;
     for (unsigned axis = 0; axis < 3; ++axis) {
         delta[axis] = (s16)(u16)(end[axis] - start[axis]);
-        counts[axis] = (unsigned)(delta[axis] < 0 ? -delta[axis] : delta[axis]) + 1;
+        unsigned magnitude = (unsigned)(delta[axis] < 0 ? -delta[axis] : delta[axis]);
+        /* Match presentation_lerp_angle: strictly past a quarter turn snaps.
+         * Include both endpoints for alpha=0/denominator=0 and positive alpha.
+         * The Cartesian product remains conservative across unsnapped axes. */
+        snapped[axis] = magnitude > PRESENTATION_SNAPSHOT_ROTATION_SNAP;
+        counts[axis] = snapped[axis] ? 2 : magnitude + 1;
         if (counts[axis] > max_states / states) return FALSE;
         states *= counts[axis];
     }
@@ -148,9 +160,9 @@ int cam_lens_rotation_envelope(const Camera *before, const Camera *after,
     for (unsigned y = 0; y < counts[0]; ++y)
     for (unsigned p = 0; p < counts[1]; ++p)
     for (unsigned r = 0; r < counts[2]; ++r) {
-        sample.trans.rotation.y_rotation = (s16)(u16)(start[0] + (delta[0] < 0 ? -(int)y : (int)y));
-        sample.trans.rotation.x_rotation = (s16)(u16)(start[1] + (delta[1] < 0 ? -(int)p : (int)p));
-        sample.trans.rotation.z_rotation = (s16)(u16)(start[2] + (delta[2] < 0 ? -(int)r : (int)r));
+        sample.trans.rotation.y_rotation = camera_envelope_angle(start[0], end[0], delta[0], y, snapped[0]);
+        sample.trans.rotation.x_rotation = camera_envelope_angle(start[1], end[1], delta[1], p, snapped[1]);
+        sample.trans.rotation.z_rotation = camera_envelope_angle(start[2], end[2], delta[2], r, snapped[2]);
         if (!cam_lens_pose_from_camera_snapshot(&sample, FALSE, &pose)) return FALSE;
         for (int horizontal = -1; horizontal <= 1; horizontal += 2)
         for (int vertical = -1; vertical <= 1; vertical += 2) {

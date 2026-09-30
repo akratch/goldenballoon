@@ -393,6 +393,11 @@ CHECKS = (
     Check("custom_track_loader_asan", "check_custom_track_loader.py", "asan",
           "sanitizer coverage of installed synthetic sections, native DMA host "
           "destinations and session detachment before retail boot continues"),
+    Check("custom_save_inventory", "check_custom_save_inventory.py", "native",
+          "real progression/time codecs preserve retail bytes with synthetic "
+          "appended courses; guarded buffers and empty custom defaults"),
+    Check("custom_save_inventory_asan", "check_custom_save_inventory.py", "asan",
+          "sanitizer coverage of retail codec isolation from appended metadata"),
     Check("dev_tools_purity", "check_dev_tools_purity.py", "native",
           "every registered developer tool leaves the authoritative state "
           "stream byte-identical when opened"),
@@ -508,6 +513,10 @@ CHECKS = (
     Check("camera_probe_invalid_recovery", "check_camera_probe_invalid_recovery.py", "release",
           "one injected unprovable exact probe leaves its telemetry mark and "
           "costs no tick its published, target-visible pose"),
+    Check("camera_held_shot_faults", "check_camera_held_shot_faults.py", "release",
+          "normal Modern held-shot projection/query fault recovery and safe publication"),
+    Check("camera_held_shot_faults_asan", "check_camera_held_shot_faults.py", "asan",
+          "sanitizer held-shot projection/query fault recovery in isolated saves"),
     Check("camera_obstruction_lifecycle_runtime", "check_camera_obstruction_lifecycle_runtime.py", "release",
           "Modern camera state retirement and fresh safe solves across quit, restart, and hub/race reloads"),
     Check("camera_obstruction_performance_runtime", "check_camera_obstruction_performance_runtime.py", "release",
@@ -1329,6 +1338,10 @@ CHECKS = (
 # artifacts produced inside that CTest fixture rather than the runner's normal
 # role arguments. ``rom_free_units`` owns their execution.
 CTEST_COMPANION_SCRIPTS = {
+    "check_camera_envelope_control.py",  # native lens CTest supplies its binary
+    # Parser imported/exercised by test_camera_chain_evidence.py. Its CLI
+    # accepts an operator's private trace, not standard runner build arguments.
+    "check_camera_chain_evidence.py",
     "check_sprite_models.py",  # synthetic packs consumed by sprite_models CTest
     "check_ai_difficulty_ui.py",
     "check_match_transport_tls_io.py",

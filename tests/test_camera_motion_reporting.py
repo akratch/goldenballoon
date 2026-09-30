@@ -4,13 +4,131 @@
 import contextlib
 import io
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import check_camera_motion_quality as motion
+import check_camera_obstruction_performance_runtime as performance
+import check_camera_obstruction_lifecycle_runtime as lifecycle
+import check_camera_obstruction_runtime as runtime
 
 
 class MotionReportingTests(unittest.TestCase):
+    def test_policy_runner_isolates_state_and_ambient_faults(self):
+        roots = []
+        def capture(command, **kwargs):
+            env, root = kwargs["env"], kwargs["cwd"]
+            roots.append(root)
+            self.assertTrue(root.is_dir())
+            self.assertEqual(env["MDKR_SAVE_DIR"], str(root / "save"))
+            self.assertEqual(env["MDKR_VIDEO_CONFIG_PATH"], str(root / "missing.ini"))
+            self.assertNotIn("MDKR_TEST_CAMERA_EXACT_INVALID_TICK", env)
+            self.assertNotIn("GE007_STALE_TEST", env)
+            self.assertNotIn("MDKR_CAMERA_OBSTRUCTION", env)
+            self.assertTrue(Path(command[0]).is_absolute())
+            self.assertTrue(Path(command[command.index("--input-script") + 1]).is_absolute())
+            return mock.Mock(returncode=0, stdout="clean")
+        with mock.patch.dict(os.environ, {"MDKR_TEST_CAMERA_EXACT_INVALID_TICK": "2136",
+                "GE007_STALE_TEST": "1", "MDKR_SAVE_DIR": "/not-test-state",
+                "MDKR_CAMERA_OBSTRUCTION": "modern"}), \
+                mock.patch.object(runtime.subprocess, "run", side_effect=capture):
+            runtime.run("build-rel/mdkr64", "private.z64", "unset", 1, 1)
+            runtime.run("build-rel/mdkr64", "private.z64", "unset", 1, 1)
+        self.assertNotEqual(roots[0], roots[1])
+        self.assertTrue(all(not root.exists() for root in roots))
+
+    def test_policy_runner_cleans_up_failed_arms(self):
+        for failure in ("exit", "timeout", "launch"):
+            roots = []
+            def fail(command, **kwargs):
+                roots.append(kwargs["cwd"])
+                self.assertTrue(roots[-1].is_dir())
+                if failure == "timeout":
+                    raise runtime.subprocess.TimeoutExpired(command, 1)
+                if failure == "launch":
+                    raise OSError("injected launch failure")
+                return mock.Mock(returncode=1, stdout="injected child failure")
+            expected = {"exit": RuntimeError, "timeout": runtime.subprocess.TimeoutExpired,
+                        "launch": OSError}[failure]
+            with self.subTest(failure=failure), \
+                    mock.patch.object(runtime.subprocess, "run", side_effect=fail), \
+                    self.assertRaises(expected):
+                runtime.run("build-rel/mdkr64", "private.z64", "modern", 1, 1)
+            self.assertEqual(len(roots), 1)
+            self.assertFalse(roots[0].exists())
+
+    def test_held_correction_exemption_requires_matching_safe_publication(self):
+        detail = ("camera_obstruction_observe detail tick=1 physical_slot=0 "
+                  "resolve={status=2 valid=1 corrected=1 alternate=1 clearance=0 source_degraded=0}")
+        published = "camera_held_shot_published tick=1 slot=0 frame=7 active=1"
+        self.assertEqual(runtime.nonheld_corrections(detail), 1)
+        self.assertEqual(runtime.nonheld_corrections(published + "\n" + detail), 0)
+        self.assertEqual(runtime.nonheld_corrections("\n".join((
+            published, detail, detail.replace("tick=1", "tick=2"), published, detail))), 1)
+        self.assertEqual(runtime.nonheld_corrections(published.replace("active=1", "active=0") + "\n" + detail), 1)
+        for trace in (published, detail + "\n" + detail,
+                      detail + "\n" + published + "\n" + published,
+                      detail + "\n" + published.replace("slot=0", "slot=1"),
+                      detail + "\n" + published.replace("active=1", "active=2")):
+            with self.subTest(trace=trace), self.assertRaises(RuntimeError):
+                runtime.nonheld_corrections(trace)
+        for old, new in (("status=2", "status=0"), ("valid=1", "valid=0"),
+                         ("corrected=1", "corrected=0"), ("alternate=1", "alternate=0"),
+                         ("clearance=0", "clearance=1"), ("source_degraded=0", "source_degraded=1")):
+            with self.subTest(field=old), self.assertRaises(RuntimeError):
+                runtime.nonheld_corrections(detail.replace(old, new) + "\n" + published)
+
+    def test_performance_trial_does_not_change_observe_control(self):
+        for enabled in (False, True):
+            for policy in ("observe", "modern"):
+                with self.subTest(enabled=enabled, policy=policy), \
+                        tempfile.TemporaryDirectory() as temp, \
+                        mock.patch.dict(os.environ, {"MDKR_TEST_CAMERA_HELD_SHOT": "1"}), \
+                        mock.patch.object(performance.subprocess, "run", side_effect=RuntimeError("captured")) as run:
+                    with self.assertRaisesRegex(RuntimeError, "captured"):
+                        performance.run(Path("unused"), Path("unused"), Path(temp),
+                                        policy, 10, 1, held_shot_trial=enabled)
+                    self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", run.call_args.kwargs["env"])
+
+    def test_lifecycle_legacy_flag_cannot_restore_trial_selector(self):
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temp, \
+                    mock.patch.dict(os.environ, {"MDKR_TEST_CAMERA_HELD_SHOT": "1"}), \
+                    mock.patch.object(lifecycle.subprocess, "run", side_effect=RuntimeError("captured")) as run:
+                with self.assertRaisesRegex(RuntimeError, "captured"):
+                    lifecycle.run(Path("unused"), Path("unused"), lifecycle.SCENARIOS[0],
+                                  Path(temp), 1, held_shot_trial=enabled)
+                self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", run.call_args.kwargs["env"])
+
+    def test_legacy_flag_is_recorded_but_both_arms_use_normal_policy(self):
+        arm = motion.HIGH_RATE_ARMS[0]
+        summary = {"correction_reengagements": 0}
+        for enabled in (False, True):
+            argv = ["check_camera_motion_quality.py", "--only", arm.route,
+                    "--baseline-out", "unused.json"]
+            if enabled:
+                argv.append("--held-shot-trial")
+            with self.subTest(enabled=enabled), \
+                    mock.patch("sys.argv", argv), \
+                    mock.patch.object(motion, "resolve_binary", return_value="unused-game"), \
+                    mock.patch.object(motion.Path, "is_file", return_value=True), \
+                    mock.patch.object(motion.Path, "write_text") as write, \
+                    mock.patch.object(motion, "run_route", return_value="") as run, \
+                    mock.patch.object(motion, "inspect", return_value=(summary, {}, [])), \
+                    mock.patch.object(motion, "inspect_high_rate", return_value=({"summary": summary}, [])), \
+                    mock.patch.object(motion, "report_baseline"), \
+                    mock.patch.object(motion, "report_high_rate"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(motion.main(), 0)
+            self.assertEqual(run.call_count, 2)
+            for call in run.call_args_list:
+                self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", call.kwargs["present_env"])
+            self.assertEqual(run.call_args_list[1].kwargs["frame_scale"], arm.frame_scale)
+            self.assertEqual(json.loads(write.call_args.args[0])["held_shot_trial"], enabled)
+
     def test_only_exact_event_rows_are_retained(self):
         event = "camera_motion reengagement tick=42 viewport=0 gap=11"
         output = ("camera_motion summary slot_ticks=100\n"

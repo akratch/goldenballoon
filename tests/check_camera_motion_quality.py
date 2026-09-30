@@ -554,6 +554,8 @@ def main() -> int:
     parser.add_argument("--skip-high-rate", action="store_true",
                         help="skip the high-rate cut-density arm; it re-drives "
                              "a route at 4x the frame budget")
+    parser.add_argument("--held-shot-trial", action="store_true",
+                        help="legacy compatibility flag; held-shot recovery is now part of full Modern")
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build)).resolve()
@@ -572,13 +574,17 @@ def main() -> int:
 
     failures: list[str] = []
     baseline: dict[str, dict] = {}
+    trial_env = {}
+    if args.held_shot_trial:
+        print("  Legacy trial flag supplied; testing normal Modern held-shot recovery")
     if args.profile_force:
         print(f"  profile force: MDKR_CAMERA_PROFILE_FORCE={args.profile_force} "
               "(measurement arm, not the shipped table)")
     for route in routes:
         print(f"  {route.name}: {route.description}")
         try:
-            output = run_route(route, binary, rom, args.profile_force)
+            output = run_route(route, binary, rom, args.profile_force,
+                               present_env=trial_env)
             summary, stats, route_failures = inspect(route, output)
         except (RuntimeError, subprocess.TimeoutExpired) as error:
             failures.append(f"{route.name}: {error}")
@@ -603,7 +609,7 @@ def main() -> int:
         try:
             output = run_route(
                 route, binary, rom, args.profile_force,
-                present_env={"MDKR_PRESENT_RATE": str(arm.present_rate),
+                present_env={**trial_env, "MDKR_PRESENT_RATE": str(arm.present_rate),
                              "MDKR_PRESENT_SMOOTHING": "interpolate",
                              # The scheduler summary is what proves the arm
                              # ran at the rate it claims and what supplies the
@@ -626,6 +632,7 @@ def main() -> int:
     if args.baseline_out:
         Path(args.baseline_out).write_text(
             json.dumps({"profile_force": args.profile_force,
+                        "held_shot_trial": args.held_shot_trial,
                         "routes": baseline, "high_rate": high_rate},
                        indent=2, sort_keys=True) + "\n")
         print(f"  baseline written to {args.baseline_out}")

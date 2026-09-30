@@ -15,6 +15,83 @@
 # Keep format-boundary and display math independently runnable: these regressions
 # should fail in milliseconds without booting SDL, WebGPU or copyrighted assets.
 if(BUILD_TESTING AND NOT EMSCRIPTEN)
+    add_executable(mdkr_custom_track_texture_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_texture.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_texture.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
+        ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
+    target_include_directories(mdkr_custom_track_texture_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/game/src ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    target_compile_definitions(mdkr_custom_track_texture_test PRIVATE
+        VERSION_us_v80 _LANGUAGE_C MODERN_CC NON_MATCHING=1 AVOID_UB=1 NATIVE_PORT=1)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_custom_track_texture_test PRIVATE m)
+    endif()
+    add_test(NAME custom_track_texture COMMAND mdkr_custom_track_texture_test)
+    add_executable(mdkr_custom_track_model_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_model.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_model.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_model_payload.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c
+        ${CMAKE_SOURCE_DIR}/game/src/hasm_native/inflate_native.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_custom_track_model_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/miniz
+        ${CMAKE_SOURCE_DIR}/game/src ${CMAKE_SOURCE_DIR}/game/include)
+    target_compile_definitions(mdkr_custom_track_model_test PRIVATE
+        _LANGUAGE_C NATIVE_PORT=1 MODERN_CC)
+    add_test(NAME custom_track_model COMMAND mdkr_custom_track_model_test)
+    add_executable(mdkr_custom_track_header_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_header.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_header.c)
+    target_include_directories(mdkr_custom_track_header_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME custom_track_header COMMAND mdkr_custom_track_header_test)
+    add_executable(mdkr_custom_track_package_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_package.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_package_admission.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_prepared.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_section.c
+        ${CMAKE_SOURCE_DIR}/game/src/object_layout.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_header.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_model.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_model_payload.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_texture.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c
+        ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_package.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_custom_track_package_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/miniz
+        ${CMAKE_SOURCE_DIR}/game/src ${CMAKE_SOURCE_DIR}/game/include)
+    target_compile_definitions(mdkr_custom_track_package_test PRIVATE
+        MDKR_TRACK_PACKAGE_TEST_ALLOCATOR=1 MDKR_CUSTOM_TRACK_TEST_ALLOCATOR=1
+        VERSION_us_v80 _LANGUAGE_C MODERN_CC NON_MATCHING=1 AVOID_UB=1 NATIVE_PORT=1)
+    target_include_directories(mdkr_custom_track_package_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_custom_track_package_test PRIVATE m)
+    endif()
+    add_test(NAME custom_track_package COMMAND mdkr_custom_track_package_test
+        ${CMAKE_CURRENT_BINARY_DIR}/custom_track_package_scratch)
+    add_executable(mdkr_custom_track_manifest_test
+        ${CMAKE_SOURCE_DIR}/tests/test_custom_track_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/custom_track_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_custom_track_manifest_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/miniz)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_custom_track_manifest_test PRIVATE m)
+    endif()
+    add_test(NAME custom_track_manifest COMMAND mdkr_custom_track_manifest_test)
     add_executable(mdkr_custom_track_decode_test
         ${CMAKE_SOURCE_DIR}/tests/test_custom_track_decode.c
         ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c
@@ -279,6 +356,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
 
     add_executable(mdkr_camera_lens_pose_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c
         ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
         ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
         ${CMAKE_SOURCE_DIR}/game/src/camera_lens_pose.c)
@@ -310,6 +388,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     add_test(NAME camera_lens_pose COMMAND mdkr_camera_lens_pose_test)
     add_executable(mdkr_camera_lens_pose_native_test
         ${CMAKE_SOURCE_DIR}/tests/test_camera_lens_pose.c
+        ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c
         ${CMAKE_SOURCE_DIR}/tests/camera_math_link_support.c
         ${CMAKE_SOURCE_DIR}/game/src/hasm/math_util.c
         ${CMAKE_SOURCE_DIR}/game/src/camera_lens_pose.c
@@ -519,6 +598,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     # loader consumes the exact compiler output and rejects corrupt headers and
     # payloads before publishing any section pointer.
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME camera_chain_evidence
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_camera_chain_evidence.py)
+    add_test(NAME camera_held_shot_fault_reporting
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_camera_held_shot_faults.py)
+    add_test(NAME camera_envelope_long_arc_control
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/check_camera_envelope_control.py
+            $<TARGET_FILE:mdkr_camera_lens_pose_native_test>)
     add_test(NAME character_asset_probe
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_character_asset_probe.py)

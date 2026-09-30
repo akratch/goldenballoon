@@ -25,13 +25,14 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
                            resolve_binary)
 
 
-SCRIPT = "tests/input_scripts/race_drive_long.txt"
+SCRIPT = Path(__file__).resolve().parent / "input_scripts/race_drive_long.txt"
 DETAIL = "camera_obstruction_observe detail"
 SUMMARY = "camera_obstruction_observe summary"
 
@@ -40,7 +41,8 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
         window: str = "1280x960", fov: str = "authored",
         max_hfov: str | None = None,
         extra_env: dict[str, str] | None = None) -> str:
-    env = dict(os.environ)
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(("MDKR", "GE007_"))}
     env.update(
         MDKR_RENDERER="gl",
         MDKR_AUDIO="0",
@@ -63,16 +65,20 @@ def run(binary: str, rom: str, policy: str, frames: int, timeout: int,
     if extra_env:
         env.update(extra_env)
     command = [
-        binary, "--headless-frames", str(frames), "--window-size", window,
+        str(Path(binary).resolve()), "--headless-frames", str(frames), "--window-size", window,
         "--fov", fov,
     ]
     if max_hfov is not None:
         command.extend(("--max-hfov", max_hfov))
-    command.extend(("--input-script", SCRIPT, "--rom", rom))
-    proc = subprocess.run(
-        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, timeout=timeout,
-    )
+    command.extend(("--input-script", str(SCRIPT), "--rom", str(Path(rom).resolve())))
+    with tempfile.TemporaryDirectory(prefix="mdkr_camera_policy_") as temp:
+        root = Path(temp)
+        env.update(MDKR_SAVE_DIR=str(root / "save"),
+                   MDKR_VIDEO_CONFIG_PATH=str(root / "missing.ini"))
+        proc = subprocess.run(
+            command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=timeout,
+        )
     if proc.returncode != 0:
         raise RuntimeError(f"{policy} exited {proc.returncode}\n" + "\n".join(proc.stdout.splitlines()[-80:]))
     marker = find_fatal(proc.stdout, *ASSERT_MARKERS)
@@ -109,6 +115,48 @@ def block_field(row: str, block: str, name: str) -> int:
     if match is None:
         raise RuntimeError(f"missing {block}.{name} in trace row: {row[:300]}")
     return int(match.group(1))
+
+
+def nonheld_corrections(output: str) -> int:
+    """Exclude only proven active held publications, not generic recovery.
+
+    Reduced comfort intentionally prolongs held recovery. Missing publications
+    earn no exemption; duplicate/orphan/unsafe publication evidence is invalid.
+    """
+    details = {}
+    active = set()
+    epoch, last_tick = 0, -1
+    for row in output.splitlines():
+        if DETAIL not in row and not row.startswith("camera_held_shot_published "):
+            continue
+        tick = field(row, "tick")
+        if tick < last_tick:
+            epoch += 1  # Runtime tick serial restarts on level transitions.
+        last_tick = tick
+        if DETAIL in row:
+            key = (epoch, tick, field(row, "physical_slot"))
+            if key in details:
+                raise RuntimeError("duplicate camera detail identity")
+            details[key] = row
+        elif row.startswith("camera_held_shot_published "):
+            match = re.fullmatch(r"camera_held_shot_published tick=(\d+) slot=(\d+) frame=\d+ active=([01])", row)
+            if match is None:
+                raise RuntimeError("malformed held publication")
+            if match[3] == "1":
+                key = (epoch, int(match[1]), int(match[2]))
+                if key in active:
+                    raise RuntimeError("duplicate active held publication")
+                active.add(key)
+    if not details:
+        raise RuntimeError("missing camera details")
+    for key in active:
+        row = details.get(key)
+        if row is None or any(field(row, name) != value for name, value in
+                (("corrected", 1), ("alternate", 1), ("valid", 1),
+                 ("clearance", 0), ("source_degraded", 0))) or \
+                block_field(row, "resolve", "status") not in (1, 2):
+            raise RuntimeError("held publication lacks matching safe correction")
+    return sum(field(row, "corrected") for row in details.values()) - len(active)
 
 
 def inspect(policy: str, output: str) -> dict[str, int]:
@@ -239,10 +287,15 @@ def main() -> int:
     # Comfort changes what is asked for. Counting that as an obstruction
     # correction reports a permanently retracted camera on a wall-free route --
     # it is a 35x inflation of this counter, and this bound is what catches it.
-    if results["comfort"]["corrected"] > 2 * results["modern"]["corrected"]:
+    # Active held-shot recovery legitimately lasts longer with reduced comfort.
+    # Match actual publications before exempting those ticks; keep the original
+    # inflation guard on all other corrections.
+    ordinary_comfort = nonheld_corrections(outputs["comfort"])
+    ordinary_modern = nonheld_corrections(outputs["modern"])
+    if ordinary_comfort > 2 * ordinary_modern:
         failures.append(
-            f"comfort arm reported {results['comfort']['corrected']} corrections "
-            f"against the default arm's {results['modern']['corrected']}; the "
+            f"comfort arm reported {ordinary_comfort} non-held corrections "
+            f"against the authored-motion arm's {ordinary_modern}; the "
             "comfort offset is being counted as an obstruction correction"
         )
     if results["legacy"]["penetrated"] == 0:

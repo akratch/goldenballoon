@@ -103,9 +103,12 @@ typedef struct MdkrCameraLensPose {
  */
 int cam_lens_pose_from_camera_snapshot(
     const Camera *camera, s32 apply_shake, MdkrCameraLensPose *out);
-/* Experimental geometry helper, not camera policy. Bounds displacement of the
+/* Bounded geometry helper, not camera-selection policy. Bounds displacement of the
  * four near-plane corners from the before basis over the Cartesian set of
- * shortest-arc integer yaw/composed-pitch/roll states. Eye translation is
+ * normal presentation yaw/composed-pitch/roll states: shortest-arc integers,
+ * or both endpoints when presentation snaps an axis past a quarter turn.
+ * Internal long-arc fault injection is deliberately outside this contract.
+ * Eye translation is
  * excluded. Projection geometry must remain fixed. Fails without writing out
  * if the exhaustive state count exceeds max_states or inputs are invalid. */
 int cam_lens_rotation_envelope(const Camera *before, const Camera *after,

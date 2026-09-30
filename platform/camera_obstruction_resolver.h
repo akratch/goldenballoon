@@ -156,6 +156,15 @@ typedef struct MdkrCameraObstructionResolverResult {
 void mdkr_camera_obstruction_resolver_reset(
     MdkrCameraObstructionResolverState *state);
 
+/* Transport an eye's correction relative to the authored horizontal boom.
+ * Preserves lateral/longitudinal/vertical correction as the target or authored
+ * eye moves, before recovery shrinks it. This is geometry, not clearance:
+ * callers must validate the complete resulting transition. Degenerate booms,
+ * nonfinite inputs or unrepresentable output fail without changing out_eye. */
+int mdkr_camera_recovery_transport(MdkrCameraVec3 previous_eye,
+    MdkrCameraVec3 previous_pivot, MdkrCameraVec3 previous_desired,
+    MdkrCameraVec3 pivot, MdkrCameraVec3 desired, MdkrCameraVec3 *out_eye);
+
 /*
  * Resolve one fixed authored camera pose without allocating or mutating world
  * input. Retraction is immediate; a clear boom expands by at most

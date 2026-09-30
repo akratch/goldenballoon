@@ -477,6 +477,31 @@ static void test_oriented_rounded_lens_narrow_phase(void) {
     expect_true("rounded lens conservative radius rejects null output",
                 !mdkr_camera_rounded_lens_guard_conservative_radius(&guard, NULL));
 
+    {
+        MdkrCameraRoundedLensGuard expanded = guard;
+        expanded.skin += 0.365096f;
+        expect_true("skin-only mutation invalidates enclosing radius",
+                    !mdkr_camera_rounded_lens_guard_conservative_radius(&expanded, &conservative_radius));
+        expect_true("skin expansion updates enclosing radius atomically",
+                    mdkr_camera_rounded_lens_guard_expand_skin(&guard, expanded.skin, &expanded));
+        expect_true("expanded guard remains query-valid",
+                    mdkr_camera_rounded_lens_guard_conservative_radius(&expanded, &conservative_radius));
+        expect_true("expanded sphere encloses new skin",
+                    expanded.broadphase_radius > guard.broadphase_radius + 0.365f);
+        MdkrCameraRoundedLensGuard saved = expanded;
+        expect_true("skin expansion rejects shrink without mutation",
+                    !mdkr_camera_rounded_lens_guard_expand_skin(&expanded, guard.skin, &expanded) &&
+                    memcmp(&expanded, &saved, sizeof(saved)) == 0);
+        expect_true("skin expansion rejects NaN without mutation",
+                    !mdkr_camera_rounded_lens_guard_expand_skin(&guard, NAN, &expanded) &&
+                    memcmp(&expanded, &saved, sizeof(saved)) == 0);
+        expect_true("skin expansion permits aliasing",
+                    mdkr_camera_rounded_lens_guard_expand_skin(&expanded, expanded.skin + 0.1f, &expanded));
+        expect_true("skin expansion rejects null arguments",
+                    !mdkr_camera_rounded_lens_guard_expand_skin(NULL, 1, &expanded) &&
+                    !mdkr_camera_rounded_lens_guard_expand_skin(&guard, 1, NULL));
+    }
+
     /* This lies inside the broad enclosing sphere, but outside the true pyramid. */
     side_world = world_for(side_vertices, 3U, side_indices, side_triangles, 1U);
     status = mdkr_camera_sweep(&side_world, &(MdkrCameraSweepInput){

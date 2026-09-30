@@ -290,7 +290,19 @@ typedef enum MdkrCameraMotionPhase {
     MDKR_CAMERA_MOTION_PHASE_BLOCKED,
 } MdkrCameraMotionPhase;
 
+typedef struct MdkrCameraHeldChainProbe {
+    Camera camera;
+    MdkrCameraProjection projection;
+    MdkrCameraRoundedLensGuard guard;
+    MdkrCameraVec3 pivot;
+    MdkrCameraVec3 desired;
+    uint64_t tick;
+    uint32_t length;
+    uint8_t valid, apply_shake;
+} MdkrCameraHeldChainProbe;
+
 typedef struct MdkrCameraObstructionObserveSlot {
+    MdkrCameraHeldChainProbe held_chain_probe;
     Camera authored;
     Camera last_validated_camera;
     MdkrCameraVec3 desired_eye;
@@ -342,6 +354,8 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t resolved_valid;
     uint8_t correction_applied;
     uint8_t alternate_active;
+    /* The rendered held-shot trial is not an ordinary retargeted fan shot. */
+    uint8_t held_shot_active;
     uint8_t elevated_emergency;
     /* Soft-occluder mitigation census for this tick: a small dynamic blocker
      * failed both correction gates, and whether its correction was actually
@@ -1845,53 +1859,49 @@ static void camera_obstruction_validate_presentation_transition(
         return;
     }
     observe->transition_invoked = TRUE;
+    if (status == MDKR_CAMERA_SWEEP_HIT && !observe->query_source_degraded &&
+        !camera_obstruction_exact_basis_equal(
+            &observe->last_validated_exact_guard, &pose->guard)) {
+        float envelope = NAN;
+        const int available = cam_lens_rotation_envelope(
+            &observe->last_validated_camera, &pose->camera,
+            pose->guard.near_distance, pose->guard.half_width,
+            pose->guard.half_height, 4096, &envelope);
+        MdkrCameraSweepStatus bounded_status = MDKR_CAMERA_SWEEP_INVALID;
+        if (available && observe->last_validated_exact_guard.near_distance == pose->guard.near_distance &&
+            observe->last_validated_exact_guard.half_width == pose->guard.half_width &&
+            observe->last_validated_exact_guard.half_height == pose->guard.half_height) {
+            /* A sphere HIT can be a conservative false positive. The
+             * previous rectangle expanded by the maximum corner motion
+             * contains every renderer angle state along this eye chord.
+             * Reuse the authoritative sources and degradation accounting;
+             * incomplete or over-budget proof retains the original cut. */
+            MdkrCameraRoundedLensGuard expanded;
+            const float skin = nextafterf(fmaxf(observe->last_validated_exact_guard.skin,
+                                                pose->guard.skin) + envelope, INFINITY);
+            if (mdkr_camera_rounded_lens_guard_expand_skin(
+                    &observe->last_validated_exact_guard, skin, &expanded)) {
+                MdkrCameraObstructionLensQuery query = {sphere_query, exact_query, &expanded, observe};
+                MdkrCameraSweepHit bounded_hit;
+                bounded_status = camera_obstruction_lens_sweep(&query, &transition, &bounded_hit);
+                if (observe->query_source_degraded)
+                    bounded_status = MDKR_CAMERA_SWEEP_INVALID;
+            }
+        }
+        if (camera_obstruction_trace_level() >= 2) fprintf(stderr,
+            "camera_rotation_envelope tick=%llu available=%d "
+            "margin=%.6f sphere=%.6f bounded_status=%d\n",
+            (unsigned long long)sCameraObstructionRuntime.tick_serial,
+            available, envelope, transition.guard.radius, bounded_status);
+        if (bounded_status == MDKR_CAMERA_SWEEP_CLEAR &&
+            !observe->query_source_degraded) {
+            /* INVALID never becomes clear; dynamic discontinuities
+             * and projection tuple changes returned before this point. */
+            status = MDKR_CAMERA_SWEEP_CLEAR;
+        }
+    }
     if (camera_obstruction_trace_level() >= 2 &&
         status != MDKR_CAMERA_SWEEP_CLEAR) {
-        if (camera_obstruction_reengagement_probe_enabled()) {
-            float envelope = NAN;
-            const int available = cam_lens_rotation_envelope(
-                &observe->last_validated_camera, &pose->camera,
-                pose->guard.near_distance, pose->guard.half_width,
-                pose->guard.half_height, 4096, &envelope);
-            MdkrCameraSweepStatus bounded_status = MDKR_CAMERA_SWEEP_INVALID;
-            if (available && observe->last_validated_exact_guard.near_distance == pose->guard.near_distance &&
-                observe->last_validated_exact_guard.half_width == pose->guard.half_width &&
-                observe->last_validated_exact_guard.half_height == pose->guard.half_height) {
-                /* Shadow query only. Callback state belongs to this copy;
-                 * shared query caches/counters still make this unsuitable for
-                 * production performance or fault-injection qualification. */
-                MdkrCameraObstructionObserveSlot probe = *observe;
-                const MdkrCameraObstructionQuerySource sources[] = {
-                    {camera_obstruction_track_sweep_adapter, NULL},
-                    {camera_obstruction_dynamic_sweep_adapter, &probe},
-                };
-                const MdkrCameraObstructionCombinedQuery combined = {
-                    sources, ARRAY_COUNT(sources), ARRAY_COUNT(sources)};
-                const MdkrCameraObstructionRoundedLensQuerySource exact_sources[] = {
-                    {camera_obstruction_track_rounded_sweep_adapter, NULL},
-                    {camera_obstruction_dynamic_rounded_sweep_adapter, &probe},
-                };
-                const MdkrCameraObstructionRoundedLensCombinedQuery exact = {
-                    exact_sources, ARRAY_COUNT(exact_sources), ARRAY_COUNT(exact_sources)};
-                MdkrCameraRoundedLensGuard expanded = observe->last_validated_exact_guard;
-                expanded.skin = nextafterf(fmaxf(expanded.skin, pose->guard.skin) + envelope, INFINITY);
-                double expanded_radius;
-                if (mdkr_camera_rounded_lens_guard_conservative_radius(&expanded, &expanded_radius) &&
-                    expanded_radius < FLT_MAX) {
-                    expanded.broadphase_radius = nextafterf((float)expanded_radius, INFINITY);
-                    const MdkrCameraObstructionLensQuery query = {&combined, &exact, &expanded, &probe};
-                    MdkrCameraSweepHit bounded_hit;
-                    bounded_status = camera_obstruction_lens_sweep(&query, &transition, &bounded_hit);
-                    if (probe.query_source_degraded != degraded_before)
-                        bounded_status = MDKR_CAMERA_SWEEP_INVALID;
-                }
-            }
-            fprintf(stderr,
-                "camera_rotation_envelope_probe tick=%llu available=%d "
-                "margin=%.6f sphere=%.6f bounded_status=%d\n",
-                (unsigned long long)sCameraObstructionRuntime.tick_serial,
-                available, envelope, transition.guard.radius, bounded_status);
-        }
         fprintf(stderr,
             "camera_transition_witness tick=%llu status=%d rotating=%d "
             "radius=%.5f contact={kind=%u id=%u}\n",
@@ -3002,6 +3012,198 @@ static int camera_obstruction_publish_wide_lens_shoulder(
     return TRUE;
 }
 
+/* Held-eye trajectory, diagnostic-only unless the explicit rendered trial
+ * requests publication. Successful steps retain their own camera history;
+ * a failed proof ends the chain rather than silently continuing it. */
+static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
+    const int delta = (s16)(u16)((u16)to - (u16)from);
+    /* Experimental return cap: 90 degrees per authored second, never a
+     * presentation snap. Zero-time validation must not spend recovery. */
+    const float cap = fminf(16384.0f * dt, 4096.0f);
+    const int step = (int)fminf(fabsf((float)delta), floorf(cap));
+    return (s16)(u16)((u16)from + (delta < 0 ? -step : step));
+}
+
+static int camera_obstruction_probe_held_chain(
+    MdkrCameraObstructionObserveSlot *observe, s32 physical_slot,
+    MdkrCameraVec3 boom_anchor, MdkrCameraVec3 desired, int recovering,
+    float dt, const MdkrCameraObstructionResolverConfig *config, int publish) {
+    MdkrCameraHeldChainProbe *chain = &observe->held_chain_probe;
+    const uint64_t tick = sCameraObstructionRuntime.tick_serial;
+    const int continued = chain->valid && tick > 0 && chain->tick == tick - 1 &&
+        !observe->intent.discontinuity &&
+        camera_obstruction_projection_geometry_equal(&chain->projection, &observe->projection) &&
+        chain->apply_shake == observe->last_validated_apply_shake;
+    const uint32_t previous_length = continued ? chain->length : 0;
+    MdkrCameraObstructionObserveSlot probe = *observe;
+    MdkrCameraVec3 old_pivot = observe->previous_pivot;
+    chain->valid = FALSE;
+    if (continued) {
+        probe.last_validated_camera = chain->camera;
+        probe.last_validated_projection = chain->projection;
+        probe.last_validated_exact_guard = chain->guard;
+        probe.last_validated_apply_shake = chain->apply_shake;
+        old_pivot = chain->pivot;
+    }
+    MdkrCameraLensPose previous;
+    int valid = isfinite(dt) && dt >= 0 &&
+        (!recovering || continued) &&
+        probe.last_validated_camera_valid && probe.last_validated_exact_guard_valid &&
+        !observe->intent.discontinuity && observe->intent.target_valid &&
+        cam_lens_pose_from_camera_snapshot(&probe.last_validated_camera,
+            probe.last_validated_apply_shake, &previous);
+    float target_x = NAN, target_y = NAN;
+    const char *rejection = "history";
+    MdkrCameraFinalPose pose;
+    if (valid) {
+        MdkrCameraVec3 eye = {
+            previous.eye.x + observe->intent.pivot.x - old_pivot.x,
+            previous.eye.y + observe->intent.pivot.y - old_pivot.y,
+            previous.eye.z + observe->intent.pivot.z - old_pivot.z};
+        if (recovering && continued) {
+            /* Preserve the shoulder in the authored boom's moving basis.
+             * World-fixed correction crosses sides when a spectator's target
+             * passes its camera. A degenerate basis cannot prove this return. */
+            const MdkrCameraVec3 previous_eye = {previous.eye.x, previous.eye.y, previous.eye.z};
+            if (!mdkr_camera_recovery_transport(previous_eye, chain->pivot,
+                    chain->desired, observe->intent.pivot, desired, &eye)) {
+                eye = (MdkrCameraVec3){NAN, NAN, NAN};
+            }
+        }
+        probe.authored.trans.rotation = probe.last_validated_camera.trans.rotation;
+        probe.authored.pitch = probe.last_validated_camera.pitch;
+        if (recovering && dt > 0) {
+            const float distance = camera_obstruction_distance(eye, desired);
+            const float step = fminf(config->recovery_speed * dt,
+                                    config->max_recovery_step);
+            const float settle = 4.0f * FLT_EPSILON *
+                fmaxf(1.0f, fmaxf(fabsf(desired.x),
+                    fmaxf(fabsf(desired.y), fabsf(desired.z))));
+            const float fraction = distance <= settle ? 1.0f :
+                fminf(step / distance, config->max_recovery_fraction);
+            eye = camera_obstruction_lerp(eye, desired, fraction);
+            probe.authored.trans.rotation.y_rotation = camera_obstruction_probe_return_angle(
+                probe.authored.trans.rotation.y_rotation,
+                observe->authored.trans.rotation.y_rotation, dt);
+            probe.authored.trans.rotation.z_rotation = camera_obstruction_probe_return_angle(
+                probe.authored.trans.rotation.z_rotation,
+                observe->authored.trans.rotation.z_rotation, dt);
+            probe.authored.trans.rotation.x_rotation = camera_obstruction_probe_return_angle(
+                (s16)(u16)((u16)probe.authored.trans.rotation.x_rotation + (u16)probe.authored.pitch),
+                (s16)(u16)((u16)observe->authored.trans.rotation.x_rotation + (u16)observe->authored.pitch), dt);
+            probe.authored.pitch = 0;
+        }
+        probe.query_source_degraded = FALSE;
+        probe.transition_clear = probe.transition_cut = probe.transition_invoked = FALSE;
+        const MdkrCameraObstructionQuerySource sources[] = {
+            {camera_obstruction_track_sweep_adapter, NULL},
+            {camera_obstruction_dynamic_sweep_adapter, &probe}};
+        const MdkrCameraObstructionCombinedQuery combined = {sources, 2, 2};
+        const MdkrCameraObstructionRoundedLensQuerySource exact_sources[] = {
+            {camera_obstruction_track_rounded_sweep_adapter, NULL},
+            {camera_obstruction_dynamic_rounded_sweep_adapter, &probe}};
+        const MdkrCameraObstructionRoundedLensCombinedQuery exact = {exact_sources, 2, 2};
+        MdkrCameraSweepHit hit;
+        rejection = "pose";
+        valid = camera_obstruction_build_final_pose(&probe, eye, FALSE, &pose);
+        if (valid) {
+            rejection = "endpoint";
+            valid = camera_obstruction_final_pose_stationary_clear(
+                &probe, &combined, &exact, &pose, TRUE, &hit);
+        }
+        if (valid) {
+            rejection = "transition";
+            valid = probe.transition_clear && !pose.discontinuity;
+        }
+        if (valid) {
+            MdkrCameraObstructionLensQuery query = {&combined, &exact, &pose.guard, &probe};
+            MdkrCameraSweepInput boom = {.guard = probe.guard, .start_eye = boom_anchor,
+                .desired_eye = pose.rendered_eye, .mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK};
+            rejection = "boom";
+            valid = camera_obstruction_lens_sweep(&query, &boom, &hit) == MDKR_CAMERA_SWEEP_CLEAR;
+            if (valid) {
+                rejection = "visibility";
+                valid = camera_obstruction_target_visible(&combined, probe.intent.target, pose.rendered_eye);
+            }
+            if (valid) {
+                rejection = "degraded";
+                valid = !probe.query_source_degraded;
+            }
+            const MdkrCameraVec3 offset = {probe.intent.target.x - pose.rendered_eye.x,
+                probe.intent.target.y - pose.rendered_eye.y, probe.intent.target.z - pose.rendered_eye.z};
+            const MdkrCameraRoundedLensGuard *g = &pose.guard;
+            const float depth = offset.x*g->forward.x + offset.y*g->forward.y + offset.z*g->forward.z;
+            if (depth > g->near_distance && g->half_width > 0 && g->half_height > 0) {
+                target_x = (offset.x*g->right.x + offset.y*g->right.y + offset.z*g->right.z) *
+                    g->near_distance / (depth*g->half_width);
+                target_y = (offset.x*g->up.x + offset.y*g->up.y + offset.z*g->up.z) *
+                    g->near_distance / (depth*g->half_height);
+            }
+            if (valid) {
+                rejection = "framing";
+                valid = isfinite(target_x) && isfinite(target_y) &&
+                    fabsf(target_x) <= 1 && fabsf(target_y) <= 1;
+            }
+        }
+    }
+    int returned = FALSE;
+    if (valid) {
+        chain->camera = pose.camera; chain->projection = pose.projection;
+        chain->guard = pose.guard; chain->apply_shake = pose.apply_shake;
+        chain->pivot = observe->intent.pivot; chain->tick = tick;
+        chain->desired = desired;
+        chain->length = previous_length < UINT32_MAX ? previous_length + 1 : UINT32_MAX;
+        chain->valid = TRUE;
+        returned = recovering && camera_obstruction_distance(pose.rendered_eye, desired) == 0 &&
+            (u16)pose.camera.trans.rotation.y_rotation == (u16)observe->authored.trans.rotation.y_rotation &&
+            (u16)pose.camera.trans.rotation.z_rotation == (u16)observe->authored.trans.rotation.z_rotation &&
+            (u16)((u16)pose.camera.trans.rotation.x_rotation + (u16)pose.camera.pitch) ==
+                (u16)((u16)observe->authored.trans.rotation.x_rotation + (u16)observe->authored.pitch);
+        if (returned) chain->valid = FALSE;
+    }
+    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s\n",
+        (unsigned long long)tick, physical_slot, continued, previous_length, valid, target_x, target_y,
+        recovering, valid ? camera_obstruction_distance(pose.rendered_eye, desired) : NAN, returned,
+        valid ? "none" : rejection);
+    if (!valid || !publish) return FALSE;
+
+    camera_obstruction_publish_final_pose(observe, physical_slot, &pose);
+    if (!observe->resolved_valid) {
+        chain->valid = FALSE;
+        return FALSE;
+    }
+    observe->probe_degraded_seen |= observe->query_source_degraded | probe.probe_degraded_seen;
+    observe->query_source_degraded = FALSE;
+    observe->transition_invoked = probe.transition_invoked;
+    observe->transition_clear = probe.transition_clear;
+    observe->transition_cut = probe.transition_cut;
+    observe->transition_tuple_cut = probe.transition_tuple_cut;
+    observe->resolver.last_safe_eye = pose.rendered_eye;
+    observe->resolver.last_safe_valid = TRUE;
+    observe->resolver.projection_generation = pose.projection.generation;
+    observe->resolver.retraction_latched = !recovering;
+    observe->resolver.clear_run_ticks = 0;
+    observe->resolver_status = returned ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR :
+        recovering ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING :
+                     MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
+    /* This really publishes an alternate orientation/eye, held until the
+     * bounded return completes. Do not relabel the ordinary resolver's pose. */
+    observe->alternate_active = !returned;
+    observe->held_shot_active = !returned;
+    observe->was_obstructed = !returned;
+    if (!returned) observe->correction_applied = TRUE;
+    observe->previous_pivot = observe->intent.pivot;
+    observe->previous_pivot_valid = TRUE;
+    if (camera_obstruction_trace_level() >= 2) {
+        extern int g_frameCounter;
+        fprintf(stderr,
+                "camera_held_shot_published tick=%llu slot=%d frame=%d active=%d\n",
+                (unsigned long long)tick, physical_slot, g_frameCounter,
+                !returned);
+    }
+    return TRUE;
+}
+
 static void camera_obstruction_resolve_slot(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
@@ -3053,7 +3255,7 @@ static void camera_obstruction_resolve_slot(
     const MdkrCameraVec3 prior_safe = observe->resolver.last_safe_eye;
     const int prior_safe_valid = observe->resolver.last_safe_valid;
     const int previously_obstructed = observe->was_obstructed;
-    const int prior_alternate = observe->alternate_active;
+    const int prior_alternate = observe->alternate_active && !observe->held_shot_active;
     const float shake = gNoCamShake ? observe->authored.shakeMagnitude : 0.0f;
     MdkrCameraObstructionTreatment treatment;
 
@@ -3065,6 +3267,13 @@ static void camera_obstruction_resolve_slot(
     observe->blocker_stable_id = 0U;
     observe->blocker_normal_valid = FALSE;
     observe->release_held = FALSE;
+    if (observe->held_shot_active) {
+        /* A held candidate owns its own orientation. If it cannot continue,
+         * fall back to the ordinary boom policy, not the fan-shot retargeter.
+         * Successful candidate publication below reacquires ownership. */
+        observe->alternate_active = FALSE;
+        observe->held_shot_active = FALSE;
+    }
     if (observe->intent.discontinuity) {
         observe->resolver.last_safe_valid = FALSE;
         observe->previous_pivot_valid = FALSE;
@@ -3170,6 +3379,25 @@ static void camera_obstruction_resolve_slot(
         return;
     }
 
+    /* Accepted held-shot recovery belongs to full Modern treatment. Observe
+     * and safety-only profiles retain their existing publication policy. */
+    const int held_shot_enabled = use_exact &&
+        treatment == MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL;
+    if ((held_shot_enabled || camera_obstruction_reengagement_probe_enabled()) &&
+        (status == MDKR_CAMERA_SWEEP_HIT || observe->held_chain_probe.valid) &&
+        observe->resolver.last_safe_valid && observe->previous_pivot_valid) {
+        if (camera_obstruction_probe_held_chain(observe, physical_slot, boom_anchor,
+                desired, status == MDKR_CAMERA_SWEEP_CLEAR, fixed_delta_seconds, &config,
+                held_shot_enabled)) {
+            if (status == MDKR_CAMERA_SWEEP_HIT) {
+                observe->blocker_kind = hit.kind;
+                observe->blocker_stable_id = hit.stable_id;
+                observe->blocker_normal = hit.normal;
+                observe->blocker_normal_valid = hit.stable_id != 0;
+            }
+            return;
+        }
+    }
     if (camera_obstruction_reengagement_probe_enabled() && status == MDKR_CAMERA_SWEEP_HIT &&
         observe->resolver.last_safe_valid && observe->previous_pivot_valid) {
         /* Diagnostic only: establish whether retaining the old eye, either

@@ -194,6 +194,12 @@ int mdkr_camera_rounded_lens_guard_conservative_radius(
     const MdkrCameraRoundedLensGuard *guard,
     double *out_radius);
 
+/* Increase skin and its enclosing radius together. Validates the original
+ * guard; failure leaves output unchanged. Input/output may alias. */
+int mdkr_camera_rounded_lens_guard_expand_skin(
+    const MdkrCameraRoundedLensGuard *guard, float skin,
+    MdkrCameraRoundedLensGuard *out_guard);
+
 /*
  * Exact static narrow phase for one already-selected visual triangle.  The
  * returned HIT means the triangle intersects the rounded lens (the pyramid
