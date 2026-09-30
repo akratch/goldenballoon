@@ -1,12 +1,17 @@
 """Capture and compare authoritative [SIMHASH] streams between two binaries.
 
-For the gates that run two different executables through the same route and
-require the same simulation, tick for tick. tests/check_crossarch_determinism.py
-runs a thin arm64 build against a thin x86_64 build of the same source.
+Shared by the gates that run two different executables through the same route
+and require the same simulation, tick for tick:
 
-The pure helpers are unit-tested by tests/test_crossarch_determinism.py. Their
-default wording is the cross-architecture gate's, so its reports read exactly as
-they always have; another gate passes its own labels.
+- tests/check_crossarch_determinism.py -- a thin arm64 build against a thin
+  x86_64 build of the same source;
+- tests/check_previous_release_parity.py -- this tree's build against a build
+  of the previous published release.
+
+The pure helpers are unit-tested by tests/test_crossarch_determinism.py and
+tests/test_previous_release_parity.py. Their default wording is the
+cross-architecture gate's, so its reports read exactly as they always have; the
+other gate passes its own labels.
 """
 
 from __future__ import annotations

@@ -307,6 +307,23 @@ def is_serial(check: "Check") -> bool:
 # mistaken for a task that ran and reported.
 TIMEOUT_EXIT = 124
 
+# A check that cannot run without an input only the operator can supply exits
+# with this status and says why. Only the checks named here may use it; from
+# any other check it is an ordinary failure. A SKIPPED task is never counted as
+# passed: the summary and the verdict line name it.
+SKIP_EXIT = 77
+SKIPPABLE_CHECKS = {
+    # Needs --reference-build: a build of the previous published release.
+    "previous_release_parity": "no --reference-build (a build of the previous "
+                               "published release) was supplied",
+}
+# Checks that are handed --reference-build when the operator supplies one.
+REFERENCE_BUILD_CHECKS = frozenset(SKIPPABLE_CHECKS)
+
+
+def was_skipped(check: "Check", returncode: int) -> bool:
+    return returncode == SKIP_EXIT and check.name in SKIPPABLE_CHECKS
+
 
 @dataclass(frozen=True)
 class Check:
@@ -607,6 +624,14 @@ CHECKS = (
           ("--soak-only",)),
     Check("state_hash", "check_state_hash.py", "release",
           "authoritative-hash determinism, window/backend invariance, legacy-RNG control"),
+    # Needs a build of the previous published release (--reference-build);
+    # without one it is SKIPPED, loudly, never passed. See SKIPPABLE_CHECKS.
+    Check("previous_release_parity", "check_previous_release_parity.py", "release",
+          "retail [SIMHASH] identity with the previous published release on AI, "
+          "boss and challenge-arena routes (US and PAL), a legacy-RNG control, "
+          "and that release's Time Trial record and ghost read back unchanged",
+          # Measured 10m20s alone under the runner's background scheduling.
+          timeout=3600),
     Check("sim_hash_artifact", "check_sim_hash_artifact.py", "release",
           "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "
           "byte-for-byte; the first-divergence comparator fails closed on "
@@ -1799,6 +1824,7 @@ def command_for(
     roms: Path,
     wasm: Path,
     no_rebuild_instrumented: bool,
+    reference_build: Path | None = None,
 ) -> list[str]:
     if check.role == "ctest":
         command = yield_wrapper(check) + [
@@ -1865,11 +1891,15 @@ def command_for(
     # framed_world_views joins them for the region reason as well: PAL composes
     # against a 264-row framebuffer, so how a widescreen host maps the authored
     # 2D envelope is a different question there than on NTSC.
+    # previous_release_parity compares both regions against the previous
+    # release for the same reason.
     if (check.name in {"rom_revision", "rom_checker_page", "simulation_cadence",
                        "arbitrary_presentation_rates", "presentation_breadth",
-                       "framed_world_views"}
+                       "framed_world_views", "previous_release_parity"}
             or check.script == "check_taj_character_select.py"):
         cmd += ["--roms", str(roms)]
+    if check.name in REFERENCE_BUILD_CHECKS and reference_build is not None:
+        cmd += ["--reference-build", str(reference_build)]
     cmd += list(check.args)
     return cmd
 
@@ -2210,6 +2240,13 @@ def main() -> int:
     )
     parser.add_argument("--wasm", default="build-web/mdkr64_web.wasm")
     parser.add_argument(
+        "--reference-build",
+        default=None,
+        help="a build of the previous published release, configured like "
+             "--release-build, for previous_release_parity; without it that "
+             "task is SKIPPED (named in the verdict), never passed",
+    )
+    parser.add_argument(
         "--only",
         action="append",
         metavar="GLOB[,GLOB...]",
@@ -2343,6 +2380,8 @@ def main() -> int:
     rom = resolve_path(args.rom)
     roms = resolve_path(args.roms)
     wasm = resolve_path(args.wasm)
+    reference_build = (resolve_path(args.reference_build)
+                       if args.reference_build else None)
     try:
         preflight(checks, native, release, asan, rom, wasm,
                   require_shipping_sdl=args.require_shipping_sdl)
@@ -2426,7 +2465,7 @@ def main() -> int:
         """Sequential execution, byte-for-byte the pre---jobs behavior."""
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
-            args.no_rebuild_instrumented,
+            args.no_rebuild_instrumented, reference_build,
         )
         print(
             f"\n[{index}/{len(checks)}] {check.name} — {check.description}\n"
@@ -2453,6 +2492,8 @@ def main() -> int:
         elapsed = time.monotonic() - started
         if returncode == 0:
             label = "PASS"
+        elif was_skipped(check, returncode):
+            label = f"SKIPPED ({SKIPPABLE_CHECKS[check.name]})"
         elif returncode == TIMEOUT_EXIT:
             label = f"FAIL (timeout after {format_duration(timeout)})"
         else:
@@ -2471,7 +2512,7 @@ def main() -> int:
         """
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
-            args.no_rebuild_instrumented,
+            args.no_rebuild_instrumented, reference_build,
         )
         log_path = os.path.join(log_dir, f"{check.name}.log")
         started = time.monotonic()
@@ -2509,7 +2550,8 @@ def main() -> int:
             for index, check in enumerate(checks, 1):
                 returncode, elapsed = run_streaming(index, check)
                 results.append((check, returncode, elapsed))
-                if returncode != 0 and args.fail_fast:
+                if (returncode != 0 and not was_skipped(check, returncode)
+                        and args.fail_fast):
                     break
         else:
             from concurrent.futures import ThreadPoolExecutor
@@ -2539,11 +2581,13 @@ def main() -> int:
                     done += 1
                     results.append((check, returncode, elapsed))
                     label = "PASS" if returncode == 0 else (
-                        "FAIL (timeout)" if returncode == TIMEOUT_EXIT
+                        f"SKIPPED ({SKIPPABLE_CHECKS[check.name]})"
+                        if was_skipped(check, returncode)
+                        else "FAIL (timeout)" if returncode == TIMEOUT_EXIT
                         else f"FAIL (exit {returncode})")
                     print(f"[{done}/{len(checks)}] {check.name}: {label} in "
                           f"{format_duration(elapsed)}", flush=True)
-                    if returncode != 0:
+                    if returncode != 0 and not was_skipped(check, returncode):
                         # A harness fault (or a task that raised before opening
                         # its log) may leave no file. Replay whatever exists;
                         # never let a missing log crash the whole run.
@@ -2587,7 +2631,8 @@ def main() -> int:
                     done += 1
                     returncode, elapsed = run_streaming(done, check)
                     results.append((check, returncode, elapsed))
-                    if returncode != 0 and args.fail_fast:
+                    if (returncode != 0 and not was_skipped(check, returncode)
+                            and args.fail_fast):
                         break
             # Manifest order keeps the summary comparable across runs.
             order = {c.name: i for i, c in enumerate(checks)}
@@ -2596,11 +2641,15 @@ def main() -> int:
         print("\nrun_checks: interrupted", file=sys.stderr)
         return 130
 
-    failures = [(check, rc, elapsed) for check, rc, elapsed in results if rc != 0]
+    skipped = [check for check, rc, _elapsed in results if was_skipped(check, rc)]
+    failures = [(check, rc, elapsed) for check, rc, elapsed in results
+                if rc != 0 and not was_skipped(check, rc)]
     print("\nrun_checks: summary", flush=True)
     for check, returncode, elapsed in results:
         if returncode == 0:
             label = "PASS"
+        elif was_skipped(check, returncode):
+            label = "SKIPPED"
         elif returncode == TIMEOUT_EXIT:
             label = "FAIL timeout"
         else:
@@ -2610,6 +2659,10 @@ def main() -> int:
     # A subset can never read as a completed suite: the verdict line names the
     # restriction that produced it and how much of the manifest it covered.
     scope = subset_label(args, len(checks))
+    for check in skipped:
+        print(f"run_checks: SKIPPED — {check.name}: "
+              f"{SKIPPABLE_CHECKS[check.name]}; it compared nothing and "
+              "is not a pass", file=sys.stderr, flush=True)
     if failures:
         print(
             f"run_checks: FAIL — {len(failures)}/{len(results)} task(s) failed "
@@ -2624,6 +2677,14 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if skipped:
+        print(
+            f"run_checks: PASS WITH SKIPS — {len(results) - len(skipped)}/"
+            f"{len(results)} tasks passed, {len(skipped)} SKIPPED "
+            f"({', '.join(check.name for check in skipped)}) in "
+            f"{format_duration(total)} [{scope}]"
+        )
+        return 0
     print(
         f"run_checks: PASS — all {len(results)} tasks passed in "
         f"{format_duration(total)} [{scope}]"

@@ -94,8 +94,8 @@ import tempfile
 from pathlib import Path
 
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
-# The stream capture, parsing, comparison, report and configuration guards live
-# in simhash_streams.py for any two-binary gate; they are re-exported here
+# The stream capture, parsing, comparison, report and configuration guards are
+# shared with check_previous_release_parity.py; they are re-exported here
 # because tests/test_crossarch_determinism.py unit-tests them through this gate.
 from simhash_streams import (  # noqa: F401
     HASH_VERSION, SHARED_CACHE_KEYS, SIMHASH_RE, SOURCE_SUFFIXES, SOURCE_TREES,

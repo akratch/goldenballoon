@@ -195,5 +195,47 @@ class NativeBrowserArtifacts(unittest.TestCase):
         self.assertIn(str(run_checks.PARTY_WRANGLER), str(caught.exception))
 
 
+class PreviousReleaseReferenceRouting(unittest.TestCase):
+    """--reference-build reaches only the gate that needs it; only it may skip."""
+
+    def setUp(self) -> None:
+        self.gate = next(check for check in run_checks.CHECKS
+                         if check.name == "previous_release_parity")
+        self.reference = Path("previous release") / "mdkr64"
+
+    def command(self, check, reference):
+        return run_checks.command_for(
+            check, Path("native") / "mdkr64", Path("release") / "mdkr64",
+            Path("asan") / "mdkr64", Path("rom.z64"), Path("roms"),
+            Path("web.wasm"), True, reference)
+
+    def test_the_reference_is_forwarded_once_to_the_parity_gate(self):
+        command = self.command(self.gate, self.reference)
+        self.assertEqual(command.count("--reference-build"), 1)
+        self.assertEqual(command[command.index("--reference-build") + 1],
+                         str(self.reference))
+        self.assertEqual(command[command.index("--build") + 1],
+                         str(Path("release") / "mdkr64"))
+        self.assertIn("--roms", command)
+
+    def test_without_a_reference_the_gate_is_invoked_without_one(self):
+        self.assertNotIn("--reference-build", self.command(self.gate, None))
+
+    def test_no_other_check_receives_the_reference(self):
+        for check in run_checks.CHECKS:
+            if check is self.gate or check.role == "ctest":
+                continue
+            with self.subTest(check=check.name):
+                self.assertNotIn("--reference-build",
+                                 self.command(check, self.reference))
+
+    def test_only_the_named_gate_may_skip(self):
+        self.assertTrue(run_checks.was_skipped(self.gate, run_checks.SKIP_EXIT))
+        self.assertFalse(run_checks.was_skipped(self.gate, 0))
+        self.assertFalse(run_checks.was_skipped(self.gate, 1))
+        other = next(check for check in run_checks.CHECKS if check.name == "state_hash")
+        self.assertFalse(run_checks.was_skipped(other, run_checks.SKIP_EXIT))
+
+
 if __name__ == "__main__":
     unittest.main()

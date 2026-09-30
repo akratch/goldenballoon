@@ -755,8 +755,19 @@ run.
 tools/web/build_web.sh          # builds, stages dist/web, runs the guard itself
 python3 tools/run_checks.py --jobs 6 --require-shipping-sdl --require-fresh \
   --build build-rel --release-build build-rel --asan-build build-asan \
-  --wasm build-web/mdkr64_web.wasm --roms /path/to/rom-revisions
+  --wasm build-web/mdkr64_web.wasm --roms /path/to/rom-revisions \
+  --reference-build /path/to/previous-release/build-rel
 ```
+
+`--reference-build` is a build of the previous published release: a clean
+`git worktree add --detach <dir> v1.7.0`, configured with the same `MDKR_*`
+options and SDL as `build-rel` and built with `--target mdkr64`.
+`previous_release_parity` requires both builds to produce identical `[SIMHASH]`
+streams on the retail AI, boss and challenge-arena routes (US and PAL), and has
+the old build write a Time Trial record and ghost that this build must read
+back. Without the flag that task is SKIPPED and the verdict reads `PASS WITH
+SKIPS`, which is not release evidence. A diverging route is a finding: bisect
+it over `v1.7.0..HEAD`, then document the change as intended or fix it.
 
 `--roms` must point at a directory holding BOTH source revisions, US and PAL
 v80. Its default, `build/roms`, is normally empty, and the runner's help calls

@@ -79,8 +79,8 @@ first record write fills every untouched (course, vehicle) entry of both record
 blocks with the ROM's default times and initials (`ASSET_MISC_23`), and each
 block ends in two bytes the codec never writes, which `write_eeprom_data()`
 takes from an uninitialised allocation and sums into the checksum. Records and
-the Controller Pak ghost must therefore be produced by the 1.7.0 build at test
-time, never stored.
+the Controller Pak ghost are therefore produced by the 1.7.0 build at test time,
+by `tests/check_previous_release_parity.py`, and never stored.
 
 ## What this fixture cannot see
 

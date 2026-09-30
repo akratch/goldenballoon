@@ -4270,6 +4270,32 @@ runs: **10 distinct images, 45/45 pairs differing, median 18.9 % of pixels**
 this.** The failure mode is silent: no crash, no assertion, every fixture green,
 and every visual comparison quietly meaningless.
 
+## Previous-release parity — `tests/check_previous_release_parity.py`
+
+Every other determinism gate compares a build with itself, so none of them can
+see a release change how the retail game plays. This one runs a build of the
+previous published release (`--reference-build`, v1.7.0) and this build through
+the same retail routes and requires their `[SIMHASH]` v3 streams to be
+byte-identical for 6,600 ticks, at least 3,000 of them racing: Ancient Lake and
+Whale Bay (two worlds, car and hovercraft), Tricky's boss race, and the eggs,
+bananas and battle arenas, on the US ROM and on the PAL ROM when `--roms` holds
+one. Each arm has its own save directory, preferences and working directory
+(no content packs) and runs at Original cadence. A red route prints the first
+divergent tick with both rows; bisect it over `v1.7.0..HEAD` and decide whether
+the change is intended. A `MDKR_RNGSEED=legacy` arm must diverge, the reference
+must be a clean checkout of the tag configured like this build, and the old
+build writes a Time Trial record and Controller Pak ghost that this build must
+decode, re-encode and play back. Without `--reference-build` the gate exits 77
+and `tools/run_checks.py` reports it as SKIPPED, never as passed. Pure helpers
+are unit-tested by `test_previous_release_parity.py`; the stream capture and
+comparator are shared with the cross-architecture gate in `simhash_streams.py`.
+
+```bash
+python3 tests/check_previous_release_parity.py --build build-rel \
+  --reference-build ../mdkr64-v170-ref/build-rel --rom baserom.us.v80.z64 \
+  --roms /path/to/rom-revisions --jobs 4
+```
+
 ## Saves written by 1.7.0 — `tests/check_save_v170_compat.py`
 
 `tests/fixtures/save_v170/` holds the EEPROM the published 1.7.0 build wrote
