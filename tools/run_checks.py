@@ -398,6 +398,13 @@ CHECKS = (
           "appended courses; guarded buffers and empty custom defaults"),
     Check("custom_save_inventory_asan", "check_custom_save_inventory.py", "asan",
           "sanitizer coverage of retail codec isolation from appended metadata"),
+    Check("save_v170_compat", "check_save_v170_compat.py", "native",
+          "the game's own codec decodes the save the published 1.7.0 build wrote "
+          "to every fact 1.7.0 reported and re-encodes it byte for byte; a "
+          "one-bit-shifted control is rejected"),
+    Check("save_v170_compat_asan", "check_save_v170_compat.py", "asan",
+          "sanitizer coverage of the game codec reading a caller-named EEPROM "
+          "image through MDKR_SAVE_COMPAT_FIXTURE"),
     Check("dev_tools_purity", "check_dev_tools_purity.py", "native",
           "every registered developer tool leaves the authoritative state "
           "stream byte-identical when opened"),

@@ -2565,6 +2565,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME save_container COMMAND mdkr_save_container_test)
 
+    # A save the published 1.7.0 build wrote (tests/fixtures/save_v170) must
+    # decode to the same progress and re-encode byte for byte, raw and as its
+    # 1.7.0 .mdkr-save container.
+    add_executable(mdkr_save_v170_fixture_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_v170_fixture.c
+        ${CMAKE_SOURCE_DIR}/platform/save_container.c
+        ${CMAKE_SOURCE_DIR}/platform/save_codec.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_save_v170_fixture_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME save_v170_fixture
+        COMMAND mdkr_save_v170_fixture_test
+                ${CMAKE_SOURCE_DIR}/tests/fixtures/save_v170)
+
     add_executable(mdkr_save_tools_core_test
         ${CMAKE_SOURCE_DIR}/tests/test_save_tools_core.c
         ${CMAKE_SOURCE_DIR}/platform/save_tools_core.c

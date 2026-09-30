@@ -309,6 +309,45 @@ def config_block(payload: int) -> bytes:
     return (payload | ((config_checksum(payload) & 0xFF) << 56)).to_bytes(8, "big")
 
 
+def read_hex_fixture(path: str | os.PathLike[str]) -> bytes:
+    """The bytes an annotated hex fixture (tests/fixtures/save_v170) spells.
+
+    The format is a ``size N`` line followed by ``OFFSET: BYTES`` rows; ``#``
+    starts a comment. Every byte must appear exactly once, so a truncated or
+    hand-edited fixture raises instead of reading as zeros. The C reader in
+    tests/test_save_v170_fixture.c applies the same rules.
+    """
+
+    size: int | None = None
+    image: bytearray | None = None
+    seen: set[int] = set()
+    for number, raw in enumerate(Path(path).read_text(encoding="ascii").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("size "):
+            if size is not None:
+                raise ValueError(f"{path}:{number}: second size line")
+            size = int(line[5:])
+            image = bytearray(size)
+            continue
+        if image is None or size is None:
+            raise ValueError(f"{path}:{number}: data before the size line")
+        offset_text, separator, values = line.partition(":")
+        if not separator:
+            raise ValueError(f"{path}:{number}: expected OFFSET: BYTES")
+        offset = int(offset_text, 16)
+        for token in values.split():
+            if len(token) != 2 or offset >= size or offset in seen:
+                raise ValueError(f"{path}:{number}: bad or repeated byte at {offset:#x}")
+            image[offset] = int(token, 16)
+            seen.add(offset)
+            offset += 1
+    if image is None or size is None or len(seen) != size:
+        raise ValueError(f"{path}: {len(seen)} of {size} bytes listed")
+    return bytes(image)
+
+
 # --------------------------------------------------------------------------- #
 #  Fatal markers
 # --------------------------------------------------------------------------- #

@@ -1,0 +1,44 @@
+# The 512-byte EEPROM the published Golden Balloon 1.7.0 build wrote after
+# one Adventure door and one race from a new game. Provenance, and the
+# facts each byte range carries: README.md beside this file.
+#
+# Format: a `size` line, then `OFFSET: BYTES` rows in hex. Every byte of
+# the image appears exactly once; a reader refuses gaps and overlaps.
+size 512
+# slot 1 (bytes 0-39): valid; the Adventure file the route created
+0000: 00 50 02 00 00 00 00 00 00 00 00 00 00 00 04 04 00 00 00 00
+0014: 04 03 00 36 00 00 00 00 00 00 00 00 00 00 04 00 00 00 00 00
+# slot 2 (bytes 40-79): empty, erased to 0xFF
+0028: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+003c: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+# slot 3 (bytes 80-119): empty, erased to 0xFF
+0050: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+0064: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff
+# settings (bytes 120-127): never written by this route
+0078: 00 00 00 00 00 00 00 00
+# fastest laps (bytes 128-319): never written; no Time Trial was run
+0080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0090: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00b0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00c0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00d0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00e0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00f0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0110: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0120: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0130: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# course times (bytes 320-511): never written; no Time Trial was run
+0140: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0150: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0160: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0170: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+0190: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01a0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01b0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01c0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01d0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01e0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+01f0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00

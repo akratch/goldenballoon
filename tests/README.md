@@ -4270,6 +4270,25 @@ runs: **10 distinct images, 45/45 pairs differing, median 18.9 % of pixels**
 this.** The failure mode is silent: no crash, no assertion, every fixture green,
 and every visual comparison quietly meaningless.
 
+## Saves written by 1.7.0 — `tests/check_save_v170_compat.py`
+
+`tests/fixtures/save_v170/` holds the EEPROM the published 1.7.0 build wrote
+after one Adventure door and one race from a new game, as annotated hex and as
+1.7.0's own `.mdkr-save` export, plus 1.7.0's `mdkr-save inspect` report of it
+(its README records how they were made and why they carry no ROM-derived
+bytes). The ROM-free ctests `save_v170_fixture` and `save_v170_inspect` hold
+`platform/save_codec.c`, `platform/save_container.c` and this tree's
+`mdkr-save` to it: the same facts, byte-identical field re-encode, and 1.7.0's
+container reproduced byte for byte. This check does the same through the game's
+own codec in `game/src/save_data.c`, which is what a player's save actually
+goes through: `MDKR_SAVE_COMPAT_FIXTURE` hands it the image after level-table
+init, and every fact 1.7.0 reported must come back, with Ancient Lake cleared at
+save index 3 and the slot re-encoded byte for byte. A copy with the slot shifted
+one bit (checksum resealed) must be rejected, which is what proves the
+comparison can see a layout change; a checksum-valid settings word must
+round-trip and a wrong one must be refused. It runs in the native and ASan
+lanes.
+
 ## Authored state/RNG compatibility — `tests/check_authored_rng_compat.py`
 
 This gate is intentionally narrower and stricter than the general determinism

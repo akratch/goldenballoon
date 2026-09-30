@@ -7,7 +7,8 @@
 
 #define GAMD 0x47414D44 // 'GAMD' ASCII - Game Data?
 #ifdef NATIVE_PORT
-/* Opt-in ROM-private in-memory codec fixture, called after level init. */
+/* Opt-in codec self-tests, called after level init: MDKR_CUSTOM_SAVE_SELFTEST
+ * (in memory) and MDKR_SAVE_COMPAT_FIXTURE (decodes a caller-named image). */
 void mdkr_save_inventory_selftest(void);
 #endif
 #define TIMD 0x54494D44 // 'TIMD' ASCII - Time Data?

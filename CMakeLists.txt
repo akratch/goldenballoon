@@ -218,6 +218,11 @@ if(NOT EMSCRIPTEN)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_SOURCE_DIR}/tests/test_save_cli.py
                     --cli $<TARGET_FILE:mdkr-save>)
+        add_test(
+            NAME save_v170_inspect
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/tests/test_save_v170_inspect.py
+                    --cli $<TARGET_FILE:mdkr-save>)
     endif()
 else()
     # ROM- and renderer-free save tooling. The launcher loads this tiny module
