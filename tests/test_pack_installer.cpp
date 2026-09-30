@@ -46,6 +46,13 @@ namespace fs = std::filesystem;
     } \
 } while (0)
 
+// Nothing installed and nothing staged: the mods folder is absent (a refusal
+// before anything was created) or empty.
+bool noResidue(const fs::path &mods) {
+    std::error_code error;
+    return !fs::exists(mods, error) || fs::is_empty(mods, error);
+}
+
 struct TestRoot {
     fs::path path;
     ~TestRoot() {
@@ -263,7 +270,7 @@ int main(int argc, char **argv) {
                     ? "expanded-byte budget" : test == 2 ? "entry budget"
                     : "metadata budget") != std::string::npos);
             }
-            if (test != 0) REQUIRE(fs::is_empty(budgetMods));
+            if (test != 0) REQUIRE(noResidue(budgetMods));
         }
         // Fail after reader-state allocation, when miniz requests the central
         // directory. No large payload or memory-heavy fixture is needed.
@@ -280,7 +287,7 @@ int main(int argc, char **argv) {
             REQUIRE(!result.installed);
             REQUIRE(result.message.find("metadata budget") != std::string::npos);
         }
-        REQUIRE(fs::is_empty(budgetMods));
+        REQUIRE(noResidue(budgetMods));
     }
     {
         const auto size = fs::file_size(input / "race.zip");
@@ -294,7 +301,7 @@ int main(int argc, char **argv) {
                 if (!exact) REQUIRE(result.message.find("byte budget") != std::string::npos);
             }
             REQUIRE(fs::exists(budgetMods / "race.zip") == exact);
-            if (!exact) REQUIRE(fs::is_empty(budgetMods));
+            if (!exact) REQUIRE(noResidue(budgetMods));
         }
         const auto budgetMods = root.path / "zip-zero-entries";
         {
@@ -304,7 +311,7 @@ int main(int argc, char **argv) {
             REQUIRE(!result.installed);
             REQUIRE(result.message.find("entry budget") != std::string::npos);
         }
-        REQUIRE(fs::is_empty(budgetMods));
+        REQUIRE(noResidue(budgetMods));
     }
     {
         auto prepared = PreparedPackInstall::copyZip(input / "race.zip", mods);
@@ -583,8 +590,43 @@ int main(int argc, char **argv) {
         REQUIRE(!fs::exists(root.path / "never-created"));
     }
     const std::string largeBody(600000, 'x');
-    REQUIRE(writeZip(input / "cancel.zip", "readme.txt", largeBody.c_str(),
+    REQUIRE(writeZip(input / "cancel.zip", "pack.ini", "[pack]\nname=Cancel\n",
+                     MZ_NO_COMPRESSION, largeBody.c_str(), "readme.txt"));
+    REQUIRE(writeZip(input / "not-a-pack.zip", "readme.txt", largeBody.c_str(),
                      MZ_NO_COMPRESSION));
+    // A wrong pick is refused before anything is copied: the chosen ZIP or
+    // folder is checked with the admission rules the game applies, so nothing
+    // is staged and the copy loop (one cancellation check per 256 KiB) never
+    // starts. The only check reached is the one at intake.
+    {
+        const auto earlyMods = root.path / "early-refusal";
+        REQUIRE(fs::create_directory(earlyMods));
+        unsigned checks = 0;
+        bool sawStaging = false;
+        const auto observe = [&] {
+            ++checks;
+            sawStaging = sawStaging || !fs::is_empty(earlyMods);
+            return false;
+        };
+        auto zip = PreparedPackInstall::copyZip(input / "not-a-pack.zip", earlyMods, observe);
+        REQUIRE(fs::is_empty(earlyMods));
+        REQUIRE(checks == 1 && !sawStaging);
+        const auto zipRefusal = zip.finalize();
+        REQUIRE(!zipRefusal.installed);
+        REQUIRE(zipRefusal.message.find("pack.ini") != std::string::npos);
+
+        const auto notPack = input / "NotAPack";
+        REQUIRE(fs::create_directories(notPack / "nested"));
+        std::ofstream(notPack / "readme.txt") << "not a pack";
+        std::ofstream(notPack / "nested" / "notes.txt") << "still not a pack";
+        checks = 0;
+        auto folderInstall = PreparedPackInstall::copyPack(notPack, earlyMods, observe);
+        REQUIRE(fs::is_empty(earlyMods));
+        REQUIRE(checks == 1 && !sawStaging);
+        const auto folderRefusal = folderInstall.finalize();
+        REQUIRE(!folderRefusal.installed);
+        REQUIRE(folderRefusal.message.find("pack.ini") != std::string::npos);
+    }
     {
         unsigned checks = 0;
         auto cancelled = PreparedPackInstall::copyZip(input / "cancel.zip", mods,

@@ -290,6 +290,40 @@ std::string fileError(const char *operation, const std::error_code &error) {
     return std::string(operation) + ": " + error.message();
 }
 
+// Hold a ZIP's central directory to the intake budgets without inflating any
+// member. Returns an empty string when it fits. `poll`, when set, is called
+// before each member and a true answer abandons the check (the caller records
+// why). `staged` only chooses the wording of a failed read.
+std::string zipDirectoryProblem(FILE *stream, const PackInstallLimits &limits,
+                                bool staged, const std::function<bool()> &poll) {
+    BudgetZip reader(limits.maxZipMetadataBytes);
+    auto &zip = reader.archive;
+    if (!stream || std::fseek(stream, 0, SEEK_SET) != 0 ||
+        !mz_zip_reader_init_cfile(&zip, stream, 0,
+                                  MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
+        if (reader.refused) return "The ZIP exceeds the installation metadata budget.";
+        return staged ? "Could not read the staged ZIP directory."
+                      : "This is not an installable pack: the ZIP is damaged or is "
+                        "not a ZIP archive.";
+    }
+    const auto members = mz_zip_reader_get_num_files(&zip);
+    if (members > limits.maxEntries) return "The ZIP exceeds the installation entry budget.";
+    std::uintmax_t expanded = 0;
+    for (mz_uint i = 0; i < members; ++i) {
+        if (poll && poll()) return {};
+        mz_zip_archive_file_stat stat{};
+        if (!mz_zip_reader_file_stat(&zip, i, &stat))
+            return staged ? "Could not read a staged ZIP member."
+                          : "Could not read a member of the ZIP.";
+        if (stat.m_uncomp_size > MDKR_MOD_SOURCE_ENTRY_MAX)
+            return "A ZIP member exceeds the supported entry size.";
+        if (stat.m_uncomp_size > limits.maxExpandedBytes - expanded)
+            return "The ZIP exceeds the installation expanded-byte budget.";
+        expanded += stat.m_uncomp_size;
+    }
+    return {};
+}
+
 }  // namespace
 
 PreparedPackInstall::PreparedPackInstall(PreparedPackInstall &&other) noexcept
@@ -443,6 +477,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     }
     ScopedFd zipFd(directory ? -1 : open(source.c_str(),
         O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
+    std::uintmax_t zipSize = 0;
     if (!directory) {
         struct stat zipStatus{};
         const int openError = zipFd.value < 0 ? errno : 0;
@@ -456,7 +491,26 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                                         std::error_code(openError, std::generic_category()));
             return prepared;
         }
+        zipSize = static_cast<std::uintmax_t>(zipStatus.st_size);
     }
+    const auto openSource = [&](const fs::path &relative) -> FILE * {
+        if (directory) {
+            return mdkr_mod_source_open_directory_file(sourceRoot.get(),
+                                                       relative.generic_u8string().c_str());
+        }
+        // A private stream on the pinned ZIP; each reader starts at byte zero.
+        const int duplicate = fcntl(zipFd.value, F_DUPFD_CLOEXEC, 0);
+        FILE *stream = duplicate >= 0 ? fdopen(duplicate, "rb") : nullptr;
+        if (!stream) {
+            if (duplicate >= 0) close(duplicate);
+            return nullptr;
+        }
+        if (std::fseek(stream, 0, SEEK_SET) != 0) {
+            std::fclose(stream);
+            return nullptr;
+        }
+        return stream;
+    };
 #else
     // A folder's files are read through the same link-refusing reader the game
     // uses. A ZIP is read as the one file the player chose.
@@ -467,17 +521,62 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         prepared.error_ = "Cannot open the selected pack's source folder.";
         return prepared;
     }
-#endif
-    fs::create_directories(prepared.modsDir_, ec);
-    if (ec) {
-        prepared.error_ = fileError("Cannot create the mods folder", ec);
-        return prepared;
+    std::uintmax_t zipSize = 0;
+    if (!directory) {
+        zipSize = fs::file_size(source, ec);
+        if (ec) {
+            prepared.error_ = fileError("Cannot open the selected pack", ec);
+            return prepared;
+        }
     }
+    const auto openSource = [&](const fs::path &relative) {
+        return directory
+            ? mdkr_mod_source_open_directory_file(sourceRoot.get(),
+                                                  relative.generic_u8string().c_str())
+            : mdkr_fopen_utf8(source.u8string().c_str(), "rb");
+    };
+#endif
     const fs::path destination = prepared.modsDir_ / prepared.filename_;
     if (fs::exists(destination, ec) || ec) {
         prepared.error_ = ec ? fileError("Cannot check for an existing pack", ec)
                              : "A pack with that filename is already installed. "
                                "Nothing was replaced.";
+        return prepared;
+    }
+    // A wrong pick fails here, before anything is copied or created: a ZIP's
+    // directory is held to the intake budgets, then the pack to the admission
+    // rules the game applies when it loads packs. The staged copy is checked
+    // again before publication.
+    {
+        std::unique_ptr<MdkrModSource, decltype(&mdkr_mod_source_close)> archive(
+            nullptr, mdkr_mod_source_close);
+        if (!directory) {
+            if (zipSize > limits.maxCopyBytes) {
+                prepared.error_ = "The pack exceeds the installation byte budget.";
+                return prepared;
+            }
+            std::unique_ptr<FILE, decltype(&std::fclose)> listing(
+                openSource(prepared.filename_), std::fclose);
+            const auto problem = zipDirectoryProblem(listing.get(), limits, false, {});
+            if (!problem.empty()) {
+                prepared.error_ = problem;
+                return prepared;
+            }
+            archive.reset(mdkr_mod_source_from_zip_stream(openSource(prepared.filename_)));
+        }
+        MdkrModManifest manifest{};
+        int isRice = 0;
+        char reason[128]{};
+        if (!mdkr_mod_registry_probe_source(directory ? sourceRoot.get() : archive.get(),
+                                            prepared.filename_.u8string().c_str(),
+                                            &manifest, &isRice, reason, sizeof reason)) {
+            prepared.error_ = std::string("This is not an installable pack: ") + reason;
+            return prepared;
+        }
+    }
+    fs::create_directories(prepared.modsDir_, ec);
+    if (ec) {
+        prepared.error_ = fileError("Cannot create the mods folder", ec);
         return prepared;
     }
 
@@ -554,24 +653,6 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     const auto makeStagedDirectory = [&](const fs::path &relative, std::error_code &error) {
         return relativeMkdir(prepared.stageFd_, relative, error);
     };
-    const auto openSource = [&](const fs::path &relative) -> FILE * {
-        if (directory) {
-            return mdkr_mod_source_open_directory_file(sourceRoot.get(),
-                                                       relative.generic_u8string().c_str());
-        }
-        // A private stream on the pinned ZIP; each reader starts at byte zero.
-        const int duplicate = fcntl(zipFd.value, F_DUPFD_CLOEXEC, 0);
-        FILE *stream = duplicate >= 0 ? fdopen(duplicate, "rb") : nullptr;
-        if (!stream) {
-            if (duplicate >= 0) close(duplicate);
-            return nullptr;
-        }
-        if (std::fseek(stream, 0, SEEK_SET) != 0) {
-            std::fclose(stream);
-            return nullptr;
-        }
-        return stream;
-    };
 #else
     // Exclusive creation: CREATE_NEW on Windows, O_CREAT|O_EXCL elsewhere, so
     // nothing already at a name -- a link included -- is ever written through.
@@ -585,12 +666,6 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         if (mdkr_mkdir_utf8((prepared.stage_ / relative).u8string().c_str()) == 0) return true;
         error = std::error_code(errno, std::generic_category());
         return false;
-    };
-    const auto openSource = [&](const fs::path &relative) {
-        return directory
-            ? mdkr_mod_source_open_directory_file(sourceRoot.get(),
-                                                  relative.generic_u8string().c_str())
-            : mdkr_fopen_utf8(source.u8string().c_str(), "rb");
     };
 #endif
     // Bounded chunks allow cancellation between filesystem operations. The
@@ -671,36 +746,8 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         // source or the launcher thread. No payload inflation is needed.
         std::unique_ptr<FILE, decltype(&std::fclose)> staged(
             openStaged(prepared.filename_), std::fclose);
-        BudgetZip reader(limits.maxZipMetadataBytes);
-        auto &zip = reader.archive;
-        if (!staged || !mz_zip_reader_init_cfile(&zip, staged.get(), 0,
-                MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
-            prepared.error_ = reader.refused
-                ? "The ZIP exceeds the installation metadata budget."
-                : "Could not read the staged ZIP directory.";
-            return prepared;
-        }
-        const auto members = mz_zip_reader_get_num_files(&zip);
-        std::uintmax_t expanded = 0;
-        if (members > limits.maxEntries)
-            prepared.error_ = "The ZIP exceeds the installation entry budget.";
-        for (mz_uint i = 0; i < members && prepared.error_.empty(); ++i) {
-            if (stop()) break;
-            mz_zip_archive_file_stat stat{};
-            if (!mz_zip_reader_file_stat(&zip, i, &stat)) {
-                prepared.error_ = "Could not read a staged ZIP member.";
-                break;
-            }
-            if (stat.m_uncomp_size > MDKR_MOD_SOURCE_ENTRY_MAX) {
-                prepared.error_ = "A ZIP member exceeds the supported entry size.";
-                break;
-            }
-            if (stat.m_uncomp_size > limits.maxExpandedBytes - expanded) {
-                prepared.error_ = "The ZIP exceeds the installation expanded-byte budget.";
-                break;
-            }
-            expanded += stat.m_uncomp_size;
-        }
+        const auto problem = zipDirectoryProblem(staged.get(), limits, true, stop);
+        if (!problem.empty() && prepared.error_.empty()) prepared.error_ = problem;
         return prepared;
     }
     makeStagedDirectory(prepared.filename_, ec);

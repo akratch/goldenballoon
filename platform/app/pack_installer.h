@@ -31,6 +31,11 @@ struct PackInstallResult {
 // result back to the launcher thread and call finalize() there so publication
 // follows the current frame's cancellation/quit input and registry refresh.
 //
+// The chosen ZIP or folder is checked before anything is copied or created:
+// a ZIP's directory against the budgets below, then the pack against the
+// admission rules the registry applies. finalize() repeats admission on the
+// staged copy.
+//
 // Staging lives in the mods folder as ".install-<tick>-<n>". macOS and Linux
 // work relative to pinned directory descriptors. Windows works by pathname:
 // staging with CreateDirectoryW, files created CREATE_NEW, links and
