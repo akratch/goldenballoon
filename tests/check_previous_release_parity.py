@@ -47,12 +47,13 @@ What it asserts
    by the published release is what a player brings to this one.
 
 The routes cover what the retail simulation actually does differently: an AI
-race in two worlds and two vehicles, a boss race, and all three challenge-arena
-rule sets (eggs, bananas, battle) -- the arenas are where the AI plans routes
-through the node graph rather than following the racing line. Each route is a
-single Tracks race retargeted by MDKR_LOAD_TRACK from the one menu route every
-state-hash gate shares, on the US ROM and, when ``--roms`` holds a PAL v80
-image, on the PAL ROM too.
+race in two worlds and two vehicles, a boss race, and all four challenge
+arenas (eggs, bananas and both battle arenas). The arenas with AI nodes --
+Smokey Castle, Darkwater Beach and Icicle Pyramid; Fire Mountain has none --
+are where the AI plans routes through the node graph (func_8001CD28) rather
+than following the racing line. Each route is a single Tracks race retargeted
+by MDKR_LOAD_TRACK from the one menu route every state-hash gate shares, on
+the US ROM and, when ``--roms`` holds a PAL v80 image, on the PAL ROM too.
 
 A divergence is a finding, not noise: both builds are deterministic run to run
 (check_state_hash.py), so a red route means the two releases play that route
@@ -128,6 +129,7 @@ ROUTES = (
     Route("tricky-tops-1", 38, None, "boss race, Tricky"),
     Route("fire-mountain", 11, None, "challenge arena, eggs"),
     Route("smokey-castle", 25, None, "challenge arena, bananas"),
+    Route("darkwater-beach", 26, None, "battle arena"),
     Route("icicle-pyramid", 27, None, "battle arena"),
 )
 

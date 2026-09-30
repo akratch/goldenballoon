@@ -39,7 +39,7 @@ def main():
                                 if '[CUSTOM_TRACK' in line or '[FATAL]' in line or '[CRASHSCREEN]' in line))
                 print('\n'.join(result.stdout.splitlines()[-10:]))
                 return 1
-            ai_marker = '[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 wide_cost=1 PASS'
+            ai_marker = '[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 start_target=1 wide_cost=1 PASS'
             if result.stdout.count(ai_marker) != int(enabled):
                 print('FAIL engine AI-node rebuild/traversal fixture')
                 print('\n'.join(result.stdout.splitlines()[-30:]))

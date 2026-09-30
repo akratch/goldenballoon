@@ -4277,9 +4277,10 @@ see a release change how the retail game plays. This one runs a build of the
 previous published release (`--reference-build`, v1.7.0) and this build through
 the same retail routes and requires their `[SIMHASH]` v3 streams to be
 byte-identical for 6,600 ticks, at least 3,000 of them racing: Ancient Lake and
-Whale Bay (two worlds, car and hovercraft), Tricky's boss race, and the eggs,
-bananas and battle arenas, on the US ROM and on the PAL ROM when `--roms` holds
-one. Each arm has its own save directory, preferences and working directory
+Whale Bay (two worlds, car and hovercraft), Tricky's boss race, and all four
+challenge arenas (Fire Mountain has no AI nodes; the other three are where the
+AI plans routes through the node graph), on the US ROM and on the PAL ROM when
+`--roms` holds one. Each arm has its own save directory, preferences and working directory
 (no content packs) and runs at Original cadence. A red route prints the first
 divergent tick with both rows; bisect it over `v1.7.0..HEAD` and decide whether
 the change is intended. A `MDKR_RNGSEED=legacy` arm must diverge, the reference
@@ -4297,6 +4298,28 @@ python3 tests/check_previous_release_parity.py --build build-rel \
   --reference-build ../mdkr64-v170-ref/build-rel --rom baserom.us.v80.z64 \
   --roms /path/to/rom-revisions --jobs 4
 ```
+
+## Challenge-arena route search — `ainode_route` (ctest)
+
+The CPU racers in Smokey Castle, Darkwater Beach and Icicle Pyramid choose
+their next AI node with `func_8001CD28`. The original search keeps no closed
+set: a node that left the frontier is added again when a neighbour is expanded,
+which is how it finds a target on the racer's own node and turns back through
+the node it came from. 1.8 briefly searched each node once, and those arenas
+played differently from 1.7.0 and the N64 (the previous-release gate diverged at
+Smokey Castle tick 3115, Darkwater Beach 3133 and Icicle Pyramid 3781). The
+ROM-free `ainode_route` unit links the production `objects.c` and runs the
+v1.7.0 body, copied verbatim, beside it over named graphs (the in-binary
+self-test's triangle with the target on the start node, a ring with the target
+behind the racer, tags on the start node, a dead-end chain) and 360 random
+graphs, about 17,500 searches: the next node and the direction written must
+agree every time, and the run must include searches that found their target,
+emptied their frontier and reached the budget. The native search stops after
+`MDKR_AI_ROUTE_POP_BUDGET` pops (128 x 128), which only a search the original
+would never finish reaches: run over every start, previous node and node or tag
+target of the three arenas, the original always finished within 234 pops. The
+same unit pins the AI-node rebuild guards by behaviour (duplicate IDs, stale and
+out-of-domain links, over-budget costs) and the search's stale-link checks.
 
 ## Saves written by 1.7.0 — `tests/check_save_v170_compat.py`
 

@@ -92,7 +92,11 @@ also include retained maps. All 208 retail AI nodes pass per-map inventory
 checks. Auto-ID assignment, graph connectivity, checkpoints and remaining
 behavior fields are not validated by that count. Native AI consumer fixes cover
 duplicate rebuild overflow, invalid route roots, stale neighbors, cyclic search
-termination and wide nonnegative edge costs. Release and sanitizer four-arena
+termination and wide nonnegative edge costs. The route search keeps the original
+algorithm, which revisits expanded nodes (a search that never expanded a node
+twice changed arena AI routes against 1.7.0); termination comes from a pop budget
+no retail search reaches, and `ainode_route` compares it with the original.
+Release and sanitizer four-arena
 gates pass eight win/loss arms, three positive controls and two portrait witnesses
 each. These are retail gameplay regressions, not authored-course acceptance.
 

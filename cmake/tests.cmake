@@ -2786,6 +2786,69 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         add_test(NAME void_pairs COMMAND mdkr_void_pairs_test)
     endif()
 
+    # ROM-free units over PRODUCTION engine translation units, isolated the
+    # same way as void_pairs above: the dead-strip/--gc-sections link keeps
+    # only the closure of what the test calls (the test stubs the few engine
+    # symbols left on that path), and MinGW additionally needs IPO. MSVC has
+    # no equivalent linker contract and no MSVC lane builds these tests.
+    function(mdkr_add_engine_unit_test target test_name)
+        add_executable(${target} ${ARGN})
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_SOURCE_DIR}/game
+            ${CMAKE_SOURCE_DIR}/game/src
+            ${CMAKE_SOURCE_DIR}/game/include
+            ${CMAKE_SOURCE_DIR}/game/include/PR
+            ${CMAKE_SOURCE_DIR}/game/include/sys
+            ${CMAKE_SOURCE_DIR}/game/libultra
+            ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
+            ${CMAKE_SOURCE_DIR}/platform
+            ${CMAKE_SOURCE_DIR}/platform/fast3d
+            ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        target_compile_definitions(${target} PRIVATE
+            VERSION_us_v80
+            _LANGUAGE_C
+            MODERN_CC
+            NON_MATCHING=1
+            AVOID_UB=1
+            NATIVE_PORT=1
+            F3DDKR_GBI
+            _FINALROM)
+        target_compile_options(${target} PRIVATE -fno-strict-aliasing -fcommon)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            target_compile_options(${target} PRIVATE
+                -Wno-everything -fms-extensions -Wno-c23-extensions)
+        endif()
+        if(APPLE)
+            target_link_options(${target} PRIVATE -Wl,-dead_strip)
+        else()
+            target_compile_options(${target} PRIVATE -ffunction-sections -fdata-sections)
+            target_link_options(${target} PRIVATE -Wl,--gc-sections)
+        endif()
+        if(MINGW)
+            include(CheckIPOSupported)
+            check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error LANGUAGES C)
+            if(NOT ipo_supported)
+                message(FATAL_ERROR "MinGW ${test_name} requires IPO: ${ipo_error}")
+            endif()
+            set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+            if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+                target_compile_options(${target} PRIVATE -ffat-lto-objects)
+                target_link_options(${target} PRIVATE -flto=1)
+            endif()
+        endif()
+        target_link_libraries(${target} PRIVATE m)
+        add_test(NAME ${test_name} COMMAND ${target})
+    endfunction()
+
+    if(NOT MSVC)
+        # Challenge-arena route search: native func_8001CD28 against the
+        # original algorithm, and the AI-node rebuild guards by behaviour.
+        mdkr_add_engine_unit_test(mdkr_ainode_route_test ainode_route
+            ${CMAKE_SOURCE_DIR}/tests/test_ainode_route.c
+            ${CMAKE_SOURCE_DIR}/game/src/objects.c
+            ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
+    endif()
+
     # PAL video-mode height-raise idempotency (Return-to-Launcher -> Play
     # vertical menu shift): the native persistent launcher calls video_init()
     # once per in-process engine epoch, so the PAL height raise must not

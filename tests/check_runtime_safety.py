@@ -136,12 +136,9 @@ REQUIRED = {
     ),
     "game/src/objects.c": (
         "if (!mdkr_ainode_can_append(index2, nodeCount, (*gAINodes)[index2] != NULL)) {",
-        "u8 expanded[AINODE_COUNT] = {0};",
         "s32 cost = mdkr_ainode_distance_cost(diffX, diffY, diffZ);",
         "target == NULL || target != aiNode->nodeObj[i] ||",
         "target->level_entry->aiNode.nodeID != temp2 ||",
-        "expanded[temp2] || aiNode->distToNode[i] < 0",
-        "expanded[(u8)spD4[var_t1]] = TRUE;",
         "if (!mdkr_object_map_index_resolve(mapID, i, &mapID)) {",
         "s32 translationTableBytes;\n    for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; ++i) sObjectBehaviorCache[i] = -3;",
         "if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;",

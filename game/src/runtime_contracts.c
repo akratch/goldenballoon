@@ -10,6 +10,8 @@
 _Static_assert(NUMBER_OF_CHARACTERS * NUMBER_OF_PLAYER_VEHICLES ==
                    MDKR_VEHICLE_SOUND_ROW_COUNT,
                "vehicle sound row count must cover every base character/vehicle pair");
+_Static_assert((long long) MDKR_AI_ROUTE_POP_BUDGET * MDKR_AI_MAP_LINK_MAX < INT32_MAX,
+               "route search budget must leave every map-coordinate path cost in s32");
 
 s32 mdkr_ainode_can_append(s32 nodeId, s32 count, s32 occupied) {
     return nodeId >= 0 && nodeId < MDKR_AI_NODE_COUNT &&

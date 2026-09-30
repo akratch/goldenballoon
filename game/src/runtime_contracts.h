@@ -8,6 +8,25 @@
 #define MDKR_TEXTURE_COMMAND_BYTES (12u * 8u)
 #define MDKR_VEHICLE_SOUND_ROW_COUNT 30
 #define MDKR_AI_NODE_COUNT 128
+/* Longest link between two nodes at signed-16 map coordinates:
+ * ceil(sqrt(3) * 65535) = 113510. */
+#define MDKR_AI_MAP_LINK_MAX 113510
+/* Pop budget of the challenge-arena route search (func_8001CD28). The
+ * original search keeps no closed set: a node that left the frontier is added
+ * again whenever a neighbour is expanded, which is how it finds a target on
+ * the start node and turns back through the node the racer came from. So a
+ * search whose target is absent from a cyclic graph never empties its
+ * frontier; the N64 spins until the s32 cost wraps. The budget lets each of
+ * the 128 node slots be expanded 128 times. Each pop adds at most one link
+ * to a path, so after the budget no cost on a map-coordinate graph exceeds
+ * 16384 * 113510 = 1,859,747,840 < INT32_MAX (runtime_contracts.c asserts
+ * it). No retail search comes near it: run exhaustively over every start,
+ * previous node and node/tag target on the three arenas with AI nodes
+ * (Smokey Castle, Darkwater Beach, Icicle Pyramid; US and PAL), the original
+ * search always finishes, in at most 234 pops. A search that reaches the
+ * budget ends the way the original ends one whose frontier empties: with the
+ * first hop of the node it popped last. */
+#define MDKR_AI_ROUTE_POP_BUDGET (MDKR_AI_NODE_COUNT * MDKR_AI_NODE_COUNT)
 /* First object for an explicit node ID wins. Check before appending to the
  * fixed-size rebuild arrays; occupied must describe that ID's current slot. */
 s32 mdkr_ainode_can_append(s32 nodeId, s32 count, s32 occupied);

@@ -14359,7 +14359,7 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
     s8 spD4[AINODE_COUNT];
     s8 sp54[AINODE_COUNT];
 #ifdef NATIVE_PORT
-    u8 expanded[AINODE_COUNT] = {0};
+    s32 pops = 0;
 #endif
 
     // Only matches with do {} while?
@@ -14373,7 +14373,6 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
     aiNodeObj = ainode_get(arg0);
     if (aiNodeObj == NULL) return NODE_NONE;
     arg3 &= 3; /* Same four direction-history lanes as ainode_find_next. */
-    expanded[arg0] = TRUE;
 #else
     aiNodeObj = (*gAINodes)[arg0];
 #endif
@@ -14390,14 +14389,17 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
             if (aiNode->nodeObj[i] != 0) {
                 temp2 = aiNodeEntry->adjacent[i];
 #ifdef NATIVE_PORT
-                /* Costs are nonnegative. Once removed from the sorted
-                 * frontier, a node need not be expanded again. This bounds
-                 * cyclic/unreachable searches to the finite node inventory.
-                 * Reject stale pointer/ID pairs before indexing scratch. */
+                /* Reject stale pointer/ID pairs and IDs outside the node
+                 * domain before they index the scratch arrays. A link that
+                 * ainode_update rebuilt always passes, so this never changes
+                 * a result on a valid graph. Expanded nodes are NOT excluded:
+                 * the original search adds them to the frontier again, and
+                 * the arena AI's routes depend on it (MDKR_AI_ROUTE_POP_BUDGET
+                 * bounds the searches that would otherwise never end). */
                 Object *target = ainode_get(temp2);
                 if (target == NULL || target != aiNode->nodeObj[i] ||
                     target->level_entry->aiNode.nodeID != temp2 ||
-                    expanded[temp2] || aiNode->distToNode[i] < 0) continue;
+                    aiNode->distToNode[i] < 0) continue;
 #endif
                 temp = 1;
                 if (((arg0 == aiNodeEntry->nodeID) && (temp2 == arg2)) ||
@@ -14415,7 +14417,14 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
                         sp36C++;
                     }
 
+#ifdef NATIVE_PORT
+                    /* Saturate rather than wrap. Within the pop budget this
+                     * cannot trigger on a map-coordinate graph. */
+                    sp370 = aiNode->distToNode[i] > INT32_MAX - var_ra ? INT32_MAX
+                                                                        : aiNode->distToNode[i] + var_ra;
+#else
                     sp370 = aiNode->distToNode[i] + var_ra;
+#endif
                     if (sp36C == var_t1) {
                         temp = 2;
                     } else if (sp370 < sp154[temp2]) {
@@ -14453,9 +14462,6 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 
         if (var_t1 > 0) {
             var_t1--;
-#ifdef NATIVE_PORT
-            expanded[(u8)spD4[var_t1]] = TRUE;
-#endif
             aiNodeObj = (*gAINodes)[spD4[var_t1]];
             aiNodeEntry = &aiNodeObj->level_entry->aiNode;
             var_s3 = sp54[var_t1];
@@ -14472,6 +14478,13 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
             if ((var_t1 == 0) && (result == 0xFF)) {
                 result = var_s3;
             }
+#ifdef NATIVE_PORT
+            /* End a search the original would never finish as it ends one
+             * whose frontier empties. No retail search reaches the budget. */
+            if (++pops >= MDKR_AI_ROUTE_POP_BUDGET && result == NODE_NONE) {
+                result = var_s3;
+            }
+#endif
         }
     } while ((result == NODE_NONE) && (var_t1 > 0));
 
@@ -14575,8 +14588,11 @@ static void mdkr_ainode_selftest(void) {
     NODE_CHECK(state[0].nodeObj[0] == NULL && state[0].distToNode[0] == 0);
     NODE_CHECK(entries[0].aiNode.adjacent[0] == NODE_NONE);
     NODE_CHECK(ainode_find_next(0, -1, 0) == NODE_NONE);
-    /* A three-node cycle with two frontier entries used to revisit nodes
-     * indefinitely when neither a tag nor a target ID could be found. */
+    /* A three-node cycle. The original search re-adds expanded nodes: with
+     * the target on the start node it reaches node 0 again through node 1.
+     * With the target absent it never empties its frontier, so the pop
+     * budget ends it on a neighbour of the start (tests/test_ainode_route.c
+     * compares every case with the original algorithm). */
     for (unsigned i = 0; i < 3; ++i) {
         list[i] = &objects[i];
         objects[i].trans.x_position = 10 * i;
@@ -14586,6 +14602,7 @@ static void mdkr_ainode_selftest(void) {
     gObjectCount = 3; gInitAINodes = TRUE;
     ainode_update();
     NODE_CHECK(func_8001CD28(0, 0x102, -1, 0) == 2);
+    NODE_CHECK(func_8001CD28(0, 0x100, -1, 0) == 1);
     s16 fallback = func_8001CD28(0, 0x17F, -1, 0);
     NODE_CHECK(fallback == 1 || fallback == 2);
     fallback = func_8001CD28(0, 99, -1, 0);
@@ -14605,7 +14622,7 @@ static void mdkr_ainode_selftest(void) {
     gAINodes = saved_nodes; gObjPtrList = saved_objects;
     gObjectCount = saved_count; gInitAINodes = saved_init;
     memcpy(gElevationHeights, saved_heights, sizeof saved_heights);
-    fprintf(stderr, "[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 wide_cost=1 PASS\n");
+    fprintf(stderr, "[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 start_target=1 wide_cost=1 PASS\n");
 #undef NODE_CHECK
 }
 #endif
