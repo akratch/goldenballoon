@@ -910,10 +910,35 @@ static void test_directory_root_identity(void) {
 }
 
 static void test_opened_source_adapters(void) {
+#ifndef _WIN32
+    /* Pin a known live descriptor at zero even when the runner supplies no
+     * stdin. ZIP cleanup must not close an unrelated directory capability.
+     * Restore the runner's original descriptor (including a closed stdin). */
+    int saved_stdin = dup(STDIN_FILENO);
+    int sentinel = open(g_zip_path, O_RDONLY | O_CLOEXEC);
+    struct stat expected_stdin, actual_stdin;
+    if (sentinel < 0 || fstat(sentinel, &expected_stdin) != 0 ||
+        dup2(sentinel, STDIN_FILENO) < 0)
+        fatal("prepare stdin ownership sentinel", g_zip_path);
+    if (sentinel != STDIN_FILENO) close(sentinel);
+#endif
     MdkrModSource *source = mdkr_mod_source_from_zip_stream(mdkr_fopen_utf8(g_zip_path, "rb"));
     expect(source != NULL && mdkr_mod_source_has(source, ENTRY_STORED),
            "opened ZIP stream admits fixture payload");
     mdkr_mod_source_close(source);
+#ifndef _WIN32
+    expect(fstat(STDIN_FILENO, &actual_stdin) == 0 &&
+               actual_stdin.st_dev == expected_stdin.st_dev &&
+               actual_stdin.st_ino == expected_stdin.st_ino,
+           "closing ZIP source preserves unrelated descriptor zero");
+    if (saved_stdin >= 0) {
+        if (dup2(saved_stdin, STDIN_FILENO) < 0)
+            fatal("restore stdin", g_zip_path);
+        close(saved_stdin);
+    } else {
+        close(STDIN_FILENO);
+    }
+#endif
     expect(mdkr_mod_source_from_zip_stream(NULL) == NULL,
            "null ZIP stream is refused");
 #ifndef _WIN32
