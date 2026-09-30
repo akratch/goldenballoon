@@ -1,5 +1,14 @@
 # 1.7.0 release work inventory and parallel ownership
 
+> Historical 1.7 inventory, not the current 1.8 qualification verdict. For the
+> active `release/1.8-integration` work, consult the private 1.8 integration
+> record, the
+> [custom-track parity scope](DKR_R_CUSTOM_TRACK_PARITY_REVIEW.md), and current
+> status at the top of the [release checklist](RELEASE_CHECKLIST.md).
+> Historical execution deferrals below do not revoke the maintainer's current
+> local-validation authorization. Outstanding acceptance requirements still
+> need evidence against the final candidate.
+
 Evidence cut: 2026-09-06, `int-1.7.0`, base `c657fa62` plus the local trophy,
 pacing-integrity, Workshop readiness and native join-editor corrections.
 This is a coordination inventory, not a

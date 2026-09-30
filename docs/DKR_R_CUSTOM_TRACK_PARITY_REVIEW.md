@@ -6,6 +6,175 @@ No upstream repository, release, issue or user installation was changed.
 
 ## Current native loader integration status
 
+Current checkpoint clarification, 2026-09-27: the dated entries below are an
+incremental history, not a single current capability matrix. Model preparation
+now bounded-decodes, validates spans/indices/BSP/PVS/typed regions and initial
+collision-plane references, checks a conservative collision arena budget,
+relocates textures, and recompresses for the native loader. All 55 retail models
+pass the native decoder corpus. This supersedes the earlier standalone-only
+model description, but does not establish wave/material semantics or gameplay.
+
+Later September 27 admission work adds active-wave basis/height-vertex checks,
+grid row/column and aligned-origin bounds, separate header wave-texture bank
+validation, and a combined requested pool peak for both 1P/2P (including
+double-density grid/height storage and concurrent setup scratch). Every batch's
+selected colour/pulse slot must exist in its supplied header; header preparation
+separately validates the referenced raw lighting records. All 65 actual retail
+model/header lighting pairings pass the native corpus in Release and ASan/UBSan.
+These are now composed in package preparation, not merely standalone helpers.
+
+Header-only packages now have an explicit retained-retail-model admission path:
+fixed retail identity, bounded decode, collision/staging budgets and retail
+texture references feed the same header lighting/wave checks used for supplied
+models. Release/sanitizer synthetic composition and refusal tests pass. Real
+retail-model/custom-header gameplay and production importer invocation remain
+unqualified; raw misc/header reference admission is still a separate step.
+
+Further September 27 work composes selected pulsing-texture payload checks into
+both model paths, including package-local versus immutable retail resolution.
+Native split-image uploads are dimension-aware; full retail compatibility and
+GL/WebGPU Spaceport sanitizer smokes pass. Command fixtures cover every supported
+split layout and preserve the two legacy layouts byte-for-byte. Active-wave
+strip command limits and ordinary draw-batch limits are also admitted. These
+are not a complete material/renderer semantic proof or visual acceptance.
+
+Final map-pair preparation now resolves both header-selected roles from the
+package or retail prefix and applies one shared behavior-check context in native
+spawn order. It rejects references into previous custom-course inventory.
+Immutable packages also carry a versioned content digest, independent of JSON
+formatting and external container location. This is not yet a persisted course
+identity or an online compatibility handshake.
+
+Still required before production publication: remaining material/renderer
+semantics, total allocator/texture/renderer/transient
+budgets, final retained-retail-model/custom-header qualification, object/AI/checkpoint
+semantics, persistent content-keyed course identity and an atomic owned prepared
+session. Course/name positional alignment and fallback name preparation are now
+implemented as staging helpers, not yet invoked by a production importer.
+Then complete actual authored-course launch/restart/finish and CT5–CT7 user,
+save and netplay workflows below. Admission helpers alone are not custom-track
+parity, and the successful retail corpus is not authored-course acceptance.
+
+Texture admission now handles raw/compressed frames and native allocation
+accounting; all 1416 retail 3D textures pass. Package-level admission sums those
+allocations under a caller limit and checks supplied four-language name records.
+Neither helper is called by a production importer. Course planning requires
+aligned header/name inventories and reserves missing names at the same course
+ID. Name preparation preserves supplied localized bytes or generates four
+language entries from printable ASCII metadata, with explicit identifier
+fallback for unsupported legacy-font encoding. It does not provide persistent
+course identity or translations. Texture budgets exclude GPU/cache
+and transient decode storage. Palette-backed textures remain unsupported by
+this admission path. A successful helper result is not publication permission.
+See the private 1.8 integration record for the precise test checkpoints.
+
+Pinned-exporter clarification (2026-09-27): upstream
+[textures.py at beta.11](https://github.com/ThatGuyMcd/DKR-R/blob/4ddfa1405eb76e8c073ea02603c5d557725376cf/tools/blender/dkr_track_editor/textures.py)
+explicitly excludes CI4/CI8 from CUSTOM_FORMATS because custom packages cannot
+append palettes to ASSET_EMPTY_14. Its presence in the format enumeration is
+not exporter support. Palette admission is therefore not a missing capability
+relative to this pinned authored-texture path. The actual remaining authored
+material work includes native renderer/layout qualification. A separate authored
+payload validator now enforces the exporter's power-of-two dimensions, maximum
+side 64 and 4096-byte texel budget on every frame, and package budgeting invokes
+it. The generic byte validator retains its broader extent/allocation checks;
+exporter-only size restrictions do not apply to every retail texture. Rebuilt
+Release/sanitizer texture/package tests pass this distinction. Upstream custom textures are also
+single-frame today; our multi-frame byte acceptance alone does not establish
+an animated custom authoring workflow.
+
+Latest object/header follow-up: header staging checks scalar domains and finite
+course height in addition to reference admission. Initialized behavior checks
+cover 136 retail maps / 9426 records, including short-record rejection controls.
+A separate course-local callback inventories explicit/automatic AI IDs and
+rejects duplicates/capacity overflow across supplied streams; the caller must
+also include retained maps. All 208 retail AI nodes pass per-map inventory
+checks. Auto-ID assignment, graph connectivity, checkpoints and remaining
+behavior fields are not validated by that count. Native AI consumer fixes cover
+duplicate rebuild overflow, invalid route roots, stale neighbors, cyclic search
+termination and wide nonnegative edge costs. Release and sanitizer four-arena
+gates pass eight win/loss arms, three positive controls and two portrait witnesses
+each. These are retail gameplay regressions, not authored-course acceptance.
+
+Model relocation follow-up, 2026-09-27: `custom_track_model.c/.h` now validates
+and transactionally resolves texture references in decoded BE models, using
+the pinned exporter's 0x7000 local-ordinal convention. Release/ASan fixtures
+pass. The native helper rejects unresolved IDs rather than substituting texture
+zero, and does not depend on stored-prefix compression. Importer/decode/re-encode
+wiring and full geometry/material admission remain unfinished; this is the
+standalone CT3 texture-ID primitive, not playable custom-track support.
+
+Name consumer follow-up, 2026-09-27: native initialization validates name/header
+inventory coverage and entry extents, and language lookup is bounded by each
+entry including its final terminator. Release/ASan pass all 65 retail names in
+four languages plus synthetic truncation tests. This prevents a missing
+translation from scanning into adjacent assets. Package admission still needs
+to check authored name records and establish header/name identity before
+publication; consumer refusal is not a user-facing importer workflow.
+
+Header consumer follow-up, 2026-09-27: native boot, initial level load and
+redirected level load now check the selected header span against both
+`sizeof(LevelHeader)` and the section extent before reading/allocating. Release
+and ASan ordinary/session fixtures pass; a deliberately zero-length header is
+rejected before decoding. This hardens short-record consumption but does not
+replace importer semantic validation or make arbitrary header fields safe.
+
+Header relocation follow-up, 2026-09-27: `custom_track_header.c/.h` implements
+transactional big-endian model/collectables/structure fixups, signed-ID and
+inventory bounds, and category-6 to gameplay-world-1 mapping. Retained authored
+references are restricted to retail counts; explicit replacement IDs use final
+session counts. Release/ASan fixtures pass, including failure byte preservation.
+This closes the standalone CT3 header-fixup primitive, not production importer
+wiring, model texture relocation, full header semantics or authored-course boot.
+
+Codec validation follow-up, 2026-09-27: the new ROM-private
+`check_custom_save_inventory.py` executes real progression/time read/write with
+eight synthetic appended course metadata entries and an extra world. Release
+and ASan pass byte-identical retail encode/decode-reencode and buffer guards;
+custom records reset empty. It also covers the corrected `clear_lap_records`
+boundary, which formerly read beyond retail default records for appended IDs.
+This supersedes the synthetic codec-coverage gap below, not the requirement for
+real imported-header startup and persistent content-keyed custom saves.
+
+Retail-save inventory follow-up, 2026-09-27: level initialization now snapshots
+the original header count from the session's immutable retail prefix and derives
+the original world count only from those headers. All four progression/time
+codecs use that snapshot; settings allocation and gameplay retain the complete
+level inventory. Unit tests and the ROM-backed session fixture check original
+counts before/after detach, and source controls pin the four codec calls. This
+implements inventory separation, not full CT5 acceptance: byte-identical retail
+round trips and canaries with actual appended-course boot remain required.
+Custom-progress sidecar storage is absent. The existing retail decode clears
+in-memory progress/records first, so future sidecar restore must occur after it,
+not be silently erased by retail restore. Arbitrary session changes after level
+initialization remain unsupported.
+
+Package ownership follow-up, 2026-09-27: `custom_track_package.c` now reads the
+bounded manifest and all referenced raw payloads into owned storage through the
+same pinned directory/ZIP source contract. It enforces caller per-file/aggregate
+budgets, checks measured versus actual sizes, preserves addition order and
+publishes nothing on failure. Real directory/ZIP and reader/allocation-failure
+fixtures pass in Release/ASan. This is not semantic asset admission, an atomic
+source-filesystem snapshot, bounded ZIP metadata opening, installation, or a
+playable course. No importer invokes it yet. This supersedes the raw-payload
+ownership gap in the earlier status below, not the remaining CT1–CT7 scope.
+
+Status clarification, 2026-09-27: owned sessions, bounded decompression,
+structural object-map checks, and native loader hooks are implemented. The
+ordinary/installed-session fixtures pass in Release and ASan/UBSan; full current
+CTest also passed 380/380 in each configuration before the manifest addition.
+The bounded schema-v1 metadata parser now exists in `custom_track_manifest.c`;
+it is tested independently but not called by a production importer. It reuses
+the save-container JSON reader without an online dependency. Admission caps
+manifest bytes at 256 KiB and additions at 256, validates UTF-8/types/paths/IDs,
+rejects known-field duplicates and repeated singleton/map roles, and preserves
+texture addition order. Optional author defaults to empty, matching upstream;
+name defaults to ID. Invalid companion metadata is refused rather than silently
+ignored. Payload ownership/validation, relocation and publication remain open.
+There is still no production manifest importer, relocated authored-course launch, or completed CT1–CT7
+workflow. Historical statements below about hooks being unwired describe earlier
+implementation checkpoints, not the current loader status.
+
 Object-map structural admission now reuses the engine's
 `mdkr_level_object_record_parse` through a read-only
 `mdkr_level_object_map_validate` entry point. It checks the still-big-endian
@@ -228,6 +397,12 @@ CT1/CT2 must precede executing untrusted custom geometry. CT3/CT4 qualify loadin
 CT5–CT7 complete the requested capability rather than stopping at a parser.
 Source-available prerelease status is not a reason to defer any of these.
 
+### Historical implementation checkpoints (superseded by current status above)
+
+The following records retain design rationale and intermediate evidence. Read
+their "unwired" and "unimplemented" statements as checkpoint-local, not as the
+current status or permission to omit the outstanding CT1–CT7 work.
+
 CT2 foundation started: `platform/custom_track_table.h` implements bounded,
 host-endian offset-table extension with explicit input lengths, preserved retail
 end offsets, signed-loader-range overflow checks and no output writes on failure.
@@ -286,6 +461,65 @@ on an independent directory handle. API availability or query failures remain
 fail-closed rather than falling back to the former pathname-based reader.
 
 ### Native-port differences that must not be papered over
+
+- Postrace hardening follow-up: native background load and cleanup now share
+  a bounded five-world row resolver, with Dino Domain as the presentation-only
+  fallback. Tests cover all signed header world values and wider extremes.
+  This closes those two unchecked accesses described below. It does not make
+  arbitrary worlds valid elsewhere or replace importer world validation.
+
+- Follow-up against pinned beta.11 `custom_tracks_hooks.cpp` (2026-09-27):
+  upstream relocates header fields 0x34 (model), 0x36 (collectables map) and
+  0xBA (structure map) only when the corresponding payload is supplied. It also
+  maps the catalogue's custom-world category to Dino Domain for engine-facing
+  headers. That distinction is needed here too: native `postrace_init` indexes
+  the 15-entry `gTracksMenuBgTextureIndices` using `(header->world - 1) * 3`
+  without a range check. Save inventory isolation alone does not make a sixth
+  gameplay world safe. Preserve custom catalogue identity separately from a
+  valid gameplay/background world, and validate postrace/menu transitions.
+  Header admission must additionally validate unchanged retail references:
+  seven misc/light indices at 0x74, special-sky texture at 0xA4, pulsating-light
+  misc index at 0xAC, skybox and wave texture. The engine resolves these outside
+  the three relocated fields. This is a source-proven admission requirement,
+  not evidence of an enabled custom import crashing or a reason to drop those
+  authored effects from parity.
+
+- Lifecycle/save review on 2026-09-27 identifies concrete CT5 integration
+  points. `calc_and_alloc_heap_for_settings()` calls `level_global_init()` and
+  sizes progression/time arrays from `level_count()`. An appended header
+  session must therefore be established before that initialization, or all
+  dependent tables/settings must be deliberately rebuilt; publishing only
+  loader tables after boot leaves mismatched consumer inventories.
+  `level_global_init()` reads a full `sizeof(LevelHeader)` at every header
+  entry, so importer admission must reject short records before installation.
+  Its world-to-hub table uses signed authored world indices, requiring explicit
+  world/race-type constraints rather than mere byte-length checks.
+- Existing EEPROM progression read/write loops in `save_data.c` iterate the
+  runtime `levelCount` and consume two status bits for eligible race types.
+  Both progression codecs pad to a fixed 68-bit course-status area: additions
+  consume that padding until the eligible-course count exceeds 34, after which
+  the negative padding request is a no-op and subsequent fields move. The
+  world-dependent balloon/hub loops can also change field positions. Thus
+  appending a course does not necessarily shift every field immediately, but
+  must not consume retail padding or expand either persisted inventory. Dynamic
+  settings allocation alone is not save compatibility. CT5 must preserve the
+  exact retail codec inventory and keep custom records in content-keyed sidecar
+  storage; qualify a byte-identical retail save round trip with custom sessions
+  attached and detached before enabling authored-course launch. This is a
+  source-proven integration hazard, not a reproduced corruption claim for a
+  currently enabled custom-track feature.
+- Time-record codecs are a separate CT5 boundary: each lap/course block is
+  192 bytes with a two-byte checksum, and each eligible vehicle consumes four
+  bytes. The lap writer's 48-vehicle check happens after an entire course and
+  exceeds the 47 complete records that fit; the course writer and both readers
+  iterate the runtime inventory without that cap. Custom records must not be
+  appended to these fixed buffers. Test all four paths with canaries as well as
+  retail byte identity; a progression-only round trip cannot qualify saves.
+- Object-map references have no negative sentinel in `track_spawn_objects`:
+  `init_track` loads both roles unconditionally. The native runtime now rejects
+  negative IDs/empty inventories before table indexing while preserving the
+  existing high-ID fallback to map zero. Import admission must reject invalid
+  authored references rather than rely on that compatibility fallback.
 
 - Direct local us.v80 ROM inspection confirmed padding after the first table
   sentinel in four of the five relevant sections; header/name data sections

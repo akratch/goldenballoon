@@ -11,6 +11,29 @@ Templates become available only after merging into the default branch; see
 
 ## Maintainer triage
 
+### Read-only GitHub refresh, 2026-09-27
+
+The open issue inventory remains #58, #65, #66, #67 and #68. The issues API
+also returns pull requests; these are tracked separately, not counted as two
+additional bug reports:
+
+- [PR #64](https://github.com/akratch/goldenballoon/pull/64): grouped GitHub
+  Actions major upgrades across five workflows. Review runner compatibility,
+  artifact upload/download interoperability, checkout security behavior and
+  pinned revisions before adopting; local engine CTest cannot qualify CI
+  action upgrades. No merge or workflow dispatch was performed.
+- [PR #1](https://github.com/akratch/goldenballoon/pull/1): older post-1.0
+  integration proposal, head `4d7d3bb6ac2d4920126f9d5be18887cf5408f4d7`.
+  Reconcile against current integration before deciding its disposition; do
+  not merge or close it solely because the current tree passes local tests.
+
+The source-available [beta.11 branch](https://github.com/ThatGuyMcd/DKR-R/tree/build/1.0.5-beta.11)
+still resolves to `4ddfa1405eb76e8c073ea02603c5d557725376cf`.
+The [additional build branch comparison](https://github.com/ThatGuyMcd/DKR-R/compare/4ddfa1405eb76e8c073ea02603c5d557725376cf...3d281438ba0d69a166c8262010822a8ffb4e690e)
+shows CI/toolkit changes only; it does not add a new runtime parity requirement.
+All existing feature and report acceptance requirements remain open unless
+their own evidence says otherwise. No GitHub state was mutated.
+
 ### Read-only GitHub refresh, 2026-09-23
 
 Open inventory remains #58 (portraits/NDS additions), #65 (custom tracks),

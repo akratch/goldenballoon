@@ -16,7 +16,7 @@ fourth is the opt-in camera item, reproduced byte-identically on shipped
 v1.6.0). The statuses below are therefore no longer waiting on requalification:
 where a section says a behavioural gate had not executed, it has now, and the
 gate names are listed with their verdicts in
-[the release checklist](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-08).
+[the historical release checklist](../RELEASE_CHECKLIST.md#historical-candidate-status-2026-09-08).
 This does not close any issue: release availability and the owner-side device
 matrix are separate obligations, and #61's Windows/NVIDIA symptom cannot be
 settled by any macOS result. This update reads the local source tree and saved
@@ -25,7 +25,7 @@ validation logs; it does not mutate or close issues. The candidate remains
 alignment finding is fixed in the candidate with a valid-texture regression
 and a clean 601-second ASan/UBSan fuzz run (4,004,077 executions). KTX2 remains
 enabled; final-artifact qualification is pending. See
-[the release blockers](../RELEASE_CHECKLIST.md#current-candidate-status-2026-09-08).
+[the historical release blockers](../RELEASE_CHECKLIST.md#historical-candidate-status-2026-09-08).
 The passes below remain historical evidence until explicitly requalified.
 This checkpoint uses non-executing checks under the latest conversation-supplied
 instructions; the saved workstation policy is unchanged. Earlier execution-control

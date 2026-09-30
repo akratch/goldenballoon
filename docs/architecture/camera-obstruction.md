@@ -32,6 +32,71 @@ are distinguished explicitly.
 
 ## 1. Product decision
 
+### 2026-09-27 normal-path validation update
+
+The integrated held-shot Modern candidate passes full motion routes (including
+high-rate reporting), Release lifecycle, four-player performance/authority,
+sanitizer projection/query fault injection and fresh-state policy isolation.
+Unset still matches Observe. Sanitizer lifecycle also passes all three scenarios; physical
+platform/route acceptance and the complete release gates remain separate.
+The earlier ordinary-Modern motion failure is resolved on the tested routes,
+not waived. See the integration record for terminal results and test scope.
+
+### 2026-09-27 production integration candidate — qualification running
+
+Following maintainer acceptance, full Modern treatment now enables held-shot
+recovery without MDKR_TEST_CAMERA_HELD_SHOT. Observe remains the unset/default
+policy; safety-only treatment and diagnostic non-publication remain unchanged.
+This supersedes the earlier trial-only implementation descriptions below, not
+their historical evidence. Normal-path motion and sanitizer fault gates have
+been started; do not call the candidate qualified until their terminal results
+and the remaining lifecycle/cost/default-isolation checks are recorded.
+
+### 2026-09-27 maintainer review: held-shot transition trial
+
+The maintainer reviewed the private normal-left/held-shot-right comparison and
+responded: "Yes the new version looks great." This accepts the reviewed trial's
+visual result and clears the outstanding human-review request for that clip.
+It does not establish comfort across all routes, input devices or platforms,
+nor change the configured/default camera policy. The held-shot implementation
+still needs a reviewed production integration decision and qualification of
+that exact path; removing its test-only selector is not itself validation.
+Keep the ROM-derived comparison private and out of release artifacts.
+
+### 2026-09-27 integration update: rotating-transition clearance
+
+The 1.8 integration tree refines a rotating transition's enclosing-sphere HIT
+with a bounded lens envelope. This is active in the normal Modern validator;
+it is not a default-policy change. Unset configuration still selects Observe.
+The separately named held-camera chain remains an explicitly enabled,
+unpublished diagnostic and must not be confused with this clearance change.
+
+The envelope enumerates the Cartesian set of renderer integer yaw, composed
+pitch and roll states. Axes beyond the renderer's quarter-turn snap threshold
+include both endpoints; other axes include every shortest-arc integer state.
+Maximum near-plane corner displacement expands the previous rectangle's skin,
+using the larger endpoint skin and outward rounding. Each intermediate
+rectangle is contained by this expanded convex shape, swept along the rendered
+eye chord. Shake is included in that chord, not treated as lens rotation.
+This argument depends on fixed projection geometry and the normal renderer
+angle contract; the internal long-arc fault is deliberately a negative control.
+
+Work is capped at 4096 orientation combinations. Invalid/unavailable bounds,
+query degradation, or a non-clear refined sweep retain the interpolation cut;
+an initial INVALID is never refined into CLEAR. Projection/shake tuple changes
+and discontinuous dynamic obstacles remain earlier cut conditions. The
+refinement reuses the authoritative static/dynamic sources, not a visual-only
+mesh approximation, and does not move the selected endpoint or game camera.
+
+Release evidence: Ancient Lake published cuts fall from 410 to 149; clearance,
+default isolation, and four-player cost gates pass. Both lens math variants
+also pass varied-pose containment and the real long-arc negative control under
+Release and sanitizers. These are not complete release acceptance: the
+tick-2136 reengagement gate remains failing, broader lifecycle/sanitizer runtime
+qualification is in progress, and no held-camera selection policy is promoted.
+Current results and private-log locations are tracked in
+the private 1.8 integration record.
+
 The native port will treat camera obstruction as a correctness boundary, not a
 visual preset:
 

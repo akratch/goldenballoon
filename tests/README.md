@@ -690,6 +690,25 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   `MDKR_CAMERA_PERF=1` is allocation-free and reads an
   intra-thread performance clock; it never uses the synthetic VI/rAF clock.
 
+The development-only held-shot selection trial has separate qualification.
+`--held-shot-trial` on the motion, lifecycle and performance runners explicitly
+enables it; normal invocations do not inherit the trial switch. Motion JSON
+records which policy was measured, and the performance runner leaves Observe
+unchanged for its authority comparison. A trial pass does not qualify the normal
+policy or authorize changing the user-facing camera default. Actual rendered
+quality still requires the architecture plan's visual/device acceptance.
+
+`check_camera_held_shot_faults.py` is registered in Release and sanitizer roles.
+It uses private save/config directories and injects projection and exact-query
+failure into a known active held-shot episode, requiring safe publication and
+fresh history after the missing projection. Its ROM-free reporting CTest
+rejects missing injections and unsafe or incomplete evidence.
+`check_camera_chain_evidence.py LOG` audits unpublished-chain continuity and
+reported framing/return invariants in a private trace; it is not an independent
+geometry proof. Its parser and negative controls run through CTest, as does
+the actual interpolation long-arc containment control. Keep trace/capture files
+outside public source and release archives.
+
 The three source-role camera cache tasks are static audits of the immutable
 occlusion caches the runtime queries, and hold no ROM:
 
@@ -7518,6 +7537,34 @@ a tool that merely slows the frame loop enough to shift pacing is also caught.
 its own task lands, so an empty table would otherwise sail through.
 
 ## Custom-track loader integration — `tests/check_custom_track_loader.py`
+
+An additional negative arm uses `MDKR_LEVEL_NAMES_SELFTEST=unterminated`, fills
+only the first loaded name entry with nonzero bytes, and invokes the production
+selector. Its exact unterminated-name diagnostic is required; an unrelated
+abort, sanitizer failure or the fixture's escaped-guard abort cannot pass.
+
+The enabled arm additionally sets `MDKR_LEVEL_NAMES_SELFTEST=1` and requires
+a positive-count `[LEVEL_NAMES]` marker for all four localized strings in every
+retail name entry. Each lookup stays within its entry, including the selected
+string's terminator. This is raw corpus compatibility, not a visual translation
+review or acceptance of authored names.
+
+The wrapper also boots with `MDKR_LEVEL_HEADER_SHORT_SELFTEST=1`, corrupting
+only the consumer's private header-table copy to give entry zero no bytes.
+It requires a nonzero exit and the named header-span refusal before decoding.
+This negative arm validates the production boot boundary; initial and redirected
+level-load call sites are additionally pinned by the runtime safety census.
+
+Related save boundary: `check_custom_save_inventory.py --build build-rel --rom
+<private-rom>` (also registered as `custom_save_inventory` and
+`custom_save_inventory_asan`) runs the real progression/time codecs using the
+ROM's retail metadata, then eight synthetic extra courses and one extra world.
+It requires byte-identical retail encoding and decode/re-encode, guarded 40-byte
+progression/384-byte time buffers, and empty custom records after retail restore.
+The opt-in `MDKR_CUSTOM_SAVE_SELFTEST=1` fixture uses separate in-memory settings,
+restores global metadata and codec cursor state, and performs no save-file I/O.
+An ordinary boot must not emit its marker. This is not a manifest import,
+appended-header startup, custom sidecar, or playable-course test.
 
 Run with `--build BUILD --rom PRIVATE_ROM_PATH`, or select
 `--only custom_track_loader` in `tools/run_checks.py`. Repeat against the

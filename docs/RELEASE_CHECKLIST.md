@@ -7,7 +7,46 @@ the clear legally — they are scripts, not judgement calls, and they fail close
 Nothing here is optional, and nothing here should be reasoned around. If a gate
 fails, the release stops.
 
-## Current candidate status (2026-09-08)
+## Current integration status (2026-09-27)
+
+The active work is `release/1.8-integration`, based on `53cf92a7` with additional
+uncommitted implementation and tests. It is not an immutable release candidate.
+Use the private 1.8 integration record for dated
+results and [the custom-track review](DKR_R_CUSTOM_TRACK_PARITY_REVIEW.md) for
+the remaining native integration scope. Neither replaces the gates below.
+
+Fresh all-target builds and full CTest runs passed 388/388 in both Release
+(367.60 seconds) and ASan/UBSan (431.70 seconds) at the latest September 27
+checkpoint. These runs include dimension-aware pulsing uploads, selected texture
+admission, immutable package digests and final map-pair resolution, alongside
+the earlier camera/header/name/AI work. Evidence is recorded in the integration
+execution record. The source-readiness guard still fails source custody because
+intended new source files are not committed; its broken historical Markdown
+anchors have been repaired and independently rechecked.
+Consult the integration record for subsequent focused validation; CTest is not
+the complete release runner or physical
+platform acceptance. The maintainer accepted the held-shot comparison's visual
+result after the trial passed motion, lifecycle, fault and cost/authority gates.
+The current candidate integrates that recovery into full Modern treatment;
+Observe remains default. Normal-path motion (including high-rate presentation)
+and sanitizer fault checks pass. Normal-path lifecycle and four-player
+performance/authority gates also pass, as does fresh-state policy isolation
+(unset remains Observe). Sanitizer lifecycle qualification also passes all
+three pause/quit, restart and Adventure postrace scenarios.
+The earlier 387/388 reporting-test failure is repaired and superseded by the
+full runs above; it is not an outstanding failure or a waiver.
+The earlier ordinary-Modern motion failure is
+resolved for this candidate's tested routes, not waived.
+Custom-track primitives are not yet a
+complete importer or playable authored-course workflow. Real model artwork
+and Windows-specific input/rendering acceptance remain unqualified.
+
+The September 8 results below belong to the earlier 1.7 candidate, not this
+working tree. Historical workstation deferrals do not override the current
+maintainer authorization in AGENTS.md. No publication is authorized by a
+passing local gate.
+
+## Historical candidate status (2026-09-08)
 
 **Not release-ready, but now qualified by execution rather than inspection.**
 The complete suite has run against the integrated `int-1.7.0` candidate at
