@@ -469,6 +469,12 @@ int mdkr_mod_registry_probe_source(MdkrModSource *source, const char *name,
         copy_bounded(reason, reason_size, "the pack source or name is unavailable");
         return 0;
     }
+    if (name[0] == '.') {
+        copy_bounded(reason, reason_size,
+                     "its name starts with '.', which hides it from the game. "
+                     "Rename it and try again");
+        return 0;
+    }
     result = mdkr_mod_source_read(source, "pack.ini", text, sizeof text, &length);
     if (result == MDKR_MOD_SOURCE_ABSENT) {
         RiceScan probe;

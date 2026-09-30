@@ -44,6 +44,9 @@ extern "C" {
 #include <string>
 #include <thread>
 #include <utility>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -1539,6 +1542,42 @@ void servicePackInstall(bool quitting) {
     if (g_packInstall.service(quitting)) platform_content_packs_init();
 }
 
+#if !defined(_WIN32)
+// Linux has no native file-manager call of its own. xdg-open is the desktop's
+// "open this with its usual application" command: where it is installed the
+// launcher offers Open mods folder, and where it is not, the folder's path
+// shown under the buttons is the way in. macOS reveals the folder in Finder
+// instead, but compiles these too so they are built wherever the suite runs.
+[[maybe_unused]] bool desktopOpenerAvailable() {
+    static const bool available = [] {
+        const char *path = std::getenv("PATH");
+        const std::string directories = path != nullptr ? path : "";
+        size_t start = 0;
+        for (;;) {
+            const size_t end = directories.find(':', start);
+            std::string directory = directories.substr(
+                start, end == std::string::npos ? std::string::npos : end - start);
+            if (directory.empty()) directory = ".";
+            if (access((directory + "/xdg-open").c_str(), X_OK) == 0) return true;
+            if (end == std::string::npos) return false;
+            start = end + 1;
+        }
+    }();
+    return available;
+}
+
+[[maybe_unused]] bool openWithDesktopOpener(const std::string &folder) {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    // SDL starts xdg-open detached, so a file manager that stays open never
+    // holds up the launcher.
+    return SDL_OpenURL(folder.c_str()) == 0;
+#else
+    (void)folder;
+    return false;
+#endif
+}
+#endif
+
 void installContentPack(const char *modsDirectory) {
 #if defined(__linux__)
     g_packBrowser.open("", BrowserFileKind::ZipPack);
@@ -1601,13 +1640,25 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
             ui::SpeakFocusedItem("Cancel installation", nullptr,
                                  "Discard the pending copy without installing it.");
         }
-        if (filedialog::isAvailable()) {
+#if defined(__linux__)
+        const bool canOpenModsFolder = desktopOpenerAvailable();
+#else
+        const bool canOpenModsFolder = filedialog::isAvailable();
+#endif
+        if (canOpenModsFolder) {
             if (ImGui::GetContentRegionAvail().x > ui::kBtnWide().x * 2.0f)
                 ImGui::SameLine();
             if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
                 std::error_code created;
                 std::filesystem::create_directories(modsDirectory, created);
+#if defined(__linux__)
+                const auto folder = std::filesystem::absolute(modsDirectory, created);
+                if (created || !openWithDesktopOpener(folder.u8string()))
+                    g_packInstall.setNote("Could not open the mods folder. Its location "
+                                          "is shown below.");
+#else
                 (void)filedialog::revealInFileManager(modsDirectory);
+#endif
             }
             ui::SpeakFocusedItem(
                 "Open mods folder", nullptr,

@@ -133,7 +133,9 @@ int main(int argc, char **argv) {
         auto duplicate = PreparedPackInstall::copyZip(input / "Textures.ZIP", mods);
         const PackInstallResult refused = duplicate.finalize();
         REQUIRE(!refused.installed);
+        // Updating means removing the old copy first; the message says so.
         REQUIRE(refused.message.find("already installed") != std::string::npos);
+        REQUIRE(refused.message.find("remove the installed copy") != std::string::npos);
         REQUIRE(fs::is_regular_file(mods / "Textures.ZIP"));
     }
     const fs::path unicodeName = fs::u8path(u8"Forêt.ZIP");
@@ -716,7 +718,7 @@ int main(int argc, char **argv) {
                 auto linked = PreparedPackInstall::copyPack(linkedPack, linkedMods);
                 const auto result = linked.finalize();
                 REQUIRE(!result.installed);
-                REQUIRE(result.message.find("no links") != std::string::npos);
+                REQUIRE(result.message.find("contains a link") != std::string::npos);
             }
             REQUIRE(fs::is_empty(linkedMods));
             REQUIRE(fs::file_size(outside / "secret.bin") == 13);
@@ -782,6 +784,53 @@ int main(int argc, char **argv) {
     }
     REQUIRE(fs::is_empty(root.path / "folder-linked"));
     REQUIRE(fs::remove(folder / "linked.zip"));
+#endif
+    // Refusals a player can act on say what to do.
+    {
+        // A name starting with '.' is hidden from the game: refused with that
+        // reason instead of being "installed" and then silently ignored.
+        const auto hidden = input / ".HiddenPack";
+        const auto hiddenMods = root.path / "hidden-mods";
+        REQUIRE(fs::create_directories(hidden));
+        std::ofstream(hidden / "pack.ini") << "[pack]\nname=Hidden\n";
+        {
+            auto prepared = PreparedPackInstall::copyPack(hidden, hiddenMods);
+            const auto result = prepared.finalize();
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("starts with '.'") != std::string::npos);
+        }
+        REQUIRE(noResidue(hiddenMods));
+
+        // More folders deep than the game reads.
+        const auto deep = input / "DeepPack";
+        fs::path level = deep;
+        for (int depth = 0; depth < MDKR_MOD_SOURCE_WALK_DEPTH_MAX + 2; ++depth) level /= "d";
+        REQUIRE(fs::create_directories(level));
+        std::ofstream(deep / "pack.ini") << "[pack]\nname=Deep\n";
+        std::ofstream(level / "art.bin") << "deep";
+        const auto deepMods = root.path / "deep-mods";
+        {
+            auto prepared = PreparedPackInstall::copyPack(deep, deepMods);
+            const auto result = prepared.finalize();
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("folders deep") != std::string::npos);
+        }
+        REQUIRE(noResidue(deepMods));
+    }
+#ifndef _WIN32
+    {
+        // A name the game cannot use: macOS Finder shows ':' as '/', so a
+        // player can produce this without seeing it.
+        REQUIRE(writeZip(input / "Bad:Name.zip", "pack.ini", "[pack]\nname=Bad\n"));
+        const auto unsafeMods = root.path / "unsafe-name-mods";
+        {
+            auto prepared = PreparedPackInstall::copyZip(input / "Bad:Name.zip", unsafeMods);
+            const auto result = prepared.finalize();
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("Rename it") != std::string::npos);
+        }
+        REQUIRE(noResidue(unsafeMods));
+    }
 #endif
     // A mods folder that is itself a link (packs moved to another drive, a
     // linked portable folder) works: the installer resolves it once and stays

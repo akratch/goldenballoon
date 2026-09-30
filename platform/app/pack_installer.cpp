@@ -332,6 +332,20 @@ std::string fileError(const char *operation, const std::error_code &error) {
     return std::string(operation) + ": " + error.message();
 }
 
+// The mods folder's filesystem cannot rename without risking replacing an
+// existing pack (FAT, exFAT, some network shares), and publication never
+// falls back to a rename that could.
+bool exclusiveRenameUnsupported(const std::error_code &error) {
+    return error == std::errc::not_supported ||
+           error == std::errc::operation_not_supported ||
+           error == std::errc::function_not_supported
+#ifdef __linux__
+           // renameat2 reports flags a filesystem does not implement as EINVAL.
+           || error == std::errc::invalid_argument
+#endif
+        ;
+}
+
 // Hold a ZIP's central directory to the intake budgets without inflating any
 // member. Returns an empty string when it fits. `poll`, when set, is called
 // before each member and a true answer abandons the check (the caller records
@@ -461,6 +475,12 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         prepared.error_ = "Choose a named content-pack folder or ZIP.";
         return prepared;
     }
+    // Finder shows ':' as '/', so a player can hold such a name unawares.
+    if (!mdkr_mod_source_path_is_safe(prepared.filename_.u8string().c_str())) {
+        prepared.error_ = "The game cannot use a pack name containing ':' or '\\'. "
+                          "Rename it and try again.";
+        return prepared;
+    }
 
     std::error_code ec;
 #if MDKR_PACK_BY_PATH
@@ -578,11 +598,17 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             : mdkr_fopen_utf8(source.u8string().c_str(), "rb");
     };
 #endif
-    const fs::path destination = prepared.modsDir_ / prepared.filename_;
-    if (fs::exists(destination, ec) || ec) {
-        prepared.error_ = ec ? fileError("Cannot check for an existing pack", ec)
-                             : "A pack with that filename is already installed. "
-                               "Nothing was replaced.";
+    // Any entry at the name counts, a dangling link included: publication
+    // never replaces one, so say so now rather than after the copy.
+    const int existing = mdkr_path_kind_utf8(
+        (prepared.modsDir_ / prepared.filename_).u8string().c_str());
+    if (existing != MDKR_PATH_MISSING) {
+        prepared.error_ = existing < 0
+            ? fileError("Cannot check for an existing pack",
+                        std::error_code(errno, std::generic_category()))
+            : "A pack named \"" + prepared.filename_.u8string() + "\" is already "
+              "installed. To update it, remove the installed copy from your mods "
+              "folder first. Nothing was replaced.";
         return prepared;
     }
     // A wrong pick fails here, before anything is copied or created: a ZIP's
@@ -811,8 +837,20 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         prepared.error_ = fileError("Cannot stage the folder", ec);
         return prepared;
     }
-    const char *const unsafeFolder =
-        "Pack folders must contain only safely named regular files and folders (no links).";
+    // A folder entry the game could not read the way it was copied: one
+    // reason per cause, so the player knows what to change.
+    const auto folderProblem = [](bool ordinary, bool usableName, bool shallow) -> const char * {
+        if (!ordinary)
+            return "This pack folder contains a link or a special file. Packs can "
+                   "hold only ordinary files and folders.";
+        if (!usableName)
+            return "This pack folder contains a name the game cannot use (one with "
+                   "':' or '\\'). Rename it and try again.";
+        if (!shallow)
+            return "This pack folder is nested more than 24 folders deep, deeper than "
+                   "the game reads.";
+        return nullptr;
+    };
 #if !MDKR_PACK_BY_PATH
     fs::recursive_directory_iterator it(source, fs::directory_options::none, ec), end;
     while (!ec && it != end) {
@@ -822,10 +860,11 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         if (ec) break;
         const auto relative = it->path().lexically_relative(source);
         const auto name = relative.generic_u8string();
-        if (!mdkr_mod_source_path_is_safe(name.c_str()) ||
-            it.depth() > MDKR_MOD_SOURCE_WALK_DEPTH_MAX ||
-            (!fs::is_directory(status) && !fs::is_regular_file(status))) {
-            prepared.error_ = unsafeFolder;
+        if (const char *problem = folderProblem(
+                fs::is_directory(status) || fs::is_regular_file(status),
+                mdkr_mod_source_path_is_safe(name.c_str()) != 0,
+                it.depth() <= MDKR_MOD_SOURCE_WALK_DEPTH_MAX)) {
+            prepared.error_ = problem;
             return prepared;
         }
         if (fs::is_directory(status)) makeStagedDirectory(prepared.filename_ / relative, ec);
@@ -847,10 +886,11 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                 if (stop()) return false;
                 if (!takeEntry()) return false;
                 const fs::path child = relative / fs::u8path(entry.name);
-                if (!mdkr_mod_source_path_is_safe(child.generic_u8string().c_str()) ||
-                    depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX ||
-                    (entry.kind != MDKR_PATH_DIRECTORY && entry.kind != MDKR_PATH_FILE)) {
-                    prepared.error_ = unsafeFolder;
+                if (const char *problem = folderProblem(
+                        entry.kind == MDKR_PATH_DIRECTORY || entry.kind == MDKR_PATH_FILE,
+                        mdkr_mod_source_path_is_safe(child.generic_u8string().c_str()) != 0,
+                        depth <= MDKR_MOD_SOURCE_WALK_DEPTH_MAX)) {
+                    prepared.error_ = problem;
                     return false;
                 }
                 if (entry.kind == MDKR_PATH_DIRECTORY) {
@@ -992,6 +1032,11 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
         result.destination.clear();
         result.message = ec == std::errc::file_exists
             ? "A pack with that filename was installed meanwhile. Nothing was replaced."
+            : exclusiveRenameUnsupported(ec)
+            ? "The drive your mods folder is on cannot add a pack without risking "
+              "replacing another one (a FAT or exFAT drive, or some network "
+              "folders). Nothing was installed. Copy the pack into the mods folder "
+              "yourself."
             : fileError("Could not publish the pack", ec);
         return result;
     }
