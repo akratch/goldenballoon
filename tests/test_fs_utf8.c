@@ -108,6 +108,7 @@ static int listed_kind(const Listing *listing, const char *name) {
 static void test_path_primitives(const char *root) {
     char folder[1024], file[1024], unicode[1024], link[1024], moved[1024];
     char renamed_folder[1024], nested[1024], empty[1024], missing[1024];
+    char inside[1100];
     const char *unicode_name = "pack-\xc3\xa9\xe5\x90\x8d.bin";
     Listing listing;
     MdkrFileLock first = {-1}, second = {-1};
@@ -202,7 +203,9 @@ static void test_path_primitives(const char *root) {
     expect(mdkr_directory_hold_utf8(renamed_folder, &second) == -1 && errno == EBUSY &&
                second.handle == -1,
            "a second hold on a held directory reports it busy");
-    expect(write_bytes(moved, "still writable"), "files stay writable while a directory is held");
+    join(inside, sizeof inside, renamed_folder, "inside.bin");
+    expect(write_bytes(inside, "still writable") && mdkr_remove_utf8(inside) == 0,
+           "a held directory's contents stay writable and removable");
 #ifdef _WIN32
     expect(mdkr_rename_exclusive_utf8(renamed_folder, folder) == -1 &&
                mdkr_path_kind_utf8(renamed_folder) == MDKR_PATH_DIRECTORY,
