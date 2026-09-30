@@ -836,6 +836,55 @@ int main(int argc, char **argv) {
         }
     }
 #endif
+    // Staging abandoned by a crash or force-quit is reclaimed; a live
+    // installation's staging (in this process or another) is not, and nothing
+    // that is not the installer's own staging folder is touched.
+    {
+        const auto sweepMods = root.path / "sweep-mods";
+        const auto outside = root.path / "sweep-outside";
+        REQUIRE(fs::create_directories(sweepMods / ".install-1-0" / "Pack" / "nested"));
+        std::ofstream(sweepMods / ".install-1-0" / "Pack" / "nested" / "partial.bin") << "partial";
+        std::ofstream(sweepMods / ".install-1-0" / "Pack" / "pack.ini") << "[pack]\nname=Partial\n";
+        REQUIRE(fs::create_directories(sweepMods / ".install-2-0"));
+        REQUIRE(fs::create_directories(sweepMods / ".keep-me"));
+        std::ofstream(sweepMods / ".install-file") << "a file, not staging";
+        std::ofstream(sweepMods / "Installed.zip") << "an installed pack";
+        REQUIRE(fs::create_directories(outside));
+        std::ofstream(outside / "keep.bin") << "keep";
+        const bool linked = makeDirectoryLink(outside, sweepMods / ".install-link");
+        auto live = PreparedPackInstall::copyZip(input / "race.zip", sweepMods);
+        fs::path liveStage;
+        for (const auto &entry : fs::directory_iterator(sweepMods)) {
+            const auto name = entry.path().filename().string();
+            if (name.rfind(".install-", 0) == 0 && name != ".install-1-0" &&
+                name != ".install-2-0" && name != ".install-file" && name != ".install-link")
+                liveStage = entry.path();
+        }
+        REQUIRE(!liveStage.empty() && fs::is_regular_file(liveStage / "race.zip"));
+
+        REQUIRE(PreparedPackInstall::reclaimAbandonedStaging(sweepMods) == 2);
+        REQUIRE(!fs::exists(sweepMods / ".install-1-0"));
+        REQUIRE(!fs::exists(sweepMods / ".install-2-0"));
+        REQUIRE(fs::is_regular_file(liveStage / "race.zip"));
+        REQUIRE(fs::is_directory(sweepMods / ".keep-me"));
+        REQUIRE(fs::is_regular_file(sweepMods / ".install-file"));
+        REQUIRE(fs::is_regular_file(sweepMods / "Installed.zip"));
+        REQUIRE(fs::file_size(outside / "keep.bin") == 4);
+        if (linked) {
+            REQUIRE(fs::exists(fs::symlink_status(sweepMods / ".install-link")));
+            removeLink(sweepMods / ".install-link");
+        }
+        REQUIRE(live.finalize().installed);
+        REQUIRE(fs::is_regular_file(sweepMods / "race.zip"));
+
+        // A stopped sweep leaves the rest for the next one.
+        REQUIRE(fs::create_directories(sweepMods / ".install-3-0" / "left"));
+        REQUIRE(PreparedPackInstall::reclaimAbandonedStaging(sweepMods, [] { return true; }) == 0);
+        REQUIRE(fs::exists(sweepMods / ".install-3-0" / "left"));
+        REQUIRE(PreparedPackInstall::reclaimAbandonedStaging(sweepMods) == 1);
+        REQUIRE(!fs::exists(sweepMods / ".install-3-0"));
+        REQUIRE(PreparedPackInstall::reclaimAbandonedStaging(root.path / "no-such-mods") == 0);
+    }
     int visible = 0;
     for (const auto &entry : fs::directory_iterator(mods)) {
         REQUIRE(entry.path().filename() == "Textures.ZIP" ||

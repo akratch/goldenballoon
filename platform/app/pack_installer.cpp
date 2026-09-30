@@ -25,8 +25,10 @@
 #else
 #include <fcntl.h>
 #include <dirent.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 #ifdef __linux__
 #include <linux/fs.h>
 #include <sys/syscall.h>
@@ -36,6 +38,25 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+// Every staging folder is named with this prefix, which is what lets a sweep
+// recognise the installer's own leftovers and nothing else.
+constexpr char kStagePrefix[] = ".install-";
+constexpr size_t kStagePrefixLength = sizeof kStagePrefix - 1;
+
+bool isStageName(const char *name) {
+    return std::strncmp(name, kStagePrefix, kStagePrefixLength) == 0;
+}
+
+// A stop request, where an exception from the callback also means stop: the
+// removal loops below must not unwind through open directory streams.
+bool stopRequested(const std::function<bool()> *stop) noexcept {
+    try {
+        return stop && *stop && (*stop)();
+    } catch (...) {
+        return true;
+    }
+}
 
 #if !MDKR_PACK_BY_PATH
 struct ScopedFd {
@@ -96,32 +117,46 @@ bool sameDirectory(int fd, int parent, const char *name, bool follow = false) {
 
 // Walk through descriptors, never through the staging pathname. A replaced
 // child link is unlinked as a link, not followed into another directory tree.
-bool clearDirectory(int fd, unsigned depth = 0) {
+// A directory stream read while its entries are unlinked may skip some, so
+// passes repeat while one makes progress.
+bool clearDirectory(int fd, unsigned depth = 0,
+                    const std::function<bool()> *stop = nullptr) {
     if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX + 2u) return false;
-    int scan = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (scan < 0) return false;
-    DIR *dir = fdopendir(scan);
-    if (!dir) { close(scan); return false; }
-    bool okay = true;
-    for (;;) {
-        errno = 0;
-        auto *entry = readdir(dir);
-        if (!entry) { if (errno) okay = false; break; }
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        struct stat status{};
-        if (fstatat(fd, entry->d_name, &status, AT_SYMLINK_NOFOLLOW)) { okay = false; continue; }
-        if (S_ISDIR(status.st_mode)) {
-            int child = openat(fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (child < 0) { okay = false; continue; }
-            struct stat opened{};
-            if (fstat(child, &opened) || opened.st_dev != status.st_dev || opened.st_ino != status.st_ino ||
-                !clearDirectory(child, depth + 1) || !sameDirectory(child, fd, entry->d_name) ||
-                unlinkat(fd, entry->d_name, AT_REMOVEDIR)) okay = false;
-            close(child);
-        } else if (unlinkat(fd, entry->d_name, 0)) okay = false;
+    for (int round = 0; round < 16; ++round) {
+        int scan = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (scan < 0) return false;
+        DIR *dir = fdopendir(scan);
+        if (!dir) { close(scan); return false; }
+        bool okay = true, removed = false, stopped = false;
+        for (;;) {
+            errno = 0;
+            auto *entry = readdir(dir);
+            if (!entry) { if (errno) okay = false; break; }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            if (stopRequested(stop)) { stopped = true; break; }
+            struct stat status{};
+            if (fstatat(fd, entry->d_name, &status, AT_SYMLINK_NOFOLLOW)) { okay = false; continue; }
+            if (S_ISDIR(status.st_mode)) {
+                int child = openat(fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+                if (child < 0) { okay = false; continue; }
+                struct stat opened{};
+                if (fstat(child, &opened) || opened.st_dev != status.st_dev ||
+                    opened.st_ino != status.st_ino || !clearDirectory(child, depth + 1, stop) ||
+                    !sameDirectory(child, fd, entry->d_name) ||
+                    unlinkat(fd, entry->d_name, AT_REMOVEDIR)) okay = false;
+                else removed = true;
+                close(child);
+            } else if (unlinkat(fd, entry->d_name, 0)) {
+                okay = false;
+            } else {
+                removed = true;
+            }
+        }
+        closedir(dir);
+        if (stopped) return false;
+        if (!removed) return okay;
     }
-    closedir(dir);
-    return okay;
+    return false;
 }
 #else
 // The pathname arm. Every filesystem call goes through fs_utf8, the one UTF-8
@@ -155,17 +190,23 @@ bool removeDirectory(const char *path) {
     }
 }
 
-bool clearDirectory(const char *directory, unsigned depth);
+bool clearDirectory(const char *directory, unsigned depth,
+                    const std::function<bool()> *stop);
 
 struct ClearPass {
     const char *directory;
     unsigned depth;
+    const std::function<bool()> *stop;
     bool removed;
     bool okay;
 };
 
 int clearEntry(const char *name, int kind, void *opaque) {
     auto &pass = *static_cast<ClearPass *>(opaque);
+    if (stopRequested(pass.stop)) {
+        pass.okay = false;
+        return 1;
+    }
     char *child = joinPath(pass.directory, name);
     if (!child) {
         pass.okay = false;
@@ -173,7 +214,7 @@ int clearEntry(const char *name, int kind, void *opaque) {
     }
     bool removed;
     if (kind == MDKR_PATH_DIRECTORY) {
-        removed = clearDirectory(child, pass.depth + 1) && removeDirectory(child);
+        removed = clearDirectory(child, pass.depth + 1, pass.stop) && removeDirectory(child);
     } else if (kind == MDKR_PATH_LINK) {
         // Remove the link itself, never what it points at. A Windows
         // directory link or junction is removed as a directory.
@@ -189,10 +230,11 @@ int clearEntry(const char *name, int kind, void *opaque) {
 
 // Empty `directory` without following links. A listing taken while entries
 // are removed may miss some, so repeat while a pass makes progress.
-bool clearDirectory(const char *directory, unsigned depth) {
+bool clearDirectory(const char *directory, unsigned depth,
+                    const std::function<bool()> *stop) {
     if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX + 2u) return false;
     for (int round = 0; round < 16; ++round) {
-        ClearPass pass{directory, depth, false, true};
+        ClearPass pass{directory, depth, stop, false, true};
         if (mdkr_directory_list_utf8(directory, clearEntry, &pass) != 0) return false;
         if (!pass.removed) return pass.okay;
     }
@@ -378,7 +420,7 @@ void PreparedPackInstall::cleanup() noexcept {
     // Windows the hold refuses that replacement in the first place.
     if (!stage_.empty() &&
         mdkr_path_kind_utf8(stagePath_.c_str()) == MDKR_PATH_DIRECTORY) {
-        const bool cleared = clearDirectory(stagePath_.c_str(), 0);
+        const bool cleared = clearDirectory(stagePath_.c_str(), 0, nullptr);
         // Windows refuses to remove a directory this process still holds.
         mdkr_file_lock_release(&hold_);
         if (cleared) (void)removeDirectory(stagePath_.c_str());
@@ -590,11 +632,31 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
     for (unsigned attempt = 0; attempt < 32; ++attempt) {
         fs::path candidate = prepared.modsDir_ /
-            (".install-" + std::to_string(tick) + "-" + std::to_string(attempt));
+            (kStagePrefix + std::to_string(tick) + "-" + std::to_string(attempt));
         prepared.stageName_ = candidate.filename();
         ec.clear();
 #if !MDKR_PACK_BY_PATH
         if (relativeMkdir(prepared.modsFd_, candidate.filename(), ec)) {
+            const int stageFd = openat(prepared.modsFd_, prepared.stageName_.c_str(),
+                                       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (stageFd < 0) {
+                // Swept away the moment it was made: not ours, try another name.
+                if (errno == ENOENT) continue;
+                prepared.error_ = "Could not retain ownership of the staging directory.";
+                return prepared;
+            }
+            // Lock the new folder for the whole installation, so a sweep in any
+            // process leaves it alone. A filesystem without advisory locks
+            // cannot record that; the installation proceeds unlocked there.
+            if (flock(stageFd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK) {
+                close(stageFd);
+                continue;
+            }
+            if (!sameDirectory(stageFd, prepared.modsFd_, prepared.stageName_.c_str())) {
+                close(stageFd);
+                continue;
+            }
+            prepared.stageFd_ = stageFd;
             prepared.stage_ = std::move(candidate);
             break;
         }
@@ -638,12 +700,6 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         return prepared;
     }
 #if !MDKR_PACK_BY_PATH
-    prepared.stageFd_ = prepared.modsFd_ < 0 ? -1 : openat(prepared.modsFd_,
-        prepared.stageName_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    if (prepared.stageFd_ < 0) {
-        prepared.error_ = "Could not retain ownership of the staging directory.";
-        return prepared;
-    }
     const auto createStaged = [&](const fs::path &relative) {
         return relativeFile(prepared.stageFd_, relative, true);
     };
@@ -942,4 +998,64 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     result.installed = true;
     cleanup();
     return result;
+}
+
+std::size_t PreparedPackInstall::reclaimAbandonedStaging(
+        const fs::path &modsDir, const std::function<bool()> &cancelled) {
+    std::size_t removed = 0;
+#if !MDKR_PACK_BY_PATH
+    ScopedFd mods(open(modsDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (mods.value < 0) return 0;
+    std::vector<std::string> names;
+    {
+        const int scan = openat(mods.value, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        std::unique_ptr<DIR, decltype(&closedir)> dir(scan >= 0 ? fdopendir(scan) : nullptr,
+                                                      closedir);
+        if (!dir) {
+            if (scan >= 0) close(scan);
+            return 0;
+        }
+        while (auto *entry = readdir(dir.get())) {
+            if (isStageName(entry->d_name)) names.emplace_back(entry->d_name);
+        }
+    }
+    for (const auto &name : names) {
+        if (stopRequested(&cancelled)) break;
+        // Only a real folder, and only the one that was listed.
+        struct stat listed{};
+        if (fstatat(mods.value, name.c_str(), &listed, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISDIR(listed.st_mode)) continue;
+        ScopedFd stage(openat(mods.value, name.c_str(),
+                              O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        struct stat opened{};
+        if (stage.value < 0 || fstat(stage.value, &opened) != 0 ||
+            opened.st_dev != listed.st_dev || opened.st_ino != listed.st_ino) continue;
+        // A live installation holds its staging folder locked. A folder that
+        // cannot be locked at all is left alone too: its owner is unknowable.
+        if (flock(stage.value, LOCK_EX | LOCK_NB) != 0) continue;
+        if (clearDirectory(stage.value, 0, &cancelled) &&
+            sameDirectory(stage.value, mods.value, name.c_str()) &&
+            unlinkat(mods.value, name.c_str(), AT_REMOVEDIR) == 0) {
+            ++removed;
+        }
+    }
+#else
+    std::vector<DirectoryEntry> listed;
+    if (!listDirectory(modsDir, listed)) return 0;
+    for (const auto &entry : listed) {
+        if (stopRequested(&cancelled)) break;
+        // Only a real folder: a link with the prefix is never followed.
+        if (entry.kind != MDKR_PATH_DIRECTORY || !isStageName(entry.name.c_str())) continue;
+        const std::string path = (modsDir / fs::u8path(entry.name)).u8string();
+        // A live installation holds its staging folder; so does anything this
+        // process cannot hold. Either way it is left alone.
+        MdkrFileLock hold{-1};
+        if (mdkr_directory_hold_utf8(path.c_str(), &hold) != 0) continue;
+        const bool cleared = clearDirectory(path.c_str(), 0, &cancelled);
+        // Windows refuses to remove a directory this process still holds.
+        mdkr_file_lock_release(&hold);
+        if (cleared && removeDirectory(path.c_str())) ++removed;
+    }
+#endif
+    return removed;
 }
