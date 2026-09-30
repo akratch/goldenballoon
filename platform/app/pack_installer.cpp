@@ -84,10 +84,12 @@ bool relativeMkdir(int root, const fs::path &path, std::error_code &error) {
     return result == 0;
 }
 
-bool sameDirectory(int fd, int parent, const char *name) {
+// `follow` only for the caller-chosen mods root, which may be a link; every
+// entry the installer owns is compared without following links.
+bool sameDirectory(int fd, int parent, const char *name, bool follow = false) {
     struct stat owned{}, named{};
     return fd >= 0 && fstat(fd, &owned) == 0 &&
-        fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0 &&
+        fstatat(parent, name, &named, follow ? 0 : AT_SYMLINK_NOFOLLOW) == 0 &&
         S_ISDIR(named.st_mode) && owned.st_dev == named.st_dev &&
         owned.st_ino == named.st_ino;
 }
@@ -428,13 +430,32 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
 #if !MDKR_PACK_BY_PATH
     // Pin the source before traversal/cancellation callbacks. A pathname check
     // followed by ifstream can follow a replaced parent into unrelated files.
-    const auto readRoot = directory ? source :
-        (source.parent_path().empty() ? fs::path(".") : source.parent_path());
+    // A folder is pinned by its descriptor. A ZIP is opened as the one file
+    // the player chose, never through its folder: macOS lets an Open-panel
+    // pick be read, but may refuse to let this process open the folder it sits
+    // in (Downloads, Desktop, Documents).
     std::unique_ptr<MdkrModSource, decltype(&mdkr_mod_source_close)> sourceRoot(
-        mdkr_mod_source_open(readRoot.u8string().c_str(), 0), mdkr_mod_source_close);
-    if (!sourceRoot) {
+        directory ? mdkr_mod_source_open(source.c_str(), 0) : nullptr,
+        mdkr_mod_source_close);
+    if (directory && !sourceRoot) {
         prepared.error_ = "Cannot open the selected pack's source folder.";
         return prepared;
+    }
+    ScopedFd zipFd(directory ? -1 : open(source.c_str(),
+        O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY));
+    if (!directory) {
+        struct stat zipStatus{};
+        const int openError = zipFd.value < 0 ? errno : 0;
+        if (openError == ELOOP || (zipFd.value >= 0 &&
+            (fstat(zipFd.value, &zipStatus) != 0 || !S_ISREG(zipStatus.st_mode)))) {
+            prepared.error_ = "Choose a regular ZIP or folder, not a link or special file.";
+            return prepared;
+        }
+        if (openError != 0) {
+            prepared.error_ = fileError("Cannot open the selected pack",
+                                        std::error_code(openError, std::generic_category()));
+            return prepared;
+        }
     }
 #else
     // A folder's files are read through the same link-refusing reader the game
@@ -533,9 +554,23 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     const auto makeStagedDirectory = [&](const fs::path &relative, std::error_code &error) {
         return relativeMkdir(prepared.stageFd_, relative, error);
     };
-    const auto openSource = [&](const fs::path &relative) {
-        return mdkr_mod_source_open_directory_file(sourceRoot.get(),
-                                                   relative.generic_u8string().c_str());
+    const auto openSource = [&](const fs::path &relative) -> FILE * {
+        if (directory) {
+            return mdkr_mod_source_open_directory_file(sourceRoot.get(),
+                                                       relative.generic_u8string().c_str());
+        }
+        // A private stream on the pinned ZIP; each reader starts at byte zero.
+        const int duplicate = fcntl(zipFd.value, F_DUPFD_CLOEXEC, 0);
+        FILE *stream = duplicate >= 0 ? fdopen(duplicate, "rb") : nullptr;
+        if (!stream) {
+            if (duplicate >= 0) close(duplicate);
+            return nullptr;
+        }
+        if (std::fseek(stream, 0, SEEK_SET) != 0) {
+            std::fclose(stream);
+            return nullptr;
+        }
+        return stream;
     };
 #else
     // Exclusive creation: CREATE_NEW on Windows, O_CREAT|O_EXCL elsewhere, so
@@ -755,8 +790,10 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     // destination capability ownership remains a separate requirement.
     const auto stageIsDirectory = [&] {
 #if !MDKR_PACK_BY_PATH
+        // The mods folder may be reached through a link (packs moved to
+        // another drive); it must still name the folder pinned at intake.
         if (sameDirectory(stageFd_, modsFd_, stage_.filename().c_str()) &&
-            sameDirectory(modsFd_, AT_FDCWD, modsDir_.c_str())) return true;
+            sameDirectory(modsFd_, AT_FDCWD, modsDir_.c_str(), true)) return true;
 #else
         // On Windows the hold refuses any rename or replacement of the stage;
         // elsewhere this at least refuses a link swapped into its place.

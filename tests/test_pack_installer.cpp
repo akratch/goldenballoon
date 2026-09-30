@@ -741,6 +741,59 @@ int main(int argc, char **argv) {
     REQUIRE(fs::is_empty(root.path / "folder-linked"));
     REQUIRE(fs::remove(folder / "linked.zip"));
 #endif
+    // A mods folder that is itself a link (packs moved to another drive, a
+    // linked portable folder) works: the installer resolves it once and stays
+    // inside the folder it names.
+    {
+        const auto realMods = root.path / "real-mods";
+        const auto linkedMods = root.path / "linked-mods";
+        REQUIRE(fs::create_directory(realMods));
+        if (makeDirectoryLink(realMods, linkedMods)) {
+            {
+                auto zip = PreparedPackInstall::copyZip(input / "race.zip", linkedMods);
+                const auto result = zip.finalize();
+                if (!result.installed) std::fprintf(stderr, "%s\n", result.message.c_str());
+                REQUIRE(result.installed);
+                auto pack = PreparedPackInstall::copyPack(folder, linkedMods);
+                REQUIRE(pack.finalize().installed);
+            }
+            REQUIRE(fs::file_size(realMods / "race.zip") == fs::file_size(input / "race.zip"));
+            REQUIRE(fs::file_size(realMods / "FolderPack" / "nested" / "art.txt") == 14);
+            REQUIRE(std::distance(fs::directory_iterator(realMods), fs::directory_iterator{}) == 2);
+            removeLink(linkedMods);
+        }
+    }
+#ifndef _WIN32
+    // A ZIP chosen from a folder this process may enter but not list -- how
+    // macOS privacy protection treats ~/Downloads, ~/Desktop and ~/Documents
+    // for a file picked in the Open panel -- still installs: intake opens the
+    // chosen file, never its folder.
+    {
+        const auto guarded = input / "guarded";
+        const auto guardedMods = root.path / "guarded-mods";
+        REQUIRE(fs::create_directory(guarded));
+        REQUIRE(writeZip(guarded / "Guarded.zip", "pack.ini", "[pack]\nname=Guarded\n"));
+        fs::permissions(guarded, fs::perms::owner_exec, fs::perm_options::replace);
+        std::error_code listError;
+        fs::directory_iterator listing(guarded, listError);
+        const bool unlistable = static_cast<bool>(listError);
+        PackInstallResult installed;
+        {
+            auto prepared = PreparedPackInstall::copyZip(guarded / "Guarded.zip", guardedMods);
+            installed = prepared.finalize();
+        }
+        fs::permissions(guarded, fs::perms::owner_all, fs::perm_options::replace);
+        if (!unlistable) {
+            std::puts("SKIP: this user can list any folder, so the guarded-folder case "
+                      "proves nothing here");
+        } else {
+            if (!installed.installed) std::fprintf(stderr, "%s\n", installed.message.c_str());
+            REQUIRE(installed.installed);
+            REQUIRE(fs::file_size(guardedMods / "Guarded.zip") ==
+                    fs::file_size(guarded / "Guarded.zip"));
+        }
+    }
+#endif
     int visible = 0;
     for (const auto &entry : fs::directory_iterator(mods)) {
         REQUIRE(entry.path().filename() == "Textures.ZIP" ||
