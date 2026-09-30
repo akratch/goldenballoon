@@ -7702,13 +7702,16 @@ of all nonempty retail object-map and level-model compressed entries, with
 separate positive corpus counts; synthetic-only or older loader fixtures do
 not satisfy this gate. `dma_destination` separately links the real PI DMA
 entry points (`platform/pi_dma.c`) with a recording ROM read and requires every
-DMA to land at the caller's pointer: stack, static and NULL destinations, and
-synthetic host pointers whose low 32 bits are arena addresses. The arena
-helpers are defined as `stubs_dkr.c` defines them, with the arena's high half
-away from every test pointer, so an entry that rebuilt the destination as an
-arena token (as 1.7.0 did) fails the address checks. On 32-bit hosts a pointer
-is its own low half, so only the pass-through and completion message are
-tested there.
+DMA to land at the caller's pointer: stack, static and NULL destinations, low
+pointers (the test arena's first, an inner and its last low-32 address, two
+outside that window, and `UINT32_MAX`), and full-width pointers whose low 32
+bits are arena addresses. The arena helpers are defined as `stubs_dkr.c`
+defines them, with the arena's high half away from every test pointer. Both
+earlier reconstructions fail it: 1.7.0's unconditional rebuild from the low 32
+bits, and the later helper that widened a low pointer only when the rebuilt
+address fell inside the arena. On 32-bit hosts a pointer is its own low half,
+so a rebuild cannot move it there; only the pass-through and completion
+message are tested.
 
 This does not validate package admission, authored model formats, importer/UI,
 live reload or playable custom tracks. The fixture detaches before game asset

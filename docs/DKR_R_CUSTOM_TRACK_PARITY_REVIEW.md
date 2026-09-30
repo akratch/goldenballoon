@@ -255,8 +255,10 @@ bytes and does not decode them as playable assets or export ROM data.
 It exposed a pre-existing DMA shim bug: full host destinations were truncated
 and reconstructed with arena upper bits. Both DMA entry points
 (`platform/pi_dma.c`) now pass the caller's host pointer through unchanged. The
-`dma_destination` test links them and fails if either rebuilds an arena token;
-the address-domain source gate passes. No production importer
+`dma_destination` test links them and fails for both earlier reconstructions
+(1.7.0's unconditional low-32 rebuild, and widening a low pointer whose rebuilt
+address lands in the arena) on 64-bit hosts; the address-domain source gate
+passes. No production importer
 currently publishes a session. The installed-session fixture additionally rejects
 an altered retail prefix in each of the five section types while retaining the
 valid installed session. ROM-content compatibility admission,

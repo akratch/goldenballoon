@@ -3,13 +3,22 @@
  *
  * Links the PRODUCTION platform/pi_dma.c (osPiStartDma, osPiRawStartDma)
  * with a recording platform_rom_read, and requires every DMA to land at the
- * pointer the caller passed. The regression this guards is the 1.7.0 entry,
- * which rebuilt the destination from its low 32 bits as an arena token
- * (dkr_lo32_to_ptr): a genuine host buffer whose low bits alias the arena
- * then received the ROM data at an arena address instead. The arena helpers
- * are defined here exactly as stubs_dkr.c defines them, with the arena's
- * high half placed away from every pointer the test passes, so a
- * reconstructing entry still links and fails the address checks.
+ * pointer the caller passed. It guards against both earlier ways of
+ * rebuilding the destination as an arena token:
+ *
+ *  - 1.7.0 rebuilt every destination from its low 32 bits
+ *    (dkr_lo32_to_ptr), so a full host pointer whose low bits alias the
+ *    arena received the ROM data at an arena address. The full-width
+ *    pointers below catch that.
+ *  - The later conditional helper widened only a low pointer (at most
+ *    UINT32_MAX) whose rebuilt address lands inside the live arena, so a
+ *    genuine low host allocation with those bits was still redirected. The
+ *    low pointers below, which fall in the test arena's low-32 window
+ *    (0x01000000..0x01FFFFFF), catch that.
+ *
+ * The arena helpers are defined here exactly as stubs_dkr.c defines them,
+ * with the arena's high half placed away from every pointer the test passes,
+ * so a reconstructing entry still links and fails the address checks.
  *
  * Pointers other than the two real buffers are compared only, never written
  * through: the recording platform_rom_read does not touch its destination.
@@ -63,7 +72,7 @@ s32 osSendMesg(OSMesgQueue *mq, OSMesg msg, s32 flags) {
     return 0;
 }
 
-static int dma_lands_at(void *destination) {
+static int dma_lands_at_checked(void *destination) {
     OSIoMesg io;
     OSMesgQueue queue;
     int reads = sReads, messages = sMessages;
@@ -79,6 +88,12 @@ static int dma_lands_at(void *destination) {
     CHECK(sLastOffset == 0x5678 && sLastLength == 0x20);
     CHECK(sMessages == messages + 1); /* the raw entry posts nothing */
     return 0;
+}
+
+static int dma_lands_at(void *destination) {
+    if (!dma_lands_at_checked(destination)) return 0;
+    fprintf(stderr, "DMA destination: passed %p, recorded %p\n", destination, sLastDestination);
+    return 1;
 }
 
 int main(void) {
@@ -101,6 +116,15 @@ int main(void) {
 
     if (dma_lands_at(stackBuffer) || dma_lands_at(heapLike)) return 1;
     if (dma_lands_at(NULL)) return 1;
+
+    /* Low host pointers, on every host: the arena's first byte, one inside
+     * it and its last byte, plus addresses outside the window and the top
+     * of the 32-bit range. Compared, never written through. */
+    const uintptr_t lows[] = {0x01000000u, 0x01600020u, 0x01FFFFFFu,
+                              0x00001234u, 0x02000000u, UINT32_MAX};
+    for (size_t i = 0; i < sizeof lows / sizeof lows[0]; ++i) {
+        if (dma_lands_at((void *)lows[i])) return 1;
+    }
 
 #if UINTPTR_MAX > UINT32_MAX
     /* Synthetic host pointers whose low 32 bits are an address inside the
