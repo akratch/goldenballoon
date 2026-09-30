@@ -253,9 +253,10 @@ copies, logical sizes, cross-boundary loads, invalid-range nonmutation and
 detach/restoration before consumer initialization. It uses synthetic appended
 bytes and does not decode them as playable assets or export ROM data.
 It exposed a pre-existing DMA shim bug: full host destinations were truncated
-and reconstructed with arena upper bits. Both DMA entry points now retain full
-native pointers and widen only legacy 32-bit tokens. The `dma_destination`
-boundary test and address-domain source gate pass. No production importer
+and reconstructed with arena upper bits. Both DMA entry points
+(`platform/pi_dma.c`) now pass the caller's host pointer through unchanged. The
+`dma_destination` test links them and fails if either rebuilds an arena token;
+the address-domain source gate passes. No production importer
 currently publishes a session. The installed-session fixture additionally rejects
 an altered retail prefix in each of the five section types while retaining the
 valid installed session. ROM-content compatibility admission,

@@ -7679,9 +7679,15 @@ retail restoration after detachment. Actual ROM bytes stay in memory, not in
 fixtures or output. The enabled arm also requires successful bounded decoding
 of all nonempty retail object-map and level-model compressed entries, with
 separate positive corpus counts; synthetic-only or older loader fixtures do
-not satisfy this gate. `dma_destination` separately tests full host-pointer
-preservation versus legacy 32-bit token reconstruction, including NULL and
-boundary values. This test exposed the prior stack-destination DMA crash.
+not satisfy this gate. `dma_destination` separately links the real PI DMA
+entry points (`platform/pi_dma.c`) with a recording ROM read and requires every
+DMA to land at the caller's pointer: stack, static and NULL destinations, and
+synthetic host pointers whose low 32 bits are arena addresses. The arena
+helpers are defined as `stubs_dkr.c` defines them, with the arena's high half
+away from every test pointer, so an entry that rebuilt the destination as an
+arena token (as 1.7.0 did) fails the address checks. On 32-bit hosts a pointer
+is its own low half, so only the pass-through and completion message are
+tested there.
 
 This does not validate package admission, authored model formats, importer/UI,
 live reload or playable custom tracks. The fixture detaches before game asset

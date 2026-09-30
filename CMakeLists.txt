@@ -561,6 +561,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/platform_sdl_min.c
     ${CMAKE_SOURCE_DIR}/platform/app_overlay_hooks.c # zero-cost overlay dispatch/stub
     ${CMAKE_SOURCE_DIR}/platform/stubs_dkr.c
+    ${CMAKE_SOURCE_DIR}/platform/pi_dma.c           # osPiStartDma: ROM image copy, host destination
     ${CMAKE_SOURCE_DIR}/platform/rom_io.c
     ${CMAKE_SOURCE_DIR}/platform/rom_id.c          # which DKR revision is this?
     ${CMAKE_SOURCE_DIR}/platform/rom_validation.c  # authoritative full-image gate

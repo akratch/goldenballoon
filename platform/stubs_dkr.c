@@ -1141,23 +1141,7 @@ void osCreatePiManager(OSPri pri, OSMesgQueue *cmdQ, OSMesg *cmdBuf, s32 n) {
 }
 OSPiHandle *osCartRomInit(void) { return NULL; }
 
-s32 osPiStartDma(OSIoMesg *mb, s32 pri, s32 dir, u32 devAddr,
-                 void *dramAddr, u32 size, OSMesgQueue *mq) {
-    int readStatus;
-    (void)pri; (void)dir;
-    /* Both native callers supply host pointers, never truncated tokens. */
-    void *dst = mdkr_dma_destination(dramAddr);
-    readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
-    if (mq) osSendMesg(mq, mb ? (OSMesg)mb : (OSMesg)0, OS_MESG_NOBLOCK);
-    return readStatus;
-}
-s32 osPiRawStartDma(s32 dir, u32 devAddr, void *dramAddr, u32 size) {
-    int readStatus;
-    (void)dir;
-    void *dst = mdkr_dma_destination(dramAddr);
-    readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
-    return readStatus;
-}
+/* osPiStartDma / osPiRawStartDma: platform/pi_dma.c. */
 u32 osPiGetStatus(void)                 { return 0; }
 s32 osPiRawReadIo(u32 a, u32 *d)        { (void)a; if (d) *d = 0; return 0; }
 s32 osPiRawWriteIo(u32 a, u32 d)        { (void)a; (void)d; return 0; }

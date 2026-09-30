@@ -99,8 +99,18 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_custom_track_decode_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/lib/miniz)
     add_test(NAME custom_track_decode COMMAND mdkr_custom_track_decode_test)
-    add_executable(mdkr_dma_destination_test ${CMAKE_SOURCE_DIR}/tests/test_dma_destination.c)
-    target_include_directories(mdkr_dma_destination_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
+    # The real PI DMA entry (platform/pi_dma.c) with a recording ROM read:
+    # a DMA must land at the caller's pointer, never a rebuilt arena token.
+    add_executable(mdkr_dma_destination_test
+        ${CMAKE_SOURCE_DIR}/tests/test_dma_destination.c
+        ${CMAKE_SOURCE_DIR}/platform/pi_dma.c)
+    target_include_directories(mdkr_dma_destination_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/game
+        ${CMAKE_SOURCE_DIR}/game/include
+        ${CMAKE_SOURCE_DIR}/game/include/PR
+        ${CMAKE_SOURCE_DIR}/platform)
+    target_compile_definitions(mdkr_dma_destination_test PRIVATE
+        VERSION_us_v80 _LANGUAGE_C MODERN_CC NON_MATCHING=1 AVOID_UB=1 NATIVE_PORT=1)
     add_test(NAME dma_destination COMMAND mdkr_dma_destination_test)
     add_executable(mdkr_custom_track_table_test ${CMAKE_SOURCE_DIR}/tests/test_custom_track_table.c
         ${CMAKE_SOURCE_DIR}/platform/custom_track_section.c)
