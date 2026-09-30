@@ -139,6 +139,8 @@ int main(void) {
     CHECK(!mdkr_custom_track_section_create(retail, 4, entries, 2, 5, 5));
     MdkrCustomTrackSection *section = mdkr_custom_track_section_create(retail, 4, entries, 2, 5, 6);
     CHECK(section != NULL);
+    CHECK(mdkr_custom_track_section_retail_count(NULL) == 0);
+    CHECK(mdkr_custom_track_section_retail_count(section) == 2);
     CHECK(mdkr_custom_track_section_matches_retail(section, retail, 4));
     const uint32_t wrong_prefix[] = {1, 12, 40, UINT32_MAX};
     const uint32_t wrong_count[] = {0, 12, 40, 43, UINT32_MAX};

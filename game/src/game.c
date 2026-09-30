@@ -4,6 +4,7 @@
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
 #include "asset_swap.h"
+#include "runtime_contracts.h"
 #include "mdkr_trace.h"
 #include "mod_texture_store.h"
 #include "fast3d/gfx_pc_dkr.h"
@@ -33,6 +34,11 @@
 #include "types.h"
 #include "video.h"
 #include "weather.h"
+#ifdef NATIVE_PORT
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif
 
 /************ .data ************/
 
@@ -56,7 +62,16 @@ s32 *gTempAssetTable;
 s32 gMapId;
 LevelHeader *gCurrentLevelHeader;
 char **gLevelNames;
+#ifdef NATIVE_PORT
+static u32 *sLevelNameSizes; /* Stored in the same allocation as gLevelNames. */
+#endif
 s32 gNumberOfLevelHeaders;
+#ifdef NATIVE_PORT
+/* Snapshot at level-table initialization, never inferred from a later live
+ * session pointer. Retail save layouts must not grow with custom courses. */
+static s32 sRetailLevelCount;
+static s32 sRetailWorldCount;
+#endif
 s32 gNumberOfWorlds;
 s8 *D_80121178;
 LevelGlobalData *gGlobalLevelTable;
@@ -145,6 +160,18 @@ static void mdkr_publish_level_lighting(const LevelHeader *header) {
  * Additionally loads other globally accessed information, like level names, then runs a checksum compare, for good
  * measure.
  */
+#ifdef NATIVE_PORT
+static s32 level_header_size_checked(const s32 *table, s32 count, s32 index) {
+    if (!table || index < 0 || index >= count ||
+        !mdkr_asset_rows_fit(table[index], table[index + 1], 1, sizeof(LevelHeader)) ||
+        table[index + 1] > asset_table_size(ASSET_LEVEL_HEADERS)) {
+        fprintf(stderr, "[FATAL] level header span invalid: index=%d count=%d\n", index, count);
+        abort();
+    }
+    return table[index + 1] - table[index];
+}
+#endif
+
 void level_global_init(void) {
     s32 i;
     s32 size;
@@ -163,10 +190,22 @@ void level_global_init(void) {
         gNumberOfLevelHeaders++;
     }
     gNumberOfLevelHeaders--;
+#ifdef NATIVE_PORT
+    /* Private negative control: corrupt only this consumer-owned table copy.
+     * The span guard must abort before a cross-entry read or header decode. */
+    const char *shortHeaderProbe = getenv("MDKR_LEVEL_HEADER_SHORT_SELFTEST");
+    if (shortHeaderProbe && !strcmp(shortHeaderProbe, "1") && gNumberOfLevelHeaders > 0)
+        gTempAssetTable[1] = gTempAssetTable[0];
+    sRetailLevelCount = asset_retail_entry_count(ASSET_LEVEL_HEADERS_TABLE, gNumberOfLevelHeaders);
+    sRetailWorldCount = 0;
+#endif
     gGlobalLevelTable = mempool_alloc_safe(gNumberOfLevelHeaders * sizeof(LevelGlobalData), COLOUR_TAG_YELLOW);
     gCurrentLevelHeader = (LevelHeader *) header;
     gNumberOfWorlds = -1;
     for (i = 0; i < gNumberOfLevelHeaders; i++) {
+#ifdef NATIVE_PORT
+        (void)level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, i);
+#endif
         asset_load(ASSET_LEVEL_HEADERS, (uintptr_t)gCurrentLevelHeader, gTempAssetTable[i], sizeof(LevelHeader));
 #ifdef NATIVE_PORT
         asset_swap_normalize(ASSET_LEVEL_HEADERS, gCurrentLevelHeader, sizeof(LevelHeader));
@@ -174,6 +213,11 @@ void level_global_init(void) {
         if (gNumberOfWorlds < gCurrentLevelHeader->world) {
             gNumberOfWorlds = gCurrentLevelHeader->world;
         }
+#ifdef NATIVE_PORT
+        if (i < sRetailLevelCount && sRetailWorldCount <= gCurrentLevelHeader->world) {
+            sRetailWorldCount = gCurrentLevelHeader->world + 1;
+        }
+#endif
         if ((gCurrentLevelHeader->race_type >= 0) && (gCurrentLevelHeader->race_type < 16)) {
             gRaceTypeCountTable[gCurrentLevelHeader->race_type]++;
         }
@@ -226,16 +270,67 @@ void level_global_init(void) {
     gTempAssetTable = (s32 *) asset_table_load(ASSET_LEVEL_NAMES_TABLE);
     for (i = 0; gTempAssetTable[i] != (-1); i++) {}
     i--;
+#ifdef NATIVE_PORT
+    if (i < gNumberOfLevelHeaders || i <= 0 ||
+        (size_t)i > INT32_MAX / (sizeof(void *) + sizeof(u32)) ||
+        gTempAssetTable[i] <= 0 || gTempAssetTable[i] > asset_table_size(ASSET_LEVEL_NAMES)) {
+        fprintf(stderr, "[FATAL] level name inventory or extent invalid\n");
+        abort();
+    }
+    /* Offsets remain relative to section start, including a nonzero first
+     * offset. Keep entry sizes so language lookup cannot cross into a neighbor. */
+    size = gTempAssetTable[i];
+    gLevelNames = mempool_alloc_safe(i * (sizeof(void *) + sizeof(u32)), COLOUR_TAG_YELLOW);
+    sLevelNameSizes = (u32 *)(gLevelNames + i);
+#else
     size = gTempAssetTable[i] - gTempAssetTable[0];
     /* LP64: gLevelNames is char **, so the block must be sized by the real
      * pointer width. sizeof(void *) == sizeof(s32) on N64, so the ROM-side
      * allocation size is unchanged. */
     gLevelNames = mempool_alloc_safe(i * sizeof(void *), COLOUR_TAG_YELLOW);
+#endif
     gTempLevelNames = mempool_alloc_safe(size, COLOUR_TAG_YELLOW);
+#ifdef NATIVE_PORT
+    if (asset_load(ASSET_LEVEL_NAMES, (uintptr_t)gTempLevelNames, 0, size) != size) {
+        fprintf(stderr, "[FATAL] level name section read failed\n");
+        abort();
+    }
+#else
     asset_load(ASSET_LEVEL_NAMES, (uintptr_t)gTempLevelNames, 0, size);
+#endif
     for (size = 0; size < i; size++) {
+#ifdef NATIVE_PORT
+        if (!mdkr_asset_rows_fit(gTempAssetTable[size], gTempAssetTable[size + 1], 1, 1) ||
+            gTempAssetTable[size + 1] > gTempAssetTable[i]) {
+            fprintf(stderr, "[FATAL] level name span invalid: index=%d\n", size);
+            abort();
+        }
+        sLevelNameSizes[size] = (u32)(gTempAssetTable[size + 1] - gTempAssetTable[size]);
+#endif
         gLevelNames[size] = (char *) &gTempLevelNames[gTempAssetTable[size]];
     }
+#ifdef NATIVE_PORT
+    const char *nameProbe = getenv("MDKR_LEVEL_NAMES_SELFTEST");
+    if (nameProbe && !strcmp(nameProbe, "unterminated")) {
+        /* Corrupt only this private loaded entry, not the ROM or adjacent
+         * entry. The real selector must refuse its missing terminator. */
+        memset(gLevelNames[0], 'X', sLevelNameSizes[0]);
+        (void)level_name(0);
+        fprintf(stderr, "[FATAL] level name negative control escaped its guard\n");
+        abort();
+    }
+    if (nameProbe && !strcmp(nameProbe, "1")) {
+        for (s32 entry = 0; entry < i; ++entry) {
+            for (unsigned language = 0; language < 4; ++language) {
+                if (!mdkr_level_name_bounded(gLevelNames[entry], sLevelNameSizes[entry], language)) {
+                    fprintf(stderr, "[FATAL] level name corpus: entry=%d language=%u\n", entry, language);
+                    abort();
+                }
+            }
+        }
+        fprintf(stderr, "[LEVEL_NAMES] PASS entries=%d languages=4\n", i);
+    }
+#endif
     mempool_free(gTempAssetTable);
     // Antipiracy measure
 #ifdef ANTI_TAMPER
@@ -447,6 +542,15 @@ void level_count(s32 *outLevelCount, s32 *outWorldCount) {
     *outWorldCount = gNumberOfWorlds;
 }
 
+void level_count_for_save(s32 *outLevelCount, s32 *outWorldCount) {
+#ifdef NATIVE_PORT
+    *outLevelCount = sRetailLevelCount;
+    *outWorldCount = sRetailWorldCount;
+#else
+    level_count(outLevelCount, outWorldCount);
+#endif
+}
+
 /**
  * Returns true if the current event is a regular race or a boss race.
  * Returns false if it's a menu, challenge or hubworld.
@@ -558,8 +662,13 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
         levelId = ASSET_LEVEL_CENTRALAREAHUB;
     }
 
+#ifdef NATIVE_PORT
+    size = level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId);
+    offset = gTempAssetTable[levelId];
+#else
     offset = gTempAssetTable[levelId];
     size = gTempAssetTable[levelId + 1] - offset;
+#endif
     gCurrentLevelHeader = (LevelHeader *) mempool_alloc_safe(size, COLOUR_TAG_YELLOW);
     asset_load(ASSET_LEVEL_HEADERS, (uintptr_t)gCurrentLevelHeader, offset, size);
 #ifdef NATIVE_PORT
@@ -687,8 +796,13 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     D_800DD32C = 0;
     if (prevLevelID != levelId) {
         mempool_free(gCurrentLevelHeader);
+#ifdef NATIVE_PORT
+        size = level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId);
+        offset = gTempAssetTable[levelId];
+#else
         offset = gTempAssetTable[levelId];
         size = gTempAssetTable[levelId + 1] - offset;
+#endif
         gCurrentLevelHeader = mempool_alloc_safe(size, COLOUR_TAG_YELLOW);
         asset_load(ASSET_LEVEL_HEADERS, (uintptr_t)gCurrentLevelHeader, offset, size);
 #ifdef NATIVE_PORT
@@ -895,8 +1009,8 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     settings->courseId = levelId;
     if (gCurrentLevelHeader->weatherEnable > 0) {
         weather_reset(gCurrentLevelHeader->weatherType, gCurrentLevelHeader->weatherEnable,
-                      gCurrentLevelHeader->weatherVelX << 8, gCurrentLevelHeader->weatherVelY << 8,
-                      gCurrentLevelHeader->weatherVelZ << 8, gCurrentLevelHeader->weatherIntensity * 257,
+                      (s32)gCurrentLevelHeader->weatherVelX * 256, (s32)gCurrentLevelHeader->weatherVelY * 256,
+                      (s32)gCurrentLevelHeader->weatherVelZ * 256, gCurrentLevelHeader->weatherIntensity * 257,
                       gCurrentLevelHeader->weatherOpacity * 257);
         weather_clip_planes(-1, -512);
     }
@@ -1052,13 +1166,29 @@ UNUSED u8 level_header_count(void) {
  * Returns the name of the level from the passed ID
  */
 char *level_name(s32 levelId) {
+#ifndef NATIVE_PORT
     char *levelName;
     u8 numberOfNullPointers = 0;
+#endif
 
     if (levelId < 0 || levelId >= gNumberOfLevelHeaders) {
         return NULL;
     }
 
+#ifdef NATIVE_PORT
+    unsigned language = 0;
+    switch (get_language()) {
+        case LANGUAGE_GERMAN: language = 1; break;
+        case LANGUAGE_FRENCH: language = 2; break;
+        case LANGUAGE_JAPANESE: language = 3; break;
+    }
+    const char *name = mdkr_level_name_bounded(gLevelNames[levelId], sLevelNameSizes[levelId], language);
+    if (!name) {
+        fprintf(stderr, "[FATAL] unterminated level name: index=%d language=%u\n", levelId, language);
+        abort();
+    }
+    return (char *)name;
+#else
     levelName = gLevelNames[levelId];
     switch (get_language()) {
         case LANGUAGE_GERMAN:
@@ -1084,6 +1214,7 @@ char *level_name(s32 levelId) {
             break;
     }
     return levelName;
+#endif
 }
 
 /**

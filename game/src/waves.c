@@ -2068,7 +2068,14 @@ void func_800BBE08(LevelModel *level, LevelHeader *header) {
     // Change these batch flags to 0, 1, 2 and 4
     colourID = (curBatch->flags & (RENDER_UNK_40000000 | RENDER_UNK_20000000 | RENDER_UNK_10000000)) >> 28;
     if (colourID > 0) {
+#ifdef NATIVE_PORT
+        /* Slots 1–7 are the actual seven-element array, not elements past
+         * the one-element unk70 union. Absent records retain the -1 token. */
+        dkrptr32 colourToken = header->unk74[colourID - 1];
+        D_800E3180 = colourToken == (dkrptr32)-1 ? NULL : DKR_PTR(LevelHeader_70, colourToken);
+#else
         D_800E3180 = DKR_PTR(LevelHeader_70, (&header->unk70[0])[colourID]);
+#endif
     } else {
         D_800E3180 = NULL;
     }

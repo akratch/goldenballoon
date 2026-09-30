@@ -1314,7 +1314,13 @@ typedef struct Object_Exit {
 
 typedef struct Object_AiNode {
     /* 0x00 */ struct Object *nodeObj[4];
+#ifdef NATIVE_PORT
+    /* Host-only behavior storage, allocated with sizeof(Object_AiNode).
+     * Signed-16 map coordinates can yield distances beyond signed 16 bits. */
+    s32 distToNode[4];
+#else
     /* 0x10 */ s16 distToNode[4];
+#endif
     /* 0x18 */ s8 directions[4];
 } Object_AiNode;
 

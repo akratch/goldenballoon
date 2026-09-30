@@ -22,7 +22,30 @@ from harness_utils import resolve_binary
 REPO = Path(__file__).resolve().parent.parent
 
 REQUIRED = {
+    "game/src/waves.c": (
+        "dkrptr32 colourToken = header->unk74[colourID - 1];",
+        "colourToken == (dkrptr32)-1 ? NULL : DKR_PTR(LevelHeader_70, colourToken)",
+    ),
+    "game/src/thread3_main.c": (
+        "level_count_for_save(&retailLevels, &retailWorlds);",
+        "if (j >= retailLevels) {",
+        "settings->flapInitialsPtr[i][j] = 0;",
+        "settings->courseInitialsPtr[i][j] = 0;",
+    ),
     "game/src/game.c": (
+        "(s32)gCurrentLevelHeader->weatherVelX * 256",
+        "(s32)gCurrentLevelHeader->weatherVelY * 256",
+        "(s32)gCurrentLevelHeader->weatherVelZ * 256",
+        "i < gNumberOfLevelHeaders || i <= 0",
+        "sLevelNameSizes = (u32 *)(gLevelNames + i);",
+        "mdkr_level_name_bounded(gLevelNames[levelId], sLevelNameSizes[levelId], language)",
+        "(void)level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, i);",
+        "size = level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId);",
+        "table[index + 1] > asset_table_size(ASSET_LEVEL_HEADERS)",
+        "sRetailLevelCount = asset_retail_entry_count(ASSET_LEVEL_HEADERS_TABLE, gNumberOfLevelHeaders);",
+        "if (i < sRetailLevelCount && sRetailWorldCount <= gCurrentLevelHeader->world) {",
+        "*outLevelCount = sRetailLevelCount;",
+        "*outWorldCount = sRetailWorldCount;",
         "LevelHeader *levelHeader = gCurrentLevelHeader;",
         "weatherEnabled = levelHeader->weatherEnable > 0;",
         "skyTexture = DKR_PTR(TextureHeader, levelHeader->unkA4);",
@@ -33,6 +56,12 @@ REQUIRED = {
         "gCurrentLevelHeader = NULL;",
     ),
     "game/src/tracks.c": (
+        "if (numberVertices <= 0 || numberTriangles <= 0) continue;",
+        "if (pulseData == NULL || texture == NULL) batchFlags &= ~RENDER_PULSING_LIGHTS;",
+        "color = pulseData->outColorValue;",
+        "dkrptr32 colourToken = gCurrentLevelHeader2->unk74[levelHeaderIndex - 1];",
+        "LevelHeader_70 *lh70 = colourToken == (dkrptr32)-1 ? NULL :",
+        "if (lh70 != NULL) {",
         "gCurrentLevelModel = NULL;",
         "gCurrentLevelHeader2 = NULL;",
         "u8 *collisionCursor;",
@@ -85,8 +114,14 @@ REQUIRED = {
     # The clean-room engine's equivalent boundary (synthInternals.h param
     # round-trips) is covered by check_address_domains' allowance instead.
     "game/src/textures_sprites.c": (
+        "mdkr_light_cycle_time(arg0->unk8, updateRate, arg0->unkC)",
+        "mdkr_light_cycle_time(data->time, timeDelta, data->totalTime)",
+        "mdkr_light_fraction(65536u, arg0->unk8, cur->unk18->unk0)",
+        "mdkr_light_fraction(data->frames[nextFrameIndex].value,",
         "mdkr_texture_allocation_size(",
         "mdkr_texture_frame_advance(",
+        "mdkr_texture_pulse_layout(texture_list->width, texture_list->height,",
+        "tblock = mblock + layout.halfBytes / sizeof(*mblock);",
         "mdkr_palette_reservation(",
         "gNumberOfLoadedTextures >= MAX_NUM_TEXTURES",
         "gTextureCache[ASSETCACHE_ID(slotIndex)] = id;",
@@ -100,6 +135,14 @@ REQUIRED = {
         "mdkr_model_index_resolve(",
     ),
     "game/src/objects.c": (
+        "if (!mdkr_ainode_can_append(index2, nodeCount, (*gAINodes)[index2] != NULL)) {",
+        "u8 expanded[AINODE_COUNT] = {0};",
+        "s32 cost = mdkr_ainode_distance_cost(diffX, diffY, diffZ);",
+        "target == NULL || target != aiNode->nodeObj[i] ||",
+        "target->level_entry->aiNode.nodeID != temp2 ||",
+        "expanded[temp2] || aiNode->distToNode[i] < 0",
+        "expanded[(u8)spD4[var_t1]] = TRUE;",
+        "if (!mdkr_object_map_index_resolve(mapID, i, &mapID)) {",
         "s32 translationTableBytes;\n    for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; ++i) sObjectBehaviorCache[i] = -3;",
         "if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;",
         "if (hdr == NULL) {\n        /* A transient load failure must not poison future admissions. */\n        return -1;\n    }",
@@ -109,14 +152,19 @@ REQUIRED = {
     ),
     "game/src/save_data.c": (
         "mdkr_extension_bit(extension, &extensionBit)",
+        "level_count_for_save(&levelCount, &worldCount);",
     ),
     "game/src/menu.c": (
+        "worldID = mdkr_postrace_background_index(header->world);",
+        "headerWorldTex = mdkr_postrace_background_index(header->world);",
         "settings->trophies = mdkr_trophy_records_merge(",
         "mdkr_trophy_state(settings->trophies,",
         "i = WORLD_DINO_DOMAIN; i <= WORLD_FUTURE_FUN_LAND; i++)",
         "mdkr_trophy_state(settings->trophies, i, &trophyState)",
     ),
     "game/src/weather.c": (
+        "weatherType = mdkr_weather_preset_index(weatherType, WEATHER_RAIN);",
+        "if (weatherType < 0) return;",
         "DKR_SHL32(1U, rand_range(0, 32) + 5)",
     ),
     "platform/platform_sdl_min.c": (
@@ -185,6 +233,25 @@ def validate(sources: dict[str, str]) -> list[str]:
         failures.append("game/src/game.c: level teardown ownership order changed")
 
     racer = sources["game/src/racer.c"]
+    nodes = sources["game/src/objects.c"].split("void ainode_update(void)", 1)[-1]
+    node_order = [nodes.find(fragment) for fragment in (
+        "if (!mdkr_ainode_can_append(index2, nodeCount, (*gAINodes)[index2] != NULL)) {",
+        "continue;", "(*gAINodes)[index2] = obj;", "nodeIDs[nodeCount] =",
+        "elevations[nodeCount] =", "nodeCount++;",
+    )]
+    if any(position < 0 for position in node_order) or node_order != sorted(node_order):
+        failures.append("objects.c: AI-node duplicate/capacity guard must precede rebuild writes")
+    weather = sources["game/src/weather.c"].split("void weather_reset(", 1)[-1]
+    weather_order = [weather.find(fragment) for fragment in (
+        "weatherType = mdkr_weather_preset_index(weatherType, WEATHER_RAIN);",
+        "if (weatherType < 0) return;", "weather_free();", "gWeatherPresets[weatherType]",
+    )]
+    if any(position < 0 for position in weather_order) or weather_order != sorted(weather_order):
+        failures.append("weather.c: validate weather type before teardown and preset access")
+    if game.count("size = level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId);") != 2:
+        failures.append("game.c: initial and redirected header loads must both check spans")
+    if sources["game/src/save_data.c"].count("level_count_for_save(&levelCount, &worldCount);") != 4:
+        failures.append("save_data.c: all four retail codecs must use the fixed inventory")
     if racer.count("pathGoalValid = set_position_goal_from_path") != 2:
         failures.append("game/src/racer.c: expected both recovery paths to validate path goals")
     if racer.count("mdkr_normalize_xz(") != 2:

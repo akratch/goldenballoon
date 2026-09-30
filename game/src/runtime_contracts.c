@@ -11,6 +11,17 @@ _Static_assert(NUMBER_OF_CHARACTERS * NUMBER_OF_PLAYER_VEHICLES ==
                    MDKR_VEHICLE_SOUND_ROW_COUNT,
                "vehicle sound row count must cover every base character/vehicle pair");
 
+s32 mdkr_ainode_can_append(s32 nodeId, s32 count, s32 occupied) {
+    return nodeId >= 0 && nodeId < MDKR_AI_NODE_COUNT &&
+        count >= 0 && count < MDKR_AI_NODE_COUNT && !occupied;
+}
+
+s32 mdkr_ainode_distance_cost(f32 dx, f32 dy, f32 dz) {
+    const f32 distance = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (!isfinite(distance) || distance > INT32_MAX / MDKR_AI_NODE_COUNT) return -1;
+    return (s32)distance;
+}
+
 s32 mdkr_audio_group_valid(s32 groupId) {
     return groupId >= 0 && groupId < MDKR_SOUND_GROUP_COUNT;
 }
@@ -97,6 +108,48 @@ s32 mdkr_model_index_resolve(s32 requested, s32 modelCount, s32 *resolved) {
     return TRUE;
 }
 
+s32 mdkr_object_map_index_resolve(s32 requested, s32 mapCount, s32 *resolved) {
+    if (resolved == NULL || requested < 0 || mapCount <= 0) {
+        return FALSE;
+    }
+    *resolved = requested < mapCount ? requested : 0;
+    return TRUE;
+}
+
+s32 mdkr_postrace_background_index(s32 worldId) {
+    return worldId >= WORLD_DINO_DOMAIN && worldId <= WORLD_FUTURE_FUN_LAND
+        ? worldId - WORLD_DINO_DOMAIN : 0;
+}
+
+s32 mdkr_weather_preset_index(s32 requested, s32 lastPreset) {
+    if (requested < 0 || lastPreset < 0) return -1;
+    return requested > lastPreset ? lastPreset : requested;
+}
+
+u32 mdkr_light_fraction(u32 scale, s32 elapsed, s32 duration) {
+    if (elapsed <= 0 || duration <= 0) return 0;
+    if (elapsed >= duration) return scale;
+    return (u32)(((u64)scale * (u32)elapsed) / (u32)duration);
+}
+
+s32 mdkr_light_cycle_time(s32 elapsed, s32 delta, s32 duration) {
+    if (elapsed < 0 || delta < 0 || duration <= 0) return -1;
+    return (s32)(((u64)(u32)elapsed + (u32)delta) % (u32)duration);
+}
+
+const char *mdkr_level_name_bounded(const char *bytes, size_t size, unsigned languageIndex) {
+    if (!bytes || languageIndex > 3) return NULL;
+    for (unsigned i = 0; i <= languageIndex; ++i) {
+        const char *end = memchr(bytes, 0, size);
+        if (!end) return NULL;
+        if (i == languageIndex) return bytes;
+        size_t consumed = (size_t)(end - bytes) + 1;
+        bytes += consumed;
+        size -= consumed;
+    }
+    return NULL;
+}
+
 s32 mdkr_model_load_selection(s32 requested, s32 modelCount, s32 *resolved,
                               s32 *loadCount) {
     if (resolved == NULL || loadCount == NULL ||
@@ -162,6 +215,18 @@ static s32 checked_size_mul(size_t left, size_t right, size_t *result) {
     }
     *result = left * right;
     return TRUE;
+}
+
+s32 mdkr_texture_pulse_layout(unsigned width, unsigned height, unsigned format,
+    MdkrPulseTextureLayout *out) {
+    if (!out || format != 1 || width < 4 || width > 64 || height < 2 || height > 64 ||
+        (width & (width - 1)) || (height & (height - 1)) || width * height > 2048)
+        return 0;
+    MdkrPulseTextureLayout result = {width, height / 2, 0, 0, (size_t)width * height};
+    for (unsigned n = width; n > 1; n >>= 1) ++result.maskS;
+    for (unsigned n = height / 2; n > 1; n >>= 1) ++result.maskT;
+    *out = result;
+    return 1;
 }
 
 s32 mdkr_texture_allocation_size(size_t dataBytes, size_t frameCount,

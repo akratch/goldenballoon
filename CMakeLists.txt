@@ -479,6 +479,10 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/asset_subentry.c   # bounds-checked asset sub-entry access
     ${CMAKE_SOURCE_DIR}/platform/custom_track_section.c # immutable custom-track asset sessions
     ${CMAKE_SOURCE_DIR}/platform/custom_track_decode.c # bounded rzip admission decode
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_model.c # checked BE texture-ID relocation
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_header.c # BE header/lighting admission
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_model_payload.c # bounded private model repack
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_texture.c # bounded decoded/raw texture admission
     # The console command parser. It was reachable only from cmake/tests.cmake
     # until the console shipped -- a unit-tested island the engine never linked.
     ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing

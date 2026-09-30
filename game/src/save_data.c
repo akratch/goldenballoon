@@ -401,7 +401,7 @@ void populate_settings_from_save_data(Settings *settings, u8 *saveData) {
     u8 temp_v1;
 
     clear_game_progress(settings);
-    level_count(&levelCount, &worldCount);
+    level_count_for_save(&levelCount, &worldCount);
     D_801241EC = saveData;
     D_801241F0 = D_801241F4 = 0;
     var_a0 = func_80072C54(16) - 5;
@@ -539,7 +539,7 @@ void func_800732E8(Settings *settings, u8 *saveData) {
     s32 i;
     s32 var_s0;
 
-    level_count(&levelCount, &worldCount);
+    level_count_for_save(&levelCount, &worldCount);
     D_801241EC = saveData;
     D_801241F0 = 0;
     D_801241F4 = 128;
@@ -610,7 +610,7 @@ void func_80073588(Settings *settings, u8 *saveData, u8 arg2) {
     s16 sum;
 
     clear_lap_records(settings, arg2);
-    level_count(&levelCount, &worldCount);
+    level_count_for_save(&levelCount, &worldCount);
 
     if (arg2 & 1) {
         D_801241EC = saveData;
@@ -684,7 +684,7 @@ void func_800738A4(Settings *settings, u8 *saveData) {
     s32 vehicleCount;
     s16 sum;
 
-    level_count(&levelCount, &worldCount);
+    level_count_for_save(&levelCount, &worldCount);
     D_801241EC = saveData;
     D_801241F0 = 0;
     D_801241F4 = 128;

@@ -14667,7 +14667,11 @@ void postrace_start(s32 finishState, s32 worldID) {
     gTrackSelectViewPortHalfY = gTrackSelectViewportY >> 1;
     if (gNumberOfActivePlayers == 1 && gTrophyRaceWorldId == 0) {
         gPostRace.unk0_s32 = 0;
+#ifdef NATIVE_PORT
+        worldID = mdkr_postrace_background_index(header->world);
+#else
         worldID = header->world - 1;
+#endif
         var_v1 = &gTracksMenuBgTextureIndices[worldID * 3];
         if (var_v1[0] != -1) {
             menu_asset_load(var_v1[0]);
@@ -15511,7 +15515,11 @@ void postrace_free(void) {
 
     header = level_header();
     menu_assetgroup_free(gRaceResultsObjectIndices);
+#ifdef NATIVE_PORT
+    headerWorldTex = mdkr_postrace_background_index(header->world);
+#else
     headerWorldTex = header->world - 1;
+#endif
 
     if (gMenuMosaic1) {
         menu_asset_free(gTracksMenuBgTextureIndices[headerWorldTex * 3]);

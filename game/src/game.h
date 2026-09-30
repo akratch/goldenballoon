@@ -37,6 +37,8 @@ s8 leveltable_type(s32 mapId);
 s8 leveltable_world(s32 mapId);
 s32 level_world_id(s32 worldId);
 void level_count(s32 *outLevelCount, s32 *outWorldCount);
+/* Fixed retail inventory for progression and time-record wire formats. */
+void level_count_for_save(s32 *outLevelCount, s32 *outWorldCount);
 s32 level_is_race(void);
 void level_music_start(f32 tempo);
 s32 level_id(void);

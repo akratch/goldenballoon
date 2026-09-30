@@ -65,6 +65,10 @@ static int test_audio_domains(void) {
     REQUIRE(!mdkr_asset_rows_fit(100, 99, 30, 64));
     REQUIRE(!mdkr_asset_rows_fit(-1, 2000, 30, 64));
     REQUIRE(!mdkr_asset_rows_fit(0, INT32_MAX, INT32_MAX, INT32_MAX));
+    for (s32 bytes = 0; bytes < 0xC4; ++bytes)
+        REQUIRE(!mdkr_asset_rows_fit(100, 100 + bytes, 1, 0xC4));
+    REQUIRE(mdkr_asset_rows_fit(100, 100 + 0xC4, 1, 0xC4));
+    REQUIRE(mdkr_asset_rows_fit(100, 100 + 0xC8, 1, 0xC4));
     return 0;
 }
 
@@ -255,9 +259,141 @@ static int test_mips_audio_math(void) {
     return 0;
 }
 
+static int test_object_map_indices(void) {
+    s32 resolved = 77;
+    REQUIRE(!mdkr_object_map_index_resolve(-1, 136, &resolved));
+    REQUIRE(resolved == 77);
+    REQUIRE(!mdkr_object_map_index_resolve(INT32_MIN, 136, &resolved));
+    REQUIRE(!mdkr_object_map_index_resolve(0, 0, &resolved));
+    REQUIRE(!mdkr_object_map_index_resolve(0, -1, &resolved));
+    REQUIRE(resolved == 77);
+    REQUIRE(!mdkr_object_map_index_resolve(0, 136, NULL));
+    for (s32 i = 0; i < 136; ++i) {
+        REQUIRE(mdkr_object_map_index_resolve(i, 136, &resolved));
+        REQUIRE(resolved == i);
+    }
+    REQUIRE(mdkr_object_map_index_resolve(136, 136, &resolved));
+    REQUIRE(resolved == 0);
+    REQUIRE(mdkr_object_map_index_resolve(INT32_MAX, 136, &resolved));
+    REQUIRE(resolved == 0);
+    resolved = 135;
+    REQUIRE(mdkr_object_map_index_resolve(resolved, 136, &resolved));
+    REQUIRE(resolved == 135);
+    return 0;
+}
+
+static int test_postrace_background_indices(void) {
+    /* Exhaust the signed header byte domain, plus wider caller extremes.
+     * Every three-column background access must remain inside 15 entries. */
+    for (s32 world = INT8_MIN; world <= INT8_MAX; ++world) {
+        s32 row = mdkr_postrace_background_index(world);
+        REQUIRE(row >= 0 && row * 3 + 2 < 15);
+        REQUIRE(row == (world >= 1 && world <= 5 ? world - 1 : 0));
+    }
+    REQUIRE(mdkr_postrace_background_index(INT32_MIN) == 0);
+    REQUIRE(mdkr_postrace_background_index(INT32_MAX) == 0);
+    return 0;
+}
+
+static int test_level_name_bounds(void) {
+    const char names[] = {'E', 0, 'D', 0, 'F', 0, 'J', 0};
+    for (unsigned language = 0; language < 4; ++language) {
+        REQUIRE(mdkr_level_name_bounded(names, sizeof names, language) == names + language * 2);
+        for (size_t size = 0; size < (language + 1) * 2; ++size)
+            REQUIRE(mdkr_level_name_bounded(names, size, language) == NULL);
+    }
+    const char empty[] = {0, 0, 0, 0};
+    REQUIRE(mdkr_level_name_bounded(empty, sizeof empty, 3) == empty + 3);
+    REQUIRE(mdkr_level_name_bounded(names, sizeof names, 4) == NULL);
+    REQUIRE(mdkr_level_name_bounded(NULL, 1, 0) == NULL);
+    REQUIRE(mdkr_level_name_bounded("unterminated", 12, 0) == NULL);
+    return 0;
+}
+
+static int test_weather_preset_indices(void) {
+    for (s32 type = INT16_MIN; type <= INT16_MAX; ++type) {
+        s32 index = mdkr_weather_preset_index(type, 1);
+        REQUIRE(index == (type < 0 ? -1 : type > 1 ? 1 : type));
+    }
+    REQUIRE(mdkr_weather_preset_index(INT32_MIN, 1) == -1);
+    REQUIRE(mdkr_weather_preset_index(INT32_MAX, 1) == 1);
+    REQUIRE(mdkr_weather_preset_index(0, -1) == -1);
+    REQUIRE(mdkr_weather_preset_index(1, 0) == 0);
+    return 0;
+}
+
+static int test_light_fraction(void) {
+    REQUIRE(mdkr_light_cycle_time(65000, 1000, 65535) == 465);
+    REQUIRE(mdkr_light_cycle_time(INT32_MAX - 1, INT32_MAX, INT32_MAX) == INT32_MAX - 1);
+    REQUIRE(mdkr_light_cycle_time(0, 0, 1) == 0);
+    REQUIRE(mdkr_light_cycle_time(-1, 1, 10) == -1);
+    REQUIRE(mdkr_light_cycle_time(1, -1, 10) == -1);
+    REQUIRE(mdkr_light_cycle_time(1, 1, 0) == -1);
+    REQUIRE(mdkr_light_cycle_time(1, 1, -1) == -1);
+    REQUIRE(mdkr_light_fraction(65536, 32768, 65536) == 32768);
+    REQUIRE(mdkr_light_fraction(65535, 65534, 65535) == 65534);
+    REQUIRE(mdkr_light_fraction(UINT32_MAX, INT32_MAX - 1, INT32_MAX) == UINT32_MAX - 3u);
+    REQUIRE(mdkr_light_fraction(65536, -1, 10) == 0);
+    REQUIRE(mdkr_light_fraction(65536, 1, 0) == 0);
+    REQUIRE(mdkr_light_fraction(65536, 1, -1) == 0);
+    REQUIRE(mdkr_light_fraction(65536, 10, 10) == 65536);
+    REQUIRE(mdkr_light_fraction(65536, 11, 10) == 65536);
+    for (s32 duration = 1; duration <= 256; ++duration)
+        for (s32 time = 0; time < duration; ++time) {
+            for (s32 delta = 0; delta <= 8; ++delta) {
+                s32 previous = time + delta;
+                while (previous >= duration) previous -= duration;
+                REQUIRE(mdkr_light_cycle_time(time, delta, duration) == previous);
+            }
+            REQUIRE(mdkr_light_fraction(65536, time, duration) == (u32)((time << 16) / duration));
+            REQUIRE(mdkr_light_fraction(255, time, duration) == (u32)((255 * time) / duration));
+        }
+    return 0;
+}
+
+static int test_ainode_rebuild_bounds(void) {
+    REQUIRE(mdkr_ainode_distance_cost(3, 4, 0) == 5);
+    REQUIRE(mdkr_ainode_distance_cost(0, 0, 0) == 0);
+    REQUIRE(mdkr_ainode_distance_cost(32768, 0, 0) == 32768);
+    REQUIRE(mdkr_ainode_distance_cost(-65535, 0, 0) == 65535);
+    REQUIRE(mdkr_ainode_distance_cost(65535, 65535, 65535) == 113509);
+    REQUIRE(mdkr_ainode_distance_cost(NAN, 0, 0) == -1);
+    REQUIRE(mdkr_ainode_distance_cost(INFINITY, 0, 0) == -1);
+    REQUIRE(mdkr_ainode_distance_cost(0, -INFINITY, 0) == -1);
+    REQUIRE(mdkr_ainode_distance_cost(0, 0, 1e30f) == -1);
+    const s32 edge_limit = INT32_MAX / MDKR_AI_NODE_COUNT;
+    REQUIRE(mdkr_ainode_distance_cost(edge_limit, 0, 0) == edge_limit);
+    REQUIRE(mdkr_ainode_distance_cost(edge_limit + 1, 0, 0) == -1);
+    for (s32 id = -1; id <= 255; ++id)
+        for (s32 count = -1; count <= MDKR_AI_NODE_COUNT; ++count)
+            for (s32 occupied = 0; occupied <= 1; ++occupied)
+                REQUIRE(mdkr_ainode_can_append(id, count, occupied) ==
+                    (id >= 0 && id < MDKR_AI_NODE_COUNT && count >= 0 &&
+                     count < MDKR_AI_NODE_COUNT && !occupied));
+    REQUIRE(!mdkr_ainode_can_append(INT32_MIN, 0, 0));
+    REQUIRE(!mdkr_ainode_can_append(INT32_MAX, 0, 0));
+    REQUIRE(!mdkr_ainode_can_append(0, INT32_MAX, 0));
+    struct { u8 before; u8 ids[MDKR_AI_NODE_COUNT]; u8 after; } bounded = {.before = 0xA5, .after = 0x5A};
+    u8 occupied[MDKR_AI_NODE_COUNT] = {0};
+    s32 count = 0;
+    /* More objects than capacity, despite every ID being individually valid. */
+    for (s32 id = 0; id < MDKR_AI_NODE_COUNT; ++id)
+        for (unsigned duplicate = 0; duplicate < 3; ++duplicate)
+            if (mdkr_ainode_can_append(id, count, occupied[id])) {
+                occupied[id] = 1;
+                bounded.ids[count++] = id;
+            }
+    REQUIRE(count == MDKR_AI_NODE_COUNT && bounded.before == 0xA5 && bounded.after == 0x5A);
+    for (s32 i = 0; i < count; ++i) REQUIRE(bounded.ids[i] == i);
+    return 0;
+}
+
 int main(void) {
     if (test_audio_domains() != 0 || test_path_normalization() != 0 ||
-        test_safety_domains() != 0 || test_mips_audio_math() != 0) {
+        test_safety_domains() != 0 || test_mips_audio_math() != 0 ||
+        test_object_map_indices() != 0 || test_postrace_background_indices() != 0 ||
+        test_level_name_bounds() != 0 || test_weather_preset_indices() != 0 ||
+        test_light_fraction() != 0 || test_ainode_rebuild_bounds() != 0) {
         return 1;
     }
     puts("runtime contract tests passed");

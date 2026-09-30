@@ -13,6 +13,14 @@ struct MdkrCustomTrackSession;
  * read/allocation failure return 0 and preserve the installed session. NULL
  * detaches. Table matching is not authored-asset or ROM-content validation. */
 int asset_custom_track_session_set(const struct MdkrCustomTrackSession *session);
+/* Host-owned behavior ID per retail level-object translation slot, callable
+ * after pi_init without texture/object pools. No spawning or reference-count
+ * changes. Invalid translated headers/negative behaviors map to -1 (unusable).
+ * Caller frees with free(). Failure returns NULL and zeroes *count. */
+s16 *asset_object_behavior_catalog(size_t *count);
+/* At consumer initialization only: original entry inventory of a normalized
+ * table, or logicalCount when it has no appended session section. */
+s32 asset_retail_entry_count(u32 tableIndex, s32 logicalCount);
 #endif
 
 void pi_init(void);

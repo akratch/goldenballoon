@@ -3484,6 +3484,9 @@ void calc_and_alloc_heap_for_settings(void) {
     gSaveDataFlags = // Set bits 0/1/2/8 and wipe out all others
         SAVE_DATA_FLAG_READ_FLAP_TIMES | SAVE_DATA_FLAG_READ_COURSE_TIMES | SAVE_DATA_FLAG_READ_SAVE_DATA |
         SAVE_DATA_FLAG_READ_EEPROM_SETTINGS;
+#ifdef NATIVE_PORT
+    mdkr_save_inventory_selftest();
+#endif
 }
 
 /**
@@ -3550,11 +3553,31 @@ void clear_lap_records(Settings *settings, s32 flags) {
     s32 numWorlds, numLevels;
     s32 index;
     u16 *temp_v0;
+#ifdef NATIVE_PORT
+    s32 retailLevels, retailWorlds;
+    level_count_for_save(&retailLevels, &retailWorlds);
+#endif
 
     level_count(&numLevels, &numWorlds);
     temp_v0 = (u16 *) get_misc_asset(ASSET_MISC_23);
     for (i = 0; i < NUMBER_OF_SAVE_FILES; i++) {
         for (j = 0; j < numLevels; j++) {
+#ifdef NATIVE_PORT
+            /* ASSET_MISC_23 contains retail defaults only. Zero denotes no
+             * record in the finish-time comparison; custom progress is restored
+             * separately after the retail codec has initialized settings. */
+            if (j >= retailLevels) {
+                if (flags & 1) {
+                    settings->flapInitialsPtr[i][j] = 0;
+                    settings->flapTimesPtr[i][j] = 0;
+                }
+                if (flags & 2) {
+                    settings->courseInitialsPtr[i][j] = 0;
+                    settings->courseTimesPtr[i][j] = 0;
+                }
+                continue;
+            }
+#endif
             index = (j * 12) + (i * 4);
             if (flags & 1) {
                 settings->flapInitialsPtr[i][j] = temp_v0[index + 3];

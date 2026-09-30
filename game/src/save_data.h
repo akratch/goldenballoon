@@ -6,6 +6,10 @@
 #include "common.h"
 
 #define GAMD 0x47414D44 // 'GAMD' ASCII - Game Data?
+#ifdef NATIVE_PORT
+/* Opt-in ROM-private in-memory codec fixture, called after level init. */
+void mdkr_save_inventory_selftest(void);
+#endif
 #define TIMD 0x54494D44 // 'TIMD' ASCII - Time Data?
 #define GHSS 0x47485353 // 'GHSS' ASCII - Ghosts?
 

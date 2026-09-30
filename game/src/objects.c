@@ -5,6 +5,7 @@
 #include "asset_loading.h"
 #ifdef NATIVE_PORT
 #include "asset_subentry.h"
+#include "custom_track_decode.h"
 #include "mdkr_adventure.h"
 #include "asset_swap.h"
 #include "ghost_bank.h"
@@ -498,6 +499,7 @@ static void bonus_visual_trace_transform_bypass(const Object *obj) {
 
 #ifdef NATIVE_PORT
 #include <limits.h> /* INT_MAX */
+#include "custom_track_table.h"
 #include <stdio.h>  /* fprintf — loud corruption asserts below */
 #include <stdlib.h> /* abort */
 #include <string.h> /* strchr — native trace/test-hook parsing */
@@ -730,6 +732,9 @@ static Vec3s *mdkr_object_batch_normals(ObjectModel *model,
 #endif
 #define OBJECT_COLLISION_COUNT 20
 #define AINODE_COUNT 128
+#ifdef NATIVE_PORT
+_Static_assert(AINODE_COUNT == MDKR_AI_NODE_COUNT, "AI-node inventory contract drift");
+#endif
 /* Slots in gParticlePtrList, the deferred-free queue drained by
  * gParticlePtrList_flush(). */
 #define FREE_QUEUE_COUNT 200
@@ -2043,6 +2048,8 @@ s32 mdkr_object_assets_model_reference_covered(const ObjectModel *model) {
  * addresses/counts. Never use allocation addresses as content identity. */
 #define MDKR_OBJ_BHV_CACHE_N 1024
 static s16 sObjectBehaviorCache[MDKR_OBJ_BHV_CACHE_N];
+static void mdkr_objmap_admission_selftest(void);
+static void mdkr_ainode_selftest(void);
 #endif
 
 void allocate_object_pools(void) {
@@ -2217,6 +2224,10 @@ void allocate_object_pools(void) {
     gIsTimeTrial = FALSE;
     gObjectUpdateRateF = 2.0f;
     clear_object_pointers();
+#ifdef NATIVE_PORT
+    mdkr_objmap_admission_selftest();
+    mdkr_ainode_selftest();
+#endif
 }
 
 // Decrypts cheats
@@ -2905,9 +2916,9 @@ static void mdkr_objmap_swap_entry_body(s32 behaviorId, u8 *e, s32 stride) {
 
 /* Resolve a header type -> behaviourId. An object header's behaviour is a static
  * property of the asset, so the result is cached for the object-pool lifetime:
- * load_object_header() gzip-decompresses on a cache miss, so resolving per map
- * entry (with many repeats, every level load) is prohibitively slow. With the
- * cache each unique header type is decompressed at most once per pool lifetime, and since the
+ * load_object_header() allocates, reads and normalizes a raw object-header
+ * entry on a cache miss, so resolving per map entry repeats unnecessary work.
+ * With the cache each unique header type is read at most once per pool lifetime, and since the
  * spawn loop loads the same headers anyway this adds ~no cost. -3 = unknown. */
 static s16 mdkr_obj_behavior_of(s16 hdrType) {
     ObjectHeader *hdr;
@@ -3005,6 +3016,156 @@ s32 mdkr_objmap_validate_bodies(const u8 *entries, s32 totalSize) {
     return walked == (size_t) totalSize;
 }
 
+int mdkr_objmap_admission_check(void *context, const void *entries, size_t size) {
+    if (context != NULL || size > INT32_MAX) return FALSE;
+    return mdkr_objmap_validate_bodies(entries, (s32)size);
+}
+
+int mdkr_objmap_ai_inventory_check(void *context, const void *entries, size_t size) {
+    _Static_assert(sizeof(((MdkrObjectMapAiInventory *)0)->explicit_ids) == AINODE_COUNT,
+                   "AI admission inventory drift");
+    if (!context || !mdkr_objmap_admission_check(NULL, entries, size)) return FALSE;
+    MdkrObjectMapAiInventory staged = *(MdkrObjectMapAiInventory *)context;
+    if (staged.total_nodes > AINODE_COUNT || staged.automatic_nodes > staged.total_nodes) return FALSE;
+    const u8 *bytes = entries;
+    for (size_t offset = 0; offset < size;) {
+        MdkrLevelObjectRecordView view;
+        if (mdkr_level_object_record_parse(bytes + offset, size - offset,
+                gAssetsLvlObjTranslationTableCapacity, &view) != MDKR_LEVEL_OBJECT_RECORD_OK) return FALSE;
+        const s16 behavior = mdkr_obj_behavior_of(gAssetsLvlObjTranslationTable[view.object_id]);
+        if (behavior == BHV_AINODE) {
+            const u8 id = view.bytes[offsetof(LevelObjectEntry_AiNode, nodeID)];
+            /* Native rebuild ignores other high-bit IDs. NODE_NONE requests
+             * automatic registration at initialization, not a disabled node. */
+            if (id < AINODE_COUNT || id == NODE_NONE) {
+                if (staged.total_nodes == AINODE_COUNT) return FALSE;
+                if (id == NODE_NONE) ++staged.automatic_nodes;
+                else {
+                    if (staged.explicit_ids[id]) return FALSE;
+                    staged.explicit_ids[id] = 1;
+                }
+                ++staged.total_nodes;
+            }
+        }
+        offset += view.size;
+    }
+    *(MdkrObjectMapAiInventory *)context = staged;
+    return TRUE;
+}
+
+static void mdkr_objmap_admission_selftest(void) {
+    const char *enabled = getenv("MDKR_CUSTOM_TRACK_LOADER_SELFTEST");
+    if (!enabled || strcmp(enabled, "1")) return;
+    s16 saved_cache[MDKR_OBJ_BHV_CACHE_N];
+    memcpy(saved_cache, sObjectBehaviorCache, sizeof saved_cache);
+#define MAP_CHECK(condition) do { if (!(condition)) { \
+    fprintf(stderr, "[FATAL] object-map admission corpus line=%d\n", __LINE__); abort(); \
+} } while (0)
+    const s32 table_bytes = asset_table_size(ASSET_LEVEL_OBJECT_MAPS_TABLE);
+    const s32 data_bytes = asset_table_size(ASSET_LEVEL_OBJECT_MAPS);
+    u32 *table = asset_table_load(ASSET_LEVEL_OBJECT_MAPS_TABLE);
+    size_t words = 0;
+    MAP_CHECK(table_bytes > 0 && table_bytes % 4 == 0 && data_bytes > 0);
+    MAP_CHECK(mdkr_custom_track_measure_table(table, (size_t)table_bytes / 4, data_bytes, &words));
+    u8 *decoded = malloc(0x3000);
+    MAP_CHECK(decoded != NULL);
+    MAP_CHECK(!mdkr_objmap_admission_check(table, decoded, 0));
+    MAP_CHECK(!mdkr_objmap_admission_check(NULL, decoded, SIZE_MAX));
+    size_t maps = 0, records_total = 0, short_controls = 0, ai_controls = 0, ai_nodes = 0;
+    for (size_t i = 0; i + 2 < words; ++i) {
+        u32 size = table[i + 1] - table[i];
+        if (!size) continue;
+        u8 *compressed = malloc(size);
+        size_t written = 0, records = 0;
+        MAP_CHECK(compressed != NULL);
+        MAP_CHECK(asset_load(ASSET_LEVEL_OBJECT_MAPS, (uintptr_t)compressed, table[i], size) == size);
+        MAP_CHECK(mdkr_custom_track_decode(compressed, size, decoded, 0x3000, &written));
+        free(compressed);
+        MAP_CHECK(mdkr_level_object_map_validate(decoded, written,
+            gAssetsLvlObjTranslationTableCapacity, &records));
+        const u32 entries = (u32)decoded[0] << 24 | (u32)decoded[1] << 16 |
+            (u32)decoded[2] << 8 | decoded[3];
+        if (!mdkr_objmap_admission_check(NULL, decoded + 16, entries)) {
+            fprintf(stderr, "[FATAL] object-map behavior corpus refused map=%zu\n", i);
+            abort();
+        }
+        MdkrObjectMapAiInventory map_inventory = {0};
+        if (!mdkr_objmap_ai_inventory_check(&map_inventory, decoded + 16, entries)) {
+            fprintf(stderr, "[FATAL] AI inventory corpus refused map=%zu\n", i);
+            abort();
+        }
+        ai_nodes += map_inventory.total_nodes;
+        /* Derive a behavior-short record from admitted data, without changing
+         * the corpus. Both the isolated and later-record cases must pass the
+         * common parser and fail specifically at the initializer-size check. */
+        for (size_t offset = 0; (!short_controls || !ai_controls) && offset < entries;) {
+            MdkrLevelObjectRecordView view, shortened;
+            MAP_CHECK(mdkr_level_object_record_parse(decoded + 16 + offset,
+                entries - offset, gAssetsLvlObjTranslationTableCapacity,
+                &view) == MDKR_LEVEL_OBJECT_RECORD_OK);
+            const s16 behavior = mdkr_obj_behavior_of(gAssetsLvlObjTranslationTable[view.object_id]);
+            if (!ai_controls && behavior == BHV_AINODE) {
+                u8 pair[128];
+                MdkrObjectMapAiInventory inventory = {0}, saved;
+                MAP_CHECK(view.size * 2 <= sizeof pair);
+                memcpy(pair, view.bytes, view.size);
+                pair[offsetof(LevelObjectEntry_AiNode, nodeID)] = 0;
+                memcpy(pair + view.size, pair, view.size);
+                saved = inventory;
+                MAP_CHECK(!mdkr_objmap_ai_inventory_check(&inventory, pair, view.size * 2));
+                MAP_CHECK(!memcmp(&inventory, &saved, sizeof inventory));
+                MAP_CHECK(mdkr_objmap_ai_inventory_check(&inventory, pair, view.size));
+                saved = inventory;
+                MAP_CHECK(!mdkr_objmap_ai_inventory_check(&inventory, pair, view.size));
+                MAP_CHECK(!memcmp(&inventory, &saved, sizeof inventory));
+                pair[offsetof(LevelObjectEntry_AiNode, nodeID)] = 1;
+                MAP_CHECK(mdkr_objmap_ai_inventory_check(&inventory, pair, view.size));
+                MAP_CHECK(inventory.total_nodes == 2 && inventory.explicit_ids[0] && inventory.explicit_ids[1]);
+                pair[offsetof(LevelObjectEntry_AiNode, nodeID)] = NODE_NONE;
+                for (unsigned n = 2; n < AINODE_COUNT; ++n)
+                    MAP_CHECK(mdkr_objmap_ai_inventory_check(&inventory, pair, view.size));
+                MAP_CHECK(inventory.total_nodes == AINODE_COUNT && inventory.automatic_nodes == AINODE_COUNT - 2);
+                saved = inventory;
+                MAP_CHECK(!mdkr_objmap_ai_inventory_check(&inventory, pair, view.size));
+                MAP_CHECK(!memcmp(&inventory, &saved, sizeof inventory));
+                MAP_CHECK(!mdkr_objmap_ai_inventory_check(NULL, pair, view.size));
+                ai_controls = 1;
+            }
+            if (!short_controls && mdkr_level_object_min_size(behavior) > MDKR_LEVEL_OBJECT_COMMON_SIZE) {
+                u8 pair[128], original[128];
+                const size_t common = MDKR_LEVEL_OBJECT_COMMON_SIZE;
+                MAP_CHECK(view.size + common <= sizeof pair);
+                memcpy(pair, view.bytes, view.size);
+                memcpy(pair + view.size, view.bytes, common);
+                pair[view.size + 1] = (pair[view.size + 1] & 0xC0) | common;
+                memcpy(original, pair, view.size + common);
+                MAP_CHECK(mdkr_level_object_record_parse(pair + view.size, common,
+                    gAssetsLvlObjTranslationTableCapacity, &shortened) == MDKR_LEVEL_OBJECT_RECORD_OK);
+                MAP_CHECK(shortened.object_id == view.object_id);
+                fprintf(stderr, "[CUSTOM_TRACK_BEHAVIOR_SHORT] BEGIN\n");
+                MAP_CHECK(!mdkr_objmap_admission_check(NULL, pair + view.size, common));
+                MAP_CHECK(!mdkr_objmap_admission_check(NULL, pair, view.size + common));
+                fprintf(stderr, "[CUSTOM_TRACK_BEHAVIOR_SHORT] END\n");
+                MAP_CHECK(!memcmp(pair, original, view.size + common));
+                MAP_CHECK(mdkr_objmap_admission_check(NULL, pair, view.size));
+                short_controls = 2;
+            }
+            offset += view.size;
+        }
+        ++maps; records_total += records;
+    }
+    free(decoded); mempool_free(table);
+    for (s32 i = 0; i < gAssetsObjectHeadersTableLength; ++i) {
+        MAP_CHECK((*gObjectHeaderReferences)[i] == 0);
+    }
+    memcpy(sObjectBehaviorCache, saved_cache, sizeof saved_cache);
+    MAP_CHECK(maps > 0 && records_total > 0 && short_controls == 2);
+    MAP_CHECK(ai_controls == 1 && ai_nodes > 0);
+    fprintf(stderr, "[CUSTOM_TRACK_AI_INVENTORY] nodes=%zu duplicate_and_capacity_controls=1 PASS\n", ai_nodes);
+    fprintf(stderr, "[CUSTOM_TRACK_BEHAVIOR_CORPUS] maps=%zu records=%zu PASS\n", maps, records_total);
+#undef MAP_CHECK
+}
+
 static s32 mdkr_objmap_swap_bodies(u8 *entries, s32 totalSize) {
     size_t walked = 0;
     /* Validate the entire stream before modifying any record. The resolver's
@@ -3080,9 +3241,20 @@ void track_spawn_objects(s32 mapID, s32 index) {
     objMapTable = (u32 *) asset_table_load(ASSET_LEVEL_OBJECT_MAPS_TABLE);
     for (i = 0; objMapTable[i] != 0xFFFFFFFF; i++) {}
     i--;
+#ifdef NATIVE_PORT
+    /* Header references are signed. A negative map is not a sentinel here:
+     * both maps are loaded unconditionally by init_track. Never index before
+     * the normalized table; retain retail's high-ID fallback for compatibility.
+     * Custom-package admission must still reject invalid authored references. */
+    if (!mdkr_object_map_index_resolve(mapID, i, &mapID)) {
+        fprintf(stderr, "[FATAL] invalid object map reference %d (count=%d)\n", mapID, i);
+        abort();
+    }
+#else
     if (mapID >= i) {
         mapID = 0;
     }
+#endif
     assetOffset = objMapTable[mapID];
     assetSize = objMapTable[mapID + 1] - assetOffset;
 
@@ -13809,6 +13981,16 @@ void ainode_update(void) {
             aiNodeEntry = &obj->level_entry->aiNode;
             index2 = aiNodeEntry->nodeID;
             if (!(index2 & AINODE_COUNT)) {
+#ifdef NATIVE_PORT
+                /* Duplicate IDs used to append repeatedly to 128-entry stack
+                 * arrays while overwriting one table slot. Keep the first
+                 * object deterministically and never exceed either array. */
+                if (!mdkr_ainode_can_append(index2, nodeCount, (*gAINodes)[index2] != NULL)) {
+                    MDKR_TRACE("ainode_update: skipped duplicate/full node id=%u count=%d",
+                               (unsigned)index2, (int)nodeCount);
+                    continue;
+                }
+#endif
                 (*gAINodes)[index2] = obj;
                 nodeIDs[nodeCount] = aiNodeEntry->nodeID;
                 elevations[nodeCount] = aiNodeEntry->elevation & 3;
@@ -13827,6 +14009,13 @@ void ainode_update(void) {
             aiNodeEntry = &obj->level_entry->aiNode;
             for (j = 0; j < 4; j++) {
                 index2 = aiNodeEntry->adjacent[j];
+#ifdef NATIVE_PORT
+                /* Rebuild owns these links: an absent/invalid replacement
+                 * must not retain a pointer or distance from the last graph. */
+                aiNodeObj64->nodeObj[j] = NULL;
+                aiNodeObj64->distToNode[j] = 0;
+                if (index2 >= AINODE_COUNT) aiNodeEntry->adjacent[j] = NODE_NONE;
+#endif
                 if (!(index2 & AINODE_COUNT)) {
                     nextAiNodeObj = (*gAINodes)[index2];
                     aiNodeObj64->nodeObj[j] = nextAiNodeObj;
@@ -13836,7 +14025,17 @@ void ainode_update(void) {
                         diffX = obj->trans.x_position - nextAiNodeObj->trans.x_position;
                         diffY = obj->trans.y_position - nextAiNodeObj->trans.y_position;
                         diffZ = obj->trans.z_position - nextAiNodeObj->trans.z_position;
+#ifdef NATIVE_PORT
+                        s32 cost = mdkr_ainode_distance_cost(diffX, diffY, diffZ);
+                        if (cost < 0) {
+                            aiNodeObj64->nodeObj[j] = NULL;
+                            aiNodeEntry->adjacent[j] = NODE_NONE;
+                        } else {
+                            aiNodeObj64->distToNode[j] = cost;
+                        }
+#else
                         aiNodeObj64->distToNode[j] = sqrtf((diffX * diffX) + (diffY * diffY) + (diffZ * diffZ));
+#endif
                     }
                 }
             }
@@ -14103,10 +14302,14 @@ s32 ainode_find_next(s32 nodeId, s32 nextNodeId, s32 direction) {
     s32 i;
     s32 someCount;
 
+#ifdef NATIVE_PORT
+    aiNodeObj = ainode_get(nodeId);
+#else
     if (nodeId < -1 || nodeId >= AINODE_COUNT) {
         return NODE_NONE;
     }
     aiNodeObj = (*gAINodes)[nodeId];
+#endif
     if (aiNodeObj == NULL) {
         return NODE_NONE;
     }
@@ -14118,7 +14321,11 @@ s32 ainode_find_next(s32 nodeId, s32 nextNodeId, s32 direction) {
     nextIndex = (aiNode->directions[direction] + 1) & 3;
 
     for (i = 0; i < 4; i++) {
-        if (entry->adjacent[nextIndex] != NODE_NONE && entry->adjacent[nextIndex] != nextNodeId) {
+        if (entry->adjacent[nextIndex] != NODE_NONE && entry->adjacent[nextIndex] != nextNodeId
+#ifdef NATIVE_PORT
+            && ainode_get(entry->adjacent[nextIndex]) != NULL
+#endif
+        ) {
             aiNode->directions[direction] = nextIndex;
             i = 4; // break
             someCount++;
@@ -14151,6 +14358,9 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
     s32 sp154[AINODE_COUNT];
     s8 spD4[AINODE_COUNT];
     s8 sp54[AINODE_COUNT];
+#ifdef NATIVE_PORT
+    u8 expanded[AINODE_COUNT] = {0};
+#endif
 
     // Only matches with do {} while?
     i = 0;
@@ -14159,7 +14369,14 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
         i++;
     } while (i < AINODE_COUNT);
 
+#ifdef NATIVE_PORT
+    aiNodeObj = ainode_get(arg0);
+    if (aiNodeObj == NULL) return NODE_NONE;
+    arg3 &= 3; /* Same four direction-history lanes as ainode_find_next. */
+    expanded[arg0] = TRUE;
+#else
     aiNodeObj = (*gAINodes)[arg0];
+#endif
     aiNode = aiNodeObj->ai_node;
     aiNodeEntry = &aiNodeObj->level_entry->aiNode;
     var_t1 = 0;
@@ -14172,6 +14389,16 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
         for (i = 0; i < 4; i++) {
             if (aiNode->nodeObj[i] != 0) {
                 temp2 = aiNodeEntry->adjacent[i];
+#ifdef NATIVE_PORT
+                /* Costs are nonnegative. Once removed from the sorted
+                 * frontier, a node need not be expanded again. This bounds
+                 * cyclic/unreachable searches to the finite node inventory.
+                 * Reject stale pointer/ID pairs before indexing scratch. */
+                Object *target = ainode_get(temp2);
+                if (target == NULL || target != aiNode->nodeObj[i] ||
+                    target->level_entry->aiNode.nodeID != temp2 ||
+                    expanded[temp2] || aiNode->distToNode[i] < 0) continue;
+#endif
                 temp = 1;
                 if (((arg0 == aiNodeEntry->nodeID) && (temp2 == arg2)) ||
                     ((arg2 == aiNodeEntry->nodeID) && (temp2 == arg0))) {
@@ -14226,6 +14453,9 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
 
         if (var_t1 > 0) {
             var_t1--;
+#ifdef NATIVE_PORT
+            expanded[(u8)spD4[var_t1]] = TRUE;
+#endif
             aiNodeObj = (*gAINodes)[spD4[var_t1]];
             aiNodeEntry = &aiNodeObj->level_entry->aiNode;
             var_s3 = sp54[var_t1];
@@ -14279,18 +14509,106 @@ void ainode_tail_set(s32 nodeID) {
  */
 UNUSED Object *ainode_tail(s32 *nodeID) {
     *nodeID = gAINodeTail[1];
+#ifdef NATIVE_PORT
+    return ainode_get(*nodeID);
+#else
     return gAINodes[0][gAINodeTail[1]];
+#endif
 }
 
 /**
  * Return the AI node assigned to the given ID.
  */
 Object *ainode_get(s32 nodeID) {
+#ifdef NATIVE_PORT
+    if (gAINodes == NULL) return NULL;
+#endif
     if (nodeID >= 0 && nodeID < AINODE_COUNT) {
         return gAINodes[0][nodeID];
     }
     return NULL;
 }
+
+#ifdef NATIVE_PORT
+static void mdkr_ainode_selftest(void) {
+    const char *enabled = getenv("MDKR_CUSTOM_TRACK_LOADER_SELFTEST");
+    if (!enabled || strcmp(enabled, "1")) return;
+#define NODE_CHECK(condition) do { if (!(condition)) { \
+    fprintf(stderr, "[FATAL] AI-node selftest line=%d\n", __LINE__); abort(); \
+} } while (0)
+    Object *(*saved_nodes)[AINODE_COUNT] = gAINodes;
+    Object **saved_objects = gObjPtrList;
+    const s32 saved_count = gObjectCount, saved_init = gInitAINodes;
+    f32 saved_heights[5];
+    memcpy(saved_heights, gElevationHeights, sizeof saved_heights);
+    Object objects[3] = {0};
+    Object_AiNode state[3] = {0};
+    LevelObjectEntry entries[3] = {0};
+    Object *nodes[AINODE_COUNT] = {0}, *list[AINODE_COUNT + 2];
+    for (unsigned i = 0; i < 3; ++i) {
+        objects[i].behaviorId = BHV_AINODE;
+        objects[i].level_entry = &entries[i];
+        objects[i].ai_node = &state[i];
+        entries[i].aiNode.nodeID = i;
+        memset(entries[i].aiNode.adjacent, NODE_NONE, 4);
+    }
+    entries[0].aiNode.adjacent[0] = 1;
+    objects[1].trans.x_position = 10;
+    for (unsigned i = 0; i < AINODE_COUNT + 1; ++i) list[i] = &objects[0];
+    list[AINODE_COUNT + 1] = &objects[1];
+    gAINodes = &nodes; gObjPtrList = list; gObjectCount = AINODE_COUNT + 2;
+    gInitAINodes = TRUE;
+    ainode_update();
+    NODE_CHECK(nodes[0] == &objects[0] && nodes[1] == &objects[1]);
+    NODE_CHECK(state[0].nodeObj[0] == &objects[1] && state[0].distToNode[0] == 10);
+    NODE_CHECK(ainode_find_next(0, -1, 7) == 1);
+    NODE_CHECK(func_8001CD28(0, 0x101, -1, 7) == 1);
+    const s32 invalid[] = {-1, INT32_MIN, AINODE_COUNT, NODE_NONE, INT32_MAX, 2};
+    for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+        NODE_CHECK(ainode_find_next(invalid[i], -1, 0) == NODE_NONE);
+        NODE_CHECK(func_8001CD28(invalid[i], 0x101, -1, 0) == NODE_NONE);
+    }
+    /* A second rebuild replaces a live edge with an out-of-domain ID. */
+    entries[0].aiNode.adjacent[0] = 128;
+    gInitAINodes = TRUE;
+    ainode_update();
+    NODE_CHECK(state[0].nodeObj[0] == NULL && state[0].distToNode[0] == 0);
+    NODE_CHECK(entries[0].aiNode.adjacent[0] == NODE_NONE);
+    NODE_CHECK(ainode_find_next(0, -1, 0) == NODE_NONE);
+    /* A three-node cycle with two frontier entries used to revisit nodes
+     * indefinitely when neither a tag nor a target ID could be found. */
+    for (unsigned i = 0; i < 3; ++i) {
+        list[i] = &objects[i];
+        objects[i].trans.x_position = 10 * i;
+        entries[i].aiNode.adjacent[0] = (i + 1) % 3;
+        entries[i].aiNode.adjacent[1] = (i + 2) % 3;
+    }
+    gObjectCount = 3; gInitAINodes = TRUE;
+    ainode_update();
+    NODE_CHECK(func_8001CD28(0, 0x102, -1, 0) == 2);
+    s16 fallback = func_8001CD28(0, 0x17F, -1, 0);
+    NODE_CHECK(fallback == 1 || fallback == 2);
+    fallback = func_8001CD28(0, 99, -1, 0);
+    NODE_CHECK(fallback == 1 || fallback == 2);
+    /* Stale edge metadata must not address stack arrays with ID 255. */
+    entries[0].aiNode.adjacent[0] = 255;
+    entries[0].aiNode.adjacent[1] = 255;
+    NODE_CHECK(func_8001CD28(0, 0x102, -1, 0) == NODE_NONE);
+    /* Full map-coordinate range must not narrow a live link to a negative cost. */
+    objects[0].trans.x_position = -32768;
+    objects[1].trans.x_position = 32767;
+    entries[0].aiNode.adjacent[0] = 1;
+    gInitAINodes = TRUE;
+    ainode_update();
+    NODE_CHECK(state[0].distToNode[0] == 65535 && state[0].nodeObj[0] == &objects[1]);
+    NODE_CHECK(func_8001CD28(0, 0x101, -1, 0) == 1);
+    gAINodes = saved_nodes; gObjPtrList = saved_objects;
+    gObjectCount = saved_count; gInitAINodes = saved_init;
+    memcpy(gElevationHeights, saved_heights, sizeof saved_heights);
+    fprintf(stderr, "[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 wide_cost=1 PASS\n");
+#undef NODE_CHECK
+}
+#endif
 
 UNUSED void func_8001D248(UNUSED s32 arg0, UNUSED s32 arg1, UNUSED s32 arg2) {
 }

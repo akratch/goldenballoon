@@ -646,11 +646,6 @@ SHAPE_TRIAGE = {
         "once, before the first byte. Overflow of that sum needs two strings "
         "summing past SIZE_MAX; both come from a bounded MDKR_MOD_PATH_MAX "
         "buffer or a readdir entry.",
-    ("bare-pointer", "platform/mod_source.c", "path_join:out"):
-        "BOUNDED BY PARAMETER: byte-identical reasoning to mod_registry.c's "
-        "path_join above, and deliberately a separate copy for now -- "
-        "mod_registry has not yet been retargeted onto mod_source. When it is, "
-        "one of these two disappears and so should its entry here.",
     ("bare-pointer", "platform/gpu_diagnostics.c", "copy_field:destination"):
         "BOUNDED BY PARAMETER: the copy loop's own condition is "
         "`index + 1u < size`, so index stops at size-2 and the unconditional "
@@ -697,11 +692,12 @@ SHAPE_TRIAGE = {
         "with a different channel count is the single change that would break "
         "this, which is why it is recorded here rather than left to a reader "
         "to re-derive.",
-    ("bare-pointer", "platform/save_container.c", "json_parse_string:output"):
+    ("bare-pointer", "platform/bounded_json.h", "json_parse_string:output"):
         "BOUNDED BY PARAMETER: every write path tests output_capacity first -- "
         "the single-byte path, append_utf8's `count > capacity - *length`, and "
         "the terminating NUL. Self-bounded regardless of caller correctness; all "
-        "eight call sites also pass sizeof(field).",
+        "schema call sites pass their actual field capacity. The shared reader "
+        "is explicitly included in the source sweep even though it is a header.",
     ("bare-pointer", "platform/stubs_dkr.c", "controller_query:data"):
         "BOUNDED BY LITERAL: `i < MAXCONTROLLERS` writing data[i], and the only "
         "backing store is joypad.c's OSContStatus gControllerStatus"
@@ -735,7 +731,31 @@ SHAPE_TRIAGE = {
         "truncation, not a shift-exponent problem.",
 }
 
-# Ceilings for the INFO population, per class. May fall; may not rise.
+# Named review of new INFO sites; exact occurrence counts prevent an extra
+# site under the same function/key from silently spending an old allowance.
+# These do not increase the anonymous historical population ceilings.
+SHAPE_TRIAGE.update({
+    ("equality-cap", "game/src/asset_loading.c", "asset_custom_track_env_selftest:i==MDKR_CUSTOM_TRACK_MODELS"):
+        "SECTION DISPATCH, not a saturation cap: each i loop starts at zero, "
+        "uses i < MDKR_CUSTOM_TRACK_SECTION_COUNT (5), and increments once per "
+        "iteration. Every i-indexed local array has that exact section count. "
+        "Other increments found in the function belong to separate loops or "
+        "decodedCount, not an additional update of this loop's i.",
+    ("equality-cap", "game/src/asset_loading.c", "asset_custom_track_env_selftest:i==MDKR_CUSTOM_TRACK_OBJECT_MAPS"):
+        "SECTION DISPATCH: same bounded five-section loops as the MODELS case. "
+        "The map-only validation and diagnostics do not alter i. The inner "
+        "entry loop is independently bounded by the measured table word count.",
+})
+
+SHAPE_INFO_REVIEW = {
+    ("equality-cap", "game/src/camera.c", "sprite_model_build_bark_vertices:sSpriteModelBarkVertexCount!=0"):
+        (2, "Nonempty-cache early return and final success predicate, not caps. "
+         "Each write follows count >= MAX refusal and capacity growth; failed "
+         "realloc exits before writing. One increment follows the three xyz "
+         "writes into capacity * 3 floats; capacity never exceeds MAX=100000."),
+}
+
+# Ceilings for the unclassified INFO population, per class. May fall; may not rise.
 SHAPE_INFO_MAX = {
     "bare-pointer": 0,
     # 29 pre-1.0.5 + 3 attributed additions, each verified bounded:
@@ -1346,15 +1366,24 @@ def shape_sweep(verbose):
             print("  FAIL: %s" % line)
         return False
 
-    triage, info, ok = [], {}, True
+    triage, info, reviewed, ok = [], {}, {}, True
     for line in proc.stdout.strip().split("\n"):
         if not line:
             continue
         cls, rel, ln, key, sev, txt = line.split("|", 5)
         if sev == "TRIAGE":
             triage.append((cls, rel, int(ln), key, txt))
+        elif (cls, rel, key) in SHAPE_INFO_REVIEW:
+            identity = (cls, rel, key)
+            reviewed[identity] = reviewed.get(identity, 0) + 1
         else:
             info[cls] = info.get(cls, 0) + 1
+
+    for identity, (expected, reason) in SHAPE_INFO_REVIEW.items():
+        if reviewed.get(identity, 0) != expected or not reason:
+            ok = False
+            print("  FAIL: named INFO review %s expected %d occurrence(s), found %d" %
+                  (identity, expected, reviewed.get(identity, 0)))
 
     if not triage:
         print("  FAIL: the static sweep produced no TRIAGE findings at all. The "

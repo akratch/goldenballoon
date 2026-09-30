@@ -445,7 +445,9 @@ def collect(which):
     for d in SCAN_DIRS:
         for dirpath, _dirs, files in os.walk(os.path.join(ROOT, d)):
             for f in sorted(files):
-                if not f.endswith(".c"):
+                # The shared JSON reader moved from save_container.c into a
+                # header; retain its existing bounds coverage after extraction.
+                if not f.endswith(".c") and f != "bounded_json.h":
                     continue
                 path = os.path.join(dirpath, f)
                 rel = os.path.relpath(path, ROOT)

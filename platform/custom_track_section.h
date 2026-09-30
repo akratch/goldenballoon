@@ -49,6 +49,9 @@ void mdkr_custom_track_section_destroy(MdkrCustomTrackSection *section);
 /* Logical byte extent, including the retail prefix. Fits the signed engine
  * loader range. NULL returns zero; this is not the resident allocation size. */
 uint32_t mdkr_custom_track_section_size(const MdkrCustomTrackSection *section);
+/* Original entry inventory, excluding end offset/sentinel and appended entries.
+ * NULL has no inventory. Immutable for the section's lifetime. */
+size_t mdkr_custom_track_section_retail_count(const MdkrCustomTrackSection *section);
 /* Exact normalized retail prefix identity, including original entry count.
  * The supplied table includes its logical end offset and sentinel, no padding. */
 int mdkr_custom_track_section_matches_retail(const MdkrCustomTrackSection *section,

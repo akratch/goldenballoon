@@ -16,6 +16,7 @@
 #include "types.h"
 #include "video.h"
 #ifdef NATIVE_PORT
+#include "runtime_contracts.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -404,6 +405,12 @@ void weather_reset(s32 weatherType, s32 density, s32 velX, s32 velY, s32 velZ, s
     s32 j;
     Vec3i *pos;
 
+#ifdef NATIVE_PORT
+    /* Header weatherType is signed. Preserve the retail high-type fallback,
+     * but do not allow malformed negative types to index before the table. */
+    weatherType = mdkr_weather_preset_index(weatherType, WEATHER_RAIN);
+    if (weatherType < 0) return;
+#endif
     weather_free();
     gWeather.velX = velX;
     gWeather.velXStep = 0;

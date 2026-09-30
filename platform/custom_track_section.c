@@ -22,6 +22,10 @@ struct MdkrCustomTrackSession {
     MdkrCustomTrackSection *sections[MDKR_CUSTOM_TRACK_SECTION_COUNT];
 };
 
+size_t mdkr_custom_track_section_retail_count(const MdkrCustomTrackSection *section) {
+    return section ? section->retail_words - 2 : 0;
+}
+
 void mdkr_custom_track_session_destroy(MdkrCustomTrackSession *session) {
     if (!session) return;
     for (size_t i = 0; i < MDKR_CUSTOM_TRACK_SECTION_COUNT; ++i)
@@ -38,12 +42,12 @@ const MdkrCustomTrackSection *mdkr_custom_track_session_section(
 MdkrCustomTrackSession *mdkr_custom_track_session_create(
     const MdkrCustomTrackSectionInput *inputs, size_t count,
     size_t max_payload_bytes, size_t max_table_words) {
-    unsigned seen = 0;
+    unsigned char seen[MDKR_CUSTOM_TRACK_SECTION_COUNT] = {0};
     if (!inputs || !count || count > MDKR_CUSTOM_TRACK_SECTION_COUNT) return NULL;
     for (size_t i = 0; i < count; ++i) {
         unsigned kind = (unsigned)inputs[i].kind;
-        if (kind >= MDKR_CUSTOM_TRACK_SECTION_COUNT || (seen & (1u << kind))) return NULL;
-        seen |= 1u << kind;
+        if (kind >= MDKR_CUSTOM_TRACK_SECTION_COUNT || seen[kind]) return NULL;
+        seen[kind] = 1;
     }
     MdkrCustomTrackSession *session = calloc(1, sizeof(*session));
     if (!session) return NULL;

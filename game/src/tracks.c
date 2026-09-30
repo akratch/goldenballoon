@@ -4643,12 +4643,18 @@ void render_level_segment(s32 segmentId, s32 nonOpaque) {
             numberVertices = (batchInfo + 1)->verticesOffset - batchInfo->verticesOffset;
             numberTriangles = (batchInfo + 1)->facesOffset - numberTriangles;
 #ifdef NATIVE_PORT
-            vertices = &DKR_PTR(Vertex, segment->vertices)[batchInfo->verticesOffset];
+            vertices = NULL;
+            if (numberVertices > 0 && numberTriangles > 0) {
+                vertices = &DKR_PTR(Vertex, segment->vertices)[batchInfo->verticesOffset];
+            }
 #else
             vertices = (s32) &DKR_PTR(Vertex, segment->vertices)[batchInfo->verticesOffset];
 #endif
         } while (0);
 #ifdef NATIVE_PORT
+        /* Empty batches carry metadata but no draw. Encoding zero in the
+         * count-minus-one commands would instead request 32 vertices/16 faces. */
+        if (numberVertices <= 0 || numberTriangles <= 0) continue;
         triangles = &DKR_PTR(Triangle, segment->triangles)[batchInfo->facesOffset];
         /* Honor the ROM's authored FLAG_FORCE_NO_SHADOWS: these batches
          * (scrolling rivers, ice sheets, other animated surfaces the artists
@@ -4664,14 +4670,17 @@ void render_level_segment(s32 segmentId, s32 nonOpaque) {
         levelHeaderIndex = (batchFlags >> 28) & 7;
         if (levelHeaderIndex != (batchInfo->verticesOffset * 0)) {
 #ifdef NATIVE_PORT
-            /* The N64 expression reads the 4-byte slot at LevelHeader+0x70 +
-             * index*4 (unk70[0] then unk74[0..6], contiguous dkrptr32 slots) as a
-             * LevelHeader_70* and derefs ->rgba. On LP64 that pointer arithmetic
-             * is width-dependent, so index the contiguous slot array directly and
-             * reconstruct the arena pointer. */
-            LevelHeader_70 *lh70 =
-                DKR_PTR(LevelHeader_70, (&gCurrentLevelHeader2->unk70[0])[levelHeaderIndex]);
-            gDPSetEnvColor(gTrackDL++, lh70->rgba.r, lh70->rgba.g, lh70->rgba.b, lh70->rgba.a);
+            /* Use the actual seven-element array, not pointer arithmetic past
+             * the preceding one-element union. An absent colour behaves like
+             * an unselected slot rather than reconstructing the -1 token. */
+            dkrptr32 colourToken = gCurrentLevelHeader2->unk74[levelHeaderIndex - 1];
+            LevelHeader_70 *lh70 = colourToken == (dkrptr32)-1 ? NULL :
+                DKR_PTR(LevelHeader_70, colourToken);
+            if (lh70 != NULL) {
+                gDPSetEnvColor(gTrackDL++, lh70->rgba.r, lh70->rgba.g, lh70->rgba.b, lh70->rgba.a);
+            } else {
+                gDPSetEnvColor(gTrackDL++, 255, 255, 255, 0);
+            }
 #else
             gDPSetEnvColor(
                 gTrackDL++,
@@ -4684,8 +4693,21 @@ void render_level_segment(s32 segmentId, s32 nonOpaque) {
         } else {
             gDPSetEnvColor(gTrackDL++, 255, 255, 255, 0);
         }
+#ifdef NATIVE_PORT
+        PulsatingLightData *pulseData = NULL;
         if (batchFlags & RENDER_PULSING_LIGHTS) {
+            const dkrptr32 pulseToken = gCurrentLevelHeader2->pulseLightData;
+            if (pulseToken != 0 && pulseToken != (dkrptr32)-1)
+                pulseData = DKR_PTR(PulsatingLightData, pulseToken);
+            if (pulseData == NULL || texture == NULL) batchFlags &= ~RENDER_PULSING_LIGHTS;
+        }
+#endif
+        if (batchFlags & RENDER_PULSING_LIGHTS) {
+#ifdef NATIVE_PORT
+            color = pulseData->outColorValue;
+#else
             color = DKR_PTR(PulsatingLightData, gCurrentLevelHeader2->pulseLightData)->outColorValue;
+#endif
             gDPSetPrimColor(gTrackDL++, 0, 0, color, color, color, color);
             material_set_blinking_lights(&gTrackDL, texture, batchFlags, texOffset);
             gSPVertexDKR(gTrackDL++, OS_K0_TO_PHYSICAL(vertices), numberVertices, 0);

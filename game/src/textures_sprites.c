@@ -69,6 +69,7 @@ static bool mdkr_asset_refcount_frozen(void) {
 #include <limits.h>
 #ifdef NATIVE_PORT
 #include <stdio.h>
+#include "mdkr_trace.h"
 #endif
 
 #define MAX_NUM_TEXTURES 700
@@ -78,6 +79,10 @@ static bool mdkr_asset_refcount_frozen(void) {
 #define MAX_TEX_PALETTE_SIZE 640
 #define TEXTURE_GFX_SIZE (12 * sizeof(Gfx))
 #define PALETTE_GFX_SIZE (6 * sizeof(Gfx))
+#ifdef NATIVE_PORT
+_Static_assert(TEXTURE_GFX_SIZE == MDKR_TEXTURE_COMMAND_BYTES,
+               "texture admission must match native display-list allocation");
+#endif
 
 /************ .data ************/
 
@@ -1162,6 +1167,35 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
             (TextureHeader *) ((uintptr_t) texture_list + ((texture_index >> 16) * texture_list->textureSize));
     }
     mblock = (u16 *) (texture_list + 1);
+#ifdef NATIVE_PORT
+    MdkrPulseTextureLayout layout;
+    if (!mdkr_texture_pulse_layout(texture_list->width, texture_list->height,
+            TEX_FORMAT(texture_list->format), &layout)) {
+        material_set(dList, texture_list, flags & ~RENDER_PULSING_LIGHTS, 0);
+        return;
+    }
+    tblock = mblock + layout.halfBytes / sizeof(*mblock);
+    /* Bounded diagnostic: witness the actual selected frame, not just an
+     * asset carrying the pulse bit. No texture bytes or addresses are logged. */
+    if (mdkr_trace_level() >= 2) {
+        static unsigned seenLayouts;
+        int splitLayout = TEX_FORMAT(texture_list->format) == TEX_FORMAT_RGBA16 &&
+            ((texture_list->width == 64 && texture_list->height == 32) ||
+             (texture_list->width == 32 && texture_list->height == 64));
+        unsigned bit = splitLayout ? 1u : 2u;
+        if (!(seenLayouts & bit)) {
+            seenLayouts |= bit;
+            mdkr_trace("pulse_material: width=%u height=%u format=%u legacy_layout=%d half_bytes=%zu",
+                texture_list->width, texture_list->height, texture_list->format, splitLayout, layout.halfBytes);
+        }
+    }
+    gDPLoadMultiBlock((*dList)++, OS_K0_TO_PHYSICAL(mblock), 256, 1,
+        G_IM_FMT_RGBA, G_IM_SIZ_16b, layout.width, layout.halfHeight,
+        0, 0, 0, layout.maskS, layout.maskT, 0, 0);
+    gDPLoadTextureBlock((*dList)++, OS_K0_TO_PHYSICAL(tblock),
+        G_IM_FMT_RGBA, G_IM_SIZ_16b, layout.width, layout.halfHeight,
+        0, 0, 0, layout.maskS, layout.maskT, 0, 0);
+#else
     tblock = mblock + 0x400;
     if (texture_list->width == 64) {
         gDPLoadMultiBlock((*dList)++, OS_K0_TO_PHYSICAL(mblock), 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 64, 16, 0, 0, 0,
@@ -1175,6 +1209,7 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
                             0, 0);
     }
 
+#endif
     gDPPipeSync((*dList)++);
     gCurrentTextureHeader = NULL;
     flags &= (RENDER_ANTI_ALIASING | RENDER_Z_COMPARE | RENDER_SEMI_TRANSPARENT | RENDER_FOG_ACTIVE | RENDER_CUTOUT);
@@ -2134,10 +2169,16 @@ void update_colour_cycle(LevelHeader_70 *arg0, s32 updateRate) {
     LevelHeader_70 *next;
 
     if (arg0->unk0 >= 2) {
+#ifdef NATIVE_PORT
+        s32 cycleTime = mdkr_light_cycle_time(arg0->unk8, updateRate, arg0->unkC);
+        if (cycleTime < 0) return;
+        arg0->unk8 = cycleTime;
+#else
         arg0->unk8 += updateRate;
         while (arg0->unk8 >= arg0->unkC) {
             arg0->unk8 -= arg0->unkC;
         }
+#endif
         while (arg0->unk8 >= arg0->unk18[arg0->unk4].unk0) {
             arg0->unk8 -= arg0->unk18[arg0->unk4].unk0;
             arg0->unk4++;
@@ -2153,7 +2194,11 @@ void update_colour_cycle(LevelHeader_70 *arg0, s32 updateRate) {
         }
 
         cur = (LevelHeader_70 *) (&((LevelHeader_70_18 *) arg0)[curIndex]);
+#ifdef NATIVE_PORT
+        temp = (s32)mdkr_light_fraction(65536u, arg0->unk8, cur->unk18->unk0);
+#else
         temp = (arg0->unk8 << 16) / (cur->unk18->unk0);
+#endif
         cur_red = cur->rgba2.r;
         cur_green = cur->rgba2.g;
         cur_blue = cur->rgba2.b;
@@ -2194,10 +2239,16 @@ void update_pulsating_light_data(PulsatingLightData *data, s32 timeDelta) {
     s32 thisFrameIndex, nextFrameIndex;
 
     if (data->numberFrames > 1) {
+#ifdef NATIVE_PORT
+        s32 cycleTime = mdkr_light_cycle_time(data->time, timeDelta, data->totalTime);
+        if (cycleTime < 0) return;
+        data->time = (u16)cycleTime;
+#else
         data->time += timeDelta;
         while (data->time >= data->totalTime) {
             data->time -= data->totalTime;
         }
+#endif
         while (data->time >= data->frames[data->currentFrame].time) {
             data->time -= data->frames[data->currentFrame].time;
             data->currentFrame++;
@@ -2212,7 +2263,12 @@ void update_pulsating_light_data(PulsatingLightData *data, s32 timeDelta) {
         }
 
         data->outColorValue = data->frames[thisFrameIndex].value +
+#ifdef NATIVE_PORT
+                              mdkr_light_fraction(data->frames[nextFrameIndex].value,
+                                                  data->time, data->frames[thisFrameIndex].time);
+#else
                               ((data->frames[nextFrameIndex].value * data->time) / data->frames[thisFrameIndex].time);
+#endif
     }
 }
 

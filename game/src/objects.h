@@ -557,6 +557,22 @@ void track_spawn_objects(s32, s32);
  * minimum record sizes as spawning. No coordinate/body normalization needed.
  * Returns FALSE on invalid input; does not validate behavior field semantics. */
 s32 mdkr_objmap_validate_bodies(const u8 *entries, s32 totalSize);
+/* MdkrTrackObjectMapCheck adapter; context must be NULL. Same game-thread and
+ * initialized-table requirements as the body validator. */
+int mdkr_objmap_admission_check(void *context, const void *entries, size_t size);
+typedef struct MdkrObjectMapAiInventory {
+    u8 explicit_ids[128];
+    u16 total_nodes, automatic_nodes;
+} MdkrObjectMapAiInventory;
+/* Behavior-aware callback with an additional course-local AI identity inventory.
+ * Zero-initialize context, then pass it across ALL course maps, including any
+ * retained retail maps. One successful call commits its inventory; refusal
+ * preserves it. Discard the whole staging context if package admission fails.
+ * Counts automatic IDs without assigning them, and rejects duplicate explicit
+ * IDs/capacity overflow. Does not prove auto-ID collision freedom, connectivity,
+ * checkpoint validity or cross-map reference resolution. Context and entries
+ * must be disjoint; same initialized game-thread contract as above. */
+int mdkr_objmap_ai_inventory_check(void *context, const void *entries, size_t size);
 #endif
 u8 timetrial_init_staff_ghost(s32 trackId);
 s8 set_course_finish_flags(Settings *settings);
