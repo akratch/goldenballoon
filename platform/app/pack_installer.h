@@ -1,6 +1,10 @@
 #ifndef MDKR64_PACK_INSTALLER_H
 #define MDKR64_PACK_INSTALLER_H
 
+#include "fs_utf8.h"
+#include "mod_source_stream.h"
+
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -26,6 +30,12 @@ struct PackInstallResult {
 // A background copy, not yet visible to the content-pack scanner. Move the
 // result back to the launcher thread and call finalize() there so publication
 // follows the current frame's cancellation/quit input and registry refresh.
+//
+// Staging lives in the mods folder as ".install-<tick>-<n>". macOS and Linux
+// work relative to pinned directory descriptors. Windows works by pathname:
+// staging with CreateDirectoryW, files created CREATE_NEW, links and
+// junctions never followed, publication by a same-volume MoveFileExW that
+// refuses an existing name.
 class PreparedPackInstall {
 public:
     PreparedPackInstall() = default;
@@ -50,17 +60,17 @@ public:
 private:
     void cleanup() noexcept;
     std::filesystem::path stage_;
-    // Prepared before directory creation; cleanup must not allocate filename().
+    // Prepared before directory creation; cleanup must not allocate.
     std::filesystem::path stageName_;
+    std::string stagePath_;
     std::filesystem::path modsDir_;
     std::filesystem::path filename_;
     std::string error_;
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     int modsFd_ = -1;
     int stageFd_ = -1;
 #else
-    intptr_t modsHandle_ = -1;
-    intptr_t stageHandle_ = -1;
+    MdkrFileLock hold_{-1};
 #endif
 };
 

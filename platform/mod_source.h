@@ -75,12 +75,13 @@ typedef struct MdkrModSource MdkrModSource;
  * narrow CRT, which on Windows would be a second UTF-8 boundary with different
  * behaviour from the one this port already has; there is exactly one such
  * boundary and it stays in fs_utf8. */
-/* Directory sources pin an opened root descriptor/handle. Reads and enumeration
- * use directory-relative opens and refuse descendant symlinks/reparse points;
- * replacing the root pathname does not redirect an existing source. The
- * caller-selected root itself may resolve through a link. Windows behavior
- * requires qualification on the shipping OS/CRT; cross-compilation alone is
- * not runtime evidence. */
+/* Directory sources never follow a link below their root: a symbolic link
+ * (or, on Windows, a junction or other name-surrogate reparse point) inside a
+ * pack is neither read nor enumerated. The caller-selected root itself may
+ * resolve through a link. On macOS and Linux the root is pinned by an open
+ * descriptor and every read is relative to it, so replacing the root pathname
+ * does not redirect an existing source. Windows reads by pathname, as 1.7.0
+ * did, checking each directory on the way down for links. */
 MdkrModSource *mdkr_mod_source_open(const char *path, int is_zip);
 
 

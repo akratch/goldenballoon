@@ -19,9 +19,9 @@
 #include <cstddef>
 #include <limits>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#if MDKR_PACK_BY_PATH
+#include <thread>
+#include <vector>
 #else
 #include <fcntl.h>
 #include <dirent.h>
@@ -37,7 +37,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
 struct ScopedFd {
     int value;
     explicit ScopedFd(int fd) : value(fd) {}
@@ -122,68 +122,103 @@ bool clearDirectory(int fd, unsigned depth = 0) {
     return okay;
 }
 #else
-struct ScopedDirectoryHandle {
-    intptr_t value;
-    explicit ScopedDirectoryHandle(intptr_t handle) : value(handle) {}
-    ScopedDirectoryHandle(const ScopedDirectoryHandle &) = delete;
-    ScopedDirectoryHandle &operator=(const ScopedDirectoryHandle &) = delete;
-    ~ScopedDirectoryHandle() { mdkr_directory_handle_close(value); }
-    intptr_t release() { return std::exchange(value, -1); }
-};
-
-intptr_t relativeParent(intptr_t root, const fs::path &path) {
-    if (!mdkr_mod_source_path_is_safe(path.generic_u8string().c_str())) {
-        errno = EINVAL;
-        return -1;
-    }
-    ScopedDirectoryHandle parent(mdkr_directory_handle_child_utf8(root, ".", 1));
-    for (const auto &part : path.parent_path()) {
-        if (parent.value == -1) return -1;
-        const auto name = part.u8string();
-        intptr_t next = mdkr_directory_handle_child_utf8(parent.value, name.c_str(), 1);
-        mdkr_directory_handle_close(std::exchange(parent.value, next));
-    }
-    return parent.release();
+// The pathname arm. Every filesystem call goes through fs_utf8, the one UTF-8
+// boundary, so the Windows logic is the same code these tests run on POSIX.
+//
+// Removal runs from cleanup(), which must not throw or use C++ allocation:
+// paths here are malloc'd C strings, never std::filesystem objects.
+char *joinPath(const char *parent, const char *name) {
+    const size_t head = std::strlen(parent), tail = std::strlen(name);
+    auto *joined = static_cast<char *>(std::malloc(head + tail + 2));
+    if (!joined) return nullptr;
+    std::memcpy(joined, parent, head);
+    joined[head] = '/';
+    std::memcpy(joined + head + 1, name, tail + 1);
+    return joined;
 }
 
-FILE *relativeFile(intptr_t root, const fs::path &path, bool write) {
-    const auto name = path.filename().u8string();
-    ScopedDirectoryHandle parent(relativeParent(root, path));
-    if (parent.value == -1) return nullptr;
-    intptr_t child = write
-        ? mdkr_directory_handle_create_utf8(parent.value, name.c_str(), 0)
-        : mdkr_directory_handle_child_utf8(parent.value, name.c_str(), 0);
-    return write ? mdkr_write_handle_stream(child) : mdkr_read_handle_stream(child);
-}
-
-bool relativeMkdir(intptr_t root, const fs::path &path, std::error_code &error) {
-    const auto name = path.filename().u8string();
-    ScopedDirectoryHandle parent(relativeParent(root, path));
-    ScopedDirectoryHandle child(parent.value == -1 ? -1 :
-        mdkr_directory_handle_create_utf8(parent.value, name.c_str(), 1));
-    if (child.value == -1) {
-        error = std::error_code(errno, std::generic_category());
+// A security scanner can hold a just-deleted file open for a moment, which
+// keeps its folder non-empty; retry briefly before giving up on the folder.
+bool removeDirectory(const char *path) {
+    for (int attempt = 0;; ++attempt) {
+        if (mdkr_rmdir_utf8(path) == 0) return true;
+#ifdef _WIN32
+        if (attempt < 5 && (errno == ENOTEMPTY || errno == EACCES || errno == EBUSY)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+#endif
+        (void)attempt;
         return false;
     }
-    return true;
 }
 
-bool clearDirectory(intptr_t handle, unsigned depth = 0) {
+bool clearDirectory(const char *directory, unsigned depth);
+
+struct ClearPass {
+    const char *directory;
+    unsigned depth;
+    bool removed;
+    bool okay;
+};
+
+int clearEntry(const char *name, int kind, void *opaque) {
+    auto &pass = *static_cast<ClearPass *>(opaque);
+    char *child = joinPath(pass.directory, name);
+    if (!child) {
+        pass.okay = false;
+        return 1;
+    }
+    bool removed;
+    if (kind == MDKR_PATH_DIRECTORY) {
+        removed = clearDirectory(child, pass.depth + 1) && removeDirectory(child);
+    } else if (kind == MDKR_PATH_LINK) {
+        // Remove the link itself, never what it points at. A Windows
+        // directory link or junction is removed as a directory.
+        removed = mdkr_unlink_utf8(child) == 0 || mdkr_rmdir_utf8(child) == 0;
+    } else {
+        removed = mdkr_unlink_utf8(child) == 0;
+    }
+    std::free(child);
+    if (removed) pass.removed = true;
+    else pass.okay = false;
+    return 0;
+}
+
+// Empty `directory` without following links. A listing taken while entries
+// are removed may miss some, so repeat while a pass makes progress.
+bool clearDirectory(const char *directory, unsigned depth) {
     if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX + 2u) return false;
-    struct Context { intptr_t handle; unsigned depth; bool okay; } context{handle, depth, true};
-    const auto visit = [](const char *name, int directory, void *opaque) -> int {
-        auto &state = *static_cast<Context *>(opaque);
-        /* The directory listing includes "." and "..". Opening either is
-         * rejected, and treating that as a walk failure leaves the stage. */
-        if (!name || strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 0;
-        intptr_t child = mdkr_directory_handle_owned_child_utf8(state.handle, name, directory);
-        if (child == -1) { state.okay = false; return 0; }
-        if ((directory && !clearDirectory(child, state.depth + 1)) || mdkr_handle_mark_delete(child))
-            state.okay = false;
-        mdkr_directory_handle_close(child);
+    for (int round = 0; round < 16; ++round) {
+        ClearPass pass{directory, depth, false, true};
+        if (mdkr_directory_list_utf8(directory, clearEntry, &pass) != 0) return false;
+        if (!pass.removed) return pass.okay;
+    }
+    return false;
+}
+
+struct DirectoryEntry {
+    std::string name;
+    int kind;
+};
+
+bool listDirectory(const fs::path &directory, std::vector<DirectoryEntry> &entries) {
+    struct Collect {
+        std::vector<DirectoryEntry> *entries;
+        bool failed;
+    } collect{&entries, false};
+    const auto visit = [](const char *name, int kind, void *opaque) -> int {
+        auto &state = *static_cast<Collect *>(opaque);
+        try {
+            state.entries->push_back({name, kind});
+        } catch (...) {
+            state.failed = true;
+            return 1;
+        }
         return 0;
     };
-    return mdkr_directory_handle_visit(handle, visit, &context) == 0 && context.okay;
+    return mdkr_directory_list_utf8(directory.u8string().c_str(), visit, &collect) == 0 &&
+           !collect.failed;
 }
 #endif
 
@@ -258,15 +293,15 @@ std::string fileError(const char *operation, const std::error_code &error) {
 PreparedPackInstall::PreparedPackInstall(PreparedPackInstall &&other) noexcept
     : stage_(std::exchange(other.stage_, {})),
       stageName_(std::move(other.stageName_)),
+      stagePath_(std::move(other.stagePath_)),
       modsDir_(std::move(other.modsDir_)),
       filename_(std::move(other.filename_)),
       error_(std::move(other.error_))
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
       , modsFd_(std::exchange(other.modsFd_, -1)),
       stageFd_(std::exchange(other.stageFd_, -1))
 #else
-      , modsHandle_(std::exchange(other.modsHandle_, -1)),
-      stageHandle_(std::exchange(other.stageHandle_, -1))
+      , hold_(std::exchange(other.hold_, MdkrFileLock{-1}))
 #endif
       {}
 
@@ -278,12 +313,12 @@ PreparedPackInstall &PreparedPackInstall::operator=(PreparedPackInstall &&other)
         modsDir_ = std::move(other.modsDir_);
         filename_ = std::move(other.filename_);
         error_ = std::move(other.error_);
-#ifndef _WIN32
+        stagePath_ = std::move(other.stagePath_);
+#if !MDKR_PACK_BY_PATH
         modsFd_ = std::exchange(other.modsFd_, -1);
         stageFd_ = std::exchange(other.stageFd_, -1);
 #else
-        modsHandle_ = std::exchange(other.modsHandle_, -1);
-        stageHandle_ = std::exchange(other.stageHandle_, -1);
+        hold_ = std::exchange(other.hold_, MdkrFileLock{-1});
 #endif
     }
     return *this;
@@ -292,7 +327,7 @@ PreparedPackInstall &PreparedPackInstall::operator=(PreparedPackInstall &&other)
 PreparedPackInstall::~PreparedPackInstall() { cleanup(); }
 
 void PreparedPackInstall::cleanup() noexcept {
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     // On identity loss, preserve both trees. Do not delete a replacement or
     // guess where somebody moved the original owned directory.
     if (!stage_.empty() && sameDirectory(stageFd_, modsFd_, stageName_.c_str())) {
@@ -303,12 +338,19 @@ void PreparedPackInstall::cleanup() noexcept {
     if (modsFd_ >= 0) close(std::exchange(modsFd_, -1));
     stage_.clear();
 #else
-    if (stageHandle_ != -1 && clearDirectory(stageHandle_))
-        (void)mdkr_handle_mark_delete(stageHandle_);
-    mdkr_directory_handle_close(std::exchange(stageHandle_, -1));
-    mdkr_directory_handle_close(std::exchange(modsHandle_, -1));
+    // Never descend through a link that replaced the staging folder. On
+    // Windows the hold refuses that replacement in the first place.
+    if (!stage_.empty() &&
+        mdkr_path_kind_utf8(stagePath_.c_str()) == MDKR_PATH_DIRECTORY) {
+        const bool cleared = clearDirectory(stagePath_.c_str(), 0);
+        // Windows refuses to remove a directory this process still holds.
+        mdkr_file_lock_release(&hold_);
+        if (cleared) (void)removeDirectory(stagePath_.c_str());
+    }
+    mdkr_file_lock_release(&hold_);
     stage_.clear();
 #endif
+    stagePath_.clear();
     stageName_.clear();
 }
 
@@ -343,9 +385,17 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     }
 
     std::error_code ec;
+#if MDKR_PACK_BY_PATH
+    // std::filesystem cannot see Windows junctions or symbolic links, so the
+    // pathname arm asks fs_utf8, which reports them as links.
+    const int sourceKind = mdkr_path_kind_utf8(source.u8string().c_str());
+    const bool directory = sourceKind == MDKR_PATH_DIRECTORY;
+    if (!directory && (sourceKind != MDKR_PATH_FILE || !zipExtension(source))) {
+#else
     const auto sourceStatus = fs::symlink_status(source, ec);
     const bool directory = fs::is_directory(sourceStatus);
     if (ec || (!directory && (!fs::is_regular_file(sourceStatus) || !zipExtension(source)))) {
+#endif
         prepared.error_ = "Choose a regular ZIP or folder, not a link or special file.";
         return prepared;
     }
@@ -375,6 +425,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             return prepared;
         }
     }
+#if !MDKR_PACK_BY_PATH
     // Pin the source before traversal/cancellation callbacks. A pathname check
     // followed by ifstream can follow a replaced parent into unrelated files.
     const auto readRoot = directory ? source :
@@ -385,6 +436,17 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         prepared.error_ = "Cannot open the selected pack's source folder.";
         return prepared;
     }
+#else
+    // A folder's files are read through the same link-refusing reader the game
+    // uses. A ZIP is read as the one file the player chose.
+    std::unique_ptr<MdkrModSource, decltype(&mdkr_mod_source_close)> sourceRoot(
+        directory ? mdkr_mod_source_open(source.u8string().c_str(), 0) : nullptr,
+        mdkr_mod_source_close);
+    if (directory && !sourceRoot) {
+        prepared.error_ = "Cannot open the selected pack's source folder.";
+        return prepared;
+    }
+#endif
     fs::create_directories(prepared.modsDir_, ec);
     if (ec) {
         prepared.error_ = fileError("Cannot create the mods folder", ec);
@@ -398,15 +460,9 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         return prepared;
     }
 
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     prepared.modsFd_ = open(prepared.modsDir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (prepared.modsFd_ < 0) {
-        prepared.error_ = "Cannot retain ownership of the mods folder.";
-        return prepared;
-    }
-#else
-    prepared.modsHandle_ = mdkr_directory_handle_open_utf8(prepared.modsDir_.u8string().c_str());
-    if (prepared.modsHandle_ == -1) {
         prepared.error_ = "Cannot retain ownership of the mods folder.";
         return prepared;
     }
@@ -417,18 +473,8 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             (".install-" + std::to_string(tick) + "-" + std::to_string(attempt));
         prepared.stageName_ = candidate.filename();
         ec.clear();
-#ifdef _WIN32
-        prepared.stageHandle_ = mdkr_directory_handle_create_utf8(
-            prepared.modsHandle_, candidate.filename().u8string().c_str(), 1);
-        if (prepared.stageHandle_ == -1) ec = std::error_code(errno, std::generic_category());
-#endif
-        if (
-#ifndef _WIN32
-            relativeMkdir(prepared.modsFd_, candidate.filename(), ec)
-#else
-            prepared.stageHandle_ != -1
-#endif
-        ) {
+#if !MDKR_PACK_BY_PATH
+        if (relativeMkdir(prepared.modsFd_, candidate.filename(), ec)) {
             prepared.stage_ = std::move(candidate);
             break;
         }
@@ -436,18 +482,81 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             prepared.error_ = fileError("Cannot stage the pack", ec);
             return prepared;
         }
+#else
+        std::string candidatePath = candidate.u8string();
+        if (mdkr_mkdir_utf8(candidatePath.c_str()) != 0) {
+            if (errno == EEXIST) continue;
+            prepared.error_ = fileError("Cannot stage the pack",
+                                        std::error_code(errno, std::generic_category()));
+            return prepared;
+        }
+        // Hold the new folder for the whole installation. On Windows that also
+        // stops anything renaming or replacing it until cleanup.
+        if (mdkr_directory_hold_utf8(candidatePath.c_str(), &prepared.hold_) != 0) {
+            const int error = errno;
+            // Taken or replaced since it was created: it is not ours to use or
+            // remove. Try another name.
+            if (error == EBUSY || error == ENOENT || error == ELOOP || error == ENOTDIR)
+                continue;
+            // A filesystem without advisory locks cannot record the hold; the
+            // installation proceeds unheld.
+            if (error != ENOTSUP && error != EOPNOTSUPP && error != ENOLCK) {
+                prepared.stage_ = std::move(candidate);
+                prepared.stagePath_ = std::move(candidatePath);
+                prepared.error_ = fileError("Cannot hold the staging folder",
+                                            std::error_code(error, std::generic_category()));
+                return prepared;
+            }
+        }
+        prepared.stage_ = std::move(candidate);
+        prepared.stagePath_ = std::move(candidatePath);
+        break;
+#endif
     }
     if (prepared.stage_.empty()) {
         prepared.error_ = "Could not find a free staging folder for this pack.";
         return prepared;
     }
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     prepared.stageFd_ = prepared.modsFd_ < 0 ? -1 : openat(prepared.modsFd_,
         prepared.stageName_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (prepared.stageFd_ < 0) {
         prepared.error_ = "Could not retain ownership of the staging directory.";
         return prepared;
     }
+    const auto createStaged = [&](const fs::path &relative) {
+        return relativeFile(prepared.stageFd_, relative, true);
+    };
+    const auto openStaged = [&](const fs::path &relative) {
+        return relativeFile(prepared.stageFd_, relative, false);
+    };
+    const auto makeStagedDirectory = [&](const fs::path &relative, std::error_code &error) {
+        return relativeMkdir(prepared.stageFd_, relative, error);
+    };
+    const auto openSource = [&](const fs::path &relative) {
+        return mdkr_mod_source_open_directory_file(sourceRoot.get(),
+                                                   relative.generic_u8string().c_str());
+    };
+#else
+    // Exclusive creation: CREATE_NEW on Windows, O_CREAT|O_EXCL elsewhere, so
+    // nothing already at a name -- a link included -- is ever written through.
+    const auto createStaged = [&](const fs::path &relative) {
+        return mdkr_fopen_utf8((prepared.stage_ / relative).u8string().c_str(), "wbx");
+    };
+    const auto openStaged = [&](const fs::path &relative) {
+        return mdkr_fopen_utf8((prepared.stage_ / relative).u8string().c_str(), "rb");
+    };
+    const auto makeStagedDirectory = [&](const fs::path &relative, std::error_code &error) {
+        if (mdkr_mkdir_utf8((prepared.stage_ / relative).u8string().c_str()) == 0) return true;
+        error = std::error_code(errno, std::generic_category());
+        return false;
+    };
+    const auto openSource = [&](const fs::path &relative) {
+        return directory
+            ? mdkr_mod_source_open_directory_file(sourceRoot.get(),
+                                                  relative.generic_u8string().c_str())
+            : mdkr_fopen_utf8(source.u8string().c_str(), "rb");
+    };
 #endif
     // Bounded chunks allow cancellation between filesystem operations. The
     // prepared object's owner removes partial staging; never expose it in mods.
@@ -461,11 +570,10 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         ++entries;
         return true;
     };
-    const auto copyFile = [&](const fs::path &from, const fs::path &to) {
-        const auto relative = directory ? from.lexically_relative(source) : prepared.filename_;
-        std::unique_ptr<FILE, decltype(&std::fclose)> input(
-            mdkr_mod_source_open_directory_file(sourceRoot.get(), relative.generic_u8string().c_str()),
-            std::fclose);
+    // `relative` names the file below the selected folder (a ZIP: its own
+    // name); the staged copy lands at the same place below the payload.
+    const auto copyFile = [&](const fs::path &relative) {
+        std::unique_ptr<FILE, decltype(&std::fclose)> input(openSource(relative), std::fclose);
         if (input && directory) {
             // Same per-entry limit as runtime directory reads. Inspect before
             // copying, then enforce again while streaming if the file grows.
@@ -484,13 +592,9 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                 return false;
             }
         }
+        const fs::path staged = directory ? prepared.filename_ / relative : prepared.filename_;
         std::unique_ptr<FILE, decltype(&std::fclose)> output(
-#ifndef _WIN32
-            input ? relativeFile(prepared.stageFd_, to.lexically_relative(prepared.stage_), true) : nullptr,
-#else
-            input ? relativeFile(prepared.stageHandle_, to.lexically_relative(prepared.stage_), true) : nullptr,
-#endif
-            std::fclose);
+            input ? createStaged(staged) : nullptr, std::fclose);
         if (!input || !output) {
             prepared.error_ = "Could not open the pack or staging file for copying.";
             return false;
@@ -526,17 +630,12 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             prepared.error_ = "Could not finish writing the staged pack.";
         return !stop() && prepared.error_.empty();
     };
-    const auto target = prepared.stage_ / prepared.filename_;
     if (!directory) {
-        if (!takeEntry() || !copyFile(source, target)) return prepared;
+        if (!takeEntry() || !copyFile(prepared.filename_)) return prepared;
         // Inspect the completed staged bytes on the worker, not the mutable
         // source or the launcher thread. No payload inflation is needed.
         std::unique_ptr<FILE, decltype(&std::fclose)> staged(
-#ifndef _WIN32
-            relativeFile(prepared.stageFd_, prepared.filename_, false), std::fclose);
-#else
-            relativeFile(prepared.stageHandle_, prepared.filename_, false), std::fclose);
-#endif
+            openStaged(prepared.filename_), std::fclose);
         BudgetZip reader(limits.maxZipMetadataBytes);
         auto &zip = reader.archive;
         if (!staged || !mz_zip_reader_init_cfile(&zip, staged.get(), 0,
@@ -569,15 +668,14 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         }
         return prepared;
     }
-#ifndef _WIN32
-    relativeMkdir(prepared.stageFd_, prepared.filename_, ec);
-#else
-    relativeMkdir(prepared.stageHandle_, prepared.filename_, ec);
-#endif
+    makeStagedDirectory(prepared.filename_, ec);
     if (ec) {
         prepared.error_ = fileError("Cannot stage the folder", ec);
         return prepared;
     }
+    const char *const unsafeFolder =
+        "Pack folders must contain only safely named regular files and folders (no links).";
+#if !MDKR_PACK_BY_PATH
     fs::recursive_directory_iterator it(source, fs::directory_options::none, ec), end;
     while (!ec && it != end) {
         if (stop()) return prepared;
@@ -589,20 +687,48 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         if (!mdkr_mod_source_path_is_safe(name.c_str()) ||
             it.depth() > MDKR_MOD_SOURCE_WALK_DEPTH_MAX ||
             (!fs::is_directory(status) && !fs::is_regular_file(status))) {
-            prepared.error_ = "Pack folders must contain only safely named regular files and folders (no links).";
+            prepared.error_ = unsafeFolder;
             return prepared;
         }
-        if (fs::is_directory(status)) {
-#ifndef _WIN32
-            relativeMkdir(prepared.stageFd_, prepared.filename_ / relative, ec);
-#else
-            relativeMkdir(prepared.stageHandle_, prepared.filename_ / relative, ec);
-#endif
-        }
-        else if (!copyFile(it->path(), target / relative)) return prepared;
+        if (fs::is_directory(status)) makeStagedDirectory(prepared.filename_ / relative, ec);
+        else if (!copyFile(relative)) return prepared;
         if (!ec) it.increment(ec);
     }
     if (ec) prepared.error_ = fileError("Could not copy the complete pack folder", ec);
+#else
+    // Depth-first, listing each folder by pathname. The listing reports links
+    // and junctions as links, and a link anywhere refuses the pack.
+    std::function<bool(const fs::path &, int)> copyTree =
+        [&](const fs::path &relative, int depth) -> bool {
+            std::vector<DirectoryEntry> listed;
+            if (!listDirectory(relative.empty() ? source : source / relative, listed)) {
+                prepared.error_ = "Could not read the complete pack folder.";
+                return false;
+            }
+            for (const auto &entry : listed) {
+                if (stop()) return false;
+                if (!takeEntry()) return false;
+                const fs::path child = relative / fs::u8path(entry.name);
+                if (!mdkr_mod_source_path_is_safe(child.generic_u8string().c_str()) ||
+                    depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX ||
+                    (entry.kind != MDKR_PATH_DIRECTORY && entry.kind != MDKR_PATH_FILE)) {
+                    prepared.error_ = unsafeFolder;
+                    return false;
+                }
+                if (entry.kind == MDKR_PATH_DIRECTORY) {
+                    if (!makeStagedDirectory(prepared.filename_ / child, ec)) {
+                        prepared.error_ = fileError("Could not copy the complete pack folder", ec);
+                        return false;
+                    }
+                    if (!copyTree(child, depth + 1)) return false;
+                } else if (!copyFile(child)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+    (void)copyTree(fs::path(), 0);
+#endif
     return prepared;
 }
 
@@ -628,13 +754,13 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     // These pathname checks do not close concurrent check/rename races; full
     // destination capability ownership remains a separate requirement.
     const auto stageIsDirectory = [&] {
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
         if (sameDirectory(stageFd_, modsFd_, stage_.filename().c_str()) &&
             sameDirectory(modsFd_, AT_FDCWD, modsDir_.c_str())) return true;
 #else
-        std::error_code error;
-        const auto status = fs::symlink_status(stage_, error);
-        if (!error && fs::is_directory(status)) return true;
+        // On Windows the hold refuses any rename or replacement of the stage;
+        // elsewhere this at least refuses a link swapped into its place.
+        if (mdkr_path_kind_utf8(stagePath_.c_str()) == MDKR_PATH_DIRECTORY) return true;
 #endif
         result.message = "The staging folder changed or is unavailable. Nothing was installed.";
         return false;
@@ -642,7 +768,7 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     if (!stageIsDirectory()) return result;
 
     MdkrModSource *opened = nullptr;
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     ScopedFd payloadFd(openat(stageFd_, filename_.c_str(),
                              O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
     struct stat payloadIdentity{};
@@ -659,21 +785,11 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
         }
     }
 #else
-    const auto payloadName = filename_.u8string();
-    ScopedDirectoryHandle payloadHandle(mdkr_directory_handle_owned_child_utf8(
-        stageHandle_, payloadName.c_str(), 1));
-    if (payloadHandle.value != -1) {
-        opened = mdkr_mod_source_from_directory_handle(payloadHandle.value);
-    } else {
-        payloadHandle.value = mdkr_directory_handle_owned_child_utf8(
-            stageHandle_, payloadName.c_str(), 0);
-        HANDLE duplicate = INVALID_HANDLE_VALUE;
-        if (payloadHandle.value != -1 && DuplicateHandle(GetCurrentProcess(),
-                reinterpret_cast<HANDLE>(payloadHandle.value), GetCurrentProcess(),
-                &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-            opened = mdkr_mod_source_from_zip_stream(
-                mdkr_read_handle_stream(reinterpret_cast<intptr_t>(duplicate)));
-        }
+    // Admission reads the staged copy through the same reader the game uses.
+    const std::string payloadPath = (stage_ / filename_).u8string();
+    const int payloadKind = mdkr_path_kind_utf8(payloadPath.c_str());
+    if (payloadKind == MDKR_PATH_DIRECTORY || payloadKind == MDKR_PATH_FILE) {
+        opened = mdkr_mod_source_open(payloadPath.c_str(), payloadKind == MDKR_PATH_FILE);
     }
 #endif
     std::unique_ptr<MdkrModSource, decltype(&mdkr_mod_source_close)> source(
@@ -686,8 +802,8 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
         result.message = std::string("This is not an installable pack: ") + reason;
         return result;
     }
-    // Release validator readers before publication. On Windows the separate
-    // DELETE-capable payload handle retains exact identity across this boundary.
+    // Release validator readers before publication: Windows cannot rename a
+    // folder while a file inside it is open.
     source.reset();
 
     // Last cancellation boundary before the atomic publication point. Once
@@ -695,7 +811,7 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     // in response to a late token that could race with another user's changes.
     if (stop()) return result;
     if (!stageIsDirectory()) return result;
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     struct stat publicationIdentity{};
     if (fstatat(stageFd_, filename_.c_str(), &publicationIdentity, AT_SYMLINK_NOFOLLOW) ||
         publicationIdentity.st_dev != payloadIdentity.st_dev ||
@@ -716,10 +832,10 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     // Staging and destination share a filesystem. Native exclusive moves
     // refuse an existing file or directory atomically. Plain POSIX rename()
     // would replace an existing destination and is not a safe fallback.
-#ifdef _WIN32
-    if (mdkr_handle_rename_child_utf8(payloadHandle.value, modsHandle_, payloadName.c_str())) {
+#if MDKR_PACK_BY_PATH
+    const std::string destinationPath = result.destination.u8string();
+    if (mdkr_rename_exclusive_utf8(payloadPath.c_str(), destinationPath.c_str()) != 0)
         ec = std::error_code(errno, std::generic_category());
-    }
 #elif defined(__APPLE__)
     if (renameatx_np(stageFd_, filename_.c_str(), modsFd_, filename_.c_str(), RENAME_EXCL) != 0)
         ec = std::error_code(errno, std::generic_category());

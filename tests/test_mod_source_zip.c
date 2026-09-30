@@ -16,8 +16,13 @@
  * so these assertions fail against a broken implementation rather than
  * passing for the wrong reason.
  *
- * Every byte this test writes lands beneath the scratch root given by argv[1],
- * which is removed before the first case and after the last.
+ * Every byte this test writes lands beneath the scratch root given by argv[1]
+ * (default: a folder in the temp directory), which is removed before the
+ * first case and after the last.
+ *
+ * Built twice on POSIX: once as shipped there (descriptor-relative reads) and
+ * once with MDKR_PACK_PATH_ARM, the pathname reader Windows ships, so that
+ * arm's behaviour is proved on this host before it runs on Windows.
  */
 #include "mod_source.h"
 #include "mod_source_stream.h"
@@ -26,6 +31,7 @@
 #include "miniz.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +40,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <wchar.h>
 #include <windows.h>
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
@@ -45,6 +52,7 @@
 #endif
 
 static int failures;
+static int skips;
 
 static void expect(int cond, const char *what) {
     if (!cond) { printf("FAIL %s\n", what); failures++; }
@@ -806,24 +814,52 @@ static int visit_identity(const char *rel, void *user) {
     return 0;
 }
 
-static void make_test_link(const char *target, const char *link, int directory) {
+/* 1 when the link exists, 0 when this host cannot create one (reported as a
+ * SKIP line, never a silent pass). `target` is relative to the link's folder.
+ * Windows needs Developer Mode or the privilege for a symbolic link; for a
+ * directory, a junction needs neither, so it is the fallback. */
+static int make_test_link(const char *target, const char *link, int directory) {
 #ifdef _WIN32
-    DWORD flags = (directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0) | 0x2U;
-    char native_target[1024];
-    if (strlen(target) >= sizeof native_target) fatal("link target too long", target);
+    DWORD flags = (directory ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0) |
+                  SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    char native_target[1024], native_link[1024], joined[2100];
+    wchar_t wide_joined[2100], absolute[2100], command[4400], wide_link[1024];
+    char *slash;
+    if (strlen(target) >= sizeof native_target || strlen(link) >= sizeof native_link)
+        fatal("link fixture path too long", link);
     strcpy(native_target, target);
+    strcpy(native_link, link);
     for (char *p = native_target; *p; ++p) if (*p == '/') *p = '\\';
-    if (!CreateSymbolicLinkA(link, native_target, flags)) {
-        if (GetLastError() != ERROR_INVALID_PARAMETER ||
-            !CreateSymbolicLinkA(link, native_target, flags & ~0x2U)) {
-            /* This is a required security witness, not a silent skipped pass.
-             * Windows needs Developer Mode or the symlink privilege. */
-            fatal("symlink fixture requires Windows Developer Mode or privilege", link);
-        }
+    for (char *p = native_link; *p; ++p) if (*p == '/') *p = '\\';
+    if (CreateSymbolicLinkA(native_link, native_target, flags)) return 1;
+    if (!directory) {
+        printf("SKIP a file symbolic link needs Windows Developer Mode\n");
+        skips++;
+        return 0;
     }
+    /* Junction targets must be absolute: resolve against the link's folder. */
+    strcpy(joined, native_link);
+    slash = strrchr(joined, '\\');
+    if (slash == NULL) fatal("link fixture has no parent folder", link);
+    slash[1] = '\0';
+    if (strlen(joined) + strlen(native_target) >= sizeof joined)
+        fatal("link fixture path too long", link);
+    strcat(joined, native_target);
+    if (!MultiByteToWideChar(CP_UTF8, 0, joined, -1, wide_joined, 2100) ||
+        !MultiByteToWideChar(CP_UTF8, 0, native_link, -1, wide_link, 1024) ||
+        _wfullpath(absolute, wide_joined, 2100) == NULL)
+        fatal("resolve junction target", link);
+    swprintf(command, sizeof command / sizeof command[0],
+             L"mklink /J \"%ls\" \"%ls\" >NUL", wide_link, absolute);
+    if (_wsystem(command) == 0 &&
+        GetFileAttributesW(wide_link) != INVALID_FILE_ATTRIBUTES) return 1;
+    printf("SKIP this host could create neither a directory link nor a junction\n");
+    skips++;
+    return 0;
 #else
     (void)directory;
     if (symlink(target, link) != 0) fatal("symlink fixture", link);
+    return 1;
 #endif
 }
 
@@ -846,26 +882,44 @@ static void test_directory_links(void) {
     path2(outside, sizeof outside, g_scratch, "outside-payload.bin");
     write_file(outside, "OUTSIDE", 7);
     path2(link, sizeof link, g_dir_root, "linked.bin");
-    make_test_link("../outside-payload.bin", link, 0);
-    prove_link_bait(link);
-    expect(!mdkr_mod_source_has(source, "linked.bin"), "symlink leaf is not served");
-    expect(mdkr_mod_source_read(source, "linked.bin", bytes, sizeof bytes, &size) !=
-               MDKR_MOD_SOURCE_OK && size == 0,
-           "symlink leaf cannot disclose outside bytes");
-    if (mdkr_unlink_utf8(link) != 0) fatal("unlink fixture", link);
+    if (make_test_link("../outside-payload.bin", link, 0)) {
+        prove_link_bait(link);
+        expect(!mdkr_mod_source_has(source, "linked.bin"), "symlink leaf is not served");
+        expect(mdkr_mod_source_read(source, "linked.bin", bytes, sizeof bytes, &size) ==
+                   MDKR_MOD_SOURCE_REJECTED && size == 0,
+               "symlink leaf is refused and cannot disclose outside bytes");
+        seen = 0;
+        expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 && !(seen & 8),
+               "enumeration does not report a linked file");
+        if (mdkr_unlink_utf8(link) != 0) fatal("unlink fixture", link);
+    }
     path2(outside, sizeof outside, g_scratch, "outside-dir/payload.bin");
     write_file(outside, "OUTSIDE", 7);
     path2(link, sizeof link, g_dir_root, "linked-dir");
-    make_test_link("../outside-dir", link, 1);
+    if (!make_test_link("../outside-dir", link, 1)) {
+        mdkr_mod_source_close(source);
+        return;
+    }
     path2(nested, sizeof nested, link, "payload.bin");
     prove_link_bait(nested);
     expect(!mdkr_mod_source_has(source, "linked-dir/payload.bin"),
            "symlink ancestor is not served");
+    /* macOS reports a linked directory opened O_NOFOLLOW as "not a
+     * directory", so the descriptor arm answers absent there; either way the
+     * outside bytes are never served. */
     expect(mdkr_mod_source_read(source, "linked-dir/payload.bin", bytes, sizeof bytes, &size) !=
                MDKR_MOD_SOURCE_OK && size == 0,
            "symlink ancestor cannot disclose outside bytes");
+    seen = 0;
     expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 && !(seen & 8),
            "enumeration does not enter linked directories");
+    {
+        /* The same refusal through the installer's streaming primitive. */
+        FILE *stream;
+        stream = mdkr_mod_source_open_directory_file(source, "linked-dir/payload.bin");
+        expect(stream == NULL, "directory stream refuses a linked ancestor");
+        if (stream != NULL) fclose(stream);
+    }
 #ifdef _WIN32
     if (mdkr_rmdir_utf8(link) != 0) fatal("unlink directory fixture", link);
 #else
@@ -898,6 +952,7 @@ static void test_directory_root_identity(void) {
     write_file(payload, "REPLACED", 8);
     path2(link, sizeof link, pack, "replacement-only.bin");
     write_file(link, "REPLACED", 8);
+#if !MDKR_PACK_BY_PATH
     expect(mdkr_mod_source_read(source, "payload.bin", bytes, sizeof bytes, &size) ==
                MDKR_MOD_SOURCE_OK && size == 8 && memcmp(bytes, "ORIGINAL", 8) == 0,
            "opened directory source retains its root identity after replacement");
@@ -906,6 +961,19 @@ static void test_directory_root_identity(void) {
         expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 && seen == 3,
                "repeated enumeration retains the opened root and resets its offset");
     }
+#else
+    /* The pathname reader follows the root's current name, exactly as 1.7.0
+     * did. This witness also proves the pathname arm is what this build runs. */
+    expect(mdkr_mod_source_read(source, "payload.bin", bytes, sizeof bytes, &size) ==
+               MDKR_MOD_SOURCE_OK && size == 8 && memcmp(bytes, "REPLACED", 8) == 0,
+           "the pathname reader reads the folder now at the root's name");
+    for (int pass = 0; pass < 2; ++pass) {
+        seen = 0;
+        expect(mdkr_mod_source_enumerate(source, visit_identity, &seen) == 0 &&
+                   seen == (1 | 4),
+               "repeated pathname enumeration lists the current folder completely");
+    }
+#endif
     mdkr_mod_source_close(source);
 }
 
@@ -941,7 +1009,7 @@ static void test_opened_source_adapters(void) {
 #endif
     expect(mdkr_mod_source_from_zip_stream(NULL) == NULL,
            "null ZIP stream is refused");
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     int fd = open(g_dir_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     expect(fd >= 0, "directory adapter fixture opens");
     source = mdkr_mod_source_from_directory_fd(fd);
@@ -951,21 +1019,31 @@ static void test_opened_source_adapters(void) {
     mdkr_mod_source_close(source);
     expect(mdkr_mod_source_from_directory_fd(-1) == NULL,
            "invalid borrowed directory descriptor is refused");
-#else
-    intptr_t handle = mdkr_directory_handle_open_utf8(g_dir_root);
-    expect(handle != -1, "Windows directory adapter fixture opens");
-    source = mdkr_mod_source_from_directory_handle(handle);
-    mdkr_directory_handle_close(handle);
-    expect(source != NULL && mdkr_mod_source_has(source, ENTRY_STORED),
-           "Windows source retains independent ownership after caller closes");
-    mdkr_mod_source_close(source);
-    expect(mdkr_mod_source_from_directory_handle(-1) == NULL,
-           "invalid borrowed Windows handle is refused");
 #endif
 }
 
+/* The default scratch root lives in the temp directory, so the executable runs
+ * from any working directory. */
+static const char *default_scratch(void) {
+    static char path[512];
+#ifdef _WIN32
+    wchar_t wide[400];
+    const DWORD length = GetTempPathW(400, wide);
+    if (length == 0 || length >= 400 ||
+        !WideCharToMultiByte(CP_UTF8, 0, wide, -1, path, (int)sizeof path - 32, NULL, NULL))
+        fatal("locate the temporary directory", "GetTempPathW");
+    strcat(path, "mdkr_mod_source_scratch");
+    for (char *p = path; *p; ++p) if (*p == '\\') *p = '/';
+#else
+    const char *temp = getenv("TMPDIR");
+    if (temp == NULL || temp[0] == '\0') temp = "/tmp";
+    snprintf(path, sizeof path, "%s/mdkr_mod_source_scratch_%ld", temp, (long)getpid());
+#endif
+    return path;
+}
+
 int main(int argc, char **argv) {
-    const char *scratch = argc > 1 ? argv[1] : "mod_source_scratch";
+    const char *scratch = argc > 1 ? argv[1] : default_scratch();
 
     remove_tree(scratch);
     fixture_build(scratch);
@@ -990,7 +1068,11 @@ int main(int argc, char **argv) {
     fixture_free();
     remove_tree(scratch);
 
-    printf(failures ? "FAILURES: %d\n" : "all mod source assertions passed\n",
-           failures);
-    return failures ? 1 : 0;
+    if (failures) {
+        printf("FAIL: %d mod source assertion(s) failed\n", failures);
+        return 1;
+    }
+    printf("PASS: all mod source assertions passed%s\n",
+           skips ? " (with SKIP lines above)" : "");
+    return 0;
 }

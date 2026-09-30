@@ -1,7 +1,14 @@
+// Built twice on POSIX: as shipped there (descriptor-relative installing) and
+// with MDKR_PACK_PATH_ARM, the pathname installer Windows ships, so that arm's
+// logic is proved on this host before it runs on Windows. Every scratch path
+// is under the temp directory; the last line is PASS or FAIL.
 #include "pack_installer.h"
 
 #include "miniz.h"
 #include "mod_source.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -34,6 +41,7 @@ namespace fs = std::filesystem;
 #define REQUIRE(condition) do { \
     if (!(condition)) { \
         std::fprintf(stderr, "pack installer:%d: %s\n", __LINE__, #condition); \
+        std::puts("FAIL: pack installer"); \
         return 1; \
     } \
 } while (0)
@@ -46,17 +54,52 @@ struct TestRoot {
     }
 };
 
+// Built in memory and written through std::filesystem, so a non-ASCII temp
+// directory works on Windows too.
 bool writeZip(const fs::path &path, const char *name, const char *body,
               int compression = MZ_BEST_SPEED, const char *extraBody = nullptr,
               const char *extraName = "art.bin") {
     mz_zip_archive zip{};
-    const bool okay = mz_zip_writer_init_file(&zip, path.string().c_str(), 0) &&
+    void *bytes = nullptr;
+    size_t size = 0;
+    bool okay = mz_zip_writer_init_heap(&zip, 0, 64 * 1024) &&
         mz_zip_writer_add_mem(&zip, name, body, std::strlen(body), compression) &&
         (!extraBody || mz_zip_writer_add_mem(&zip, extraName, extraBody,
                                              std::strlen(extraBody), compression)) &&
-        mz_zip_writer_finalize_archive(&zip);
+        mz_zip_writer_finalize_heap_archive(&zip, &bytes, &size);
     mz_zip_writer_end(&zip);
+    if (okay) {
+        std::ofstream out(path, std::ios::binary);
+        out.write(static_cast<const char *>(bytes), static_cast<std::streamsize>(size));
+        okay = static_cast<bool>(out);
+    }
+    mz_free(bytes);
     return okay;
+}
+
+// A link to a directory. Windows needs Developer Mode (or the privilege) for a
+// symbolic link; a junction needs neither, so it is the fallback. Returns
+// false, after printing a SKIP line, only when neither can be made.
+bool makeDirectoryLink(const fs::path &target, const fs::path &link) {
+    std::error_code error;
+    fs::create_directory_symlink(target, link, error);
+    if (!error) return true;
+#ifdef _WIN32
+    const std::wstring command = L"mklink /J \"" + link.wstring() + L"\" \"" +
+        fs::absolute(target).wstring() + L"\" >NUL";
+    if (_wsystem(command.c_str()) == 0 && fs::exists(fs::symlink_status(link))) return true;
+#endif
+    std::puts("SKIP: this host could create neither a directory link nor a junction");
+    return false;
+}
+
+void removeLink(const fs::path &link) {
+#ifdef _WIN32
+    if (!RemoveDirectoryW(link.c_str())) DeleteFileW(link.c_str());
+#else
+    std::error_code ignored;
+    fs::remove(link, ignored);
+#endif
 }
 
 int main(int argc, char **argv) {
@@ -393,7 +436,10 @@ int main(int argc, char **argv) {
         REQUIRE(fs::file_size(installed.destination) == fs::file_size(input / "race.zip"));
     }
 #endif
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
+    // Descriptor arm only: identity is tracked through pinned descriptors, so
+    // a swap of the payload or of the staging folder is detected. On Windows
+    // the staging hold refuses the swap itself (locked-stage above).
     {
         const auto raceMods = root.path / "payload-replacement";
         const auto held = root.path / "validated-payload.zip";
@@ -468,6 +514,8 @@ int main(int argc, char **argv) {
         }
         REQUIRE(fs::is_regular_file(held / "race.zip"));
     }
+#endif
+#ifndef _WIN32
     // A replaced staging-root link must not publish someone else's payload.
     // Exercise replacement before validation and at the last callback boundary.
     for (unsigned swapAt : {1u, 2u}) {
@@ -612,7 +660,46 @@ int main(int argc, char **argv) {
         REQUIRE(!fs::exists(root.path / "oversized-mods" / "OversizedPack"));
     }
     REQUIRE(fs::is_empty(root.path / "oversized-mods"));
-#ifndef _WIN32
+    // A link inside a pack folder is refused, never followed out of it.
+    {
+        const auto linkedPack = input / "LinkedPack";
+        const auto outside = input / "OutsideFolder";
+        REQUIRE(fs::create_directories(linkedPack));
+        REQUIRE(fs::create_directories(outside));
+        std::ofstream(linkedPack / "pack.ini") << "[pack]\nname=Linked\n";
+        std::ofstream(outside / "secret.bin") << "outside bytes";
+        if (makeDirectoryLink(outside, linkedPack / "shared")) {
+            const auto linkedMods = root.path / "folder-dir-link";
+            {
+                auto linked = PreparedPackInstall::copyPack(linkedPack, linkedMods);
+                const auto result = linked.finalize();
+                REQUIRE(!result.installed);
+                REQUIRE(result.message.find("no links") != std::string::npos);
+            }
+            REQUIRE(fs::is_empty(linkedMods));
+            REQUIRE(fs::file_size(outside / "secret.bin") == 13);
+            removeLink(linkedPack / "shared");
+        }
+    }
+    // Cleanup removes a link planted inside the staging folder as a link: the
+    // folder it points at, outside the mods folder, keeps every byte.
+    {
+        const auto plantMods = root.path / "planted-link";
+        const auto outside = root.path / "planted-target";
+        REQUIRE(fs::create_directories(outside));
+        std::ofstream(outside / "keep.bin") << "keep";
+        bool planted = false;
+        {
+            auto prepared = PreparedPackInstall::copyZip(input / "race.zip", plantMods);
+            const auto stage = fs::directory_iterator(plantMods)->path();
+            planted = makeDirectoryLink(outside, stage / "planted");
+        }
+        if (planted) {
+            REQUIRE(fs::is_empty(plantMods));
+            REQUIRE(fs::file_size(outside / "keep.bin") == 4);
+        }
+    }
+#if !MDKR_PACK_BY_PATH
     // Swap the selected root after its iterator is opened. Every bait file is
     // fixture-owned; a pathname-only copy would follow the replacement link.
     {
@@ -643,6 +730,8 @@ int main(int argc, char **argv) {
         }
         REQUIRE(fs::remove(changing));
     }
+#endif
+#ifndef _WIN32
     fs::create_symlink(input / "Textures.ZIP", folder / "linked.zip");
     {
         auto linked = PreparedPackInstall::copyPack(folder, root.path / "folder-linked");
@@ -673,6 +762,7 @@ int main(int argc, char **argv) {
         REQUIRE(fs::file_size(source) == fs::file_size(installed.destination));
         REQUIRE(!prepared.finalize().installed);
     }
-    std::puts("pack installer tests passed");
+    std::puts(MDKR_PACK_BY_PATH ? "PASS: pack installer (pathname arm)"
+                                : "PASS: pack installer (descriptor arm)");
     return 0;
 }

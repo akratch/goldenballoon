@@ -11,11 +11,11 @@
 #include "mod_registry.h"
 #include "miniz.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -28,10 +28,8 @@ struct MdkrModSource {
     FILE *zip_file;
     mz_zip_archive zip;
     char  root[MDKR_MOD_PATH_MAX];
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     int root_fd; /* Pins directory identity; every payload is opened beneath it. */
-#else
-    intptr_t root_handle;
 #endif
 };
 
@@ -84,7 +82,7 @@ int mdkr_mod_source_path_is_safe(const char *rel) {
 
 /* ----------------------------------------------------------- directory arm */
 
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
 /* rel has passed the common lexical validator. Walk each component relative
  * to an owned directory descriptor: a check-then-fopen path walk would still
  * follow a symlink swapped in after inspection. NONBLOCK prevents a replaced
@@ -132,25 +130,71 @@ static FILE *directory_open_file(MdkrModSource *src, const char *rel) {
     return file;
 }
 #else
-static FILE *directory_open_file(MdkrModSource *src, const char *rel) {
-    char path[MDKR_MOD_PATH_MAX];
-    char *component, *slash;
-    intptr_t parent = mdkr_directory_handle_child_utf8(src->root_handle, ".", 1);
-    intptr_t child;
-    if (parent == -1) return NULL;
-    memcpy(path, rel, strlen(rel) + 1);
-    component = path;
-    while ((slash = strchr(component, '/')) != NULL) {
-        *slash = '\0';
-        child = mdkr_directory_handle_child_utf8(parent, component, 1);
-        mdkr_directory_handle_close(parent);
-        if (child == -1) return NULL;
-        parent = child;
-        component = slash + 1;
+/* Joins with '/', which every platform here accepts. Returns 0 rather than
+ * truncating: a truncated path names a different file, and probing a different
+ * file is worse than not finding one. */
+static int path_join(char *out, size_t out_size, const char *base,
+                     const char *leaf) {
+    size_t base_length;
+    size_t leaf_length;
+
+    if (out == NULL || out_size == 0) return 0;
+    out[0] = '\0';
+    if (base == NULL || leaf == NULL) return 0;
+
+    base_length = strlen(base);
+    while (base_length > 0 &&
+           (base[base_length - 1] == '/' || base[base_length - 1] == '\\')) {
+        base_length--;
     }
-    child = mdkr_directory_handle_child_utf8(parent, component, 0);
-    mdkr_directory_handle_close(parent);
-    return mdkr_read_handle_stream(child);
+    leaf_length = strlen(leaf);
+    if (base_length + 1 + leaf_length + 1 > out_size) return 0;
+
+    memcpy(out, base, base_length);
+    out[base_length] = '/';
+    memcpy(out + base_length + 1, leaf, leaf_length);
+    out[base_length + 1 + leaf_length] = '\0';
+    return 1;
+}
+
+/* The pathname arm: the 1.7.0 reader, plus the descriptor arm's rule that no
+ * link below the root is followed. Every directory between the root and the
+ * file is checked, and the file itself, so a link anywhere in the pack is
+ * refused the same way on every platform. The root itself may resolve through
+ * a link: the player or the registry chose it. On failure errno is ENOENT for
+ * an absent file, ELOOP for a link, and EIO when the query itself failed. */
+static FILE *directory_open_file(MdkrModSource *src, const char *rel) {
+    char full[MDKR_MOD_PATH_MAX];
+    char prefix[MDKR_MOD_PATH_MAX];
+    const char *slash;
+    int kind;
+    FILE *file;
+
+    if (!path_join(full, sizeof full, src->root, rel)) {
+        errno = ENAMETOOLONG;
+        return NULL;
+    }
+    for (slash = strchr(rel, '/'); slash != NULL; slash = strchr(slash + 1, '/')) {
+        char directory[MDKR_MOD_PATH_MAX];
+        memcpy(prefix, rel, (size_t)(slash - rel));
+        prefix[slash - rel] = '\0';
+        if (!path_join(directory, sizeof directory, src->root, prefix)) {
+            errno = ENAMETOOLONG;
+            return NULL;
+        }
+        kind = mdkr_path_kind_utf8(directory);
+        if (kind == MDKR_PATH_DIRECTORY) continue;
+        errno = kind == MDKR_PATH_LINK ? ELOOP : kind < 0 ? EIO : ENOENT;
+        return NULL;
+    }
+    kind = mdkr_path_kind_utf8(full);
+    if (kind != MDKR_PATH_FILE) {
+        errno = kind == MDKR_PATH_LINK ? ELOOP : kind < 0 ? EIO : ENOENT;
+        return NULL;
+    }
+    file = mdkr_fopen_utf8(full, "rb");
+    if (file == NULL && errno != ENOENT) errno = EIO;
+    return file;
 }
 #endif
 
@@ -164,9 +208,7 @@ static int directory_query(MdkrModSource *src, const char *rel, int want_data,
     if (file == NULL && (errno == ENOENT || errno == ENOTDIR)) {
         return MDKR_MOD_SOURCE_ABSENT;
     }
-#ifndef _WIN32
     if (file == NULL && errno == ELOOP) return MDKR_MOD_SOURCE_REJECTED;
-#endif
     if (file == NULL) return MDKR_MOD_SOURCE_IO_ERROR;
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
@@ -276,22 +318,21 @@ static int mod_source_query(MdkrModSource *src, const char *rel, int want_data,
 
 MdkrModSource *mdkr_mod_source_from_zip_stream(FILE *stream) {
     MdkrModSource *src;
-    long end;
     if (stream == NULL) return NULL;
     src = (MdkrModSource *)calloc(1, sizeof *src);
     if (src == NULL) { fclose(stream); return NULL; }
+#if !MDKR_PACK_BY_PATH
     /* calloc leaves the directory capability at 0. Close treats that as a
      * live descriptor, so an unset ZIP source would close stdin. */
-#ifndef _WIN32
     src->root_fd = -1;
-#else
-    src->root_handle = -1;
 #endif
     src->is_zip = 1;
     src->zip_file = stream;
-    if (fseek(stream, 0, SEEK_END) != 0 || (end = ftell(stream)) < 0 ||
-        fseek(stream, 0, SEEK_SET) != 0 ||
-        !mz_zip_reader_init_cfile(&src->zip, stream, (mz_uint64)end, 0)) {
+    /* A zero size tells miniz to measure the archive itself with its 64-bit
+     * seek/tell. ftell() returns a 32-bit long on Windows, which refused
+     * every archive over 2 GiB. */
+    if (fseek(stream, 0, SEEK_SET) != 0 ||
+        !mz_zip_reader_init_cfile(&src->zip, stream, 0, 0)) {
         fclose(stream);
         free(src);
         return NULL;
@@ -299,20 +340,12 @@ MdkrModSource *mdkr_mod_source_from_zip_stream(FILE *stream) {
     return src;
 }
 
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
 MdkrModSource *mdkr_mod_source_from_directory_fd(int fd) {
     MdkrModSource *src = (MdkrModSource *)calloc(1, sizeof *src);
     if (src == NULL) return NULL;
     src->root_fd = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (src->root_fd < 0) { free(src); return NULL; }
-    return src;
-}
-#else
-MdkrModSource *mdkr_mod_source_from_directory_handle(intptr_t handle) {
-    MdkrModSource *src = (MdkrModSource *)calloc(1, sizeof *src);
-    if (src == NULL) return NULL;
-    src->root_handle = mdkr_directory_handle_child_utf8(handle, ".", 1);
-    if (src->root_handle == -1) { free(src); return NULL; }
     return src;
 }
 #endif
@@ -332,33 +365,27 @@ MdkrModSource *mdkr_mod_source_open(const char *path, int is_zip) {
 
     src = (MdkrModSource *)calloc(1, sizeof *src);
     if (src == NULL) return NULL;
-#ifndef _WIN32
-    src->root_fd = -1;
-#else
-    src->root_handle = -1;
-#endif
     memcpy(src->root, path, length + 1);
-    src->is_zip = is_zip ? 1 : 0;
-
-    if (!src->is_zip) {
-#ifdef _WIN32
-        src->root_handle = mdkr_directory_handle_open_utf8(path);
-        if (src->root_handle == -1) {
+#if MDKR_PACK_BY_PATH
+    {
+        /* The caller chooses the root, so it may resolve through a link;
+         * payload descendants may not. */
+        int is_directory = 0;
+        if (mdkr_path_query_utf8(path, NULL, NULL, &is_directory) != 0 ||
+            !is_directory) {
             free(src);
             return NULL;
         }
-#else
-        /* The caller chooses the root; payload descendants may not be links.
-         * Pin the selected directory even if its pathname later changes. */
-        src->root_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        if (src->root_fd < 0) {
-            free(src);
-            return NULL;
-        }
-#endif
-        return src;
     }
-
+#else
+    /* The caller chooses the root; payload descendants may not be links.
+     * Pin the selected directory even if its pathname later changes. */
+    src->root_fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (src->root_fd < 0) {
+        free(src);
+        return NULL;
+    }
+#endif
     return src;
 }
 
@@ -373,10 +400,8 @@ void mdkr_mod_source_close(MdkrModSource *src) {
         mz_zip_reader_end(&src->zip);
         if (src->zip_file != NULL) fclose(src->zip_file);
     }
-#ifndef _WIN32
+#if !MDKR_PACK_BY_PATH
     if (src->root_fd >= 0) close(src->root_fd);
-#else
-    mdkr_directory_handle_close(src->root_handle);
 #endif
     free(src);
 }
@@ -394,52 +419,53 @@ void mdkr_mod_source_close(MdkrModSource *src) {
  * the cheap "is this a Rice pack?" probe walked and stat()ed every file in it.
  */
 
-#ifdef _WIN32
-static int directory_enumerate(intptr_t handle, const char *prefix, int depth,
+#if MDKR_PACK_BY_PATH
+static int directory_enumerate(const char *root, const char *prefix, int depth,
                                MdkrModSourceVisit visit, void *user);
-typedef struct DirectoryVisitContext {
-    intptr_t handle;
+typedef struct DirectoryWalk {
+    const char *root;
     const char *prefix;
     int depth;
     MdkrModSourceVisit visit;
     void *user;
-} DirectoryVisitContext;
+} DirectoryWalk;
 
-static int directory_visit_child(const char *name, int directory, void *opaque) {
-    DirectoryVisitContext *context = (DirectoryVisitContext *)opaque;
+static int directory_walk_entry(const char *name, int kind, void *opaque) {
+    const DirectoryWalk *walk = (const DirectoryWalk *)opaque;
     char rel[MDKR_MOD_PATH_MAX];
     int written;
-    intptr_t child;
-    if (name[0] == '.') return 0;
-    written = context->prefix[0] == '\0'
+    if (name[0] == '.') return 0;   /* '.', '..', and editor bookkeeping */
+    written = walk->prefix[0] == '\0'
         ? snprintf(rel, sizeof rel, "%s", name)
-        : snprintf(rel, sizeof rel, "%s/%s", context->prefix, name);
+        : snprintf(rel, sizeof rel, "%s/%s", walk->prefix, name);
     if (written < 0 || (size_t)written >= sizeof rel ||
         !mdkr_mod_source_path_is_safe(rel)) return 0;
-    /* Revalidate with a no-follow child open, including when a directory
-     * entry was swapped after the OS enumerated it. */
-    child = mdkr_directory_handle_child_utf8(context->handle, name, directory);
-    if (child == -1) return 0;
-    if (directory) {
-        return directory_enumerate(child, rel, context->depth + 1,
-                                    context->visit, context->user) == 2;
+    /* Links are never followed; the listing reports them as links. */
+    if (kind == MDKR_PATH_DIRECTORY) {
+        /* A subdirectory that will not open is not the whole walk failing. */
+        return directory_enumerate(walk->root, rel, walk->depth + 1,
+                                   walk->visit, walk->user) == 2;
     }
-    mdkr_directory_handle_close(child);
-    return context->visit(rel, context->user) != 0;
+    if (kind == MDKR_PATH_FILE) return walk->visit(rel, walk->user) != 0;
+    return 0;
 }
 
-static int directory_enumerate(intptr_t handle, const char *prefix, int depth,
+static int directory_enumerate(const char *root, const char *prefix, int depth,
                                MdkrModSourceVisit visit, void *user) {
-    DirectoryVisitContext context = {handle, prefix, depth, visit, user};
-    int result;
-    if (handle == -1) return 1;
-    if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX) {
-        mdkr_directory_handle_close(handle);
-        return 0;
+    char here[MDKR_MOD_PATH_MAX];
+    DirectoryWalk walk;
+    if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX) return 0;
+    if (prefix[0] == '\0') {
+        if (snprintf(here, sizeof here, "%s", root) >= (int)sizeof here) return 1;
+    } else if (!path_join(here, sizeof here, root, prefix)) {
+        return 1;
     }
-    result = mdkr_directory_handle_visit(handle, directory_visit_child, &context);
-    mdkr_directory_handle_close(handle);
-    return result;
+    walk.root = root;
+    walk.prefix = prefix;
+    walk.depth = depth;
+    walk.visit = visit;
+    walk.user = user;
+    return mdkr_directory_list_utf8(here, directory_walk_entry, &walk);
 }
 #else
 /* Takes ownership of fd on every path. Each recursive directory is opened
@@ -488,10 +514,8 @@ int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
                               void *user) {
     if (src == NULL || visit == NULL) return 1;
     if (!src->is_zip) {
-#ifdef _WIN32
-        const int walked = directory_enumerate(
-            mdkr_directory_handle_child_utf8(src->root_handle, ".", 1),
-            "", 0, visit, user);
+#if MDKR_PACK_BY_PATH
+        const int walked = directory_enumerate(src->root, "", 0, visit, user);
 #else
         /* openat rather than dup: independent directory offsets make repeated
          * enumerations and nested visitor reads deterministic. */

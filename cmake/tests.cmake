@@ -147,6 +147,29 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_pack_installer_test PRIVATE m)
     endif()
     add_test(NAME pack_installer COMMAND mdkr_pack_installer_test)
+    # Windows installs by pathname. The same sources built with
+    # MDKR_PACK_PATH_ARM run that installer here, so its logic is proved on
+    # every host the suite runs on, not only on Windows.
+    if(NOT WIN32)
+        add_executable(mdkr_pack_installer_path_test
+            ${CMAKE_SOURCE_DIR}/tests/test_pack_installer.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/pack_installer.cpp
+            ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+            ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+            ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+            ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+            ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+            ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+        target_include_directories(mdkr_pack_installer_path_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/platform/app
+            ${CMAKE_SOURCE_DIR}/platform
+            ${CMAKE_SOURCE_DIR}/lib/miniz)
+        target_compile_definitions(mdkr_pack_installer_path_test PRIVATE
+            MDKR_PACK_PATH_ARM=1)
+        target_compile_features(mdkr_pack_installer_path_test PRIVATE cxx_std_17)
+        target_link_libraries(mdkr_pack_installer_path_test PRIVATE Threads::Threads m)
+        add_test(NAME pack_installer_path COMMAND mdkr_pack_installer_path_test)
+    endif()
 
     add_executable(mdkr_audio_bank_parser_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_bank_parser.c)
@@ -1074,6 +1097,24 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME mod_source_zip COMMAND mdkr_mod_source_zip_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_source_scratch)
+    # Windows reads folder packs by pathname. The same sources built with
+    # MDKR_PACK_PATH_ARM run that reader here, so its behaviour is proved on
+    # every host the suite runs on, not only on Windows.
+    if(NOT WIN32)
+        add_executable(mdkr_mod_source_zip_path_test
+            ${CMAKE_SOURCE_DIR}/tests/test_mod_source_zip.c
+            ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+            ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+            ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+        target_include_directories(mdkr_mod_source_zip_path_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/platform
+            ${CMAKE_SOURCE_DIR}/lib/miniz)
+        target_compile_definitions(mdkr_mod_source_zip_path_test PRIVATE
+            MDKR_PACK_PATH_ARM=1)
+        target_link_libraries(mdkr_mod_source_zip_path_test PRIVATE m)
+        add_test(NAME mod_source_zip_path COMMAND mdkr_mod_source_zip_path_test
+                 ${CMAKE_CURRENT_BINARY_DIR}/mod_source_path_scratch)
+    endif()
 
     # Bounds-checked access to an entry INSIDE an asset section. Each aborting
     # case runs in a forked child and asserts WTERMSIG == SIGABRT plus the
