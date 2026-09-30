@@ -80,11 +80,59 @@ int mdkr_windows_quote_argument_utf8(const char *argument, char *output,
 #include <winternl.h>
 
 static void fail_windows(DWORD error) {
-    (void)error;
-    /* MinGW and MSVC do not expose one common public Win32->errno mapper. The
-     * underlying wide CRT calls set errno themselves; direct Win32 calls use a
-     * stable generic failure while their callers retain GetLastError details. */
-    errno = EIO;
+    /* MinGW exposes no public Win32->errno mapper. Map the failures a caller
+     * can act on or explain; everything else stays a generic I/O error. */
+    switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+    case ERROR_INVALID_DRIVE:
+        errno = ENOENT;
+        break;
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+        errno = EEXIST;
+        break;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_WRITE_PROTECT:
+        errno = EACCES;
+        break;
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+    case ERROR_BUSY:
+        errno = EBUSY;
+        break;
+    case ERROR_DIR_NOT_EMPTY:
+        errno = ENOTEMPTY;
+        break;
+    case ERROR_DIRECTORY:
+        errno = ENOTDIR;
+        break;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+        errno = ENOSPC;
+        break;
+    case ERROR_NOT_SAME_DEVICE:
+        errno = EXDEV;
+        break;
+    case ERROR_NOT_SUPPORTED:
+    case ERROR_INVALID_FUNCTION:
+        errno = ENOTSUP;
+        break;
+    case ERROR_INVALID_NAME:
+    case ERROR_BAD_PATHNAME:
+        errno = EINVAL;
+        break;
+    case ERROR_FILENAME_EXCED_RANGE:
+        errno = ENAMETOOLONG;
+        break;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:
+        errno = ENOMEM;
+        break;
+    default:
+        errno = EIO;
+        break;
+    }
 }
 
 static wchar_t *utf8_to_extended_path(const char *path) {
@@ -611,6 +659,140 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? 1 : 0;
 }
 
+/* Only name surrogates (symbolic links, junctions, mount points) redirect a
+ * path somewhere else. Cloud-file placeholders and deduplicated files are
+ * reparse points too, but they hold ordinary data and are read in place. */
+static int windows_entry_kind(DWORD attributes, DWORD tag) {
+    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 &&
+        IsReparseTagNameSurrogate(tag)) {
+        return MDKR_PATH_LINK;
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) return MDKR_PATH_DIRECTORY;
+    if ((attributes & FILE_ATTRIBUTE_DEVICE) != 0) return MDKR_PATH_OTHER;
+    return MDKR_PATH_FILE;
+}
+
+int mdkr_path_kind_utf8(const char *path) {
+    wchar_t *wide = utf8_to_extended_path(path);
+    DWORD attributes;
+    DWORD tag = 0;
+    if (wide == NULL) return -1;
+    attributes = GetFileAttributesW(wide);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        free(wide);
+        switch (error) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_INVALID_NAME:
+        case ERROR_BAD_PATHNAME:
+        case ERROR_DIRECTORY:
+        case ERROR_INVALID_DRIVE:
+            return MDKR_PATH_MISSING;
+        default:
+            fail_windows(error);
+            return -1;
+        }
+    }
+    if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        /* The attribute says "reparse point"; only the tag says which kind. A
+         * point whose tag cannot be read is treated as a link, never followed. */
+        WIN32_FIND_DATAW data;
+        const HANDLE find = FindFirstFileW(wide, &data);
+        if (find == INVALID_HANDLE_VALUE) {
+            free(wide);
+            return MDKR_PATH_LINK;
+        }
+        tag = data.dwReserved0;
+        FindClose(find);
+    }
+    free(wide);
+    return windows_entry_kind(attributes, tag);
+}
+
+int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
+                             void *user) {
+    wchar_t *base;
+    wchar_t *pattern;
+    size_t length;
+    HANDLE find;
+    WIN32_FIND_DATAW data;
+    int result = 0;
+    if (visit == NULL) {
+        errno = EINVAL;
+        return 1;
+    }
+    base = utf8_to_extended_path(path);
+    if (base == NULL) return 1;
+    length = wcslen(base);
+    pattern = (wchar_t *)calloc(length + 3u, sizeof(*pattern));
+    if (pattern == NULL) {
+        free(base);
+        return 1;
+    }
+    wcscpy(pattern, base);
+    free(base);
+    if (length == 0 || pattern[length - 1] != L'\\') wcscat(pattern, L"\\");
+    wcscat(pattern, L"*");
+    find = FindFirstFileW(pattern, &data);
+    free(pattern);
+    if (find == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        /* An empty volume root has no "." or ".." to report. */
+        if (error == ERROR_FILE_NOT_FOUND) return 0;
+        fail_windows(error);
+        return 1;
+    }
+    do {
+        char *name = NULL;
+        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) {
+            continue;
+        }
+        if (wide_to_utf8_alloc(data.cFileName, &name) != 0) continue;
+        if (visit(name, windows_entry_kind(data.dwFileAttributes, data.dwReserved0),
+                  user) != 0) {
+            result = 2;
+        }
+        free(name);
+    } while (result == 0 && FindNextFileW(find, &data));
+    if (result == 0 && GetLastError() != ERROR_NO_MORE_FILES) {
+        fail_windows(GetLastError());
+        result = 1;
+    }
+    FindClose(find);
+    return result;
+}
+
+int mdkr_rename_exclusive_utf8(const char *from, const char *to) {
+    wchar_t *wide_from = utf8_to_extended_path(from);
+    wchar_t *wide_to = utf8_to_extended_path(to);
+    int result = -1;
+    if (wide_from != NULL && wide_to != NULL) {
+        for (int attempt = 0;; ++attempt) {
+            DWORD error;
+            /* No MOVEFILE_REPLACE_EXISTING and no MOVEFILE_COPY_ALLOWED: a
+             * same-volume rename that fails when the name is taken. */
+            if (MoveFileExW(wide_from, wide_to, 0)) {
+                result = 0;
+                break;
+            }
+            error = GetLastError();
+            /* Security scanners and indexers briefly open freshly written
+             * files; a rename inside that window is refused transiently. */
+            if ((error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED ||
+                 error == ERROR_LOCK_VIOLATION) && attempt < 9) {
+                Sleep(50);
+                continue;
+            }
+            fail_windows(error);
+            break;
+        }
+    }
+    free(wide_from);
+    free(wide_to);
+    return result;
+}
+
 /* Convert one UTF-8 argument into the quoted wide form the Windows parser
  * recovers verbatim. Returns NULL and leaves errno set on failure. */
 static wchar_t *quoted_wide_argument(const char *argument) {
@@ -820,9 +1002,48 @@ void mdkr_file_lock_release(MdkrFileLock *lock) {
     if (lock == NULL || lock->handle == (intptr_t)-1) return;
     handle = (HANDLE)lock->handle;
     memset(&overlapped, 0, sizeof(overlapped));
+    /* A directory hold has no byte-range lock; this fails harmlessly there. */
     (void)UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &overlapped);
     CloseHandle(handle);
     lock->handle = (intptr_t)-1;
+}
+
+int mdkr_directory_hold_utf8(const char *path, MdkrFileLock *hold) {
+    wchar_t *wide;
+    HANDLE handle;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (hold == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    hold->handle = (intptr_t)-1;
+    wide = utf8_to_extended_path(path);
+    if (wide == NULL) return -1;
+    /* DELETE access without FILE_SHARE_DELETE: a second holder, a rename and a
+     * delete of this directory all need DELETE access, which this handle's
+     * sharing refuses. Listing it and changing its contents do not. */
+    handle = CreateFileW(wide, DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                         NULL);
+    free(wide);
+    if (handle == INVALID_HANDLE_VALUE) {
+        fail_windows(GetLastError());
+        return -1;
+    }
+    if (!GetFileInformationByHandle(handle, &info)) {
+        fail_windows(GetLastError());
+        CloseHandle(handle);
+        return -1;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        CloseHandle(handle);
+        errno = (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ? ELOOP : ENOTDIR;
+        return -1;
+    }
+    hold->handle = (intptr_t)handle;
+    return 0;
 }
 
 int mdkr_running_executable_path_utf8(char **output) {
@@ -869,10 +1090,18 @@ int mdkr_running_executable_path_utf8(char **output) {
 
 #include <sys/stat.h>
 #include <sys/file.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
+
+/* RENAME_NOREPLACE's value is part of the Linux renameat2 ABI; older C
+ * libraries do not declare it. */
+#define MDKR_RENAME_NOREPLACE 1
 
 extern char **environ;
 
@@ -920,6 +1149,71 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     struct stat status;
     if (path == NULL || lstat(path, &status) != 0) return -1;
     return S_ISLNK(status.st_mode) ? 1 : 0;
+}
+static int posix_entry_kind(const struct stat *status) {
+    if (S_ISLNK(status->st_mode)) return MDKR_PATH_LINK;
+    if (S_ISDIR(status->st_mode)) return MDKR_PATH_DIRECTORY;
+    if (S_ISREG(status->st_mode)) return MDKR_PATH_FILE;
+    return MDKR_PATH_OTHER;
+}
+int mdkr_path_kind_utf8(const char *path) {
+    struct stat status;
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (lstat(path, &status) != 0) {
+        return errno == ENOENT || errno == ENOTDIR ? MDKR_PATH_MISSING : -1;
+    }
+    return posix_entry_kind(&status);
+}
+int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
+                             void *user) {
+    DIR *directory;
+    int result = 0;
+    if (path == NULL || visit == NULL) {
+        errno = EINVAL;
+        return 1;
+    }
+    directory = opendir(path);
+    if (directory == NULL) return 1;
+    while (result == 0) {
+        struct dirent *entry;
+        struct stat status;
+        errno = 0;
+        entry = readdir(directory);
+        if (entry == NULL) {
+            if (errno != 0) result = 1;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        if (fstatat(dirfd(directory), entry->d_name, &status,
+                    AT_SYMLINK_NOFOLLOW) != 0) {
+            if (errno == ENOENT) continue; /* removed while listing */
+            result = 1;
+            break;
+        }
+        if (visit(entry->d_name, posix_entry_kind(&status), user) != 0) result = 2;
+    }
+    closedir(directory);
+    return result;
+}
+int mdkr_rename_exclusive_utf8(const char *from, const char *to) {
+    if (from == NULL || to == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+#if defined(__APPLE__)
+    return renamex_np(from, to, RENAME_EXCL);
+#elif defined(__linux__) && defined(SYS_renameat2)
+    return (int)syscall(SYS_renameat2, AT_FDCWD, from, AT_FDCWD, to,
+                        MDKR_RENAME_NOREPLACE);
+#else
+    errno = ENOTSUP;
+    return -1;
+#endif
 }
 int mdkr_exec_replace_utf8(const char *path, const char *const *arguments) {
     /* POSIX carries the argument vector across exec verbatim, so there is no
@@ -1047,6 +1341,28 @@ void mdkr_file_lock_release(MdkrFileLock *lock) {
     (void)flock(descriptor, LOCK_UN);
     (void)close(descriptor);
     lock->handle = -1;
+}
+int mdkr_directory_hold_utf8(const char *path, MdkrFileLock *hold) {
+    int descriptor;
+    if (hold == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    hold->handle = -1;
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    descriptor = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (descriptor < 0) return -1;
+    if (flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+        const int saved = errno == EWOULDBLOCK ? EBUSY : errno;
+        close(descriptor);
+        errno = saved;
+        return -1;
+    }
+    hold->handle = (intptr_t)descriptor;
+    return 0;
 }
 int mdkr_running_executable_path_utf8(char **output) {
     if (output == NULL) {

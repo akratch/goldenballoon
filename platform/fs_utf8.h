@@ -70,6 +70,45 @@ int mdkr_path_query_utf8(const char *path, int *exists,
  * point, 0 for an ordinary entry, and -1 when it cannot be queried. */
 int mdkr_path_is_link_or_reparse_utf8(const char *path);
 
+/* ---- Pathname primitives for reading and installing content packs ----
+ *
+ * Windows reads and installs packs by pathname through these calls. POSIX
+ * production code works relative to pinned directory descriptors instead and
+ * runs these only in the tests that execute the pathname logic on POSIX. */
+typedef enum MdkrPathKind {
+    MDKR_PATH_MISSING = 0,
+    MDKR_PATH_FILE = 1,
+    MDKR_PATH_DIRECTORY = 2,
+    /* A POSIX symbolic link, or a Windows name-surrogate reparse point
+     * (symbolic link, junction, mount point). Never followed. Other Windows
+     * reparse points -- cloud-file placeholders, deduplicated files -- report
+     * the kind of data they hold. */
+    MDKR_PATH_LINK = 3,
+    /* FIFO, socket, device. */
+    MDKR_PATH_OTHER = 4
+} MdkrPathKind;
+
+/** What `path` itself is, never following a final link. Returns an
+ * MdkrPathKind, or -1 with errno set when the entry exists but could not be
+ * queried. A missing ancestor or an unusable name reports MDKR_PATH_MISSING. */
+int mdkr_path_kind_utf8(const char *path);
+
+/** Visit every entry of directory `path` except "." and "..", with its kind as
+ * mdkr_path_kind_utf8 reports it. A non-zero visitor return stops the listing.
+ * Names that are not valid Unicode are skipped. Returns 0 when the listing
+ * completed, 1 when the directory could not be listed, 2 when the visitor
+ * stopped it. */
+typedef int (*MdkrDirectoryVisit)(const char *name, int kind, void *user);
+int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
+                             void *user);
+
+/** Rename a file or directory within one volume, refusing with EEXIST to
+ * replace anything already named `to` (a dangling link included). There is
+ * no check-then-rename fallback: where the filesystem cannot refuse
+ * replacement atomically the call fails (ENOTSUP, EOPNOTSUPP or EINVAL).
+ * Returns 0, or -1 with errno set. */
+int mdkr_rename_exclusive_utf8(const char *from, const char *to);
+
 /** Replace this process with `path`, passing the NULL-terminated UTF-8
  * `arguments` after argv[0] (pass NULL for none). Returns errno only when
  * replacement fails.
@@ -113,6 +152,15 @@ typedef struct MdkrFileLock {
 } MdkrFileLock;
 int mdkr_file_lock_acquire_utf8(const char *path, MdkrFileLock *lock);
 void mdkr_file_lock_release(MdkrFileLock *lock);
+
+/** Hold a directory as a live transaction's workspace (see the pathname
+ * primitives above). While it is held, a second hold on the same directory,
+ * from any process, fails with EBUSY; the operating system drops the hold
+ * when the process ends, so a crash leaves nothing held. Windows also refuses
+ * to rename or delete a held directory, while its contents stay freely
+ * writable. Refuses a link or non-directory. Release with
+ * mdkr_file_lock_release(). Returns 0, or -1 with errno set. */
+int mdkr_directory_hold_utf8(const char *path, MdkrFileLock *hold);
 
 /* Resolve the executable that is actually running, rather than trusting a
  * potentially PATH-relative argv[0]: GetModuleFileNameW on Windows,
