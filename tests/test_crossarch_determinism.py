@@ -272,10 +272,6 @@ class ContractTests(unittest.TestCase):
         self.assertIn(11, gate.DEFAULT_LEVELS)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ArchitectureFamilyTests(unittest.TestCase):
     """Apple's slice sub-variants must not read as a different architecture."""
 
@@ -300,3 +296,7 @@ class ArchitectureFamilyTests(unittest.TestCase):
         problems = gate.architecture_problems(("i386",), ("x86_64",))
         self.assertTrue(problems)
         self.assertIn("unrecognised", problems[0])
+
+
+if __name__ == "__main__":
+    unittest.main()
