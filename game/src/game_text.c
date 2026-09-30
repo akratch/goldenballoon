@@ -324,9 +324,8 @@ static s16 game_text_table_entry_count(void) {
     }
     /* Same DMA landing pad set_current_text() uses: entries[0..31] is the table
      * scratch inside the 0x800 allocation (the message buffers start at
-     * entries[32]). An asset_load() destination must be an arena address --
-     * osPiStartDma resolves it through the 32-bit arena token -- so a host stack
-     * buffer is not a legal target here. */
+     * entries[32]). Reuse that bounded scratch rather than allocating another
+     * buffer. Native asset_load() preserves the full host destination pointer. */
     scratch = gGameTextTable[0]->entries;
     for (word = 0; word < sectionWords; word += DKR_GAME_TEXT_SCRATCH_WORDS) {
         chunk = sectionWords - word;

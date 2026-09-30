@@ -21,21 +21,12 @@ static inline MdkrArenaToken mdkr_arena_token_from_host(const void *pointer) {
     return (MdkrArenaToken)(uintptr_t)pointer;
 }
 
-/* Legacy DMA callers may still pass zero-extended arena tokens. Widen one
- * only when the result lands in the live arena. A low host pointer outside
- * that window keeps its own address; NULL is never reconstructed. */
-static inline void *mdkr_dma_destination(void *pointer, uintptr_t arena_high,
-                                        const void *arena_base, size_t arena_size) {
-    uintptr_t address = (uintptr_t)pointer;
-    uintptr_t base = (uintptr_t)arena_base;
-    uintptr_t reconstructed;
-    if (address == 0 || arena_base == NULL || arena_size == 0 ||
-        arena_size > UINTPTR_MAX - base) return pointer;
-    if (address >= base && address < base + arena_size) return pointer;
-    if (address > UINT32_MAX) return pointer;
-    reconstructed = arena_high | address;
-    if (reconstructed >= base && reconstructed < base + arena_size)
-        return (void *)reconstructed;
+/* Native PI destinations are host pointers: asset DMA preserves uintptr_t
+ * end-to-end and audio supplies its buffer pointer directly. Never infer an
+ * arena token from pointer bits, even when reconstruction would land inside
+ * the arena: a genuine low host allocation can have the same bits. Any future
+ * token caller must resolve its explicit token before entering this boundary. */
+static inline void *mdkr_dma_destination(void *pointer) {
     return pointer;
 }
 

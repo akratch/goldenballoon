@@ -1145,9 +1145,8 @@ s32 osPiStartDma(OSIoMesg *mb, s32 pri, s32 dir, u32 devAddr,
                  void *dramAddr, u32 size, OSMesgQueue *mq) {
     int readStatus;
     (void)pri; (void)dir;
-    /* Preserve full native destinations; widen only legacy arena tokens. */
-    void *dst = mdkr_dma_destination(dramAddr, g_dkrArenaHi,
-                                    g_dkrArenaBase, g_dkrArenaSize);
+    /* Both native callers supply host pointers, never truncated tokens. */
+    void *dst = mdkr_dma_destination(dramAddr);
     readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
     if (mq) osSendMesg(mq, mb ? (OSMesg)mb : (OSMesg)0, OS_MESG_NOBLOCK);
     return readStatus;
@@ -1155,8 +1154,7 @@ s32 osPiStartDma(OSIoMesg *mb, s32 pri, s32 dir, u32 devAddr,
 s32 osPiRawStartDma(s32 dir, u32 devAddr, void *dramAddr, u32 size) {
     int readStatus;
     (void)dir;
-    void *dst = mdkr_dma_destination(dramAddr, g_dkrArenaHi,
-                                    g_dkrArenaBase, g_dkrArenaSize);
+    void *dst = mdkr_dma_destination(dramAddr);
     readStatus = platform_rom_read(devAddr, dst, (int32_t)size);
     return readStatus;
 }

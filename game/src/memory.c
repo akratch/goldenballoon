@@ -236,7 +236,8 @@ void mempool_init_main(void) {
     /* PLAN decision 2: RDRAM is a single contiguous, 16 MB-aligned malloc arena
      * rather than a fixed N64 address range. The alignment keeps all arena
      * pointers within one 4 GB window so the game's `(u32)ptr` truncations
-     * round-trip (see stubs_dkr.c osPiStartDma / dkr_lo32_to_ptr). */
+     * round-trip through dkr_lo32_to_ptr. Native PI DMA separately preserves
+     * host pointers and must not infer tokens from their numeric addresses. */
     void *arena = dkr_arena_init(DKR_ARENA_SIZE);
     gNumberOfMemoryPools = -1;
     mempool_init((MemoryPoolSlot *)arena, (s32)DKR_ARENA_SIZE, MAIN_POOL_SLOT_COUNT);
