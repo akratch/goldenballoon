@@ -2857,6 +2857,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/tests/test_ainode_route.c
             ${CMAKE_SOURCE_DIR}/game/src/objects.c
             ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
+        # 1.8 guards in weather_reset and clear_lap_records, by behaviour.
+        mdkr_add_engine_unit_test(mdkr_engine_guards_test engine_guards
+            ${CMAKE_SOURCE_DIR}/tests/test_engine_guards.c
+            ${CMAKE_SOURCE_DIR}/game/src/weather.c
+            ${CMAKE_SOURCE_DIR}/game/src/thread3_main.c
+            ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
         # Time Trial record saves: identical bytes whatever the memory pool
         # held, 1.7.0 residue still loads, codecs use the retail inventory.
         mdkr_add_engine_unit_test(mdkr_save_records_test save_records

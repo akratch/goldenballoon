@@ -399,6 +399,8 @@ production `tracks.c` walker. MinGW additionally requires supported
 link-time optimization to discard unrelated engine references before linking;
 configuration fails if that capability is unavailable rather than omitting the
 test. GNU link-time work for this target is limited to one compiler worker.
+`ainode_route`, `engine_guards` and `save_records` link production engine files
+the same way, through `mdkr_add_engine_unit_test` in `cmake/tests.cmake`.
 
 The CI contract also pins Windows portable-settings read-back to a literal,
 whole-line match against the fresh process's read log. Its controls cover the
@@ -3032,6 +3034,25 @@ recovery callers, initialized plane/item state, exclusive sound bounds, and
 both special-vehicle mappings. It deletes every required fragment in memory and
 must reject each mutation, so its source assertions have executable failure
 directions.
+
+The guards added in 1.8 are not pinned as source text. Where a guard can be
+exercised without a ROM it has a behavioural unit, which this gate also runs:
+`ainode_route` (the AI-node rebuild's duplicate-ID, stale-link and cost guards,
+the route search's stale-link checks, and the route search against the original
+algorithm), `engine_guards` (`weather_reset` refuses a negative weather type
+before tearing anything down; `clear_lap_records` clears appended courses
+instead of reading defaults past the retail asset) and `save_records` (all four
+progress and record codecs use the retail save inventory). The rest are token
+checks of the essential guard inside the function that needs it, in the code
+the native build compiles: whitespace, line breaks, comments and braces do not
+matter, nothing is counted, and an `ordered` guard must come before the read it
+protects. The controls delete each guard's tokens, reverse each order and plant
+each forbidden form (every one must fail), and rewrite every guarded file with a
+comment and a line break between all tokens (every guard must still pass).
+Deleting the empty-batch skip in `tracks.c`, caching a failed object-header
+load, reading an object-map reference before resolving it, or sizing the
+redirected level-header load from the unchecked span each turns the gate red;
+rewording a guard's comment or bracing its body does not.
 
 ## Two ways a gate lies — read this before adding a check or a diagnostic
 
