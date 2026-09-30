@@ -9,7 +9,7 @@
 #include "app_ui_policy.h"
 #include "file_dialog.h"
 #include "file_browser_ui.h"
-#include "pack_installer.h"
+#include "pack_install_job.h"
 #include <future>
 #include <atomic>
 #include <memory>
@@ -58,6 +58,7 @@ void drawContentPanel(LauncherState &s, LauncherAction &out);
 void servicePackInstall(bool quitting);
 void cancelPackInstall();
 void finishPackInstallForExit();
+void reclaimAbandonedPackStaging();
 void drawAboutPanel(LauncherState &s, LauncherAction &out);
 
 const Panel kPanels[] = {
@@ -1157,6 +1158,7 @@ struct LauncherNetworkShutdown {
 
 Launcher::Launcher()
     : networkShutdown_(std::make_unique<LauncherNetworkShutdown>()) {
+    reclaimAbandonedPackStaging();
     /* The shipped default is the cloud transport (the compiled https Party
      * service). Task 5 wires a UI toggle to selectPartyTransport(Lan) for
      * zero-internet local play; routing both factories through this one seam is
@@ -1508,74 +1510,33 @@ void acceptCharacterPreviewRequest(
  * Every outcome ends in one sentence the player can act on. "It did nothing and
  * did not say why" is the failure this whole destination exists to end.
  */
-std::string g_packInstallNote;
-struct PackInstallJob {
-    std::shared_ptr<std::atomic<bool>> cancel;
-    std::future<PreparedPackInstall> result;
-    ~PackInstallJob() {
-        // Signal before future destruction joins the worker. Its token remains
-        // alive until copying and partial-file cleanup have finished.
-        if (cancel) cancel->store(true);
-    }
-} g_packInstallJob;
+PackInstallJob g_packInstall;
 FileBrowserUi g_packBrowser;
 
 void cancelPackInstall() {
-    if (g_packInstallJob.cancel) g_packInstallJob.cancel->store(true);
+    g_packInstall.cancel();
 }
 
 void finishPackInstallForExit() {
-    cancelPackInstall();
-    if (!g_packInstallJob.result.valid()) return;
-    try {
-        // Explicit owner cleanup, before launcher/host teardown. Never publish
-        // a completed-but-unconsumed pack as a side effect of quitting.
-        auto discarded = g_packInstallJob.result.get();
-    } catch (const std::exception &) {
-        // Worker-local staging is RAII-owned, including exceptional exits.
-    }
+    // Before launcher/host teardown. Never publishes a finished copy.
+    g_packInstall.finishForExit();
+}
+
+void reclaimAbandonedPackStaging() {
+    char modsDirectory[1024] = {0};
+    if (mdkr_user_mods_directory(modsDirectory, sizeof modsDirectory) != 0)
+        g_packInstall.reclaimAbandonedStaging(modsDirectory);
 }
 
 void startPackInstall(const std::string &source, const std::string &modsDirectory) {
-    if (g_packInstallJob.result.valid()) return;
-    try {
-        auto cancel = std::make_shared<std::atomic<bool>>(false);
-        g_packInstallJob.cancel = cancel;
-        g_packInstallJob.result = std::async(std::launch::async, [source, modsDirectory, cancel] {
-            return PreparedPackInstall::copyPack(std::filesystem::u8path(source),
-                                               std::filesystem::u8path(modsDirectory),
-                                               [cancel] { return cancel->load(); });
-        });
-        g_packInstallNote = "Copying pack… You can continue using the launcher.";
-    } catch (const std::exception &error) {
-        g_packInstallNote = std::string("Could not start pack installation: ") + error.what();
-    }
+    g_packInstall.start(source, modsDirectory);
 }
 
 void servicePackInstall(bool quitting) {
-    if (quitting) cancelPackInstall();
-    if (!g_packInstallJob.result.valid() ||
-        g_packInstallJob.result.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-        return;
-    try {
-        // Registry validation/publication stays on the launcher thread. While
-        // the engine is running the completed copy remains hidden staging.
-        auto prepared = g_packInstallJob.result.get();
-        if (g_packInstallJob.cancel->load()) {
-            g_packInstallNote = "Pack installation cancelled. Nothing was installed.";
-        } else {
-            const auto installed = prepared.finalize([cancel = g_packInstallJob.cancel] {
-                return cancel && cancel->load();
-            });
-            g_packInstallNote = installed.message;
-            // This service runs only while the launcher owns the frame, not
-            // inside a live engine session. Refresh the cached inventory so
-            // successful installation cannot leave Content showing no packs.
-            if (installed.installed) platform_content_packs_init();
-        }
-    } catch (const std::exception &error) {
-        g_packInstallNote = std::string("Could not install pack: ") + error.what();
-    }
+    // The inventory refresh stays on the launcher thread: it rebinds the
+    // texture store and retires caches the renderer owns. It runs only while
+    // the launcher owns the frame, never inside a live engine session.
+    if (g_packInstall.service(quitting)) platform_content_packs_init();
 }
 
 void installContentPack(const char *modsDirectory) {
@@ -1624,7 +1585,7 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
     canChoosePack = true;
 #endif
     if (haveModsDirectory && canChoosePack) {
-        ImGui::BeginDisabled(g_packInstallJob.result.valid());
+        ImGui::BeginDisabled(g_packInstall.busy());
         if (ui::BrandPrimaryButton("Install pack…", ui::kBtnWide())) {
             installContentPack(modsDirectory);
         }
@@ -1632,10 +1593,10 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
         ui::SpeakFocusedItem(
             "Install pack", nullptr,
             "Choose a pack to copy into your mods folder.");
-        if (g_packInstallJob.result.valid()) {
+        if (g_packInstall.busy()) {
             if (ImGui::Button("Cancel installation", ui::kBtnWide())) {
-                g_packInstallJob.cancel->store(true);
-                g_packInstallNote = "Cancelling pack installation…";
+                g_packInstall.cancel();
+                g_packInstall.setNote("Cancelling pack installation…");
             }
             ui::SpeakFocusedItem("Cancel installation", nullptr,
                                  "Discard the pending copy without installing it.");
@@ -1654,8 +1615,8 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
                 "does not exist yet.");
         }
         ui::Gap(ui::kGapS);
-        if (!g_packInstallNote.empty()) {
-            ui::TextSubtleUnformattedWrapped(g_packInstallNote.c_str());
+        if (!g_packInstall.note().empty()) {
+            ui::TextSubtleUnformattedWrapped(g_packInstall.note().c_str());
             ui::Gap(ui::kGapS);
         }
     }

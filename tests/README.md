@@ -9111,11 +9111,14 @@ before the arithmetic is; the skip counts printed above the table say which.
 
 Pack-install cancellation is also checked by `pack_installer`: callbacks stop
 a completed copy before validation or after validation but before publication.
-Neither case may create the destination. `pack_install_order` checks the source
-ordering of both launcher return paths and rejects mutations that publish
-before drawing, publish from the Content panel, or drop Quit handling. This is
-not an end-to-end pending-job mouse/gamepad cancellation witness; that acceptance
-remains separate from the app-shell, quit and lobby-takeover smoke tests.
+Neither case may create the destination. `pack_install_job` drives the
+launcher's install job the way a frame does: a copy that finishes in the same
+frame as a Cancel click or Quit is never published, a copy refused at
+publication leaves the winning pack untouched, leaving the launcher never
+publishes, and each discarded copy is deleted in the background. Where
+`Launcher::draw` calls the service is not pinned by a gate; this is not an
+end-to-end pending-job mouse/gamepad cancellation witness, which remains
+separate from the app-shell, quit and lobby-takeover smoke tests.
 
 `python3 tests/test_source_custody.py` checks the release dependency inventory
 in disposable repositories. Untracked and staged-but-uncommitted source inputs

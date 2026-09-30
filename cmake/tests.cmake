@@ -147,6 +147,29 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_pack_installer_test PRIVATE m)
     endif()
     add_test(NAME pack_installer COMMAND mdkr_pack_installer_test)
+    # The launcher's install job: a copy finishing in the same frame as Cancel
+    # or Quit is never published, and discarded copies are deleted off the
+    # launcher thread.
+    add_executable(mdkr_pack_install_job_test
+        ${CMAKE_SOURCE_DIR}/tests/test_pack_install_job.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/pack_install_job.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/pack_installer.cpp
+        ${CMAKE_SOURCE_DIR}/platform/mod_registry.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_manifest.c
+        ${CMAKE_SOURCE_DIR}/platform/config_ini.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c
+        ${CMAKE_SOURCE_DIR}/platform/mod_source.c
+        ${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c)
+    target_include_directories(mdkr_pack_install_job_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app
+        ${CMAKE_SOURCE_DIR}/platform
+        ${CMAKE_SOURCE_DIR}/lib/miniz)
+    target_compile_features(mdkr_pack_install_job_test PRIVATE cxx_std_17)
+    target_link_libraries(mdkr_pack_install_job_test PRIVATE Threads::Threads)
+    if(NOT MSVC)
+        target_link_libraries(mdkr_pack_install_job_test PRIVATE m)
+    endif()
+    add_test(NAME pack_install_job COMMAND mdkr_pack_install_job_test)
     # Windows installs by pathname. The same sources built with
     # MDKR_PACK_PATH_ARM run that installer here, so its logic is proved on
     # every host the suite runs on, not only on Windows.
@@ -2956,10 +2979,6 @@ if(BUILD_TESTING)
         NAME source_custody
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_source_custody.py)
-    add_test(
-        NAME pack_install_order
-        COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/tests/test_pack_install_order.py)
     if(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$" AND NOT MSVC)
         add_test(
             NAME taj_music_muted

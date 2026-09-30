@@ -1091,6 +1091,7 @@ if(NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/app/rom_validate.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/file_browser_ui.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/pack_install_job.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/pack_installer.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/session_runtime.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/ui_common.cpp
