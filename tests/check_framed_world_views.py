@@ -16,12 +16,21 @@ and gameplay pacing must remain unchanged in every pair. Focused 60 Hz
 interpolated captures land on the midpoint that crosses each changed policy;
 the camera snapshot must hold the new projection instead of blending safe and
 wide aspect recipes for one frame.
+
+The post-race finish banners (1ST, FINISH, and the smaller non-first banner)
+are also drawn with Video.WidescreenHUD on (issue #67). The HUD inherits the
+wooden frame's clip from the world pass; it must clip exactly where the world
+did, so the banner inside the opening matches the Widescreen-HUD-off capture
+and nothing outside the opening changes. MDKR_TEST_WIDE_HUD_EXPANDED_SCISSOR=1
+restores the shipped fault, which read that clip from the screen's left edge
+and cut the banners at x = drawable height; each arm must still catch it.
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import dataclasses
 import os
 import re
 import shlex
@@ -44,6 +53,10 @@ TRACK_SCROLL_SCRIPT = (
     ROOT / "tests" / "input_scripts" / "nav_track_select_scroll.txt"
 )
 TRACK_RACE_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
+# Time Trial ON: the finish shows the FINISH banner instead of a place.
+TIME_TRIAL_FINISH_SCRIPT = (
+    ROOT / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
+)
 TRACK_BACK_SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_track_setup_back.txt"
 CHARSELECT_LEAK_SCRIPT = (
     ROOT / "tests" / "input_scripts" / "nav_charselect_after_track_select.txt"
@@ -132,18 +145,23 @@ POST_RACE_ENV = (
     ),
 )
 
+# Tracks autopilot finishes the race on its own. The recap's BEGIN stage is
+# advanced with the existing presence-only seam (a nonnumeric value does not
+# select an option), so the frame shrinks while the finish banner is still up.
+POST_RACE_SOLO_ENV = (
+    ("MDKR_AUTOPILOT", "1"),
+    ("MDKR_TEST_POSTRACE_OPTION", "inspect"),
+)
+
 SCENES = (
     # Issue #67 uses the distinct single-player FIRST-place banner, not the
     # smaller second-place banner exercised by POST_RACE_ENV. Tracks autopilot
-    # naturally finishes first at 7831. Advance the recap's BEGIN stage using
-    # the existing presence-only seam; a nonnumeric value does not select an
-    # option. This scene qualifies the framed-region contract, not the banner
-    # silhouette: visually inspect that separately when investigating #67.
+    # naturally finishes first at 7831. This scene qualifies the framed-region
+    # contract; the banner itself is qualified by the widescreen-hud-banner
+    # arms (WIDE_HUD_BANNER_ARMS).
     Scene(
         "post-race-first-place-framed", 7901, 7900, TRACK_RACE_SCRIPT,
-        "safe-aperture",
-        (("MDKR_AUTOPILOT", "1"), ("MDKR_TEST_POSTRACE_OPTION", "inspect")),
-        gutter_bleed=False,
+        "safe-aperture", POST_RACE_SOLO_ENV, gutter_bleed=False,
     ),
     Scene("opening-logos", 701, 700, TRACK_SCRIPT, "presentation"),
     Scene("track-select", 2300, 2299, TRACK_SCRIPT, "safe-aperture",
@@ -223,6 +241,54 @@ INTERPOLATED_BOUNDARY_SCENES = (
 WEBGPU_SIZES = ("720x540", "960x540", "1260x540")
 ROUTE_PREFIXES = ("menu_init:", "level_load:")
 
+# Issue #67: with Video.WidescreenHUD = 1 the finish banner still on screen when
+# the post-race view shrinks into the wooden frame was cut off part-way across.
+# The HUD draws under the clip the world pass left behind, the frame opening
+# (80,24)-(240,144). Widescreen HUD switches the HUD to its expanded draw
+# space, and that re-read the inherited clip from the screen's left edge
+# instead of from the centred 4:3 area it was written in, so the clip's right
+# edge landed at x = drawable height. clean_environment() isolates video.ini,
+# so every arm states the option explicitly rather than trusting the default.
+WIDE_HUD_ENV = {
+    "off": (("MDKR_WIDESCREEN_HUD", "0"),),
+    "on": (("MDKR_WIDESCREEN_HUD", "1"),),
+    # The deliberate renderer fault: the shipped #67 mapping. Each arm has to
+    # catch it, which is what keeps the arm from passing on a capture that no
+    # longer shows a banner or never turned Widescreen HUD on.
+    "fault": (("MDKR_WIDESCREEN_HUD", "1"),
+              ("MDKR_TEST_WIDE_HUD_EXPANDED_SCISSOR", "1")),
+}
+WIDE_HUD_BANNER_SCENES = {
+    # 1ST: the reporter's first screenshot.
+    "first": next(scene for scene in SCENES
+                  if scene.name == "post-race-first-place-framed"),
+    # FINISH: the reporter's second screenshot. The fixture's post-race A taps
+    # start at 7650, after this capture.
+    "time-trial": Scene(
+        "post-race-time-trial-framed", 7551, 7550, TIME_TRIAL_FINISH_SCRIPT,
+        "safe-aperture", POST_RACE_SOLO_ENV, gutter_bleed=False,
+    ),
+    # The smaller non-first banner (Adventure, second place).
+    "second": next(scene for scene in SCENES
+                   if scene.name == "post-race-framed"),
+}
+# (scene, backend, window size, style). The fault's clip edge is x = H, which
+# is 26.7 authored pixels right of centre at 16:9 and 40 left of it at 21:9.
+# The 1ST and FINISH banners reach past it at both ratios. The non-first
+# banner ends left of it at 16:9, so only the 21:9 capture can see the fault
+# there. At 4:3 the two mappings coincide and there is nothing to test.
+WIDE_HUD_BANNER_ARMS = (
+    ("first", "webgpu", "960x540", "restored"),
+    ("first", "webgpu", "1260x540", "restored"),
+    ("first", "gl", "960x540", "restored"),
+    ("first", "webgpu", "960x540", "remastered"),
+    ("time-trial", "webgpu", "960x540", "restored"),
+    ("time-trial", "webgpu", "1260x540", "restored"),
+    ("time-trial", "gl", "960x540", "restored"),
+    ("second", "webgpu", "1260x540", "restored"),
+    ("second", "gl", "1260x540", "restored"),
+)
+
 
 def read_ppm(path: Path) -> Image:
     return Image(*read_ppm_bytes(path))
@@ -290,8 +356,11 @@ def run_arm(
     work: Path,
     timeout: int,
     verbose: bool,
+    style: str = "restored",
 ) -> Arm:
     label = f"{scene.name}-{backend}-{size}-{'unsafe' if unsafe else 'fixed'}"
+    if style != "restored":
+        label += f"-{style}"
     run_dir = work / label
     frame_dir = run_dir / "frames"
     save_dir = run_dir / "save"
@@ -306,7 +375,7 @@ def run_arm(
         "--input-script", str(scene.script),
         "--dump-frames", str(frame_dir),
         "--rom", str(rom),
-        "--restored",
+        f"--{style}",
     ]
     if verbose:
         print(f"$ ({label}) {shlex.join(command)}", flush=True)
@@ -744,6 +813,160 @@ def run_challenge_loss_arms(
             f"recap {recap_summary}")
 
 
+def frame_opening(width: int, height: int) -> tuple[int, int, int, int]:
+    """The post-race wooden frame's opening, (80,24)-(240,144), in pixels.
+
+    The world pass draws it through the centred 4:3 area: MDKR_ASPECT=auto
+    presents the whole drawable, and that area is height * 4/3 wide.
+    """
+    scale = height / 240.0
+    safe_x = (width - height * 4.0 / 3.0) / 2.0
+    return (round(safe_x + 80 * scale), round(24 * scale),
+            round(safe_x + 240 * scale), round(144 * scale))
+
+
+def pixels_differing_outside(
+    first: Image, second: Image, box: tuple[int, int, int, int]
+) -> int:
+    """Count differing pixels outside ``box`` (grown by one pixel)."""
+    x0, y0, x1, y1 = box[0] - 1, box[1] - 1, box[2] + 1, box[3] + 1
+    width = first.width
+    stride = width * 3
+    spans_inside = ((0, x0), (x1, width))
+    differing = 0
+    for y in range(first.height):
+        row = y * stride
+        spans = spans_inside if y0 <= y < y1 else ((0, width),)
+        for start, end in spans:
+            a = first.pixels[row + start * 3:row + end * 3]
+            b = second.pixels[row + start * 3:row + end * 3]
+            if a == b:
+                continue
+            differing += sum(
+                a[i:i + 3] != b[i:i + 3] for i in range(0, len(a), 3)
+            )
+    return differing
+
+
+def differing_columns(
+    first: Image, second: Image, box: tuple[int, int, int, int]
+) -> dict[int, int]:
+    """Count the pixels inside ``box`` that differ, as {column: pixels}."""
+    x0, y0, x1, y1 = box
+    stride = first.width * 3
+    columns: dict[int, int] = {}
+    for y in range(y0, y1):
+        start, end = y * stride + x0 * 3, y * stride + x1 * 3
+        if first.pixels[start:end] == second.pixels[start:end]:
+            continue
+        for x in range(x0, x1):
+            at = y * stride + x * 3
+            if first.pixels[at:at + 3] != second.pixels[at:at + 3]:
+                columns[x] = columns.get(x, 0) + 1
+    return columns
+
+
+def validate_wide_hud_banner(label: str, arms: dict[str, Arm]) -> str:
+    off, on, fault = arms["off"], arms["on"], arms["fault"]
+    for mode in ("on", "fault"):
+        if arms[mode].route != off.route:
+            raise RuntimeError(
+                f"{label}: Widescreen HUD ({mode}) changed the frontend route"
+            )
+        if arms[mode].pace != off.pace:
+            raise RuntimeError(
+                f"{label}: Widescreen HUD ({mode}) changed simulation; it is a "
+                "presentation option"
+            )
+        if ((arms[mode].image.width, arms[mode].image.height) !=
+                (off.image.width, off.image.height)):
+            raise RuntimeError(f"{label}: capture dimensions differ")
+    width, height = off.image.width, off.image.height
+    box = frame_opening(width, height)
+    # The fault's clip ends at x = height. Between there and the opening's
+    # right edge is where the shipped build lost banner ink.
+    if box[2] - height < 8:
+        raise RuntimeError(
+            f"{label}: at {width}x{height} the fault's clip edge (x={height}) "
+            f"is not inside the frame opening (ends at x={box[2]}); this arm "
+            "cannot see issue #67 at this ratio"
+        )
+
+    # After the finish the race HUD is gone and these banners are centred, so
+    # the option has nothing to move: with the clip where the world pass put
+    # it, the Widescreen-HUD capture is the option-off capture, pixel for
+    # pixel. Outside the opening and inside it are reported separately
+    # because they are different failures.
+    outside = pixels_differing_outside(on.image, off.image, box)
+    if outside:
+        raise RuntimeError(
+            f"{label}: with Widescreen HUD on, {outside} pixels outside the "
+            f"wooden frame's opening (x {box[0]}..{box[2] - 1}, "
+            f"y {box[1]}..{box[3] - 1}) differ from the Widescreen-HUD-off "
+            "capture. The HUD must stay inside the opening, as it does with "
+            "the option off."
+        )
+    lost = differing_columns(on.image, off.image, box)
+    if lost:
+        raise RuntimeError(
+            f"{label}: with Widescreen HUD on, {sum(lost.values())} pixels "
+            f"inside the wooden frame's opening (x {box[0]}..{box[2] - 1}) "
+            f"differ from the Widescreen-HUD-off capture, in columns "
+            f"{min(lost)}..{max(lost)} (drawable height {height}). The finish "
+            "banner is clipped somewhere other than the frame opening the "
+            "world pass drew through -- issue #67."
+        )
+
+    cut = differing_columns(fault.image, off.image, box)
+    band_area = (box[2] - height) * (box[3] - box[1])
+    cut_in_band = sum(count for column, count in cut.items()
+                      if column >= height)
+    if cut_in_band < 0.01 * band_area:
+        raise RuntimeError(
+            f"{label}: the deliberate fault removed {cut_in_band} banner "
+            f"pixels right of x={height} ({cut_in_band / band_area:.2%} of "
+            "that part of the opening, want >= 1%). The capture no longer "
+            "shows a banner reaching past the fault's clip edge, or "
+            "Widescreen HUD did not engage, so this arm cannot see issue #67."
+        )
+    early = [column for column in cut if column < height - 1]
+    if early:
+        raise RuntimeError(
+            f"{label}: the deliberate fault changed column {min(early)}, left "
+            f"of its clip edge x={height}; it no longer reproduces the "
+            "issue #67 clip and cannot vouch for this arm"
+        )
+    return (f"identical to Widescreen HUD off; fault cut {cut_in_band} px "
+            f"from x={min(cut)} (drawable height {height})")
+
+
+def run_wide_hud_banner_arm(
+    binary: Path,
+    rom: Path,
+    key: str,
+    backend: str,
+    size: str,
+    style: str,
+    work: Path,
+    timeout: int,
+    verbose: bool,
+) -> str:
+    scene = WIDE_HUD_BANNER_SCENES[key]
+    arms = {
+        mode: run_arm(
+            binary, rom,
+            dataclasses.replace(
+                scene, name=f"{scene.name}-wide-hud-{mode}",
+                extra_env=scene.extra_env + env,
+            ),
+            backend, size, False, work, timeout, verbose, style,
+        )
+        for mode, env in WIDE_HUD_ENV.items()
+    }
+    label = f"{scene.name}/{backend}/{size}/{style}"
+    return f"{label}: {validate_wide_hud_banner(label, arms)}"
+
+
 def find_pal_rom(directory: Path) -> Path | None:
     if not directory.is_dir():
         return None
@@ -1121,7 +1344,8 @@ def main() -> int:
         "--scene",
         choices=tuple(scene.name for scene in SCENES) +
         ("track-select-scroll", "pal-track-select",
-         "charselect-aperture-leak", "challenge-loss"),
+         "charselect-aperture-leak", "challenge-loss",
+         "widescreen-hud-banner"),
         help="run one ordinary scene instead of the complete matrix",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -1251,6 +1475,23 @@ def main() -> int:
                         args.verbose,
                     )
                 )
+            run_wide_hud = (
+                not args.interpolated_only and
+                (not args.scene or args.scene == "widescreen-hud-banner")
+            )
+            if run_wide_hud:
+                # Independent processes with their own run/save directories,
+                # like the ordinary arms; each item's three captures are
+                # compared inside that item.
+                with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=args.jobs) as pool:
+                    summaries.extend(pool.map(
+                        lambda arm: run_wide_hud_banner_arm(
+                            binary, rom, *arm, work, args.timeout,
+                            args.verbose,
+                        ),
+                        WIDE_HUD_BANNER_ARMS,
+                    ))
             if args.verbose:
                 for summary in summaries:
                     print("  " + summary)

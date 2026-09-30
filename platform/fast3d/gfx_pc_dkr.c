@@ -490,6 +490,7 @@ static bool dkr_replay_force_recompose = false;
 static int dkr_test_recompose_reject = -1;
 static bool dkr_test_recompose_reject_used = false;
 static int dkr_test_framed_world_unsafe = -1;
+static int dkr_test_wide_hud_expanded_scissor = -1;
 static uint64_t dkr_replay_walks = 0;
 
 /*
@@ -614,6 +615,18 @@ static bool dkr_test_framed_world_unsafe_enabled(void) {
             value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
     }
     return dkr_test_framed_world_unsafe != 0;
+}
+
+/* Deliberate renderer fault for check_framed_world_views.py: read an inherited
+ * WIDE_HUD sub-scissor from the expanded origin again, as the shipped #67
+ * build did, so the gate can prove its banner arms still see that clip. */
+static bool dkr_test_wide_hud_expanded_scissor_enabled(void) {
+    if (dkr_test_wide_hud_expanded_scissor < 0) {
+        const char *value = getenv("MDKR_TEST_WIDE_HUD_EXPANDED_SCISSOR");
+        dkr_test_wide_hud_expanded_scissor =
+            value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return dkr_test_wide_hud_expanded_scissor != 0;
 }
 
 static void dkr_mtx_inject_recompose_reject(const void *listed_bytes,
@@ -4714,9 +4727,25 @@ static void dkr_map_logical_rect(const struct FloatXYWidthHeight *logical,
             lx1 = dkr_logical_width;
             ly1 = dkr_logical_height;
         } else if (draw_space == G_MTX_DKR_SPACE_WIDE_HUD) {
-            /* HUD sub-scissors share the expanded positive coordinate origin;
-             * only the full-surface clip consumes the whole presentation. */
-            region = dkr_screen_coordinate_region(draw_space);
+            /*
+             * The HUD never states a sub-scissor of its own (game_ui.c emits
+             * none). One seen here was inherited from the world pass the HUD
+             * draws over -- the post-race wooden frame's opening,
+             * (80,24)-(240,144) -- and was written in that pass's centred
+             * domain. Map it through the world region, which still carries
+             * that pass's safe/presentation choice, so the HUD is clipped to
+             * exactly the pixels the world was.
+             *
+             * The expanded positive origin belongs only to rectangles the
+             * game pre-shifts into it (hud_widescreen_reflow_element, drawn
+             * by dkr_draw_rectangle). Reading this clip there moved it left
+             * by the width of one side gutter, so at 16:9 its right edge
+             * landed at x = drawable height and cut the centred finish
+             * banners part-way across (#67).
+             */
+            region = dkr_test_wide_hud_expanded_scissor_enabled()
+                ? dkr_screen_coordinate_region(draw_space)
+                : dkr_draw_region(G_MTX_DKR_SPACE_WORLD);
             scale_x = region.width / dkr_logical_width;
             scale_y = region.height / dkr_logical_height;
         }

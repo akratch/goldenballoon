@@ -3889,6 +3889,22 @@ profile rather than a pixel identity. The recovered ratio must be 1.0; a
 synthetic 4:3 stretch of the control must be rejected, which is what keeps the
 detector honest. Measured before the fix, the leaked route recovered 0.750.
 
+`--scene widescreen-hud-banner` covers issue #67: the finish banner still on
+screen when the post-race view shrinks into the wooden frame must not be cut
+off when Video.WidescreenHUD is on. It captures the 1ST banner (Tracks), the
+FINISH banner (Time Trial, `race_full_3lap_tt.txt`) and the smaller non-first
+banner (Adventure) three times each: Widescreen HUD off, on, and on with
+`MDKR_TEST_WIDE_HUD_EXPANDED_SCISSOR=1`. That renderer fault restores the
+shipped mapping, which read the inherited frame clip from the screen's left
+edge and cut the banners at x = drawable height. The capture with the option on
+must be identical to the one with it off, inside and outside the frame opening.
+The fault capture must lose banner pixels right of x = drawable height and
+nothing left of it, so the arm cannot pass on a frame without a banner or with
+the option silently off. The non-first banner ends left of that edge at 16:9,
+so it runs at 21:9 only. Measured before the fix, every arm failed with its
+first missing column at x = 1080 on a 1080-row drawable, or at the banner's own
+left edge where the whole banner sat right of it at 21:9.
+
 `check_shadow_visual_ab.py` is the slower pixel-level companion:
 
 ```bash
