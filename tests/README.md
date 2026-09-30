@@ -6931,21 +6931,31 @@ filenames, file selection, Escape cancellation and finite draw vertices.
 Accessibility speech labels are observed through a stub; it does not validate
 device speech, GPU pixels, the primary launcher action or Linux packaging.
 
-`rom_browser` and `pack_installer` are ROM-free CTest targets. Browser coverage
-includes case-insensitive filtering, directory ordering, navigation and failed
-directory recovery. Installer coverage includes manifest/Rice ZIP discovery,
-invalid ZIP refusal, Unicode filenames, exclusive publication under races,
-move/cancellation cleanup and dangling destination symlink refusal.
+`rom_browser`, `pack_installer`, `pack_installer_path` and `pack_install_job`
+are ROM-free CTest targets. Browser coverage includes case-insensitive
+filtering, directory ordering, navigation and failed directory recovery.
+Installer coverage includes manifest/Rice ZIP discovery, invalid ZIP refusal,
+Unicode filenames, exclusive publication under races, move/cancellation
+cleanup and dangling destination symlink refusal. A non-pack ZIP or folder is
+refused before anything is staged, with only the intake cancellation check
+reached. A ZIP inside a folder the process may enter but not list still
+installs; a mods folder that is a link works; abandoned staging is reclaimed
+while a live installation's is not; each refusal message names its cause.
 Cancellation coverage includes a request before staging and after the first
 256 KiB copy chunk, with no publication or surviving partial staging.
 Folder cases cover nested content, existing and concurrently-created empty
-destinations, self-containing mods paths, cancellation and symlink refusal.
-These are host-specific publication tests: macOS success does not qualify
-the Linux exclusive-rename syscall or the Windows move implementation.
+destinations, self-containing mods paths, cancellation, links inside the pack
+and links planted in staging. `pack_installer_path` runs the same fixture
+against the pathname installer Windows ships; descriptor-identity cases are
+compiled only into `pack_installer`. `pack_install_job` drives the launcher's
+install job frame by frame. These are host-specific publication tests: macOS
+success does not qualify the Linux exclusive-rename syscall or Windows
+MoveFileExW.
 
 ```bash
-cmake --build build-rel --target mdkr_rom_browser_test mdkr_pack_installer_test
-ctest --test-dir build-rel -R '^(rom_browser|pack_installer)$' --output-on-failure
+cmake --build build-rel --target mdkr_rom_browser_test mdkr_pack_installer_test \
+    mdkr_pack_installer_path_test mdkr_pack_install_job_test
+ctest --test-dir build-rel -R '^(rom_browser|pack_install.*)$' --output-on-failure
 ```
 
 `mdkr_pack_installer_test` optionally accepts a local ZIP path as its sole
@@ -7252,7 +7262,7 @@ because its manifest cross-check covers `tests/test_*.py`, and these are C.
 |---|---|---|
 | `mod_manifest` | One `pack.ini`, parsed and validated | Over-long name/author/version is **rejected**, not truncated |
 | `mod_registry` | Pack discovery, load order, path resolution | Traversal rejected against a bait file that genuinely exists; equal-priority tie-break pinned to an explicit ASCII case fold, so load order cannot shift with locale |
-| `mod_source_zip` | One read interface over directory and zip packs | Shared lexical path validation with existing traversal bait; leaf/ancestor symlink refusal, root identity after replacement and repeated enumeration; POSIX nonblocking special-file rejection; Windows handle implementation/tests cross-compiled, runtime qualification pending |
+| `mod_source_zip` | One read interface over directory and zip packs | Shared lexical path validation with existing traversal bait; leaf/ancestor symlink refusal, root identity after replacement and repeated enumeration; POSIX nonblocking special-file rejection. `mod_source_zip_path` runs it against the pathname reader Windows ships, where the root follows its current name instead |
 | `mod_texture_key` | The published texture digest | An exact pinned value, plus a `0xaa`-filled union proving padding bytes are not hashed |
 | `dev_command` | Console command parsing | `set` refuses any key outside the schema, so a console cannot become an arbitrary-write primitive |
 | `enhancement_registry` | The enhancement table and its authority classes | The table and `mdkr_video_key_is_enhancement()` describe exactly the same set |
@@ -7268,14 +7278,15 @@ guard a silent failure rather than a crash, and a check that passes both with
 and without the fix is not a check.
 
 Directory-containment follow-up: five new POSIX assertions failed against the
-old reader before its fix. Windows now uses directory-relative handles, with
-the same root-replacement and link-bait tests enabled rather than compiled out.
-Windows link fixtures require Developer Mode or the OS symlink privilege;
-fixture creation failure is a test failure, never a silently skipped security
-witness. `fs_utf8` additionally checks handle-backed Unicode/extended-length
-reads, component rejection and independent enumeration. These Windows-specific
-arms have been cross-compiled and linked, but not yet executed on Windows;
-the older mutation statement above does not qualify these new arms.
+old reader before its fix. Windows reads folder packs by pathname and refuses a
+symbolic link, junction or mount point at any depth; `mod_source_zip_path`
+runs that reader on POSIX. On Windows a directory link fixture falls back to a
+junction when symbolic links need Developer Mode; a file link that cannot be
+created prints a SKIP line rather than passing silently. `fs_utf8` checks the
+pathname primitives both arms share (entry kinds, listing, exclusive rename,
+directory hold) on every host. The Windows executables are built by
+`tools/mingw_cross_check.sh --intake-tests`; they have not yet run on
+Windows, and the older mutation statement above does not qualify them.
 
 ## Draw distance and model detail — `tests/check_enh_draw_distance.py`
 

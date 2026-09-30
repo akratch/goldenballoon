@@ -2945,6 +2945,24 @@ if(WIN32)
         endif()
     endforeach()
 
+    # The content-pack intake tests (fs_utf8, mod_source_zip, pack_installer,
+    # pack_install_job) are handed to a Windows PC as standalone executables:
+    # link the GCC runtimes statically, as the game does, so each runs from
+    # any folder with only stock Windows DLLs. tools/mingw_cross_check.sh
+    # --intake-tests builds and checks them.
+    foreach(_mdkr_intake_test
+            mdkr_fs_utf8_test
+            mdkr_mod_source_zip_test
+            mdkr_pack_installer_test
+            mdkr_pack_install_job_test)
+        if(TARGET ${_mdkr_intake_test})
+            target_link_options(${_mdkr_intake_test} PRIVATE
+                -static-libgcc -static-libstdc++)
+            target_link_libraries(${_mdkr_intake_test} PRIVATE
+                "-Wl,-Bstatic" winpthread "-Wl,-Bdynamic")
+        endif()
+    endforeach()
+
     # --- Test link dead-strip (MOVED OUT of if(WIN32)) ---------------------
     # The online/transport test-link dead-strip + no-speculative-devirt flags
     # are a GCC-codegen concern -- MinGW *and* the Linux release lane, both GCC

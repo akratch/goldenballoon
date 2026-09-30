@@ -147,6 +147,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         target_link_libraries(mdkr_pack_installer_test PRIVATE m)
     endif()
     add_test(NAME pack_installer COMMAND mdkr_pack_installer_test)
+    # The app shell that ships this code is built as C++17 (see MDKR_APP in
+    # CMakeLists.txt), but this file is included before that pin, and
+    # cxx_std_17 is only a minimum: GCC 16 would compile these tests as C++20,
+    # where path::u8string() returns std::u8string. Build them as shipped.
+    set_target_properties(mdkr_pack_installer_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     # The launcher's install job: a copy finishing in the same frame as Cancel
     # or Quit is never published, and discarded copies are deleted off the
     # launcher thread.
@@ -169,6 +175,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     if(NOT MSVC)
         target_link_libraries(mdkr_pack_install_job_test PRIVATE m)
     endif()
+    set_target_properties(mdkr_pack_install_job_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     add_test(NAME pack_install_job COMMAND mdkr_pack_install_job_test)
     # Windows installs by pathname. The same sources built with
     # MDKR_PACK_PATH_ARM run that installer here, so its logic is proved on
@@ -191,6 +199,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             MDKR_PACK_PATH_ARM=1)
         target_compile_features(mdkr_pack_installer_path_test PRIVATE cxx_std_17)
         target_link_libraries(mdkr_pack_installer_path_test PRIVATE Threads::Threads m)
+        set_target_properties(mdkr_pack_installer_path_test PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
         add_test(NAME pack_installer_path COMMAND mdkr_pack_installer_path_test)
     endif()
 

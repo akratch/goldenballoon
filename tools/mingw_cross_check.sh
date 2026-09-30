@@ -37,8 +37,16 @@
 # FetchContent at an already-fetched <name>-src tree (e.g. another build's
 # _deps) to skip the libdatachannel clone; the tree is used read-only.
 #
+# --intake-tests additionally builds the content-pack intake test executables
+# (fs_utf8, mod_source_zip, pack_installer, pack_install_job) in a separate
+# BUILD_TESTING=ON build dir (build-mingw-intake) and checks that each is a
+# PE32+ binary importing only stock Windows DLLs and the UCRT. They cannot run
+# here; each runs from any folder on Windows, works under %TEMP%, prints PASS
+# or FAIL last and exits non-zero on failure.
+#
 # Usage:  tools/mingw_cross_check.sh [--clean] [--jobs N] [--no-webgpu]
 #                                    [--online] [--deps-reuse-dir DIR]
+#                                    [--intake-tests]
 set -euo pipefail
 
 # --- Pinned SDL2 provenance ----------------------------------------------------
@@ -54,11 +62,13 @@ JOBS=8
 CLEAN=0
 WEBGPU=ON
 ONLINE=0
+INTAKE=0
 DEPS_REUSE_DIR="${MDKR_MINGW_DEPS_REUSE_DIR:-}"
 
 usage() {
     echo "usage: tools/mingw_cross_check.sh [--clean] [--jobs N] [--no-webgpu]" >&2
     echo "                                  [--online] [--deps-reuse-dir DIR]" >&2
+    echo "                                  [--intake-tests]" >&2
 }
 arg_error() {  # arg_error <message>: print message + usage to stderr, exit 2
     echo "mingw_cross_check: $1" >&2
@@ -79,6 +89,7 @@ while [ $# -gt 0 ]; do
         --clean) CLEAN=1 ;;
         --no-webgpu) WEBGPU=OFF ;;
         --online) ONLINE=1 ;;
+        --intake-tests) INTAKE=1 ;;
         --deps-reuse-dir) require_value "$1" "$#"; DEPS_REUSE_DIR="$2"; shift ;;
         --deps-reuse-dir=*) DEPS_REUSE_DIR="${1#*=}" ;;
         --jobs) require_value "$1" "$#"; JOBS="$2"; shift ;;
@@ -147,7 +158,9 @@ CC_BIN="$(command -v ${MINGW_TARGET}-gcc || true)"
 echo "toolchain: $($CC_BIN --version | head -1)  [$CC_BIN]"
 
 # --- 2. Vendored SDL2 (fetch + verify + extract on first run) ------------------
-if [ "$CLEAN" = "1" ]; then rm -rf "$BUILD_DIR" "$DEPS_DIR/prefix"; fi
+INTAKE_BUILD_DIR="$REPO_ROOT/build-mingw-intake"
+INTAKE_TEST_EXES="mdkr_fs_utf8_test mdkr_mod_source_zip_test mdkr_pack_installer_test mdkr_pack_install_job_test"
+if [ "$CLEAN" = "1" ]; then rm -rf "$BUILD_DIR" "$INTAKE_BUILD_DIR" "$DEPS_DIR/prefix"; fi
 
 if [ ! -f "$PREFIX/include/SDL2/SDL.h" ] || [ ! -f "$PREFIX/lib/libSDL2.dll.a" ]; then
     echo "vendoring SDL2 ($SDL2_PKG) ..."
@@ -276,6 +289,43 @@ if [ "$ONLINE" = "1" ]; then
     done
     echo ""
     echo "online: mdkr64.exe + $(printf '%s\n' $ONLINE_TEST_EXES | wc -l | tr -d ' ') test exes built; imports + PE32+ verified"
+fi
+
+# --- 7. Content-pack intake test executables (--intake-tests) -----------------
+if [ "$INTAKE" = "1" ]; then
+    # Reuse the sources the lane above already fetched for this same target,
+    # read-only, instead of cloning every dependency a second time.
+    INTAKE_ARGS=()
+    for src in "$BUILD_DIR"/_deps/*-src; do
+        [ -d "$src" ] || continue
+        name="$(basename "$src" -src | tr '[:lower:]' '[:upper:]')"
+        INTAKE_ARGS+=("-DFETCHCONTENT_SOURCE_DIR_${name}=$src")
+    done
+    echo "configuring intake tests ($GEN, Release, BUILD_TESTING=ON, ${#INTAKE_ARGS[@]} fetched deps reused) ..."
+    cmake -S "$REPO_ROOT" -B "$INTAKE_BUILD_DIR" -G "$GEN" \
+        -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/cmake/mingw-w64-x86_64.cmake" \
+        -DCMAKE_PREFIX_PATH="$PREFIX" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DMDKR_WEBGPU_BACKEND=$WEBGPU \
+        -DBUILD_TESTING=ON \
+        ${INTAKE_ARGS[@]+"${INTAKE_ARGS[@]}"} \
+        > "$INTAKE_BUILD_DIR-configure.log" 2>&1 \
+        || { cat "$INTAKE_BUILD_DIR-configure.log"; fail "intake-test configure failed"; }
+    # shellcheck disable=SC2086  # deliberate word-split of the space-listed names
+    cmake --build "$INTAKE_BUILD_DIR" --target $INTAKE_TEST_EXES -j"$JOBS" \
+        > "$INTAKE_BUILD_DIR-build.log" 2>&1 \
+        || { tail -40 "$INTAKE_BUILD_DIR-build.log"; fail "intake-test compile/link error (see $INTAKE_BUILD_DIR-build.log)"; }
+    for t in $INTAKE_TEST_EXES; do
+        exe="$INTAKE_BUILD_DIR/$t.exe"
+        [ -f "$exe" ] || fail "expected intake test exe missing: $exe"
+        if command -v file >/dev/null 2>&1; then
+            file "$exe" | grep -qE 'PE32\+' || fail "$exe is not a PE32+ binary"
+        fi
+        OBJDUMP="$OBJDUMP_BIN" tools/check_windows_imports.sh "$exe" >/dev/null \
+            || fail "$exe imports a non-system DLL or no UCRT"
+        echo "intake test exe OK: $exe"
+    done
+    echo ""
 fi
 
 echo "MINGW CROSS-CHECK: PASS — $ARTIFACT"
