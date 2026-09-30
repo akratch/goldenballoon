@@ -445,20 +445,13 @@ MinGW; no Windows executable was run. Multi-section publication is still absent.
 Native foundation follow-up: new tests also exposed symlink-following and
 root-path replacement in Golden Balloon's existing directory pack reader.
 The POSIX implementation now pins a root descriptor and uses no-follow
-directory-relative reads/enumeration. The Windows counterpart is now implemented
-with root-relative NT file handles, no-follow/reparse rejection and handle-based
-enumeration. It and its Windows-specific tests cross-compile/link, but have not
-yet run on Windows. Do not treat a lexical name validator or cross-compile as
-proof of runtime confinement. This is a CT1 dependency, not `.dkrmap` support.
-
-API basis: Microsoft's [NtOpenFile documentation](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntopenfile)
-and the shared [relative-name/open-option contract](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile)
-describe a retained parent handle and non-following reparse opens. The source
-opens one component at a time and validates the resulting handle; it never
-reconstructs an untrusted descendant pathname for opening. Enumeration uses
-[GetFileInformationByHandleEx](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex)
-on an independent directory handle. API availability or query failures remain
-fail-closed rather than falling back to the former pathname-based reader.
+directory-relative reads/enumeration. Windows reads by pathname, as 1.7.0 did,
+and refuses a symbolic link, junction or mount point at any depth below the
+pack root; it does not pin the root against pathname replacement. The Windows
+reader also builds and runs on POSIX as the `mod_source_zip_path` CTest; it has
+not yet run on Windows. Do not treat a lexical name validator or cross-compile
+as proof of runtime confinement. This is a CT1 dependency, not `.dkrmap`
+support.
 
 ### Native-port differences that must not be papered over
 

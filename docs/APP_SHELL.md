@@ -385,59 +385,84 @@ drives, and does not enumerate anything until opened. Native-panel
 `isAvailable()` stays false on Linux; Workshop native-dialog actions do not
 inherit unsupported capabilities. ROM drag-and-drop and typed paths remain.
 
-ZIP and native-picker folder installation copy to hidden staging on a worker, then validate and
-publish on the launcher thread, even if the player has left Content. Existing
-filenames are never replaced. While the engine runs, publication waits until
-the launcher resumes. Cancel installation discards the pending copy; quitting
-signals cancellation and joins the worker before launcher teardown. Copying
-and publication are separate cancellation boundaries: a ready copy is consumed
-only after the launcher's current-frame input, including Cancel and Quit.
-Finalize checks cancellation before validation and immediately before its
-exclusive move. After that atomic publication succeeds, cancellation does not
-remove the installed pack. Copying
-checks cancellation between 256 KiB operations, so blocked filesystem calls
-can still delay shutdown. Folder intake rejects links, special files, excessive
-nesting and sources containing the mods destination. Publication uses an
-exclusive move and fails safely if the filesystem cannot support it; it never
-falls back to an overwriting rename. Reads use a pinned source-directory handle
-and refuse descendant links/reparse points, so replacing a source pathname after
-opening does not redirect copied file bytes. Directory files enforce the
-runtime's per-entry size cap before and during streaming. Intake defaults to at most 8 GiB of copied bytes and
-65,536 entries (files and directories, including empty directories). The ZIP
-itself counts as one copied entry and its compressed bytes count toward the copy
-budget. After copying, the worker inspects the staged ZIP central directory:
-at most 65,536 members, 256 MiB declared uncompressed per member, and 8 GiB
-declared uncompressed in total. This does not inflate payloads or verify every
-CRC; runtime reads still enforce entry bounds and check extracted data. The
-worker's ZIP parser uses a 64 MiB live-allocation budget, including accounting
-headers, before parsing its central directory. Allocation failure refuses the
-installation. This is not an RSS limit, a bound on later registry/runtime
-allocations, or a substitute for parser hardening. Reader cleanup is scoped to
-the operation, including exceptions during validation or cancellation checks.
-Folder data is counted across all files; streaming checks also bound files
-that grow after sizing. Exceeding either budget refuses publication and the
-prepared object's destructor normally cleans partial staging. These intake limits
-do not freeze an author editing an ordinary file in place. Destination writes,
-staged ZIP reads and final admission use retained directory descriptors/handles;
-admission shares the manifest/Rice checks used by normal pack discovery.
-Cleanup traverses through directory handles without following links/reparse
-points. On POSIX, detected staging or payload identity loss preserves displaced
-and replacement data instead of deleting an entry the transaction no longer
-owns; this may leave hidden staging for manual inspection. POSIX publication
-uses a descriptor-relative exclusive rename and checks the validated payload's
-device/inode after the final callback. That does not close the remaining
-check-to-rename race, creation-to-open race, in-place edits, or descendant
-directory replacement. On Windows, staging is created with a retained handle
-that denies write/delete sharing; final validation and rename retain the same
-DELETE-capable payload handle. The Windows implementation and its sharing/
-rename/cleanup fixtures cross-compile but have not been executed on Windows.
-Concurrent destination-ancestor changes and root relocation reporting also
-remain unqualified. Do not infer full hostile-filesystem safety from the local
-callback-substitution regressions.
-Successful installs
-refresh the cached Content inventory. End-to-end cancellation/UI, visible refresh and Linux/Deck
-package validation remain open. Linux's in-window picker currently selects ZIPs;
-folder selection is offered by the supported native panels.
+**Installing a content pack.** Content → Install pack… copies a pack into the
+mods folder; nothing is unpacked.
+
+| | Pick | Open mods folder |
+|---|---|---|
+| macOS | NSOpenPanel: a `.zip` or a folder | reveals it in Finder |
+| Windows | GetOpenFileNameW: a `.zip` (a folder pack is copied in by hand) | reveals it in Explorer |
+| Linux | in-window browser: a `.zip` (a folder pack is copied in by hand) | opens it with `xdg-open` when installed |
+
+The mods folder's path is always shown under the buttons.
+
+Before anything is copied or created, the pick must be a ZIP or folder, not a
+link or special file; its name must be usable (no `:` or `\`, not starting
+with `.`, which the game hides); nothing may already have that name in the
+mods folder (an installed pack is never replaced: updating means removing the
+installed copy first); a folder must not contain the mods folder; a ZIP's
+central directory must fit the budgets below, read without inflating any
+member; and the pack must pass the admission rules the game applies when it
+loads packs (a `pack.ini`, or Rice/GLideN64 texture names). A refusal says
+which rule failed.
+
+The copy runs on a worker while the launcher stays usable, into a hidden
+staging folder `mods/.install-<tick>-<n>` that the pack scan ignores. Budgets:
+8 GiB copied, 65,536 entries (files and folders, empty ones included; a ZIP
+counts as one), 256 MiB per file in a folder; for a ZIP, at most 65,536
+members, 256 MiB declared per member, 8 GiB declared in total, and 64 MiB of
+parser allocation for its central directory. A folder may hold only ordinary
+files and folders, with usable names, at most 24 folders deep. Cancellation is
+checked between 256 KiB chunks, so a blocked filesystem call can still delay
+it.
+
+Publication happens on the launcher thread, after that frame's input: a copy
+that finishes in the same frame as Cancel installation or Quit is not
+published. While the engine runs, a finished copy waits until the launcher is
+back. The staged copy is admitted again, then moved into place by a rename
+that refuses an existing name. There is no overwriting fallback; on a drive
+that cannot refuse (FAT, exFAT, some network folders) the install is refused
+with that reason. Cancellation after the move does not undo it, and the
+Content list then refreshes on the launcher thread.
+
+A cancelled or refused copy is deleted on a background thread, never through
+a link. A live installation holds its staging folder; when the launcher
+starts, staging folders nothing holds (left by a crash or force-quit) are
+deleted in the background. Quitting cancels the copy and waits for the worker
+and those deletions.
+
+How files are reached differs by platform:
+
+- **macOS and Linux.** The chosen ZIP is opened as the file itself, never
+  through its folder, which macOS may not let the app open for Downloads,
+  Desktop or Documents even though the Open panel granted the file. The
+  chosen folder, the mods folder and the staging folder are pinned by open
+  descriptors, and every read and write is relative to them without
+  following a link below them. The mods folder itself may be a link.
+  Publication is `renameatx_np(RENAME_EXCL)` or
+  `renameat2(RENAME_NOREPLACE)`, after checking that the staged pack is the
+  same file or folder that was admitted. A live installation holds an
+  advisory lock on its staging folder. If the staging folder or pack is
+  replaced mid-install, both are kept and nothing is published; the leftover
+  staging is reclaimed at a later launch.
+- **Windows.** Pathnames through the wide-character API, with the
+  extended-length prefix. Staging is created with CreateDirectoryW and held
+  open without delete sharing, so nothing can rename or replace it during the
+  install. Files are created CREATE_NEW. Symbolic links, junctions and mount
+  points are refused inside a folder pack and removed as links during cleanup;
+  cloud-file placeholders are ordinary files. Publication is a same-volume
+  MoveFileExW without MOVEFILE_REPLACE_EXISTING, retried briefly while a
+  security scanner holds a new file. A program with write access to the mods
+  folder could still swap a file inside the staging folder between admission
+  and the move.
+
+Folder packs are read the same way at runtime: never through a link below the
+pack root (the root itself may be a link); relative to a pinned descriptor on
+macOS and Linux, and on Windows by pathname, checking each folder on the way
+down. A ZIP over 2 GiB opens on every platform.
+
+The Windows installer and reader also build and run on macOS and Linux as the
+`pack_installer_path` and `mod_source_zip_path` CTests.
 
 ---
 

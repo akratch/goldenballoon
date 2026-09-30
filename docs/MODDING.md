@@ -104,13 +104,20 @@ specific to that one.
 
 Either way works, and they do the same thing:
 
-- **Content → Install pack…** — pick the `.zip` or the folder and the launcher
-  copies it in for you. On macOS the mods folder lives inside a `Library`
-  folder the Finder hides, so this is the easier route.
-- **Content → Open mods folder**, then drag the pack in yourself.
+- **Content → Install pack…** — pick the pack and the launcher copies it in
+  for you. On macOS you can pick the `.zip` or the folder; on Windows and
+  Linux, pick the `.zip` (put a folder in with the second route). On macOS the
+  mods folder lives inside a `Library` folder the Finder hides, so this is the
+  easier route there.
+- **Content → Open mods folder**, then drag the pack in yourself. On Linux
+  this button appears when `xdg-open` is installed; the folder's location is
+  always shown under the buttons.
 
 Then press **Play**. The mods folder is rescanned on every launch, so you do
 not need to restart Golden Balloon.
+
+A pack that is already installed is never replaced. To update one, remove the
+installed copy from the mods folder first, then install the new one.
 
 ### Confirming it worked
 
