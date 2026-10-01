@@ -200,6 +200,7 @@ its texture. Run it through the runner on a route that declares
 `"rdram_capture": true`:
 
 ```bash
+mkdir -p /tmp/mdkr64-rdram   # the lane writes files; it does not create directories
 tools/run_oracle.sh spaceport_pulse_ring --skip-native \
   --rom baserom.us.v80.z64 --rdram-dump 3800:/tmp/mdkr64-rdram/us_tracks
 ```
@@ -207,7 +208,11 @@ tools/run_oracle.sh spaceport_pulse_ring --skip-native \
 The runner refuses `--rdram-dump` on any other route, and an rdram route
 without it. It requires the run to complete, each `PREFIX_<frame>.bin` to be
 exactly 8 MiB and reported written, and a declared forced load to have
-happened. Snapshots are ROM-derived and local-only: keep them out of the
+happened. With `forced_track_occurrence` N above 1, any route also needs the
+ares log to show every earlier load left as is (`match k of N`): an ares built
+before the occurrence field forces the first race instead, and
+`tools/prepare_ares_oracle.sh` re-applies its `cpu.cpp` hooks on every refresh
+so an in-place rebuild picks the field up. Snapshots are ROM-derived and local-only: keep them out of the
 repository and out of artifacts.
 
 **Spaceport Alpha's pulsing floor ring (2026-10-01).** Three routes reach the
@@ -238,10 +243,10 @@ cache by asset ID and checked by shape and content CRC (`pulse_material`
 covers the checks and their failures). Against every snapshot, over the ring's
 UV area, the second image matches the console texel for texel and the first
 matches it on 95.8% of the area. The 4.2% that differs is the fill band, where
-the console's address-dependent command words and load leftovers are not
-reproduced. That band is visible as a narrow strip at the edge of the dive
-shaft for about three frames per lap.
-The wrapped plan of every other smaller texture (`mdkr_texture_pulse_upload`)
+the console's address-dependent command words, load leftovers and texture
+880's 32-byte header are not reproduced. That band is visible as a narrow
+strip at the edge of the dive shaft for about three frames per lap. The
+wrapped plan of every other smaller texture (`mdkr_texture_pulse_upload`)
 matched the console on 51.2% of the first image and none of the second.
 
 ### The track-exit poke and menu-result lanes (issue #55)

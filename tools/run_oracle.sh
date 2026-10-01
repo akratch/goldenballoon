@@ -461,6 +461,19 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
         echo "FAIL: ares audio capture did not complete (exit=$ARES_EXIT timeout=$ARES_TIMED_OUT)" >&2
         exit 1
     fi
+    if [[ "$FORCED_TRACK" -ge 0 && "$FORCED_TRACK_OCCURRENCE" -gt 1 ]]; then
+        # Retargeting only the Nth race needs every earlier one left alone: an
+        # ares built before the occurrence field forces the first race and
+        # would otherwise pass as the route's race.
+        for ((match = 1; match < FORCED_TRACK_OCCURRENCE; match++)); do
+            if ! grep -q "retail race load $FORCED_TRACK_SOURCE left as is (match $match of $FORCED_TRACK_OCCURRENCE)" \
+                    "$ROUTE_DIR/ares.log"; then
+                echo "FAIL: ares did not leave race load $match of $FORCED_TRACK_OCCURRENCE as is" \
+                    "(rebuild it with tools/prepare_ares_oracle.sh)" >&2
+                exit 1
+            fi
+        done
+    fi
     if [[ -n "$RDRAM_DUMP" ]]; then
         # Every requested snapshot must exist whole and be reported written,
         # and a declared forced load must have happened, or the capture is not

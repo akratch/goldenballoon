@@ -146,6 +146,7 @@ fi
 # ---------------------------------------------------------------------------
 python3 - "$SRC_DIR" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 src = Path(sys.argv[1])
@@ -896,6 +897,21 @@ vi_cpp.write_text(text.rstrip() + "\n\n" + oracle_cpp.rstrip() + "\n", encoding=
 # --- cpu.cpp: retarget one real one-player race load ------------------------
 cpu_cpp = src / "ares/n64/cpu/cpu.cpp"
 text = cpu_cpp.read_text(encoding="utf-8")
+# Re-apply idempotently, as vi.cpp is: every helper below was inserted as one
+# contiguous block just before CPU::instruction(), and each call as a line just
+# after it. Strip both so a refreshed checkout always carries THIS script's
+# helpers (an in-place refresh once kept a force hook that ignored its
+# occurrence field and forced the first race).
+instruction_anchor = "auto CPU::instruction() -> bool {\n"
+first_helper = text.find("static auto mdkr64Oracle")
+if first_helper >= 0:
+    anchor_at = text.find(instruction_anchor, first_helper)
+    if anchor_at < 0:
+        raise SystemExit("FAIL: cpu.cpp oracle helpers found without the instruction anchor")
+    text = text[:first_helper] + text[anchor_at:]
+text = re.sub(r"^  mdkr64Oracle\w+\(\*this\);\n", "", text, flags=re.M)
+if "mdkr64OracleMaybeForceTrack" in text:
+    raise SystemExit("FAIL: cpu.cpp still names the force hook after stripping it")
 if "mdkr64OracleMaybeForceTrack" not in text:
     anchor = "auto CPU::instruction() -> bool {\n"
     if anchor not in text:
