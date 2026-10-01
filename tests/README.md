@@ -4005,9 +4005,11 @@ failed with its first missing column at x = 1080 on a 1080-row drawable, or at
 the banner's own left edge where the whole banner sat right of it at 21:9.
 
 The 1ST and FINISH arms also run on OpenGL Remastered, which draws the HUD in a
-separate output pass. That pass must keep the frame's clip. Before it did, the
-1ST arm's fault could not cut anything and the FINISH arm found the Time Trial
-stopwatch drawn beside the frame.
+separate output pass, and on OpenGL Restored with `MDKR_RENDER_SCALE=2`, the
+other way into that pass. That pass must keep the frame's clip. Before it did,
+the 1ST arm's fault could not cut anything and the FINISH arm found the Time
+Trial stopwatch drawn beside the frame (52768 pixels outside the opening); the
+render-scale arms fail the same two ways with that fix reverted.
 
 `check_shadow_visual_ab.py` is the slower pixel-level companion:
 

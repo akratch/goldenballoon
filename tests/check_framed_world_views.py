@@ -272,24 +272,28 @@ WIDE_HUD_BANNER_SCENES = {
     "second": next(scene for scene in SCENES
                    if scene.name == "post-race-framed"),
 }
-# (scene, backend, window size, style). The fault's clip edge is x = H, which
-# is 26.7 authored pixels right of centre at 16:9 and 40 left of it at 21:9.
-# The 1ST and FINISH banners reach past it at both ratios. The non-first
-# banner ends left of it at 16:9, so only the 21:9 capture can see the fault
-# there. At 4:3 the two mappings coincide and there is nothing to test.
-# Remastered on OpenGL draws the HUD into a separate output pass; the fault
-# can only cut the banner there if that pass keeps the world's scissor, and
-# the Time Trial stopwatch left of the frame must stay hidden in it.
+# (scene, backend, window size, style[, render scale]). The fault's clip edge
+# is x = H, which is 26.7 authored pixels right of centre at 16:9 and 40 left
+# of it at 21:9. The 1ST and FINISH banners reach past it at both ratios. The
+# non-first banner ends left of it at 16:9, so only the 21:9 capture can see
+# the fault there. At 4:3 the two mappings coincide and there is nothing to
+# test. OpenGL draws the HUD into a separate output pass for Remastered and
+# for any render scale other than 1; the fault can only cut the banner there
+# if that pass keeps the world's scissor, and the Time Trial stopwatch left of
+# the frame must stay hidden in it. The render-scale-2 Restored arms reach the
+# pass by the second route alone.
 WIDE_HUD_BANNER_ARMS = (
     ("first", "webgpu", "960x540", "restored"),
     ("first", "webgpu", "1260x540", "restored"),
     ("first", "gl", "960x540", "restored"),
     ("first", "webgpu", "960x540", "remastered"),
     ("first", "gl", "960x540", "remastered"),
+    ("first", "gl", "960x540", "restored", "2"),
     ("time-trial", "webgpu", "960x540", "restored"),
     ("time-trial", "webgpu", "1260x540", "restored"),
     ("time-trial", "gl", "960x540", "restored"),
     ("time-trial", "gl", "960x540", "remastered"),
+    ("time-trial", "gl", "960x540", "restored", "2"),
     ("second", "webgpu", "1260x540", "restored"),
     ("second", "gl", "1260x540", "restored"),
 )
@@ -956,20 +960,25 @@ def run_wide_hud_banner_arm(
     work: Path,
     timeout: int,
     verbose: bool,
+    render_scale: str = "1",
 ) -> str:
     scene = WIDE_HUD_BANNER_SCENES[key]
+    scale_env = (("MDKR_RENDER_SCALE", render_scale),)
+    scale_name = "" if render_scale == "1" else f"-scale{render_scale}"
     arms = {
         mode: run_arm(
             binary, rom,
             dataclasses.replace(
-                scene, name=f"{scene.name}-wide-hud-{mode}",
-                extra_env=scene.extra_env + env,
+                scene, name=f"{scene.name}-wide-hud-{mode}{scale_name}",
+                extra_env=scene.extra_env + env + scale_env,
             ),
             backend, size, False, work, timeout, verbose, style,
         )
         for mode, env in WIDE_HUD_ENV.items()
     }
     label = f"{scene.name}/{backend}/{size}/{style}"
+    if render_scale != "1":
+        label += f"/render-scale-{render_scale}"
     return f"{label}: {validate_wide_hud_banner(label, arms)}"
 
 
@@ -1493,8 +1502,8 @@ def main() -> int:
                         max_workers=args.jobs) as pool:
                     summaries.extend(pool.map(
                         lambda arm: run_wide_hud_banner_arm(
-                            binary, rom, *arm, work, args.timeout,
-                            args.verbose,
+                            binary, rom, *arm[:4], work, args.timeout,
+                            args.verbose, *arm[4:],
                         ),
                         WIDE_HUD_BANNER_ARMS,
                     ))
