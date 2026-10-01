@@ -8008,15 +8008,42 @@ The engine side is off by default and reads no clock unless asked:
   frame. Each row has the present-to-present wall time (`dtUs`), how much of
   it the game thread spent running (`cpuUs`; the rest was waiting), the walk
   and end-of-frame time, and what that frame spent on each part of a texture
-  miss: pack open/locate (`openUs`, of which `absentUs` found nothing), read
-  and ZIP inflate (`readUs`), PNG decode (`decodeUs`), digest and Rice-CRC
-  hashing (`hashUs`), replacement uploads (`overrideUploadUs`, the backend's
-  `upload_texture()`), and ordinary ROM fills (`romUploadUs`). It also prints
-  the counts and bytes behind each figure.
+  miss: locating the file in the registry's name index (`openUs`, of which
+  `absentUs` found nothing), read and ZIP inflate (`readUs`), PNG decode
+  (`decodeUs`), digest and Rice-CRC hashing (`hashUs`), store lookups
+  (`resolveUs`), the per-frame install pump (`pumpUs`), replacement uploads
+  (`overrideUploadUs`, the backend's `upload_texture()`), and ordinary ROM
+  fills (`romUploadUs`). Since issue #66 a replacement is read and decoded off
+  the frame, so `readUs`/`decodeUs` are charged when a texture is installed and
+  `workerUs` is the background thread's time, not the game thread's. Game-thread
+  pack work for the frame is `hashUs + resolveUs + pumpUs + overrideUploadUs`.
+  `queued`, `installed`, `discarded`, `refills` (cache entries re-uploaded in
+  place once their replacement arrived), `deferred` (resident replacements drawn
+  from ROM for a frame because that frame's upload budget was spent) and
+  `pending` (still loading at the end of the frame) describe the loader. Each
+  installed texture also prints a `[TEXPACK-INSTALL]` row with its identity and
+  how many frames it was pending.
 - The resource census (`MDKR_RESOURCE_STATS=1`, or `MDKR_TRACE`) adds one
   `texture_pack_generation:` row per completed level generation, beside
   `renderer_generation:`, with the same totals and the generation's worst frame.
-  It does not add the per-frame rows.
+  It does not add the per-frame rows, and `MDKR_TEXTURE_PACK_TIMING=1` on its
+  own does not add this row: it comes from the resource generation boundary,
+  which reports only with the census on. The measurement tool sets both.
+- `MDKR_TEXTURE_PACK_LOADER=worker|budget|inline` forces where replacements are
+  read and decoded: the background worker (the native default), the game
+  thread inside a per-frame time budget (the browser build's loader, and the
+  fallback when the thread cannot start), or inside the lookup itself (the 1.7
+  behaviour without its per-lookup archive opens; also what an author dump
+  runs, `MDKR_MOD_TEXTURE_DUMP`). For A/B measurement; players never set it.
+
+The tool verifies real-time pacing from the run itself rather than trusting
+the flag: the run must take at least the wall time its ticks take at the
+authored rate, and its median frame must sit at the present period
+`[PRESENT-MODE]` reports. A run that started on a still-busy machine after
+`--load-wait` is reported as a problem and marked BUSY in the tables. `--loader`
+forces the loader for an A/B run, and `--state-hash` records the `[SIMHASH]` v3
+stream per run (compare pack on and off under `--synthetic`, the only pacing
+under which two runs simulate the same ticks).
 
 ### Rolling attract demo — `tests/check_attract_demo.py`
 

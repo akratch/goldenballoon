@@ -19,10 +19,20 @@ The engine side is MDKR_TEXTURE_PACK_TIMING=1 plus the resource census
 (MDKR_RESOURCE_STATS=1); see the block above dkr_bind_tile in
 platform/fast3d/gfx_pc_dkr.c and mod_texture_store.h. Every presented frame
 emits one [TEXPACK-FRAME] row: wall time since the previous present, the walk
-and end-of-frame time, and what that frame spent opening the pack, reading
-(and inflating) PNGs, decoding them, hashing texture identities and uploading
-the results. The census marks each level load, which is how frames are split
-into areas and visits.
+and end-of-frame time, and what that frame spent on pack textures. The census
+marks each level load, which is how frames are split into areas and visits.
+
+Since the off-frame loader (issue #66) the per-frame figure that matters is
+GAME-THREAD PACK WORK, packUs = hashUs + resolveUs + pumpUs + overrideUploadUs:
+identity hashing, store lookups, installing finished textures (and, under the
+BUDGET loader, reading and decoding them), and uploading replacements. Raw
+frame time is not used for that: T12a showed pack-independent waits of 35-75 ms
+that would be misattributed. Each texture the store installs also prints a
+[TEXPACK-INSTALL] row, which gives the request->resident latency in frames and
+the set of identities that became resident (compare it across loaders).
+`--loader inline|budget|worker` forces a loader for A/B runs; `--state-hash`
+records the authoritative [SIMHASH] stream (use with --synthetic, the only
+pacing under which two runs simulate identically).
 
 Usage (the pack is private: it is copied into a fresh temporary mods
 directory per run and never anywhere else):
@@ -112,6 +122,12 @@ ROUTE_END_TICKS = 9900
 HOLD_TICKS = 4
 
 FRAME_TAG = "[TEXPACK-FRAME]"
+INSTALL_TAG = "[TEXPACK-INSTALL]"
+ACTIVE_PACKS_RE = re.compile(r"\[MODS\] ([0-9]+) pack\(s\) active")
+RATE_RE = re.compile(r"\[PRESENT-MODE\].*?\brate=([0-9]+)")
+# Game-thread pack work per frame, in microseconds (see the module docstring).
+PACK_WORK_FIELDS = ("hashUs", "resolveUs", "pumpUs", "overrideUploadUs")
+PACK_WORK_LIMIT_US = 4000
 CACHE_RE = re.compile(
     r"texture_cache_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+)")
 STALL_MS = (33.3, 50.0)
@@ -154,6 +170,22 @@ def wait_for_quiet(max_load: float, wait_s: float) -> dict:
 
 
 # --------------------------------------------------------------- parsing
+
+
+def parse_installs(output: str) -> list[dict]:
+    """[TEXPACK-INSTALL] rows: key, resident, frames (latency), us."""
+    rows = []
+    for line in output.splitlines():
+        position = line.find(INSTALL_TAG)
+        if position < 0:
+            continue
+        row: dict = {}
+        for token in line[position + len(INSTALL_TAG):].split():
+            key, separator, value = token.partition("=")
+            if separator:
+                row[key] = value if key == "key" else int(value)
+        rows.append(row)
+    return rows
 
 
 def parse_run(output: str) -> tuple[list[dict], list[dict]]:
@@ -199,7 +231,14 @@ SUM_FIELDS = (
     "probes", "absent", "files", "fileBytes", "decodedBytes", "openUs",
     "absentUs", "readUs", "decodeUs", "resolveUs", "overrideUploads",
     "overrideBytes", "overrideUploadUs", "romUploads", "romUploadUs",
+    # The off-frame loader's fields; absent (0) in pre-#66 logs.
+    "pumpUs", "workerUs", "queued", "installed", "discarded", "refills",
+    "deferred",
 )
+
+
+def pack_us(frame: dict) -> int:
+    return sum(frame.get(field, 0) for field in PACK_WORK_FIELDS)
 
 
 def displayed_frames(rows: list[dict]) -> list[dict]:
@@ -222,7 +261,9 @@ def displayed_frames(rows: list[dict]) -> list[dict]:
         pending["presents"] += 1
         if row.get("swap", 1):
             pending.update(frame=row["frame"], tick=row["tick"],
-                           visit_index=row["visit_index"])
+                           visit_index=row["visit_index"],
+                           pendingTextures=row.get("pending", 0))
+            pending["packUs"] = pack_us(pending)
             out.append(pending)
             pending = None
     return out
@@ -241,11 +282,23 @@ def percentile(values: list[float], fraction: float) -> float:
 
 def summarize(frames: list[dict]) -> dict:
     times = [frame["dtUs"] / 1000.0 for frame in frames]
+    pack = [frame["packUs"] / 1000.0 for frame in frames]
     return {
         "frames": len(times),
         "p50_ms": round(percentile(times, 0.50), 2),
         "p99_ms": round(percentile(times, 0.99), 2),
         "max_ms": round(max(times), 2) if times else 0.0,
+        "pack_max_ms": round(max(pack), 2) if pack else 0.0,
+        "pack_p99_ms": round(percentile(pack, 0.99), 2),
+        "pack_over_4ms": sum(1 for frame in frames
+                             if frame["packUs"] > PACK_WORK_LIMIT_US),
+        "pump_ms": round(sum(frame["pumpUs"] for frame in frames) / 1000, 1),
+        "worker_ms": round(
+            sum(frame["workerUs"] for frame in frames) / 1000, 1),
+        "queued": sum(frame["queued"] for frame in frames),
+        "installed": sum(frame["installed"] for frame in frames),
+        "refills": sum(frame["refills"] for frame in frames),
+        "deferred": sum(frame["deferred"] for frame in frames),
         "over_33_3": sum(1 for value in times if value > STALL_MS[0]),
         "over_50": sum(1 for value in times if value > STALL_MS[1]),
         "resolves": sum(frame["resolves"] for frame in frames),
@@ -289,6 +342,12 @@ def frame_record(frame: dict, visits: list[dict]) -> dict:
         "uploads": frame["overrideUploads"],
         "upload_mib": round(frame["overrideBytes"] / 2**20, 2),
         "rom_upload_ms": round(frame["romUploadUs"] / 1000, 2),
+        "pack_ms": round(frame["packUs"] / 1000, 2),
+        "pump_ms": round(frame["pumpUs"] / 1000, 2),
+        "installed": frame["installed"],
+        "refills": frame["refills"],
+        "deferred": frame["deferred"],
+        "pending": frame["pendingTextures"],
         "cpu_ms": round(frame["cpuUs"] / 1000, 2),
         "walk_ms": round(walk / 1000, 2),
         "walk_other_ms": round(max(0, walk - accounted) / 1000, 2),
@@ -317,6 +376,11 @@ def analyse(output: str) -> dict:
         if mine:
             per_visit.append({**visit, **summarize(mine)})
     worst = sorted(frames, key=lambda frame: -frame["dtUs"])[:10]
+    worst_pack = sorted(frames, key=lambda frame: -frame["packUs"])[:10]
+    installs = parse_installs(output)
+    latencies = [row["frames"] for row in installs if row.get("resident")]
+    resident_keys = sorted({row["key"] for row in installs
+                            if row.get("resident")})
     return {
         "presents": len(rows),
         "displayed": len(frames),
@@ -328,6 +392,17 @@ def analyse(output: str) -> dict:
             for level, cutscene in repeated),
         "visits": per_visit,
         "worst": [frame_record(frame, visits) for frame in worst],
+        "worst_pack": [frame_record(frame, visits) for frame in worst_pack],
+        "installs": {
+            "rows": len(installs),
+            "resident": len(latencies),
+            "latency_frames_p50": percentile(latencies, 0.50),
+            "latency_frames_p90": percentile(latencies, 0.90),
+            "latency_frames_max": max(latencies) if latencies else 0,
+            "resident_keys": resident_keys,
+        },
+        "override_uploads": sum(row.get("overrideUploads", 0)
+                                for row in rows),
     }
 
 
@@ -345,11 +420,41 @@ def route_error(result: dict) -> str | None:
     return None
 
 
+def realtime_error(record: dict, output: str, ticks: int,
+                   tick_hz: int) -> str | None:
+    """Evidence, from the run itself, that it was paced in real time.
+
+    The CLI flag only asks for it. Two independent witnesses: the process
+    could not finish faster than its ticks take at the authored rate (the
+    synthetic pacer runs several times faster), and the median displayed
+    frame sits at the present period [PRESENT-MODE] reports (synthetic frames
+    are a fraction of it).
+    """
+    rates = [int(value) for value in RATE_RE.findall(output)]
+    rate = rates[-1] if rates and rates[-1] > 0 else tick_hz
+    period_ms = 1000.0 / rate
+    minimum_s = 0.9 * ticks / tick_hz
+    record["pacing_evidence"] = {
+        "present_rate": rate, "period_ms": round(period_ms, 2),
+        "p50_ms": record["all"]["p50_ms"], "wall_s": record["wall_s"],
+        "minimum_wall_s": round(minimum_s, 1),
+    }
+    if record["wall_s"] < minimum_s:
+        return (f"not real time: {ticks} ticks took {record['wall_s']} s, "
+                f"under the {minimum_s:.0f} s they take at {tick_hz} Hz")
+    if not 0.85 * period_ms <= record["all"]["p50_ms"] <= 1.15 * period_ms:
+        return (f"not real time: p50 {record['all']['p50_ms']} ms is not the "
+                f"{period_ms:.2f} ms present period")
+    return None
+
+
 # ------------------------------------------------------------------ runs
 
 
 def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
     label = f"{renderer}-{'pack' if pack else 'nopack'}"
+    if args.loader and pack:
+        label += f"-{args.loader}"
     run_root = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=artifacts))
     scale = 2 if args.cadence == "enhanced" else 1
     ticks = ROUTE_END_TICKS * scale
@@ -377,6 +482,11 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
     })
     if not args.synthetic:
         env["MDKR_PACE_REALTIME"] = "1"
+    if args.loader:
+        env["MDKR_TEXTURE_PACK_LOADER"] = args.loader
+    if args.state_hash:
+        env["MDKR_STATE_HASH"] = "3"
+        env["MDKR_STATE_HASH_FILE"] = str(run_root / "simhash.txt")
     command = [
         str(args.binary), "--headless-ticks", str(ticks),
         "--window-size", args.window_size,
@@ -422,6 +532,14 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
                                "used this run" in line), None),
         }
         problems = []
+        if not load["quiet"]:
+            # Surfaced, not just recorded: a busy machine's frame times are
+            # not this build's. The data is still analysed (and shown, marked)
+            # so the reader can see what the contention did.
+            problems.append(
+                f"machine still busy after --load-wait: load "
+                f"{load['at_start'][0]:.2f} > {args.max_load:.2f}")
+        busy_only = bool(problems)
         if returncode != 0:
             problems.append(f"exit {returncode}")
         if f"renderer backend: {renderer}" not in output:
@@ -429,19 +547,41 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         for marker in FATAL_MARKERS:
             if marker in output:
                 problems.append(f"fatal marker {marker}")
-        if pack is not None and record["pack_used"] is None:
-            problems.append("the pack supplied no rendered texture")
-        if pack is None and "pack(s) active" in output and \
-                "0 pack(s) active" not in output:
+        active = [int(value) for value in ACTIVE_PACKS_RE.findall(output)]
+        if pack is None and any(value != 0 for value in active):
+            # Anchored on the count itself: "10 pack(s) active" contains
+            # "0 pack(s) active" as a substring.
             problems.append("a pack was active in the no-pack arm")
         if FRAME_TAG not in output:
             problems.append("no [TEXPACK-FRAME] rows: instrument missing")
-        if not problems:
+        if args.state_hash:
+            hash_file = run_root / "simhash.txt"
+            record["simhash_sha256"] = (sha256(hash_file)
+                                        if hash_file.is_file() else None)
+            record["simhash_rows"] = (
+                sum(1 for _ in hash_file.open(encoding="utf-8",
+                                              errors="replace"))
+                if hash_file.is_file() else 0)
+            if record["simhash_sha256"] is None:
+                problems.append("no [SIMHASH] stream was written")
+        complete = len(problems) == (1 if busy_only else 0)
+        if complete:
             record.update(analyse(output))
+            # Either kind of pack: a Rice pack prints how many identities it
+            # used; a digest-keyed pack prints nothing of the sort, but every
+            # replacement it supplied was uploaded as an override.
+            if pack is not None and record["pack_used"] is None and \
+                    record["override_uploads"] == 0:
+                problems.append("the pack supplied no rendered texture")
             error = route_error(record)
             if error:
                 problems.append(error)
+            if not args.synthetic:
+                error = realtime_error(record, output, ticks, tick_hz)
+                if error:
+                    problems.append(error)
         record["problems"] = problems
+        record["busy"] = busy_only
         return record
     finally:
         if pack is not None and not args.keep_pack:
@@ -544,39 +684,65 @@ def print_tables(records: list[dict], synthetic: bool) -> None:
     if synthetic:
         print("\nSYNTHETIC PACING: route check only. These are NOT player "
               "frame times.")
-    print("\n| arm | set | frames | p50 ms | p99 ms | max ms | >33.3 | >50 | "
-          "loaded | decoded MiB | open ms | read ms | decode ms | upload ms |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for record in records:
         if record.get("problems"):
-            print(f"| {record['label']} | FAILED: "
-                  f"{'; '.join(record['problems'])} |")
+            print(f"\n{record['label']}: PROBLEM: "
+                  f"{'; '.join(record['problems'])}")
+    print("\n| arm | set | frames | p50 ms | p99 ms | max ms | >33.3 | >50 | "
+          "pack work max ms | pack work p99 ms | frames pack >4 ms | loaded | "
+          "decoded MiB | read ms | decode ms | worker ms | pump ms | "
+          "upload ms |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+          "---|---|")
+    for record in records:
+        label = record["label"] + (" (BUSY)" if record.get("busy") else "")
+        if "all" not in record:
+            print(f"| {label} | FAILED: {'; '.join(record['problems'])} |")
             continue
         for key in ("cold", "warm", "all"):
             row = record[key]
-            print(f"| {record['label']} | {key} | {row['frames']} | "
+            print(f"| {label} | {key} | {row['frames']} | "
                   f"{row['p50_ms']} | {row['p99_ms']} | {row['max_ms']} | "
-                  f"{row['over_33_3']} | {row['over_50']} | {row['loaded']} | "
-                  f"{row['decoded_mib']} | {row['open_ms']} | "
-                  f"{row['read_ms']} | {row['decode_ms']} | "
-                  f"{row['upload_ms']} |")
+                  f"{row['over_33_3']} | {row['over_50']} | "
+                  f"{row['pack_max_ms']} | {row['pack_p99_ms']} | "
+                  f"{row['pack_over_4ms']} | {row['loaded']} | "
+                  f"{row['decoded_mib']} | {row['read_ms']} | "
+                  f"{row['decode_ms']} | {row['worker_ms']} | "
+                  f"{row['pump_ms']} | {row['upload_ms']} |")
     for record in records:
-        if record.get("problems"):
+        if "all" not in record:
             continue
-        print(f"\n{record['label']}: 10 worst frames")
-        print("| frame ms | cpu ms | area | kind | loaded/resolves | "
-              "decoded MiB | open ms (absent) | read ms | decode ms | "
-              "upload ms | hash ms | walk other ms | outside render ms |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-        for frame in record["worst"]:
-            print(f"| {frame['frame_ms']} | {frame['cpu_ms']} | "
-                  f"{frame['area']} | {frame['kind']} | "
-                  f"{frame['loaded']}/{frame['resolves']} | "
-                  f"{frame['decoded_mib']} | {frame['open_ms']} "
-                  f"({frame['absent_ms']}) | {frame['read_ms']} | "
-                  f"{frame['decode_ms']} | {frame['upload_ms']} | "
-                  f"{frame['hash_ms']} | {frame['walk_other_ms']} | "
-                  f"{frame['outside_render_ms']} |")
+        installs = record.get("installs", {})
+        if installs.get("rows"):
+            print(f"\n{record['label']}: {installs['resident']} textures "
+                  f"installed resident; request->resident latency in frames "
+                  f"p50 {installs['latency_frames_p50']}, p90 "
+                  f"{installs['latency_frames_p90']}, max "
+                  f"{installs['latency_frames_max']}")
+        for title, key in (("10 worst frames", "worst"),
+                           ("10 frames with the most game-thread pack work",
+                            "worst_pack")):
+            print(f"\n{record['label']}: {title}")
+            print("| frame ms | cpu ms | pack work ms | area | kind | "
+                  "loaded/resolves | installed | refills | pending | "
+                  "decoded MiB | open ms (absent) | read ms | decode ms | "
+                  "pump ms | upload ms | hash ms | walk other ms | "
+                  "outside render ms |")
+            print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+                  "---|---|---|---|")
+            for frame in record[key]:
+                print(f"| {frame['frame_ms']} | {frame['cpu_ms']} | "
+                      f"{frame['pack_ms']} | "
+                      f"{frame['area']} | {frame['kind']} | "
+                      f"{frame['loaded']}/{frame['resolves']} | "
+                      f"{frame['installed']} | {frame['refills']} | "
+                      f"{frame['pending']} | "
+                      f"{frame['decoded_mib']} | {frame['open_ms']} "
+                      f"({frame['absent_ms']}) | {frame['read_ms']} | "
+                      f"{frame['decode_ms']} | {frame['pump_ms']} | "
+                      f"{frame['upload_ms']} | "
+                      f"{frame['hash_ms']} | {frame['walk_other_ms']} | "
+                      f"{frame['outside_render_ms']} |")
 
 
 def _terminate(signum, _frame) -> None:
@@ -612,6 +778,12 @@ def main() -> int:
     parser.add_argument("--synthetic", action="store_true",
                         help="route check only: synthetic pacing, NOT player "
                              "frame times")
+    parser.add_argument("--loader", choices=("worker", "budget", "inline"),
+                        help="force the texture store's loader "
+                             "(MDKR_TEXTURE_PACK_LOADER) for an A/B run")
+    parser.add_argument("--state-hash", action="store_true",
+                        help="record the [SIMHASH] v3 stream per run and "
+                             "its SHA-256 (meaningful under --synthetic)")
     parser.add_argument("--max-load", type=float, default=4.0,
                         help="wait before a run while the 1-minute load "
                              "average is above this")
@@ -633,7 +805,7 @@ def main() -> int:
     if args.reanalyse is not None:
         results = json.loads(args.reanalyse.read_text(encoding="utf-8"))
         for record in results.get("runs", []):
-            if record.get("problems"):
+            if "all" not in record:
                 continue
             output = Path(record["log"]).read_text(
                 encoding="utf-8", errors="replace")
