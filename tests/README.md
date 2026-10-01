@@ -7967,6 +7967,49 @@ baserom.us.v80.z64` checks that exactly 512 entries are accepted and 513 fail
 instead of silently truncating. It creates a hidden native window and uses
 isolated temporary preferences; the ROM remains local.
 
+### Texture-pack transition stalls — `tools/measure_texture_pack_stalls.py`
+
+```bash
+python3 tools/measure_texture_pack_stalls.py --build build-rel \
+  --rom baserom.us.v80.z64 --texture-pack /path/to/pack.zip \
+  --json /private/path/stalls.json
+python3 tools/measure_texture_pack_stalls.py --inventory \
+  --texture-pack /path/to/pack.zip
+```
+
+A measurement, not a gate: it prints tables and writes JSON, and exits 1 only
+when a run did not complete or did not cover its route. The plateau check above
+cannot see frame-time spikes; this measures them. It drives Tracks mode through
+Ancient Lake, back to Track Select, a second course, and both again, so every
+area is visited cold and then warm in one process, once with the pack and once
+without, on WebGPU and GL. Runs are real windowed processes at real-time pacing
+(`MDKR_PACE_REALTIME=1`, `MDKR_TEST_VISIBLE_HEADLESS=1`, 960x540, Enhanced
+cadence by default). `--synthetic` checks the route quickly and labels its
+output as not player frame times. Each run waits for a quiet machine
+(`--max-load`) and records the load average it started under. The pack is
+copied into a fresh temporary mods directory per run and removed after the
+run. `--inventory` lists the pack's PNG count, size histogram and decoded total,
+and builds `tools/texture_pack_decode_bench.c` with the host compiler against
+the store's own sources. The bench times one pack open and probe, every
+identity resolved through the real store, and the same files read through one
+open archive.
+
+The engine side is off by default and reads no clock unless asked:
+
+- `MDKR_TEXTURE_PACK_TIMING=1` prints one `[TEXPACK-FRAME]` row per presented
+  frame. Each row has the present-to-present wall time (`dtUs`), how much of
+  it the game thread spent running (`cpuUs`; the rest was waiting), the walk
+  and end-of-frame time, and what that frame spent on each part of a texture
+  miss: pack open/locate (`openUs`, of which `absentUs` found nothing), read
+  and ZIP inflate (`readUs`), PNG decode (`decodeUs`), digest and Rice-CRC
+  hashing (`hashUs`), replacement uploads (`overrideUploadUs`, the backend's
+  `upload_texture()`), and ordinary ROM fills (`romUploadUs`). It also prints
+  the counts and bytes behind each figure.
+- The resource census (`MDKR_RESOURCE_STATS=1`, or `MDKR_TRACE`) adds one
+  `texture_pack_generation:` row per completed level generation, beside
+  `renderer_generation:`, with the same totals and the generation's worst frame.
+  It does not add the per-frame rows.
+
 ### Rolling attract demo — `tests/check_attract_demo.py`
 
 ```bash
