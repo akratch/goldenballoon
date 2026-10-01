@@ -52,12 +52,17 @@ tick to the ordinary boom path, never to the fan-shot retargeter.
 - **Return.** Once released the view returns in the authored boom's moving
   basis, so a spectator's shoulder does not swap sides: the eye closes at most
   25% of its remaining error per 1/30 s of authored time (speed- and
-  step-capped as the boom is), the orientation at most 90 degrees per second.
+  step-capped as the boom is), the orientation at most 90 degrees per second
+  on each rotation axis. Yaw and pitch return together, so the view direction
+  itself turns up to about 1.4 times that when both are off.
   A contact during the return re-holds the shot.
 - **Leash.** A holding view that has turned more than 45 degrees from the
   authored view turns back toward it -- the eye stays held -- by what returns
-  it to 45, never faster than the 90 degrees per second the return uses. Each
-  leashed view is proven like any held tick.
+  it to 45, never faster than the return's 90 degrees per second per axis
+  (so, like the return, up to about 1.4 times that for the view direction).
+  Each leashed view is proven like any held tick, and the census measures its
+  divergence before and after the turn; a leashed view that is not less
+  divergent after it fails the motion gate.
 - **Bounds.** A held view may stay frozen (holding, not returning) for at most
   2 s, and the published view may turn at most 60 degrees from the authored
   view in any phase. Past either, the held shot ends on a published cut (a
@@ -91,18 +96,29 @@ Costs, from the census at Enhanced (lake / hub / 3P):
   releases plus one extension each on the lake and 3P that ran into the next
   contact, the case it exists for.
 - Published cuts: down on the lake (103 to 98), up on the hub (68 to 90) and
-  the 3P route (112 to 132). Every added cut is a held seed the
-  divergence bound refused because the view it would hold was an alternate or
-  emergency composition already 84 to 143 degrees off the authored view; the
-  ordinary ladder republishes those ticks instead. They are not isolated: each
-  falls within three ticks of an existing cut, lengthening an emergency burst
-  (on the hub, each of the seven door approaches goes from three cuts, three
-  held ticks and a cut to seven or eight consecutive cuts).
-- Held views seeded from the authored view stay frozen for at most 1.1 s and
-  turn up to 36 degrees at Enhanced. At Original the hold's ticks last twice as
-  long and they turn further (up to 59, 61.5 with Comfort); there the leash
-  holds them at 45 (24 leashed ticks on the 3P comfort run) and no published
-  shot reaches the hard bound.
+  the 3P route (112 to 132).
+  - Hub: 22 added, none removed, and every added cut is a tick on which the
+    divergence bound refused a held seed whose view was an alternate or
+    emergency composition already 84 to 143 degrees off the authored view, so
+    the ordinary ladder published it instead. None is isolated: each of the
+    seven door approaches goes from three cuts, three held ticks and a cut to
+    seven or eight consecutive cuts.
+  - 3P: 23 added and 3 removed. 17 of the added cuts are refused seeds in the
+    same way. The other 6 are two runs of three ticks on one spectator slot,
+    three to six ticks after a run of refused seeds: before the bound, the
+    shot held there failed its own return and the slot then spent those ticks
+    retracted along the authored ray without a cut; with the seed refused, the
+    ordinary ladder keeps its alternate composition, cut every tick, through
+    them. Every added cut lies within three ticks of another cut. The 3
+    removed cuts were not traced.
+- Held views seeded from the authored view, measured with the bounds and the
+  leash lifted, stay frozen for at most 1.17 s and turn up to 36 degrees at
+  Enhanced. At Original the hold's ticks last twice as long and they turn
+  further: up to 44 on the lake, 38 on the hub, 56 on the 3P route and 70 on
+  the 3P route with Comfort. With the shipped values the leash holds them at
+  45 (24 leashed ticks on the 3P comfort run, at most 45.02 degrees published,
+  each turning back at least 2.5 degrees) and no published shot reaches the
+  hard bound.
 
 The held-shot look was accepted on a visual comparison against ordinary
 Modern. That covers the look; it does not establish comfort across all routes,

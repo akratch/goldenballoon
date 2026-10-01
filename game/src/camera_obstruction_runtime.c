@@ -98,26 +98,29 @@
  *
  * SOFT_DIVERGENCE is a leash: while holding, a view that has turned further
  * than this from the authored view turns back toward it -- the eye stays held
- * -- by as much as returns it to the leash, never faster than the 90 degrees
- * per second the held return uses, and every leashed view is proven like any
- * other held tick. MAX_DIVERGENCE (any phase) and MAX_DWELL (how long a view
- * stays frozen: consecutive holding, contact plus release hold, reset by a
- * recovery) are hard: past either the held shot ends, its handover tick is
- * published as a cut (a shot change, never an interpolated whip), and the
+ * -- by as much as returns it to the leash, never faster than the held
+ * return's 90 degrees per second, and every leashed view is proven like any
+ * other held tick. That rate is per rotation axis: yaw and pitch turn
+ * together, so the view direction itself can turn up to about 1.4 times as
+ * fast when both are off. MAX_DIVERGENCE (any phase) and MAX_DWELL (how long
+ * a view stays frozen: consecutive holding, contact plus release hold, reset
+ * by a recovery) are hard: past either the held shot ends, its handover tick
+ * is published as a cut (a shot change, never an interpolated whip), and the
  * slot takes the ordinary boom path -- retraction along the authored ray, its
  * alternate shot or emergency framing -- without seeding another held shot
  * until that correction has released.
  *
  * Measured on the motion routes at both simulation cadences, with and without
- * Camera.Comfort, bounds lifted: a held view stays frozen for at most 1.1 s.
- * Held shots seeded from the authored view turn up to 36 degrees at Enhanced;
- * at the default Original cadence, where the release hold's ticks last twice
- * as long, up to 44 on Ancient Lake and 59 on the 3P route (61.5 with
- * Comfort). Shots seeded from an alternate or emergency composition start at
- * 84 to 143 degrees -- the ordinary ladder's job. The leash sits at 45: above
- * every measured Enhanced view and Ancient Lake at Original, half way to
- * side-on, and 15 degrees under the hard bound: a sixth of a second at the
- * leash rate for a subject turning faster than the leash can follow.
+ * Camera.Comfort, bounds and leash lifted: a held view stays frozen for at
+ * most 1.17 s. Held shots seeded from the authored view turn up to 36 degrees
+ * at Enhanced; at the default Original cadence, where the release hold's
+ * ticks last twice as long, up to 44 on Ancient Lake, 38 on the hub tour and
+ * 56 on the 3P route (70 with Comfort). Shots seeded from an alternate or
+ * emergency composition start at 84 to 143 degrees -- the ordinary ladder's
+ * job. The leash sits at 45: above every measured Enhanced view and every
+ * Original view off the 3P route, half way to side-on, and 15 degrees under
+ * the hard bound: a sixth of a second at the leash rate for a subject turning
+ * faster than the leash can follow.
  */
 #define MDKR_CAMERA_HELD_MAX_DWELL_SECONDS 2.0f
 #define MDKR_CAMERA_HELD_SOFT_DIVERGENCE_DEGREES 45.0f
@@ -3559,8 +3562,8 @@ static s16 camera_obstruction_turn_angle(s16 from, s16 to, float cap) {
 }
 
 /* The held return rate in angle units for one step: 90 degrees per authored
- * second (16384 units), never a presentation snap (4096 units). Zero-time
- * validation must not spend recovery. */
+ * second (16384 units) on each rotation axis, never a presentation snap (4096
+ * units). Zero-time validation must not spend recovery. */
 static float camera_obstruction_held_turn_cap(float dt) {
     return fminf(16384.0f * dt, 4096.0f);
 }
