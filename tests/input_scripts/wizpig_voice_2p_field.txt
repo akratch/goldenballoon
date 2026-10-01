@@ -1,0 +1,42 @@
+# Two-player Ancient Lake race with four CPU racers, for
+# tests/check_wizpig_race_voice.py's field arms.
+#
+# Navigation is race_2p_split.txt's verified two-pad route plus ONE input: at
+# the racer-count prompt (track-select stage OPT_2) RIGHT raises the field
+# from four racers to six, so four CPU racers share the race with both humans.
+# Player one is made Wizpig by MDKR_WIZPIG_TEST_PLAYER=0 (or left retail);
+# player two stays retail. MDKR_AUTOPILOT=1 drives both humans, so overtakes
+# between humans and CPU racers produce positive and negative reactions on
+# every kind of racer.
+#
+# Route: TITLE(0) -> CHARACTER_SELECT(3) -> TRACK_SELECT(15)
+#        -> level_load: levelId=5 numPlayers=1 (two viewports) at ~frame 2490.
+# Budget: 7600 frames.
+
+# --- Title: reveal Start/Options, then Character Select ---
+1250 START 4
+1330 START 4
+
+# --- PLAYER SELECT: player two joins on controller 2, both confirm ---
+1450 A 4 P2
+1560 A 4 P1
+1670 A 4 P2
+
+# --- "OK?" -> TRACK_SELECT (two players skip Caution and Game Select) ---
+1780 A 4 P1
+
+# --- World (Ancient Lake), then BOTH players confirm the vehicle ---
+2000 A 4 P1
+2150 A 4 P1
+2150 A 4 P2
+
+# --- Racer count: four -> six racers, then accept ---
+2250 RIGHT 4 P1
+2300 A 4 P1
+
+# --- GO ---
+2450 A 4 P1
+
+# --- Tap A once per pad to exercise the physical input path ---
+2560 A 4 P1
+2560 A 4 P2

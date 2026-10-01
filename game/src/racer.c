@@ -8829,6 +8829,15 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
             }
 #ifdef NATIVE_PORT
             }
+            /* Every racer's dispatched voice, retail or bonus, so a gate can
+             * prove no other racer is handed a bonus racer's clips. A human
+             * who finishes is handed to the CPU (player -1) yet keeps its
+             * identity; finished=1 tells that racer apart from a CPU racer. */
+            MDKR_TRACE("racer_voice: racer=%d player=%d finished=%d identity=%d event=%d sound=%d",
+                       tempRacer->racerIndex, tempRacer->playerIndex,
+                       tempRacer->raceFinished != 0,
+                       mod_racer_physics_identity(tempRacer), tempRacer->unk2A,
+                       soundIndex);
 #endif
             audspat_play_sound_at_position(soundIndex, obj->trans.x_position, obj->trans.y_position,
                                            obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,

@@ -948,7 +948,9 @@ CHECKS = (
           "and distinct card pixels"),
     Check("wizpig_race_voice", "check_wizpig_race_voice.py", "native",
           "playable Wizpig positive/negative race cues use his own authored "
-          "voice IDs, with consecutive-repeat suppression"),
+          "voice IDs, with consecutive-repeat suppression; in a two-player "
+          "field with CPU racers no other racer resolves to a bonus identity "
+          "or receives a Wizpig/Taj clip, and a retail control dispatches none"),
     Check("bonus_racer_horn", "check_bonus_racer_horn.py", "native",
           "the horn dispatches the racer's own clip: retail horn or cheat voice, "
           "Wizpig's laugh, Terry's kart horn and Taj's call, with and without "

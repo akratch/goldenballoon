@@ -7098,21 +7098,33 @@ navigation, pack rendering/performance or Linux/Deck package readiness.
 ## Playable Wizpig race voice — `tests/check_wizpig_race_voice.py`
 
 Runs the real Hot Top Volcano plane route with playable Wizpig, isolated saves
-and muted device output (synthesis remains active). Independently pinned retail
-sound IDs must own both positive zipper reactions and negative reactions; the
-gate rejects missing event coverage, donor cues, consecutive repeated cues and
-sanitizer/fatal diagnostics. It checks dispatch identity, not perceived sound
-quality, retail boss encounter voices or the boss-footstep report.
+and muted device output (synthesis remains active). Retail sound IDs, pinned
+as literals, must own both positive zipper reactions and negative reactions;
+the gate rejects missing event coverage, donor cues, consecutive repeated cues
+and sanitizer/fatal diagnostics. It checks dispatch identity (routing to his
+bank), not perceived sound quality, which clip suits which reaction, retail
+boss encounter voices or the boss-footstep report.
+
+The time trial has no other racers, so two field arms run
+`tests/input_scripts/wizpig_voice_2p_field.txt`: a two-player Ancient Lake
+race with four CPU racers under autopilot. With player one as Wizpig, every
+`racer_voice` row from another racer (player two, or an unfinished CPU racer)
+must carry the retail identity and no Wizpig or Taj clip, and only player one
+may use the bonus voice table (a finished human handed to the CPU keeps its
+identity and is matched by `finished=1`). The same race with no test player is
+the retail control: no bonus identity or table use at all. Both arms must see
+reactions from the other human and from CPU racers.
 
 ```bash
 python3 tests/check_wizpig_race_voice.py --build build-rel \
   --rom baserom.us.v80.z64
 ```
 
-Registered as `wizpig_race_voice` in `tools/run_checks.py`. A bounded 8,000-frame
-run uses a 240-second process timeout. Logs and saves stay in a temporary
-evidence directory (printed on completion), or `--evidence-dir`; do not include
-private ROM-derived evidence in source/release archives.
+Registered as `wizpig_race_voice` in `tools/run_checks.py`. Each of the three
+bounded runs (8,000 and 2 x 7,600 frames) uses a 240-second process timeout.
+Logs and saves stay in a temporary evidence directory (printed on completion),
+or `--evidence-dir`; do not include private ROM-derived evidence in
+source/release archives.
 
 ## Bonus racer horn — `tests/check_bonus_racer_horn.py`
 
