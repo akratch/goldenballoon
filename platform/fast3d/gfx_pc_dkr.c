@@ -2685,6 +2685,7 @@ void gfx_dkr_texcache_invalidate_range(const void *base, uint32_t size) {
     }
 }
 
+static void dkr_texpack_note_level_boundary(void);
 static void dkr_texpack_generation_report(bool emit, int level, int players,
                                           int cutscene);
 
@@ -2712,6 +2713,9 @@ void gfx_dkr_resource_generation_begin(
     if (!s_skip_stage_reset) {
         gfx_shadow_stage_begin(dkr_shadow_stage_generation);
     }
+    /* A level load: its already-decoded pack textures are re-uploaded as the
+     * new scene draws them, outside the replacement-upload budget (#66). */
+    dkr_texpack_note_level_boundary();
     if (!mdkr_resource_trace_enabled()) {
         return;
     }
@@ -2857,6 +2861,8 @@ typedef struct DkrTexpackTotals {
                                  * pending replacement became resident */
     uint64_t deferred;          /* resident replacements drawn from ROM for a
                                  * frame because the upload budget was spent */
+    uint64_t unbudgeted;        /* resident replacements re-uploaded outside
+                                 * the budget, after a level load or toggle */
 } DkrTexpackTotals;
 
 static int s_texpack_timing = -1;   /* -1 until first asked */
@@ -2936,6 +2942,25 @@ static bool dkr_texpack_timing_on(void) {
 static uint64_t s_texpack_upload_frame_ns;
 static uint32_t s_texpack_upload_frame_count;
 
+/* ...except right after a level load or a pack toggle. Both make this cache
+ * forget its entries (arena reuse; the override generation), so the scene's
+ * already-decoded replacements are re-uploaded as they are drawn. Deferring
+ * those showed the original textures for several frames on every warm level
+ * load -- 498/651 deferrals over the T12a route -- for pixels the store
+ * already held. So for the first real walks after either event, re-uploads of
+ * RESIDENT replacements are not budgeted and do not spend the budget; newly
+ * decoded textures (a pending entry's refill) stay budgeted, as do the store's
+ * install limits. Measured on the T12a route, the re-uploads after a boundary
+ * land on its 2nd-4th presented frames; ten walks covers that with margin. */
+#define DKR_TEXPACK_UNBUDGETED_WALKS 10
+static int      s_texpack_unbudgeted_walks;
+static bool     s_texpack_walk_unbudgeted;
+static uint32_t s_texpack_seen_override_generation;
+
+static void dkr_texpack_note_level_boundary(void) {
+    s_texpack_unbudgeted_walks = DKR_TEXPACK_UNBUDGETED_WALKS;
+}
+
 static bool dkr_texpack_upload_budgeted(void) {
     const MdkrModTextureLoader loader = mdkr_mod_texture_store_loader();
     return loader == MDKR_MOD_TEXTURE_LOADER_WORKER ||
@@ -2953,8 +2978,16 @@ static bool dkr_texpack_upload_room(void) {
  * the last frame, within the store's default per-frame budget. A no-op with
  * no texture pack bound. */
 static void dkr_texpack_pump(void) {
+    const uint32_t override_generation = mdkr_mod_texture_generation();
     s_texpack_upload_frame_ns = 0;
     s_texpack_upload_frame_count = 0;
+    if (override_generation != s_texpack_seen_override_generation) {
+        /* A pack toggle (Tab or Content.PacksEnabled). */
+        s_texpack_seen_override_generation = override_generation;
+        s_texpack_unbudgeted_walks = DKR_TEXPACK_UNBUDGETED_WALKS;
+    }
+    s_texpack_walk_unbudgeted = s_texpack_unbudgeted_walks > 0;
+    if (s_texpack_unbudgeted_walks > 0) s_texpack_unbudgeted_walks--;
     if (mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_AUTO) {
         return;
     }
@@ -3025,7 +3058,7 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
             "romUploadUs=%llu pumpUs=%llu workerUs=%llu queued=%llu "
             "installed=%llu discarded=%llu refills=%llu deferred=%llu "
-            "pending=%llu\n",
+            "unbudgeted=%llu pending=%llu\n",
             frame, tick, swapped ? 1 : 0, (unsigned long long)(dt / 1000u),
             (unsigned long long)(cpu / 1000u), DKR_TEXPACK_US(walk_ns),
             DKR_TEXPACK_US(end_ns),
@@ -3043,7 +3076,8 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             DKR_TEXPACK_STORE_US(pump_ns), DKR_TEXPACK_STORE_US(worker_ns),
             DKR_TEXPACK_STORE_DIFF(queued), DKR_TEXPACK_STORE_DIFF(installed),
             DKR_TEXPACK_STORE_DIFF(discarded), DKR_TEXPACK_DIFF(refills),
-            DKR_TEXPACK_DIFF(deferred), (unsigned long long)memory.pending);
+            DKR_TEXPACK_DIFF(deferred), DKR_TEXPACK_DIFF(unbudgeted),
+            (unsigned long long)memory.pending);
     s_texpack_frame_base = s_texpack;
     s_texpack_store_frame_base = store;
 }
@@ -3067,7 +3101,7 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
         "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
         "romUploadUs=%llu walkUs=%llu endUs=%llu pumpUs=%llu workerUs=%llu "
         "queued=%llu installed=%llu discarded=%llu refills=%llu "
-        "deferred=%llu",
+        "deferred=%llu unbudgeted=%llu",
         level, players, cutscene,
         (unsigned long long)s_texpack_gen_frames,
         (unsigned long long)(s_texpack_gen_worst_ns / 1000u),
@@ -3085,7 +3119,8 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
         DKR_TEXPACK_US(end_ns), DKR_TEXPACK_STORE_US(pump_ns),
         DKR_TEXPACK_STORE_US(worker_ns), DKR_TEXPACK_STORE_DIFF(queued),
         DKR_TEXPACK_STORE_DIFF(installed), DKR_TEXPACK_STORE_DIFF(discarded),
-        DKR_TEXPACK_DIFF(refills), DKR_TEXPACK_DIFF(deferred));
+        DKR_TEXPACK_DIFF(refills), DKR_TEXPACK_DIFF(deferred),
+        DKR_TEXPACK_DIFF(unbudgeted));
     s_texpack_gen_base = s_texpack;
     s_texpack_store_gen_base = store;
     s_texpack_gen_frames = 0u;
@@ -3183,20 +3218,27 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * entry stops asking and keeps its ROM pixels.
      */
     int refill = -1;
+    bool refill_unbudgeted = false;
     MdkrModTexture refill_over = { NULL, 0, 0, 0 };
     if (hit >= 0 && tex_cache[hit].pack_pending) {
         struct DkrTexCacheEntry *entry = &tex_cache[hit];
         const uint32_t serial = mdkr_mod_texture_settled_serial();
-        /* A deferred entry waits for upload room, not for the store. */
-        const bool ask = entry->pack_deferred ? dkr_texpack_upload_room()
-                                              : entry->pack_serial != serial;
+        /* A deferred entry's replacement is already resident, so after a
+         * level load or toggle it goes up outside the budget; otherwise it
+         * waits for upload room, not for the store. */
+        const bool resident_wait = entry->pack_deferred;
+        const bool unbudgeted = resident_wait && s_texpack_walk_unbudgeted;
+        const bool ask = resident_wait
+                             ? (unbudgeted || dkr_texpack_upload_room())
+                             : entry->pack_serial != serial;
         if (ask) {
             bool still_pending = false;
             entry->pack_serial = serial;
             if (dkr_texpack_reask(entry, fmt, siz, &refill_over,
                                   &still_pending)) {
-                if (dkr_texpack_upload_room()) {
+                if (unbudgeted || dkr_texpack_upload_room()) {
                     refill = hit;
+                    refill_unbudgeted = unbudgeted;
                     hit = -1;
                 } else {
                     /* Resident, but no upload room left this frame: wait
@@ -3316,7 +3358,13 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             pack_serial = mdkr_mod_texture_settled_serial();
         }
         bool pack_deferred = false;
-        if (over_used && refill < 0 && !dkr_texpack_upload_room()) {
+        /* On a miss the store answered from resident pixels; after a level
+         * load or toggle that re-upload is outside the budget. A refill is
+         * outside it only when it was a deferred resident one. */
+        const bool upload_unbudgeted =
+            refill >= 0 ? refill_unbudgeted : s_texpack_walk_unbudgeted;
+        if (over_used && refill < 0 && !upload_unbudgeted &&
+            !dkr_texpack_upload_room()) {
             /* Resident, but this frame's replacement uploads are spent: the
              * original now, the replacement on a later frame. */
             over_used = false;
@@ -3325,7 +3373,12 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             if (dkr_texpack_timing_on()) s_texpack.deferred++;
         }
         const uint64_t upload_start = dkr_texpack_now();
-        const bool budgeted = over_used && dkr_texpack_upload_budgeted();
+        const bool budgeted = over_used && dkr_texpack_upload_budgeted() &&
+                              !upload_unbudgeted;
+        if (over_used && upload_unbudgeted && dkr_texpack_upload_budgeted() &&
+            dkr_texpack_timing_on()) {
+            s_texpack.unbudgeted++;
+        }
         const uint64_t budget_start = budgeted ? dkr_texpack_clock_ns() : 0u;
         const bool uploaded =
             over_used ? gfx_rapi->upload_texture(over.rgba, over.width,

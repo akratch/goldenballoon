@@ -233,7 +233,7 @@ SUM_FIELDS = (
     "overrideBytes", "overrideUploadUs", "romUploads", "romUploadUs",
     # The off-frame loader's fields; absent (0) in pre-#66 logs.
     "pumpUs", "workerUs", "queued", "installed", "discarded", "refills",
-    "deferred",
+    "deferred", "unbudgeted",
 )
 
 
@@ -299,6 +299,7 @@ def summarize(frames: list[dict]) -> dict:
         "installed": sum(frame["installed"] for frame in frames),
         "refills": sum(frame["refills"] for frame in frames),
         "deferred": sum(frame["deferred"] for frame in frames),
+        "unbudgeted": sum(frame["unbudgeted"] for frame in frames),
         "over_33_3": sum(1 for value in times if value > STALL_MS[0]),
         "over_50": sum(1 for value in times if value > STALL_MS[1]),
         "resolves": sum(frame["resolves"] for frame in frames),
@@ -347,6 +348,7 @@ def frame_record(frame: dict, visits: list[dict]) -> dict:
         "installed": frame["installed"],
         "refills": frame["refills"],
         "deferred": frame["deferred"],
+        "unbudgeted": frame["unbudgeted"],
         "pending": frame["pendingTextures"],
         "cpu_ms": round(frame["cpuUs"] / 1000, 2),
         "walk_ms": round(walk / 1000, 2),

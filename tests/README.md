@@ -8019,8 +8019,10 @@ The engine side is off by default and reads no clock unless asked:
   pack work for the frame is `hashUs + resolveUs + pumpUs + overrideUploadUs`.
   `queued`, `installed`, `discarded`, `refills` (cache entries re-uploaded in
   place once their replacement arrived), `deferred` (resident replacements drawn
-  from ROM for a frame because that frame's upload budget was spent) and
-  `pending` (still loading at the end of the frame) describe the loader. Each
+  from ROM for a frame because that frame's upload budget was spent),
+  `unbudgeted` (resident replacements re-uploaded outside that budget in the ten
+  walks after a level load or pack toggle) and `pending` (still loading at the
+  end of the frame) describe the loader. Each
   installed texture also prints a `[TEXPACK-INSTALL]` row with its identity and
   how many frames it was pending.
 - The resource census (`MDKR_RESOURCE_STATS=1`, or `MDKR_TRACE`) adds one
