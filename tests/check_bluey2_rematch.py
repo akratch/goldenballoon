@@ -15,6 +15,14 @@ original game's intro-cue stop and delayed race-cue start while requiring the
 intervening mix to remain alive; the reported "dip" is a cue transition, not a
 digital dropout.
 
+The Enhanced arm records audio too (issue #66: instruments dropping out of the
+music at the 60 Hz tick rate). Enhanced runs two game ticks per synthesis
+frame, so the per-tick SFX and music-channel updates land twice in each frame
+and all share the synthesiser's update pool. A dry pool silently drops note
+starts and releases. The arm must play every music note it admits (each
+traced note-on reaches the synthesiser as a start), steal no voice, refuse no
+pool update, and use at most half the pool.
+
 All EEPROM and PCM data are created in temporary directories and deleted.
 Nothing ROM-derived is committed by this check.
 """
@@ -24,7 +32,7 @@ from __future__ import annotations
 import argparse
 import array
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import os
@@ -44,8 +52,10 @@ from check_first_boss_progression import (
     save_order,
     sum_block,
 )
-from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, seal_slot,
-                           SLOT_BYTES, slot_checksum_valid)
+from harness_utils import (DEFAULT_BUILD_DIR, music_start_census,
+                           resolve_binary, seal_slot, SLOT_BYTES,
+                           slot_checksum_valid, synth_update_pool,
+                           synth_update_pool_failures)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -143,6 +153,11 @@ class RaceResult:
     output: str
     audio: bytes | None
     note_events: tuple[dict[str, object], ...]
+    # Music and jingle note-ons the sequence players admitted, and the starts
+    # the synthesiser actually queued (harness_utils.music_start_census).
+    # Recorded on Enhanced only.
+    admitted_starts: int = 0
+    voice_starts: int = 0
 
 
 def checkpoint_image(eligible: list[int]) -> bytes:
@@ -224,7 +239,8 @@ def parse_rows(output: str) -> list[Row]:
 
 
 def analyse_race(label: str, output: str, audio: bytes | None,
-                 note_events: tuple[dict[str, object], ...]) -> RaceResult:
+                 note_events: tuple[dict[str, object], ...],
+                 music_starts: tuple[int, int] = (0, 0)) -> RaceResult:
     bluey = [
         row for row in parse_rows(output)
         if row.slot == 1 and row.racer_index == 1
@@ -272,6 +288,8 @@ def analyse_race(label: str, output: str, audio: bytes | None,
         output=output,
         audio=audio,
         note_events=note_events,
+        admitted_starts=music_starts[0],
+        voice_starts=music_starts[1],
     )
 
 
@@ -291,6 +309,7 @@ def invoke(
         (save_dir / "eeprom.bin").write_bytes(checkpoint)
         wav_path = run_dir / "bluey2.wav"
         note_path = run_dir / "bluey2-notes.jsonl"
+        voice_path = run_dir / "bluey2-voices.jsonl"
 
         env = {
             key: value for key, value in os.environ.items()
@@ -316,6 +335,14 @@ def invoke(
                 MDKR_AUDIO_DUMP=str(wav_path),
                 MDKR_AUDIO_RMS="1",
                 MDKR_MUSIC_MIDI_TRACE_JSONL=str(note_path),
+            )
+        else:
+            env.update(
+                MDKR_AUDIO_DUMP=str(wav_path),
+                MDKR_AUDIO_RMS="1",
+                MDKR_MUSIC_MIDI_TRACE_JSONL=str(note_path),
+                MDKR_AUDIO_VOICE_TRACE_JSONL=str(voice_path),
+                MDKR_AUDIO_SERVICE_TRACE="1",
             )
         command = [
             str(binary), "--headless-frames", str(frames),
@@ -370,7 +397,13 @@ def invoke(
                 )
             except (json.JSONDecodeError, OSError) as exc:
                 raise RuntimeError(f"{label}: invalid MIDI trace: {exc}") from exc
-        return analyse_race(label, output, audio, note_events)
+        music_starts = (0, 0)
+        if cadence != "original":
+            try:
+                music_starts = music_start_census(note_path, voice_path)
+            except (json.JSONDecodeError, OSError) as exc:
+                raise RuntimeError(f"{label}: invalid voice trace: {exc}") from exc
+        return analyse_race(label, output, audio, note_events, music_starts)
 
 
 # The authored ceiling is sqrt(((20 * 0.025) + 0.561) / 0.004) ~= 16.3, plus
@@ -456,6 +489,21 @@ def longest_zero_run(values: array.array) -> int:
     return longest
 
 
+def admission_failures(result: RaceResult) -> dict[str, int]:
+    """Voices the sequence players lost or stole, by reason. Channel-disabled
+    rejects are the sequence's own authored channel mask, not a loss."""
+    return dict(Counter(
+        str(event.get("reason", event.get("event", "unknown")))
+        for event in result.note_events
+        if event.get("event") in {
+            "physical_steal", "physical_steal_reject",
+            "physical_voice_reject",
+        }
+        or (event.get("event") == "note_reject"
+            and event.get("reason") not in {"channel-disabled"})
+    ))
+
+
 def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
     failures: list[str] = []
     if result.audio is None:
@@ -474,22 +522,10 @@ def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
         failures.append(f"Original audio format {fmt}, want (22050, 2, 2)")
         return failures, {}
 
-    admission_failures = [
-        event for event in result.note_events
-        if event.get("event") in {
-            "physical_steal", "physical_steal_reject",
-            "physical_voice_reject",
-        }
-        or (event.get("event") == "note_reject"
-            and event.get("reason") not in {"channel-disabled"})
-    ]
-    if admission_failures:
-        summary = Counter(
-            str(event.get("reason", event.get("event", "unknown")))
-            for event in admission_failures
-        )
+    admission = admission_failures(result)
+    if admission:
         failures.append(
-            "Original sequence audio lost or stole authored voices: " + str(dict(summary))
+            "Original sequence audio lost or stole authored voices: " + str(admission)
         )
 
     total = TOTAL_RE.search(result.output)
@@ -570,6 +606,74 @@ def validate_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
     }
 
 
+# Issue #66: instruments dropped out of the music at the Enhanced tick rate.
+# Enhanced applies two game ticks per synthesis frame, so every per-tick SFX
+# and music-channel update lands twice in one frame, and all of them share the
+# synthesiser's update pool (game/src/audio.c). On this route the pool peaks at
+# 90 entries at Enhanced against 58 at Original: the stock 96 had six to spare
+# here, and other Enhanced routes ran it dry (the adventure race lost five
+# music note starts and 373 other updates; check_adventure_race_loop.py).
+MIN_ENHANCED_NOTES = 1000   # measured 3619 music/jingle note-ons
+STOCK_UPDATE_POOL = 96      # the N64's pool, for the sensitivity control
+TOTAL_RMS_RE = re.compile(r"\[AUDIO\] TOTAL frames=\d+ samples=\d+ rms=([0-9.]+)")
+
+
+def validate_enhanced_audio(result: RaceResult) -> tuple[list[str], dict[str, float]]:
+    failures: list[str] = []
+    if result.audio is None:
+        return ["Enhanced: no PCM capture"], {}
+    with tempfile.NamedTemporaryFile(suffix=".wav") as handle:
+        handle.write(result.audio)
+        handle.flush()
+        with wave.open(handle.name, "rb") as wav:
+            fmt = (wav.getframerate(), wav.getnchannels(), wav.getsampwidth())
+            frame_count = wav.getnframes()
+    if fmt != (22050, 2, 2):
+        failures.append(f"Enhanced audio format {fmt}, want (22050, 2, 2)")
+    total = TOTAL_RE.search(result.output)
+    rms = TOTAL_RMS_RE.search(result.output)
+    if total is None or int(total[1]) <= 0 or rms is None:
+        failures.append("Enhanced audio has no synthesis accounting")
+    else:
+        per_pump = frame_count / int(total[1])
+        if not 735.0 <= per_pump <= 737.0:
+            failures.append(
+                f"Enhanced audio produced {per_pump:.2f} sample-frames per "
+                "synthesis frame, want about 736"
+            )
+        if float(rms[1]) < 1500.0:
+            failures.append(f"Enhanced mix RMS {float(rms[1]):.1f} below 1500")
+
+    admission = admission_failures(result)
+    if admission:
+        failures.append(
+            "Enhanced sequence audio lost or stole authored voices: " + str(admission)
+        )
+    admitted = result.admitted_starts
+    if admitted < MIN_ENHANCED_NOTES:
+        failures.append(
+            f"Enhanced traced only {admitted} music note-ons; the start "
+            "comparison below would prove nothing"
+        )
+    dropped = admitted - result.voice_starts
+    if dropped != 0:
+        failures.append(
+            f"Enhanced admitted {admitted} music note(s) but the synthesiser "
+            f"started {result.voice_starts}: {dropped} note start(s) dropped"
+        )
+    pool = synth_update_pool(result.output)
+    if pool is None:
+        failures.append("Enhanced arm printed no [AUDIO-PARAMS] update-pool report")
+    else:
+        failures.extend(synth_update_pool_failures(pool, "Enhanced"))
+    return failures, {
+        "admitted": float(admitted),
+        "started": float(result.voice_starts),
+        "pool_peak": float(pool["peak"]) if pool else -1.0,
+        "pool_capacity": float(pool["capacity"]) if pool else -1.0,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
@@ -601,11 +705,22 @@ def main() -> int:
         failures = cadence_failures(original, enhanced)
         audio_failures, audio = validate_audio(original)
         failures.extend(audio_failures)
+        enhanced_failures, enhanced_audio = validate_enhanced_audio(enhanced)
+        failures.extend(enhanced_failures)
 
         # Self-validation without another run: substituting the healthy arm for
         # the positive control must be rejected by the relationship assertions.
         if not cadence_failures(original, original):
             failures.append("same-as-Original sensitivity control was not rejected")
+        # The Enhanced audio assertions must be able to fail: one lost start,
+        # and this run's measured demand against the stock 96-entry pool.
+        if not validate_enhanced_audio(
+                replace(enhanced, voice_starts=enhanced.voice_starts - 1))[0]:
+            failures.append("dropped-start sensitivity control was not rejected")
+        pool = synth_update_pool(enhanced.output)
+        if pool is not None and not synth_update_pool_failures(
+                {**pool, "capacity": STOCK_UPDATE_POOL}, "control"):
+            failures.append("stock-pool sensitivity control was not rejected")
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
@@ -624,6 +739,14 @@ def main() -> int:
             f"race cue={audio['race_cue_after_go']:.3f}s after GO, "
             f"gap RMS={audio['gap_rms']:.1f}, "
             f"minimum 250ms RMS={audio['min_window_rms']:.1f}"
+        )
+    if enhanced_audio:
+        print(
+            "  Enhanced music: "
+            f"admitted={enhanced_audio['admitted']:.0f} "
+            f"started={enhanced_audio['started']:.0f}, synth update pool "
+            f"peak={enhanced_audio['pool_peak']:.0f}/"
+            f"{enhanced_audio['pool_capacity']:.0f}"
         )
     note_census = Counter(
         f"{event.get('player', 'unknown')}:"

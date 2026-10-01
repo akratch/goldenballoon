@@ -254,7 +254,39 @@ void audio_init(OSSched *sc) {
 
     synth_config.maxVVoices = 40;
     synth_config.maxPVoices = 40;
+#ifdef NATIVE_PORT
+    /* Synth update pool: 96 on the N64, 384 here. Measured, issue #66. Every
+     * volume, pan, pitch, FX, start and stop update that music, jingles and
+     * SFX send a voice takes one entry, and nothing is returned until the
+     * frame's mix consumes it. A dry pool drops the update silently: a lost
+     * start is a note that never sounds, a lost release a note cut off.
+     *
+     * Enhanced (60 Hz) runs two game ticks per synthesis frame, so every
+     * per-tick SFX and music-channel update lands twice in one frame. Peak
+     * entries in use (MDKR_AUDIO_SERVICE_TRACE's [AUDIO-PARAMS], measured with
+     * the pool temporarily at 1024 so nothing capped the demand):
+     *
+     *                                      Original   Enhanced
+     *   adventure hub -> Ancient Lake race       70        148
+     *   4-player race                            73        152
+     *   3-player race                            54        126
+     *   time trial                               84        116
+     *   attract demo                             85         99
+     *   Bluey 2 rematch                          58         90
+     *
+     * At 96, Enhanced ran the pool dry on six of eleven routes; the adventure
+     * race lost 378 updates there, five of them music note starts. Original
+     * never went below 11 free on any route, and its PCM is byte-identical at
+     * 96, 384 and 1024 on all eleven: the pool size only changes output when
+     * an update would otherwise be refused.
+     *
+     * 384 is 2.5x the highest measured peak. check_bluey2_rematch.py and
+     * check_adventure_race_loop.py fail an Enhanced run that uses more than
+     * half of it. Cost is 40 bytes per entry, 15 KB of the audio heap. */
+    synth_config.maxUpdates = 384;
+#else
     synth_config.maxUpdates = 96;
+#endif
     synth_config.dmaproc = NULL;
     synth_config.fxType[0] = AL_FX_CUSTOM;
     synth_config.fxType[1] = AL_FX_BIGROOM;

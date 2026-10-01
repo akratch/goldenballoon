@@ -51,6 +51,12 @@ What this asserts
      loss must persist neither. Finish frame and clock must match, proving the
      hook changes the verdict rather than the drive or finish.
 
+  8. **Every admitted music note starts (issue #66).** The loss arm traces
+     the music: each note-on the sequence players admit must reach the
+     synthesiser as a start, no pool update may be refused, and the update
+     pool must keep 2x headroom. Under the Enhanced tick rate this route used
+     to run the stock 96-entry pool dry and lose music note starts.
+
 EEPROM isolation
 ----------------
 Each arm runs in its own temporary working directory with a fresh `save/`
@@ -80,8 +86,9 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, SLOT_BYTES,
-                           slot_checksum)
+from harness_utils import (DEFAULT_BUILD_DIR, music_start_census,
+                           resolve_binary, SLOT_BYTES, slot_checksum,
+                           synth_update_pool, synth_update_pool_failures)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, "tests", "input_scripts", "adventure_race_loop.txt")
@@ -148,6 +155,11 @@ MIN_LUMA_SIGMA = 12.0         # check_race_drive.py calibration: broken build 5.
 # sample inside a fade does not fail the check for a reason that is not a bug.
 MAX_BAD_SAMPLES = 2
 SAMPLE_EVERY = 800
+# Issue #66. Enhanced runs two game ticks per synthesis frame, so the per-tick
+# SFX and music-channel updates land twice in one frame. At the stock 96-entry
+# synth update pool this route ran it dry in 21 frames and refused 378
+# updates, five of them music note starts; the pool now peaks at 148 here.
+MIN_MUSIC_NOTES = 3000        # measured 8648 music note-ons in the loss arm
 
 PACE_RE = re.compile(
     r"\[PACE\] frame=(\d+).*racer x=(\S+) y=(\S+) z=(\S+) clock=(\d+) cp=(-?\d+) lap=(-?\d+)"
@@ -260,8 +272,12 @@ def decode_progress(save: bytes, rom_path: str) -> dict[str, object]:
     }
 
 
-def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
-    """Run one new-save arm and capture its EEPROM before the sandbox vanishes."""
+def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str,
+             music_trace: bool = False):
+    """Run one new-save arm and capture its EEPROM before the sandbox vanishes.
+
+    With ``music_trace`` the arm also records the music note and synth-start
+    traces and returns their census (harness_utils.music_start_census)."""
     with tempfile.TemporaryDirectory(prefix="mdkr_advloop_run_") as run_dir:
         os.mkdir(os.path.join(run_dir, "save"))
         # No inherited MDKR hook may silently alter either arm. Keep unrelated
@@ -301,6 +317,12 @@ def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
         if frame_dir is not None:
             env["MDKR_DUMP_FROM"] = "7000"
             env["MDKR_DUMP_EVERY"] = str(SAMPLE_EVERY)
+        note_path = os.path.join(run_dir, "notes.jsonl")
+        voice_path = os.path.join(run_dir, "voices.jsonl")
+        if music_trace:
+            env["MDKR_MUSIC_MIDI_TRACE_JSONL"] = note_path
+            env["MDKR_AUDIO_VOICE_TRACE_JSONL"] = voice_path
+            env["MDKR_AUDIO_SERVICE_TRACE"] = "1"
         cmd = [
             binary, "--headless-frames", str(FRAMES),
             "--input-script", SCRIPT,
@@ -316,7 +338,8 @@ def run_case(binary: str, rom: str, frame_dir: str | None, verdict: str):
                 save = f.read()
         else:
             save = b""
-        return proc, proc.stdout + proc.stderr, save
+        music = music_start_census(note_path, voice_path) if music_trace else None
+        return proc, proc.stdout + proc.stderr, save, music
 
 
 def main() -> int:
@@ -345,11 +368,11 @@ def main() -> int:
 
     if args.verbose:
         print("  running full three-lap win arm (native verdict control)")
-    proc, out, win_save = run_case(binary, args.rom, frame_dir, verdict="win")
+    proc, out, win_save, _ = run_case(binary, args.rom, frame_dir, verdict="win")
     if args.verbose:
         print("  running identical full three-lap loss control")
-    loss_proc, loss_out, loss_save = run_case(
-        binary, args.rom, frame_dir=None, verdict="loss")
+    loss_proc, loss_out, loss_save, loss_music = run_case(
+        binary, args.rom, frame_dir=None, verdict="loss", music_trace=True)
 
     failures: list[str] = []
 
@@ -367,6 +390,22 @@ def main() -> int:
     if loss_proc.returncode != 0:
         failures.append(f"loss control exit code {loss_proc.returncode} "
                         f"(negative = killed by signal {-loss_proc.returncode})")
+
+    # 8. every admitted music note starts, and the synth update pool keeps
+    #    its headroom (issue #66)
+    admitted, started = loss_music
+    if admitted < MIN_MUSIC_NOTES:
+        failures.append(f"loss control traced only {admitted} music note-ons "
+                        f"(need {MIN_MUSIC_NOTES}); the start census proves nothing")
+    if started != admitted:
+        failures.append(f"loss control admitted {admitted} music note(s) but the "
+                        f"synthesiser started {started}: "
+                        f"{admitted - started} note start(s) dropped")
+    pool = synth_update_pool(loss_out)
+    if pool is None:
+        failures.append("loss control printed no [AUDIO-PARAMS] update-pool report")
+    else:
+        failures.extend(synth_update_pool_failures(pool, "loss control"))
 
     # 1. the transition chain
     levels = [(int(m.group(1)), int(m.group(3)), int(m.group(5)), int(m.group(6)))
@@ -672,6 +711,9 @@ def main() -> int:
         if loss_finished:
             print(f"  loss control:     finish clock {loss_finished[0][4]} "
                   f"@frame {loss_finished[0][0]} place {loss_finished[0][9]}")
+        print(f"  music starts:     admitted {admitted} started {started}; "
+              f"synth update pool peak {pool['peak'] if pool else 'n/a'}"
+              f"/{pool['capacity'] if pool else 'n/a'}")
         if decoded:
             print(f"  persisted state:  {decoded}")
         if hub_back:

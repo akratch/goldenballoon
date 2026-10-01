@@ -13,6 +13,7 @@ import contextlib
 import errno
 import fcntl
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -530,6 +531,73 @@ def tear_free_presentation(output: str, label: str) -> list[str]:
                     f"{label}: GL policy {policy} swapped at interval "
                     f"{row.get('effectiveSwap')}, expected the automation 0")
     return problems
+
+
+# The synthesiser's update pool, reported by platform/audio_synth.c as one
+# [AUDIO-PARAMS] line at shutdown when MDKR_AUDIO_SERVICE_TRACE=1. Every voice
+# update music, jingles and SFX send takes one entry until the frame's mix
+# consumes it; a dry pool drops the update silently (issue #66).
+SYNTH_POOL_RE = re.compile(
+    r"\[AUDIO-PARAMS\] capacity=(?P<capacity>\d+) minfree=-?\d+ "
+    r"peak=(?P<peak>\d+) frames=(?P<frames>\d+) "
+    r"exhaustedframes=(?P<exhausted>\d+) nulls=(?P<nulls>\d+) "
+    r".*?syncfree=(?P<syncfree>\d+)")
+# The pool is sized to at least twice the measured demand (game/src/audio.c).
+SYNTH_POOL_HEADROOM = 2
+
+
+def synth_update_pool(output: str) -> dict[str, int] | None:
+    """The run's [AUDIO-PARAMS] report as integers, or None if it printed none."""
+    match = SYNTH_POOL_RE.search(output)
+    if match is None:
+        return None
+    return {key: int(value) for key, value in match.groupdict().items()}
+
+
+def synth_update_pool_failures(pool: Mapping[str, int], label: str) -> list[str]:
+    """No update refused, no voice freed without one, and 2x headroom kept."""
+    problems: list[str] = []
+    if pool["frames"] <= 0:
+        problems.append(f"{label}: the update-pool report covers no synthesis frames")
+    if pool["nulls"] or pool["exhausted"]:
+        problems.append(
+            f"{label}: ran the synth update pool dry: {pool['nulls']} update(s) "
+            f"refused in {pool['exhausted']} frame(s) at capacity {pool['capacity']}")
+    if pool["syncfree"]:
+        problems.append(
+            f"{label}: freed {pool['syncfree']} stolen voice(s) with no update left")
+    if pool["peak"] * SYNTH_POOL_HEADROOM > pool["capacity"]:
+        problems.append(
+            f"{label}: used {pool['peak']} of {pool['capacity']} synth updates in "
+            f"one frame; the pool must keep {SYNTH_POOL_HEADROOM}x headroom "
+            f"(at most {pool['capacity'] // SYNTH_POOL_HEADROOM})")
+    return problems
+
+
+def music_start_census(note_path: str | os.PathLike[str],
+                       voice_path: str | os.PathLike[str]) -> tuple[int, int]:
+    """(admitted, started) music and jingle notes.
+
+    ``admitted`` counts MDKR_MUSIC_MIDI_TRACE_JSONL ``note_on`` rows, which the
+    sequence players write once a note has a voice and before they ask the
+    synthesiser to start it. ``started`` counts MDKR_AUDIO_VOICE_TRACE_JSONL
+    ``music`` rows, which alSynStartVoiceParams writes only after it got an
+    update for the start. The difference is note starts the synthesiser
+    refused. Missing files count as zero, so callers must floor ``admitted``.
+    """
+    admitted = started = 0
+    note_file, voice_file = Path(note_path), Path(voice_path)
+    if note_file.is_file():
+        for line in note_file.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                admitted += (row.get("event") == "note_on"
+                             and row.get("player") in {"music", "jingle"})
+    if voice_file.is_file():
+        for line in voice_file.read_text().splitlines():
+            if line.strip():
+                started += json.loads(line).get("event") == "music"
+    return admitted, started
 
 
 def test_save_dir() -> str:
