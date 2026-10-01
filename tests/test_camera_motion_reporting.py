@@ -5,14 +5,11 @@ import contextlib
 import io
 import json
 import os
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import check_camera_motion_quality as motion
-import check_camera_obstruction_performance_runtime as performance
-import check_camera_obstruction_lifecycle_runtime as lifecycle
 import check_camera_obstruction_runtime as runtime
 
 
@@ -127,53 +124,32 @@ class MotionReportingTests(unittest.TestCase):
                 self.assertEqual(len(failures), 1)
                 self.assertIn(reason, failures[0])
 
-    def test_performance_trial_does_not_change_observe_control(self):
-        for enabled in (False, True):
-            for policy in ("observe", "modern"):
-                with self.subTest(enabled=enabled, policy=policy), \
-                        tempfile.TemporaryDirectory() as temp, \
-                        mock.patch.dict(os.environ, {"MDKR_TEST_CAMERA_HELD_SHOT": "1"}), \
-                        mock.patch.object(performance.subprocess, "run", side_effect=RuntimeError("captured")) as run:
-                    with self.assertRaisesRegex(RuntimeError, "captured"):
-                        performance.run(Path("unused"), Path("unused"), Path(temp),
-                                        policy, 10, 1, held_shot_trial=enabled)
-                    self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", run.call_args.kwargs["env"])
-
-    def test_lifecycle_legacy_flag_cannot_restore_trial_selector(self):
-        for enabled in (False, True):
-            with self.subTest(enabled=enabled), tempfile.TemporaryDirectory() as temp, \
-                    mock.patch.dict(os.environ, {"MDKR_TEST_CAMERA_HELD_SHOT": "1"}), \
-                    mock.patch.object(lifecycle.subprocess, "run", side_effect=RuntimeError("captured")) as run:
-                with self.assertRaisesRegex(RuntimeError, "captured"):
-                    lifecycle.run(Path("unused"), Path("unused"), lifecycle.SCENARIOS[0],
-                                  Path(temp), 1, held_shot_trial=enabled)
-                self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", run.call_args.kwargs["env"])
-
-    def test_legacy_flag_is_recorded_but_both_arms_use_normal_policy(self):
-        arm = motion.HIGH_RATE_ARMS[0]
-        summary = {"correction_reengagements": 0}
-        for enabled in (False, True):
-            argv = ["check_camera_motion_quality.py", "--only", arm.route,
-                    "--baseline-out", "unused.json"]
-            if enabled:
-                argv.append("--held-shot-trial")
-            with self.subTest(enabled=enabled), \
-                    mock.patch("sys.argv", argv), \
-                    mock.patch.object(motion, "resolve_binary", return_value="unused-game"), \
-                    mock.patch.object(motion.Path, "is_file", return_value=True), \
-                    mock.patch.object(motion.Path, "write_text") as write, \
-                    mock.patch.object(motion, "run_route", return_value="") as run, \
-                    mock.patch.object(motion, "inspect", return_value=(summary, {}, [])), \
-                    mock.patch.object(motion, "inspect_high_rate", return_value=({"summary": summary}, [])), \
-                    mock.patch.object(motion, "report_baseline"), \
-                    mock.patch.object(motion, "report_high_rate"), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(motion.main(), 0)
-            self.assertEqual(run.call_count, 2)
-            for call in run.call_args_list:
-                self.assertNotIn("MDKR_TEST_CAMERA_HELD_SHOT", call.kwargs["present_env"])
-            self.assertEqual(run.call_args_list[1].kwargs["frame_scale"], arm.frame_scale)
-            self.assertEqual(json.loads(write.call_args.args[0])["held_shot_trial"], enabled)
+    def test_cut_census_must_measure_every_measurable_cut(self):
+        def census(adjacent=90, unadjacent=6, discontinuities=96, cut_ticks=90,
+                   pos=90, ang=90):
+            summary = {"cut_adjacent": adjacent, "cut_unadjacent": unadjacent,
+                       "discontinuities": discontinuities, "cut_ticks": cut_ticks}
+            stats = {"cut_pos_step": {"unit": "wu/cut", "samples": pos},
+                     "cut_ang_step": {"unit": "deg/cut", "samples": ang}}
+            return summary, stats
+        self.assertEqual(motion.cut_census_failures("route", *census()), [])
+        self.assertEqual(motion.cut_census_failures(
+            "route", *census(adjacent=0, unadjacent=0, discontinuities=0,
+                             cut_ticks=0, pos=0, ang=0)), [])
+        for kwargs, reason in (
+                # The recorder that silently never fires: a cut-heavy route
+                # whose steps all vanished from the report.
+                (dict(pos=0, ang=0), "sampled 0 of the 90"),
+                (dict(ang=89), "cut_ang_step sampled 89"),
+                (dict(unadjacent=5), "splits 90+5"),
+                (dict(adjacent=0, unadjacent=96, pos=0, ang=0), "none with a measurable step")):
+            with self.subTest(reason=reason):
+                failures = motion.cut_census_failures("route", *census(**kwargs))
+                self.assertTrue(any(reason in failure for failure in failures), failures)
+        summary, stats = census()
+        del stats["cut_pos_step"]
+        self.assertIn("route: missing or invalid cut_pos_step census",
+                      motion.cut_census_failures("route", summary, stats))
 
     def test_only_exact_event_rows_are_retained(self):
         event = "camera_motion reengagement tick=42 viewport=0 gap=11"

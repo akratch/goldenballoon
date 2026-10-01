@@ -220,6 +220,8 @@ def parse_summary(row: str) -> dict[str, float]:
         "slot_ticks": scalar(row, "slot_ticks"),
         "ticks": scalar(row, "ticks"),
         "cut_ticks": scalar(row, "cut_ticks"),
+        "cut_adjacent": block_scalar(row, "cut", "adjacent"),
+        "cut_unadjacent": block_scalar(row, "cut", "unadjacent"),
         "release_hold_ticks": block_scalar(row, "release_hold", "held_ticks"),
         "release_hold_spans": block_scalar(row, "release_hold", "spans"),
         "release_hold_window": block_scalar(row, "release_hold", "window"),
@@ -317,14 +319,7 @@ def inspect(route: Route, output: str) -> tuple[dict, dict, list[str]]:
     summary = parse_summary(rows[-1])
     stats = parse_stats(output)
 
-    failures: list[str] = []
-    # Smooth derivatives intentionally omit published cuts. Require separate
-    # cut-step reporting so a cut-heavy route cannot appear motionless simply
-    # because all its large movements were excluded from that chain.
-    for metric, unit in (("cut_pos_step", "wu/cut"), ("cut_ang_step", "deg/cut")):
-        values = stats.get(metric)
-        if values is None or values["unit"] != unit:
-            failures.append(f"{route.name}: missing or invalid {metric} census")
+    failures: list[str] = cut_census_failures(route.name, summary, stats)
 
     # The route has to have actually resolved cameras under Modern. A silent
     # zero-sample run must never read as a clean one.
@@ -388,6 +383,35 @@ def inspect(route: Route, output: str) -> tuple[dict, dict, list[str]]:
     failures.extend(held_bound_failures(route.name, summary))
 
     return summary, stats, failures
+
+
+def cut_census_failures(name: str, summary: dict, stats: dict) -> list[str]:
+    """Every published cut whose step was measurable must be measured.
+
+    Smooth derivatives intentionally omit published cuts, so a cut-heavy route
+    could look motionless if the cut-step recorder stopped firing. The runtime
+    counts cuts with a valid pose on the slot's previous tick (`adjacent`)
+    apart from the recorder, so the two must agree exactly, the split must
+    account for every cut, and a route that cut at all must have measured at
+    least one step.
+    """
+    failures = []
+    if summary["cut_adjacent"] + summary["cut_unadjacent"] != summary["discontinuities"]:
+        failures.append(
+            f"{name}: cut census splits {summary['cut_adjacent']}+"
+            f"{summary['cut_unadjacent']} cuts but counted {summary['discontinuities']}")
+    if summary["cut_ticks"] > 0 and summary["cut_adjacent"] == 0:
+        failures.append(
+            f"{name}: {summary['cut_ticks']} cut ticks, none with a measurable step")
+    for metric, unit in (("cut_pos_step", "wu/cut"), ("cut_ang_step", "deg/cut")):
+        values = stats.get(metric)
+        if values is None or values["unit"] != unit:
+            failures.append(f"{name}: missing or invalid {metric} census")
+        elif values["samples"] != summary["cut_adjacent"]:
+            failures.append(
+                f"{name}: {metric} sampled {int(values['samples'])} of the "
+                f"{summary['cut_adjacent']} cuts with a measurable step")
+    return failures
 
 
 def held_bound_failures(name: str, summary: dict) -> list[str]:
@@ -611,8 +635,6 @@ def main() -> int:
     parser.add_argument("--skip-high-rate", action="store_true",
                         help="skip the high-rate cut-density arm; it re-drives "
                              "a route at 4x the frame budget")
-    parser.add_argument("--held-shot-trial", action="store_true",
-                        help="legacy compatibility flag; held-shot recovery is now part of full Modern")
     args = parser.parse_args()
 
     binary = Path(resolve_binary(args.build)).resolve()
@@ -631,17 +653,13 @@ def main() -> int:
 
     failures: list[str] = []
     baseline: dict[str, dict] = {}
-    trial_env = {}
-    if args.held_shot_trial:
-        print("  Legacy trial flag supplied; testing normal Modern held-shot recovery")
     if args.profile_force:
         print(f"  profile force: MDKR_CAMERA_PROFILE_FORCE={args.profile_force} "
               "(measurement arm, not the shipped table)")
     for route in routes:
         print(f"  {route.name}: {route.description}")
         try:
-            output = run_route(route, binary, rom, args.profile_force,
-                               present_env=trial_env)
+            output = run_route(route, binary, rom, args.profile_force)
             summary, stats, route_failures = inspect(route, output)
         except (RuntimeError, subprocess.TimeoutExpired) as error:
             failures.append(f"{route.name}: {error}")
@@ -666,7 +684,7 @@ def main() -> int:
         try:
             output = run_route(
                 route, binary, rom, args.profile_force,
-                present_env={**trial_env, "MDKR_PRESENT_RATE": str(arm.present_rate),
+                present_env={"MDKR_PRESENT_RATE": str(arm.present_rate),
                              "MDKR_PRESENT_SMOOTHING": "interpolate",
                              # The scheduler summary is what proves the arm
                              # ran at the rate it claims and what supplies the
@@ -689,7 +707,6 @@ def main() -> int:
     if args.baseline_out:
         Path(args.baseline_out).write_text(
             json.dumps({"profile_force": args.profile_force,
-                        "held_shot_trial": args.held_shot_trial,
                         "routes": baseline, "high_rate": high_rate},
                        indent=2, sort_keys=True) + "\n")
         print(f"  baseline written to {args.baseline_out}")

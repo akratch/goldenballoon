@@ -10,6 +10,7 @@ from check_camera_held_shot_faults import (BOUND_ARMS,
 
 SLOT = 0
 CENSUS = ("camera_motion summary slot_ticks=100 ticks=100 cut_ticks=0 "
+          "cut={adjacent=0 unadjacent=0} "
           "profiles={full=100 safety_only=0 depenetrate_only=0} "
           "events={retract=1 recovery=1 alternate_entry=1 alternate_exit=1 "
           "emergency_entry=0 discontinuity=0 degenerate=0} "

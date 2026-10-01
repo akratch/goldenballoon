@@ -46,8 +46,7 @@ def fields(text: str) -> dict[str, int]:
 
 
 def run(binary: Path, rom: Path, root: Path, policy: str,
-        frames: int, timeout: int, comfort: str = "authored",
-        held_shot_trial: bool = False) -> Result:
+        frames: int, timeout: int, comfort: str = "authored") -> Result:
     run_root = root / f"{policy}-{comfort}"
     run_root.mkdir()
     env = {key: value for key, value in os.environ.items()
@@ -105,8 +104,6 @@ def main() -> int:
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=12500)
     parser.add_argument("--timeout", type=int, default=900)
-    parser.add_argument("--held-shot-trial", action="store_true",
-                        help="legacy flag; held-shot cost/authority now belongs to normal Modern")
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
@@ -115,19 +112,16 @@ def main() -> int:
             raise SystemExit(f"missing: {path}")
 
     failures: list[str] = []
-    if args.held_shot_trial:
-        print("Legacy trial flag supplied; testing normal Modern; Observe unchanged", flush=True)
     try:
         with tempfile.TemporaryDirectory(prefix="mdkr_camera_perf_") as temp:
             root = Path(temp)
             observe = run(binary, rom, root, "observe", args.frames, args.timeout)
-            modern = run(binary, rom, root, "modern", args.frames, args.timeout,
-                         held_shot_trial=args.held_shot_trial)
+            modern = run(binary, rom, root, "modern", args.frames, args.timeout)
             # Camera.Comfort's presentation-only proof, on exactly the terms
             # the camera itself is held to: same route, same policy, reduced
             # motion, and the authoritative state stream must not move.
             comfort = run(binary, rom, root, "modern", args.frames,
-                          args.timeout, comfort="reduced", held_shot_trial=args.held_shot_trial)
+                          args.timeout, comfort="reduced")
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"check_camera_obstruction_performance_runtime: FAIL\n  - {error}",
               file=sys.stderr)

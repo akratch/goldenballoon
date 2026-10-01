@@ -39,7 +39,7 @@ def field(row: str, name: str) -> int:
 
 
 def run(binary: Path, rom: Path, scenario: Scenario, root: Path,
-        timeout: int, held_shot_trial: bool = False) -> str:
+        timeout: int) -> str:
     run_root = root / scenario.name
     run_root.mkdir()
     env = {key: value for key, value in os.environ.items()
@@ -202,8 +202,6 @@ def main() -> int:
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--only", help="comma-separated scenario names")
-    parser.add_argument("--held-shot-trial", action="store_true",
-                        help="legacy flag; held-shot retirement now runs in normal Modern")
     args = parser.parse_args()
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
@@ -218,13 +216,11 @@ def main() -> int:
         raise SystemExit("--only selected no scenarios")
 
     failures: list[str] = []
-    if args.held_shot_trial:
-        print("Legacy trial flag supplied; testing normal Modern lifecycle", flush=True)
     with tempfile.TemporaryDirectory(prefix="mdkr_camera_lifecycle_") as temp:
         root = Path(temp)
         try:
             for scenario in scenarios:
-                output = run(binary, rom, scenario, root, args.timeout, args.held_shot_trial)
+                output = run(binary, rom, scenario, root, args.timeout)
                 scenario_failures = inspect(scenario, output)
                 failures.extend(scenario_failures)
                 print(

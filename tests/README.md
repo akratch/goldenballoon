@@ -595,7 +595,14 @@ environment parsing; the fixed-tick integration supplies those inputs.
 Release-hold cases include repeated zero-time projection revalidation at every
 point before release: the eye and clear-tick counter stay held, positive-time
 resume serves exactly one tick, and contact still retracts immediately at zero
-time. The zero-duration hold remains the no-hysteresis control.
+time. The zero-duration hold remains the no-hysteresis control. The hold is one
+shared step, `mdkr_camera_release_hold_step()`, also spent by the runtime's held
+shot; the suite pins its contract tick by tick, including the release band (a
+served hold that is still grazing waits up to its bound), and requires the
+resolver to agree with it on every tick of a mixed contact/clear/grazing/paused
+sequence. `mdkr_camera_recovery_fraction_for_step()` is checked for exactness
+at the reference step, composition of half steps, and the same remaining error
+after the same authored time at 25, 30, 50 and 60 Hz.
 
 `camera_object_bvh` is a ROM-free white-box test of the production immutable
 object-model index. It compares indexed sphere and exact rounded-lens results
@@ -699,18 +706,23 @@ The remaining registered camera runtime gates are deliberately orthogonal:
 - `check_camera_3p_tt_runtime.py` validates the 3P T.T. fourth viewport/camera 3
   directly, avoiding an unrelated inherited autopilot-progress limitation.
 - `check_camera_motion_quality.py` captures the MOTION-01 motion metrics
-  (retract latency, recovery, jerk, shoulder flips, emergency dwell, published
-  cuts, blocker churn) on the lake, hub, and 3P T.T. spectate routes under
-  Modern. Chatter and shoulder-flip invariants gate hard; the analog
-  distributions print as the labelled baseline for threshold-setting.
-  Level-1 re-engagement events retain release/gap, per-slot contact history and
-  recovery state in each arm's optional `--baseline-out` JSON. Console context
-  is bounded to 16 events per arm; missing event rows from older binaries are
-  disclosed without weakening the aggregate failure. The ROM-free
-  `camera_motion_reporting` CTest entry (`test_camera_motion_reporting.py`)
-  checks extraction, bounded reporting and failed authored/high-rate arm
-  isolation without launching a game. These additions still need execution on
-  the current candidate; they do not resolve Ancient Lake's hard motion failure.
+  (retract latency, recovery, jerk, shoulder flips, emergency dwell, held-shot
+  dwell and divergence, published cuts, blocker churn) on the lake, hub, and
+  3P T.T. spectate routes under Modern. Chatter, shoulder-flip, emergency-dwell
+  and held-shot-bound invariants gate hard; the analog distributions print as
+  the labelled baseline for threshold-setting. Recovery, held or ordinary, is
+  the clear phase of the census, so a correction that lets go and returns
+  inside the 12-tick window is a re-engagement on every path. Every published
+  cut whose previous tick had a valid pose must appear in the cut-step samples,
+  which the census counts separately from the recorder. Level-1 re-engagement
+  events retain release/gap, per-slot contact history and recovery state in
+  each arm's optional `--baseline-out` JSON. Console context is bounded to 16
+  events per arm; missing event rows from older binaries are disclosed without
+  weakening the aggregate failure. The ROM-free `camera_motion_reporting` CTest
+  entry (`test_camera_motion_reporting.py`) checks extraction, bounded
+  reporting, the cut-census cross-check, the comfort guard's bounded held
+  exemption and failed authored/high-rate arm isolation without launching a
+  game.
 - `check_camera_obstruction_performance_runtime.py` runs one optimized binary in
   Observe, Modern, and Modern + reduced motion over a long 4P route, requiring
   at least 5,000 active four-viewport fixed ticks (more than 83 seconds at 60 Hz).
@@ -721,24 +733,31 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   `MDKR_CAMERA_PERF=1` is allocation-free and reads an
   intra-thread performance clock; it never uses the synthetic VI/rAF clock.
 
-The development-only held-shot selection trial has separate qualification.
-`--held-shot-trial` on the motion, lifecycle and performance runners explicitly
-enables it; normal invocations do not inherit the trial switch. Motion JSON
-records which policy was measured, and the performance runner leaves Observe
-unchanged for its authority comparison. A trial pass does not qualify the normal
-policy or authorize changing the user-facing camera default. Actual rendered
-quality still requires the architecture plan's visual/device acceptance.
+Held-shot recovery is part of full Modern treatment; there is no separate
+trial switch. The motion, lifecycle and performance runners measure it as
+normal Modern.
 
-`check_camera_held_shot_faults.py` is registered in Release and sanitizer roles.
-It uses private save/config directories and injects projection and exact-query
-failure into a known active held-shot episode, requiring safe publication and
-fresh history after the missing projection. Its ROM-free reporting CTest
-rejects missing injections and unsafe or incomplete evidence.
-`check_camera_chain_evidence.py LOG` audits unpublished-chain continuity and
-reported framing/return invariants in a private trace; it is not an independent
-geometry proof. Its parser and negative controls run through CTest, as does
-the actual interpolation long-arc containment control. Keep trace/capture files
-outside public source and release archives.
+`check_camera_held_shot_faults.py` is registered in Release and sanitizer roles
+and uses private save/config directories. `MDKR_TEST_CAMERA_HELD_FAULT` makes
+the runtime locate its own held-shot episode and report the tick it fired on,
+so no arm pins a route tick. Its arms: a projection-latch failure (validated
+fallback cut, chain retired); an unprovable exact probe inside the held
+chain's own proof (rejected candidate, degraded-probe mark on that tick only);
+a corridor false-clear run one tick shorter than the release hold (the held
+eye must not move relative to its pivot, nor its orientation); one injected
+contact inside a released held recovery (the census must count the
+re-engagement and the motion gate must fail); lowered dwell and divergence
+bounds through `MDKR_TEST_CAMERA_HELD_BOUNDS` (clean handover to the ordinary
+path, no re-seed before it releases); and, on the 3P route with
+`MDKR_TEST_CAMERA_SOFT_STATIC`, the held path's deference to the soft-occluder
+decline. Every arm also audits the real trace with the chain-evidence parser
+and checks each natural held release against the release hold and its band.
+Its ROM-free reporting CTest feeds each verifier positive and negative
+evidence. `check_camera_chain_evidence.py LOG` audits held-chain continuity
+and reported framing/return/bound invariants in a private trace; it is not an
+independent geometry proof. Its parser and negative controls run through
+CTest, as does the actual interpolation long-arc containment control. Keep
+trace/capture files outside public source and release archives.
 
 The three source-role camera cache tasks are static audits of the immutable
 occlusion caches the runtime queries, and hold no ROM:

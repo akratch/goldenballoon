@@ -331,6 +331,10 @@ typedef struct MdkrCameraMotionSlot {
     uint8_t held_active;
     float held_dwell_seconds;
     float held_episode_seconds;
+    /* Last tick this slot published a valid pose, kept apart from the
+     * derivative chain so the cut census can be checked against it. */
+    uint64_t valid_pose_tick;
+    uint8_t valid_pose_seen;
 } MdkrCameraMotionSlot;
 
 typedef enum MdkrCameraMotionPhase {
@@ -3069,6 +3073,11 @@ typedef struct MdkrCameraMotionCensus {
      * frame a player is shown jump", which is a per-tick question.
      */
     uint64_t cut_ticks;
+    /* Slot-tick cuts whose previous tick published a valid pose for the slot
+     * (so their step was measurable), and the rest. They sum to
+     * `discontinuities`, and every adjacent one must be a cut-step sample. */
+    uint64_t cut_adjacent;
+    uint64_t cut_unadjacent;
     uint64_t last_cut_tick;
     uint8_t last_cut_tick_valid;
     uint64_t alternate_entries;
@@ -4520,6 +4529,12 @@ static void camera_obstruction_motion_sample(
     }
     if (cut) {
         sCameraMotion.discontinuities++;
+        if (pose_valid && motion->valid_pose_seen &&
+            motion->valid_pose_tick + 1U == tick) {
+            sCameraMotion.cut_adjacent++;
+        } else {
+            sCameraMotion.cut_unadjacent++;
+        }
         if (!sCameraMotion.last_cut_tick_valid ||
             sCameraMotion.last_cut_tick != tick) {
             sCameraMotion.cut_ticks++;
@@ -4885,6 +4900,8 @@ static void camera_obstruction_motion_sample(
     if (pose_valid) {
         motion->previous_eye = eye;
         motion->previous_forward = forward;
+        motion->valid_pose_tick = tick;
+        motion->valid_pose_seen = TRUE;
     }
     motion->previous_tick = tick;
 
@@ -5631,6 +5648,7 @@ void camera_obstruction_motion_summary(void) {
             (double)sCameraMotion.sampled_slot_ticks;
     fprintf(stderr,
             "camera_motion summary slot_ticks=%llu ticks=%llu cut_ticks=%llu "
+            "cut={adjacent=%llu unadjacent=%llu} "
             "profiles={full=%llu safety_only=%llu depenetrate_only=%llu} "
             "events={retract=%llu recovery=%llu alternate_entry=%llu "
             "alternate_exit=%llu emergency_entry=%llu discontinuity=%llu "
@@ -5648,6 +5666,8 @@ void camera_obstruction_motion_summary(void) {
             (unsigned long long)sCameraMotion.sampled_slot_ticks,
             (unsigned long long)sCameraMotion.sampled_ticks,
             (unsigned long long)sCameraMotion.cut_ticks,
+            (unsigned long long)sCameraMotion.cut_adjacent,
+            (unsigned long long)sCameraMotion.cut_unadjacent,
             (unsigned long long)sCameraMotion.profile_slot_ticks
                 [MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL],
             (unsigned long long)sCameraMotion.profile_slot_ticks
