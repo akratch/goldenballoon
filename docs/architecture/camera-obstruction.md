@@ -47,19 +47,24 @@ tick to the ordinary boom path, never to the fan-shot retargeter.
   (`mdkr_camera_release_hold_step()`, §7.3.2): a clear corridor keeps it held
   until it has been clear for the 9-tick hold, so a false-clear run at a facet
   seam cannot start its return. A served hold whose clear corridor still grazes
-  geometry within 4 units waits up to the 12-tick chatter window longer (the
-  grazing extension, which the boom shares).
+  geometry within 4.5 units waits up to 12 more clear ticks (the grazing
+  extension, which the boom shares, §7.3.2).
 - **Return.** Once released the view returns in the authored boom's moving
   basis, so a spectator's shoulder does not swap sides: the eye closes at most
   25% of its remaining error per 1/30 s of authored time (speed- and
   step-capped as the boom is), the orientation at most 90 degrees per second.
   A contact during the return re-holds the shot.
+- **Leash.** A holding view that has turned more than 45 degrees from the
+  authored view turns back toward it -- the eye stays held -- by what returns
+  it to 45, never faster than the 90 degrees per second the return uses. Each
+  leashed view is proven like any held tick.
 - **Bounds.** A held view may stay frozen (holding, not returning) for at most
   2 s, and the published view may turn at most 60 degrees from the authored
-  view in any phase. Past either, the slot takes the ordinary ladder and does
-  not seed another held shot until that correction has released. A seed whose
-  view is already past the bound (an alternate or emergency composition) is
-  refused.
+  view in any phase. Past either, the held shot ends on a published cut (a
+  shot change, never an interpolated whip), the slot takes the ordinary
+  ladder, and no held shot seeds until that correction has released. A seed
+  whose view is already past the bound (an alternate or emergency
+  composition) is refused.
 - **Soft occluders.** A corridor blocker that the boom would not retract for
   (§5.7.1, VIS-01 interim rule) does not seed or continue a held shot either,
   provided the authored pose proves clear.
@@ -68,19 +73,36 @@ tick to the ordinary boom path, never to the fan-shot retargeter.
   window is a re-engagement. Shoulder history lives only through the blocked
   phase.
 
-Measured on the three MOTION-01 routes: the hard invariants (re-engagement,
-continuous-surface shoulder flips, emergency dwell, held-shot bounds) hold at
-Enhanced cadence, which the gate drives, and also at Original cadence with and
-without `Camera.Comfort`. Ancient Lake's tick-2136 re-engagement, which 1.7.0
-Modern also fails, is closed by the grazing extension: the boom leaves one canyon
-facet, stays within 2-4 units of the wall for 19 ticks and meets the next, and
-the correction now stays engaged across that gap instead of releasing at tick
-2125. Its cost is release-held ticks: 183, 59 and 93 on the lake, hub and 3P
-routes (44, 3 and 41 before held shots shared the hold). Held views seeded from
-the authored view stay frozen for at most 1.1 s and turn up to 36 degrees at
-Enhanced and 59 at Original (the hold's ticks last twice as long there); with
-`Camera.Comfort` at Original the 3P route turns three of them past 60 degrees,
-where the bound hands them to the ordinary path.
+Measured on the MOTION-01 routes: the hard invariants (re-engagement,
+continuous-surface shoulder flips, emergency dwell, held-shot bounds, cut on
+every bound handover) hold at Enhanced cadence on all three, and on the 3P
+route at the default Original cadence with `Camera.Comfort`, which the gate
+also drives; they also hold at Original on the other routes with and without
+Comfort. Ancient Lake's tick-2136 re-engagement, which 1.7.0 Modern also
+fails, is closed by the grazing extension: the boom leaves one canyon facet,
+grazes the wall for 19 ticks and meets the next, and the correction now stays
+engaged across that gap instead of releasing at tick 2125.
+
+Costs, from the census at Enhanced (lake / hub / 3P):
+
+- Release-held ticks rose from 44 / 3 / 41 to 183 / 59 / 94: the served hold
+  accounts for 76 / 59 / 78 (held shots now spend the 9-tick hold they used to
+  skip) and the grazing extension for 107 / 0 / 16, in 8 / 0 / 1 deferred
+  releases plus one extension each on the lake and 3P that ran into the next
+  contact, the case it exists for.
+- Published cuts: down on the lake (103 to 98), up on the hub (68 to 90) and
+  the 3P route (112 to 132). Every added cut is a held seed the
+  divergence bound refused because the view it would hold was an alternate or
+  emergency composition already 84 to 143 degrees off the authored view; the
+  ordinary ladder republishes those ticks instead. They are not isolated: each
+  falls within three ticks of an existing cut, lengthening an emergency burst
+  (on the hub, each of the seven door approaches goes from three cuts, three
+  held ticks and a cut to seven or eight consecutive cuts).
+- Held views seeded from the authored view stay frozen for at most 1.1 s and
+  turn up to 36 degrees at Enhanced. At Original the hold's ticks last twice as
+  long and they turn further (up to 59, 61.5 with Comfort); there the leash
+  holds them at 45 (24 leashed ticks on the 3P comfort run) and no published
+  shot reaches the hard bound.
 
 The held-shot look was accepted on a visual comparison against ordinary
 Modern. That covers the look; it does not establish comfort across all routes,
@@ -1446,15 +1468,30 @@ distributions above. It found two things. Neither was a safety regression —
 
    The hold is one step function, `mdkr_camera_release_hold_step()`, spent by
    the boom and by the held shot (§1), so neither path can release on a first
-   clear tick. It carries a grazing extension: when the served hold's clear
-   corridor still comes within 4 units of geometry (the exact lens, its skin
-   grown by that margin, swept over the same corridor), release waits up to the
-   12-tick chatter window longer, and releases at once when the corridor clears
-   the margin. The value is measured: Ancient Lake's tick-2136 re-engagement
-   is a 19-tick gap in which the boom stays within 2-4 units of a canyon wall
-   between two of its facets, and 4 units is the smallest probed margin that
-   reads it as grazing. The bound keeps a camera riding along a wall without
-   touching it from staying corrected.
+   clear tick. It carries a grazing extension, distance hysteresis on top of
+   the hold's time hysteresis: when the served hold's clear corridor still
+   comes within 4.5 units of geometry (the exact lens, its skin grown by that
+   margin, swept over the same corridor), release waits up to 12 more clear
+   ticks, and releases at once when the corridor clears the margin. The
+   census counts its ticks, the releases it deferred, and the extensions that
+   ran into a new contact.
+
+   Both values are measured on the three routes at both cadences. Ancient
+   Lake's tick-2136 re-engagement is a 19-tick gap in which the boom grazes a
+   canyon wall between two of its facets; a quarter-unit sweep shows it needs
+   a 2.75-unit margin (it re-engages at 2.5), so 4.5 carries 1.75 units of
+   headroom. Margins of 5, 6 and 8 change no re-engagement outcome on any route
+   but start extending on the hub tour's ordinary corridor driving, which
+   grazes at 4.5 to 5 units (its held ticks at Original go from 185 to 389).
+   The bound follows the hold's own rule, the smallest value covering every
+   measured case plus one tick: the 19-tick gap needs 11 ticks beyond the
+   9-tick hold. A 16-tick bound was measured too and costs 30 more extension
+   ticks on the lake for no change in outcome. The bound keeps a camera riding
+   along a wall without touching it from staying corrected.
+
+   `SAFETY_ONLY` takes the extension like `FULL`: forcing the follow families
+   to `SAFETY_ONLY` reproduces the tick-2136 re-engagement without it and none
+   with it. `DEPENETRATE_ONLY` never retracts or releases.
 
 2. **Published-cut density — measured at rate, no threshold set.** Modern marks
    17–132 presentation cuts per 1000 resolved slot ticks depending on route,
