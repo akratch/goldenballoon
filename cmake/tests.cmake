@@ -2884,6 +2884,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/game/src/save_data.c
             ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c
             ${CMAKE_SOURCE_DIR}/platform/save_codec.c)
+        # Synth voice stealing and the shared update pool (issue #66): a
+        # stolen voice freed while the pool is dry must not leak.
+        mdkr_add_engine_unit_test(mdkr_audio_synth_voice_test audio_synth_voice
+            ${CMAKE_SOURCE_DIR}/tests/test_audio_synth_voice.c
+            ${CMAKE_SOURCE_DIR}/platform/audio_synth.c
+            ${CMAKE_SOURCE_DIR}/platform/audio_event_queue.c)
     endif()
 
     # PAL video-mode height-raise idempotency (Return-to-Launcher -> Play

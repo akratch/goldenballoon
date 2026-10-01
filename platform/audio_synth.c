@@ -96,6 +96,8 @@ static void native_voice_trace_music(ALSynth *s, ALVoice *voice, u8 fxmix)
  *   minfree          lowest free count ever seen (capacity - minfree = peak)
  *   exhaustedframes  synthesis frames whose window ever reached zero free
  *   nulls            allocations refused, keyed by the update they carried
+ *   syncfree         stolen voices alSynFreeVoice released synchronously
+ *                    because no param was left for the deferred free
  *
  * Off by default. The switch is read once in alSynNew, before the first param
  * exists, so the free count is exact for the whole session; when it is off
@@ -125,6 +127,7 @@ static s32 s_param_window_min_free;
 static u64 s_param_frames;
 static u64 s_param_exhausted_frames;
 static u64 s_param_nulls[NATIVE_PARAM_KINDS];
+static u64 s_param_sync_frees;
 
 static void native_param_stats_init(s32 capacity)
 {
@@ -163,6 +166,13 @@ static void native_param_stats_null(int kind)
 {
     if (s_param_stats) {
         s_param_nulls[kind]++;
+    }
+}
+
+static void native_param_stats_sync_free(void)
+{
+    if (s_param_stats) {
+        s_param_sync_frees++;
     }
 }
 
@@ -211,7 +221,7 @@ void mdkr_synth_param_report(void)
             "[AUDIO-PARAMS] capacity=%d minfree=%d peak=%d frames=%llu "
             "exhaustedframes=%llu nulls=%llu start_alt=%llu start=%llu "
             "volume=%llu pan=%llu pitch=%llu fxmix=%llu stop=%llu free=%llu "
-            "steal=%llu other=%llu\n",
+            "steal=%llu other=%llu syncfree=%llu\n",
             (int)s_param_capacity, (int)s_param_min_free,
             (int)(s_param_capacity - s_param_min_free),
             (unsigned long long)s_param_frames,
@@ -226,13 +236,15 @@ void mdkr_synth_param_report(void)
             (unsigned long long)s_param_nulls[NATIVE_PARAM_STOP],
             (unsigned long long)s_param_nulls[NATIVE_PARAM_FREE],
             (unsigned long long)s_param_nulls[NATIVE_PARAM_STEAL],
-            (unsigned long long)s_param_nulls[NATIVE_PARAM_OTHER]);
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_OTHER],
+            (unsigned long long)s_param_sync_frees);
 }
 #else
 #define native_param_stats_init(capacity) ((void)0)
 #define native_param_stats_take() ((void)0)
 #define native_param_stats_give() ((void)0)
 #define native_param_stats_null(kind) ((void)0)
+#define native_param_stats_sync_free() ((void)0)
 #define native_param_stats_frame() ((void)0)
 #define native_param_kind(type) (NATIVE_PARAM_OTHER)
 #endif
@@ -938,6 +950,21 @@ void alSynFreeVoice(ALSynth *s, ALVoice *voice)
 
     update = (ALFreeParam *)alloc_voice_update(s, voice, AL_FILTER_FREE_VOICE);
     if (update == NULL) {
+        /*
+         * Stock libultra returns here and keeps the voice attached. The
+         * physical voice then stays on pAllocList at offset 512 for the rest
+         * of the session: find_stealable_voice() skips it (it needs offset 0)
+         * and no FREE_VOICE update will ever release it, so each dry-pool free
+         * permanently loses one of the 40 voices. Release it now instead. Its
+         * pending fade and stop are still on the envmixer and still play; the
+         * next owner's start queues behind them, at most 512 samples late.
+         * Not reached while the pool keeps its headroom (game/src/audio.c),
+         * so normal output is unchanged. tests/test_audio_synth_voice.c.
+         */
+        native_param_stats_sync_free();
+        voice->pvoice->offset = 0;
+        _freePVoice(s, voice->pvoice);
+        voice->pvoice = NULL;
         return;
     }
 
