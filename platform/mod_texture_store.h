@@ -122,6 +122,48 @@ int  mdkr_mod_texture_rice_active(void);
  * packs at all. */
 bool mdkr_mod_texture_store_active(void);
 
+/* ------------------------------------- resolve timing (issue #66) ---- */
+
+/* What resolving pack textures has cost this process, as running totals.
+ *
+ * A replacement is decoded the first time the renderer binds it, inside the
+ * display-list walk, so a scene change can pay for many large PNGs within one
+ * frame. These totals say how much of a frame that was, split the way the cost
+ * actually divides: finding the file, reading it (which, for a zipped pack,
+ * includes inflating it) and decoding the PNG it holds.
+ *
+ * Totals, never reset -- not even by shutdown -- so any number of readers can
+ * each keep their own last snapshot and difference against it (one per frame,
+ * one per level generation) without taking the numbers from one another.
+ *
+ * All zero, and never a clock read, until a clock is installed: the store has
+ * no clock of its own. The renderer installs one only when a diagnostic asked
+ * for it (MDKR_TEXTURE_PACK_TIMING or the resource census), so an ordinary run
+ * pays one null test per resolution and nothing else. */
+typedef struct MdkrModTextureResolveTiming {
+    uint64_t resolves;       /* slot resolutions run, absent answers included */
+    uint64_t loaded;         /* resolutions that left decoded pixels resident */
+    uint64_t probes;         /* pack lookups made (one pack open each) */
+    uint64_t absent;         /* ...of which no enabled pack held the file */
+    uint64_t files;          /* PNG files read and handed to the decoder */
+    uint64_t file_bytes;     /* their size as read (after any ZIP inflate) */
+    uint64_t decoded_bytes;  /* RGBA8 bytes the decoder produced from them */
+    uint64_t open_ns;        /* opening the pack and locating the entry, and
+                              * closing it again; absent probes included. For
+                              * a ZIP this is where the archive is opened. */
+    uint64_t absent_ns;      /* the part of open_ns spent on absent probes */
+    uint64_t read_ns;        /* reading the entry's bytes (ZIP: inflate+CRC) */
+    uint64_t decode_ns;      /* PNG header inspection + pixel decode */
+    uint64_t resolve_ns;     /* whole resolutions: the three above, plus Rice
+                              * alpha merging and cache eviction */
+} MdkrModTextureResolveTiming;
+
+/* Monotonic nanoseconds. NULL uninstalls, which is also the initial state. */
+typedef uint64_t (*MdkrModTextureClock)(void);
+void mdkr_mod_texture_timing_set_clock(MdkrModTextureClock clock);
+/* The running totals. Always safe; all zero when no clock was ever set. */
+void mdkr_mod_texture_timing_totals(MdkrModTextureResolveTiming *out);
+
 void     mdkr_mod_texture_set_enabled(bool enabled);
 bool     mdkr_mod_texture_enabled(void);
 /* Increments on every enable/disable. Feeds DkrTexCacheKey.override_generation,

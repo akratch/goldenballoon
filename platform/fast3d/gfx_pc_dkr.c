@@ -58,6 +58,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
 
 #ifndef _LANGUAGE_C
 #define _LANGUAGE_C
@@ -2671,6 +2672,9 @@ void gfx_dkr_texcache_invalidate_range(const void *base, uint32_t size) {
     }
 }
 
+static void dkr_texpack_generation_report(bool emit, int level, int players,
+                                          int cutscene);
+
 void gfx_dkr_resource_generation_begin(
     int32_t level, int32_t players, int32_t cutscene) {
     /*
@@ -2719,6 +2723,14 @@ void gfx_dkr_resource_generation_begin(
                 gfx_dkr_shader_programs_created -
                 dkr_resource_generation.shader_created_start));
     }
+    /* Same boundary, same labelling: the generation that just ended. The
+     * first boundary only opens the window, so boot and title work never
+     * lands in the first level's row. */
+    dkr_texpack_generation_report(
+        dkr_resource_generation.active,
+        (int)dkr_resource_generation.level,
+        (int)dkr_resource_generation.players,
+        (int)dkr_resource_generation.cutscene);
     dkr_resource_generation.active = true;
     dkr_resource_generation.level = level;
     dkr_resource_generation.players = players;
@@ -2780,6 +2792,208 @@ static uint32_t dkr_palette_fmt_key(uint8_t fmt) {
     return fmt == G_IM_FMT_CI ? dkr_textlut_fmt() : 0u;
 }
 
+/* ---- texture-pack transition timing (issue #66) --------------------------
+ *
+ * Where a scene change's frame time goes when a texture pack is installed.
+ * Pack PNGs resolve lazily on first bind, inside this walk, so entering a new
+ * area can decode many of them in one frame. The store times its own half
+ * (pack open, read+inflate, PNG decode; mod_texture_store.h); this half times
+ * what the renderer does around it on every texture-cache miss -- the digest
+ * and Rice CRC that name the texture, the GPU upload of a replacement, the
+ * ordinary ROM decode+upload of everything else -- and the whole walk and
+ * end-of-frame submit, so the remainder (game logic, pacing, GPU) can be read
+ * off by subtraction rather than guessed.
+ *
+ * Off by default and inert when off: one cached flag test per site, no clock
+ * read, nothing counted, and no clock installed in the store. On under either
+ *   MDKR_TEXTURE_PACK_TIMING=1  a [TEXPACK-FRAME] row per presented frame,
+ *                              plus the census row below; or
+ *   MDKR_RESOURCE_STATS=1 / MDKR_TRACE  the census row only: one
+ *                              texture_pack_generation line per level
+ *                              generation, next to renderer_generation.
+ * tools/measure_texture_pack_stalls.py reads both.
+ *
+ * Every counter is a running total. The frame row and the generation row each
+ * keep their own last snapshot and print the difference, so neither consumer
+ * resets numbers the other still needs. */
+typedef struct DkrTexpackTotals {
+    uint64_t misses;            /* texture-cache misses (fills) */
+    uint64_t hash_ns;           /* digest + Rice CRC over the source texels */
+    uint64_t override_uploads;  /* replacements handed to the backend */
+    uint64_t override_bytes;
+    uint64_t override_ns;       /* backend upload_texture() for them */
+    uint64_t rom_uploads;       /* ordinary fills: ROM decode, mips, upload */
+    uint64_t rom_ns;
+    uint64_t walk_ns;           /* gfx_run(), real and replay walks */
+    uint64_t end_ns;            /* gfx_end_frame(): submit, and present on
+                                 * WebGPU */
+} DkrTexpackTotals;
+
+static int s_texpack_timing = -1;   /* -1 until first asked */
+static int s_texpack_rows;          /* per-frame rows requested */
+static DkrTexpackTotals s_texpack;
+static DkrTexpackTotals s_texpack_frame_base;
+static DkrTexpackTotals s_texpack_gen_base;
+static MdkrModTextureResolveTiming s_texpack_store_frame_base;
+static MdkrModTextureResolveTiming s_texpack_store_gen_base;
+static uint64_t s_texpack_last_present_ns;
+static uint64_t s_texpack_last_cpu_ns;
+static uint64_t s_texpack_gen_frames;
+static uint64_t s_texpack_gen_worst_ns;
+
+static uint64_t dkr_texpack_clock_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+}
+
+/* CPU time this thread has actually run, so a long frame can be told apart as
+ * work (cpuUs close to dtUs) or waiting -- on the pacer, the GPU, or the host
+ * scheduler (cpuUs far below it). The game runs on this one thread (the port
+ * is cooperative). 0 where the platform has no per-thread CPU clock. */
+static uint64_t dkr_texpack_thread_cpu_ns(void) {
+#if defined(CLOCK_THREAD_CPUTIME_ID)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) return 0u;
+    return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+#else
+    return 0u;
+#endif
+}
+
+static bool dkr_texpack_timing_on(void) {
+    if (s_texpack_timing < 0) {
+        const char *value = getenv("MDKR_TEXTURE_PACK_TIMING");
+        s_texpack_rows = value != NULL && value[0] == '1' && value[1] == '\0';
+        s_texpack_timing = s_texpack_rows || mdkr_resource_trace_enabled();
+        /* The store gets a clock only now, so it is never timing a run that
+         * did not ask. Resolution happens only from dkr_bind_tile, which asks
+         * this first. */
+        mdkr_mod_texture_timing_set_clock(
+            s_texpack_timing ? dkr_texpack_clock_ns : NULL);
+    }
+    return s_texpack_timing != 0;
+}
+
+/* 0 when off; hand it to dkr_texpack_add(), which reads no clock either. */
+static inline uint64_t dkr_texpack_now(void) {
+    return dkr_texpack_timing_on() ? dkr_texpack_clock_ns() : 0u;
+}
+
+static inline void dkr_texpack_add(uint64_t *bucket, uint64_t start) {
+    uint64_t now;
+    if (!dkr_texpack_timing_on()) return;
+    now = dkr_texpack_clock_ns();
+    if (now > start) *bucket += now - start;
+}
+
+#define DKR_TEXPACK_DIFF(field) \
+    (unsigned long long)(s_texpack.field - base->field)
+#define DKR_TEXPACK_STORE_DIFF(field) \
+    (unsigned long long)(store.field - store_base->field)
+#define DKR_TEXPACK_STORE_US(field) \
+    (unsigned long long)((store.field - store_base->field) / 1000u)
+#define DKR_TEXPACK_US(field) \
+    (unsigned long long)((s_texpack.field - base->field) / 1000u)
+
+void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
+    MdkrModTextureResolveTiming store;
+    const DkrTexpackTotals *base = &s_texpack_frame_base;
+    const MdkrModTextureResolveTiming *store_base =
+        &s_texpack_store_frame_base;
+    uint64_t now;
+    uint64_t dt;
+    uint64_t cpu_now;
+    uint64_t cpu;
+
+    if (!dkr_texpack_timing_on()) return;
+    now = dkr_texpack_clock_ns();
+    dt = s_texpack_last_present_ns != 0u && now > s_texpack_last_present_ns
+        ? now - s_texpack_last_present_ns : 0u;
+    s_texpack_last_present_ns = now;
+    s_texpack_gen_frames++;
+    if (dt > s_texpack_gen_worst_ns) s_texpack_gen_worst_ns = dt;
+    if (!s_texpack_rows) return;
+
+    cpu_now = dkr_texpack_thread_cpu_ns();
+    cpu = s_texpack_last_cpu_ns != 0u && cpu_now > s_texpack_last_cpu_ns
+        ? cpu_now - s_texpack_last_cpu_ns : 0u;
+    s_texpack_last_cpu_ns = cpu_now;
+    mdkr_mod_texture_timing_totals(&store);
+    /* dtUs is present-to-present wall time, so this row's work is the work
+     * that delayed this present; cpuUs is how much of it this thread spent
+     * running. walkUs contains hashUs, resolveUs and both upload terms;
+     * resolveUs contains openUs, readUs and decodeUs. */
+    fprintf(stderr,
+            "[TEXPACK-FRAME] frame=%d tick=%d swap=%d dtUs=%llu cpuUs=%llu "
+            "walkUs=%llu endUs=%llu misses=%llu hashUs=%llu resolves=%llu "
+            "loaded=%llu probes=%llu absent=%llu files=%llu fileBytes=%llu "
+            "decodedBytes=%llu openUs=%llu absentUs=%llu readUs=%llu "
+            "decodeUs=%llu resolveUs=%llu overrideUploads=%llu "
+            "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
+            "romUploadUs=%llu\n",
+            frame, tick, swapped ? 1 : 0, (unsigned long long)(dt / 1000u),
+            (unsigned long long)(cpu / 1000u), DKR_TEXPACK_US(walk_ns),
+            DKR_TEXPACK_US(end_ns),
+            DKR_TEXPACK_DIFF(misses), DKR_TEXPACK_US(hash_ns),
+            DKR_TEXPACK_STORE_DIFF(resolves), DKR_TEXPACK_STORE_DIFF(loaded),
+            DKR_TEXPACK_STORE_DIFF(probes), DKR_TEXPACK_STORE_DIFF(absent),
+            DKR_TEXPACK_STORE_DIFF(files), DKR_TEXPACK_STORE_DIFF(file_bytes),
+            DKR_TEXPACK_STORE_DIFF(decoded_bytes),
+            DKR_TEXPACK_STORE_US(open_ns), DKR_TEXPACK_STORE_US(absent_ns),
+            DKR_TEXPACK_STORE_US(read_ns), DKR_TEXPACK_STORE_US(decode_ns),
+            DKR_TEXPACK_STORE_US(resolve_ns),
+            DKR_TEXPACK_DIFF(override_uploads),
+            DKR_TEXPACK_DIFF(override_bytes), DKR_TEXPACK_US(override_ns),
+            DKR_TEXPACK_DIFF(rom_uploads), DKR_TEXPACK_US(rom_ns));
+    s_texpack_frame_base = s_texpack;
+    s_texpack_store_frame_base = store;
+}
+
+/* The census half: one row per completed level generation, labelled like
+ * renderer_generation with the generation that just ENDED. */
+static void dkr_texpack_generation_report(bool emit, int level, int players,
+                                          int cutscene) {
+    MdkrModTextureResolveTiming store;
+    const DkrTexpackTotals *base = &s_texpack_gen_base;
+    const MdkrModTextureResolveTiming *store_base = &s_texpack_store_gen_base;
+
+    if (!dkr_texpack_timing_on()) return;
+    mdkr_mod_texture_timing_totals(&store);
+    if (emit) mdkr_trace(
+        "texture_pack_generation: level=%d players=%d cutscene=%d "
+        "frames=%llu worstFrameUs=%llu misses=%llu hashUs=%llu "
+        "resolves=%llu loaded=%llu probes=%llu absent=%llu files=%llu "
+        "fileBytes=%llu decodedBytes=%llu openUs=%llu absentUs=%llu "
+        "readUs=%llu decodeUs=%llu resolveUs=%llu overrideUploads=%llu "
+        "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
+        "romUploadUs=%llu walkUs=%llu endUs=%llu",
+        level, players, cutscene,
+        (unsigned long long)s_texpack_gen_frames,
+        (unsigned long long)(s_texpack_gen_worst_ns / 1000u),
+        DKR_TEXPACK_DIFF(misses), DKR_TEXPACK_US(hash_ns),
+        DKR_TEXPACK_STORE_DIFF(resolves), DKR_TEXPACK_STORE_DIFF(loaded),
+        DKR_TEXPACK_STORE_DIFF(probes), DKR_TEXPACK_STORE_DIFF(absent),
+        DKR_TEXPACK_STORE_DIFF(files), DKR_TEXPACK_STORE_DIFF(file_bytes),
+        DKR_TEXPACK_STORE_DIFF(decoded_bytes),
+        DKR_TEXPACK_STORE_US(open_ns), DKR_TEXPACK_STORE_US(absent_ns),
+        DKR_TEXPACK_STORE_US(read_ns), DKR_TEXPACK_STORE_US(decode_ns),
+        DKR_TEXPACK_STORE_US(resolve_ns),
+        DKR_TEXPACK_DIFF(override_uploads), DKR_TEXPACK_DIFF(override_bytes),
+        DKR_TEXPACK_US(override_ns), DKR_TEXPACK_DIFF(rom_uploads),
+        DKR_TEXPACK_US(rom_ns), DKR_TEXPACK_US(walk_ns),
+        DKR_TEXPACK_US(end_ns));
+    s_texpack_gen_base = s_texpack;
+    s_texpack_store_gen_base = store;
+    s_texpack_gen_frames = 0u;
+    s_texpack_gen_worst_ns = 0u;
+}
+
+#undef DKR_TEXPACK_DIFF
+#undef DKR_TEXPACK_STORE_DIFF
+#undef DKR_TEXPACK_STORE_US
+#undef DKR_TEXPACK_US
+
 /* Bind the render tile's texture to a sampler unit; import+cache on miss.
  * Returns the uploaded dimensions (for UV normalization). */
 static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32_t *h) {
@@ -2840,6 +3054,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         verify ? dkr_src_hash(addr, source_size_bytes) : 0;
     const bool was_hit = (hit >= 0);
     if (hit < 0) {
+        if (dkr_texpack_timing_on()) s_texpack.misses++;
         int slot = tex_cache_next;
         bool acquired = !tex_cache[slot].valid;
         tex_cache_next = (tex_cache_next + 1) % DKR_TEXCACHE_SIZE;
@@ -2895,7 +3110,9 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
                 digest_bytes = (uint32_t)digest_room;
             }
+            uint64_t hash_start = dkr_texpack_now();
             mdkr_mod_texture_digest(&key, addr, digest_bytes, digest);
+            dkr_texpack_add(&s_texpack.hash_ns, hash_start);
             digest_known = true;
             over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
             /* A Rice/GLideN64 pack names this texture by an identity computed
@@ -2906,18 +3123,35 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
              * in RDRAM, padding included, not as a tightly packed image. */
             if (!over_used && mdkr_mod_texture_rice_active()) {
                 uint32_t rice_key = 0;
-                if (mdkr_rice_crc32(addr, digest_bytes, (int)tw, (int)th,
-                                    (int)siz, (int)source_line_bytes,
-                                    &rice_key)) {
+                bool rice_keyed;
+                hash_start = dkr_texpack_now();
+                rice_keyed = mdkr_rice_crc32(addr, digest_bytes, (int)tw,
+                                             (int)th, (int)siz,
+                                             (int)source_line_bytes,
+                                             &rice_key);
+                dkr_texpack_add(&s_texpack.hash_ns, hash_start);
+                if (rice_keyed) {
                     over_used = mdkr_mod_texture_lookup_rice(
                         rice_key, (int)fmt, (int)siz, &over) != 0;
                 }
             }
         }
+        const uint64_t upload_start = dkr_texpack_now();
         const bool uploaded =
             over_used ? gfx_rapi->upload_texture(over.rgba, over.width,
                                                  over.height)
                       : dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived);
+        if (over_used) {
+            dkr_texpack_add(&s_texpack.override_ns, upload_start);
+            if (dkr_texpack_timing_on()) {
+                s_texpack.override_uploads++;
+                s_texpack.override_bytes +=
+                    (uint64_t)over.width * (uint64_t)over.height * 4u;
+            }
+        } else {
+            dkr_texpack_add(&s_texpack.rom_ns, upload_start);
+            if (dkr_texpack_timing_on()) s_texpack.rom_uploads++;
+        }
         if (over_used) {
             /* The GPU image is the replacement's physical size; the cached
              * dimensions the texcoords are normalised against must stay the
@@ -8644,6 +8878,7 @@ void gfx_dkr_reset_interpreter_state(void) {
 
 void gfx_run(Gfx *dl) {
     if (!gfx_rapi) return;
+    const uint64_t texpack_walk_start = dkr_texpack_now();
     /* A replay re-walks a list this counter already advanced for. Bumping it
      * again would desynchronise MDKR_DL_FRAME filtering and every trace that
      * keys off the frame index from the dumped-frame numbering. */
@@ -8678,11 +8913,13 @@ void gfx_run(Gfx *dl) {
                    dkr_frame_index, dkr_dbg_emitted, dkr_dbg_onscreen,
                    dkr_dbg_clipped, dkr_dbg_clip_dropped, dkr_dbg_clip_degen);
     dkr_trace_this_frame = false;
+    dkr_texpack_add(&s_texpack.walk_ns, texpack_walk_start);
 }
 
 void gfx_run_dl(Gfx *dl) { gfx_run(dl); }
 
 void gfx_end_frame(void) {
+    const uint64_t texpack_end_start = dkr_texpack_now();
     gfx_flush();
     if (gfx_rapi && gfx_rapi->end_frame) gfx_rapi->end_frame();
     if (gfx_rapi && gfx_rapi->finish_render) gfx_rapi->finish_render();
@@ -8723,6 +8960,7 @@ void gfx_end_frame(void) {
                 (unsigned long long)dkr_output_overlay_frames,
                 (unsigned long long)dkr_output_overlay_begin_failures);
     }
+    dkr_texpack_add(&s_texpack.end_ns, texpack_end_start);
 }
 
 bool gfx_renderer_failed(void) {

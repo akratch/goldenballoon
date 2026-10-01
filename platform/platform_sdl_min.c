@@ -6298,6 +6298,9 @@ static void platform_frame_sync_impl(int swap, int count_present) {
         return;
     }
     g_frameCounter++;
+    /* Off unless a texture-pack timing diagnostic asked (a flag test). After
+     * the swap, so the interval it records is the one the player saw. */
+    gfx_dkr_texture_pack_timing_frame(g_frameCounter, g_simTickCounter, swap);
     if (s_frameCaptureAutoReturnReady) {
         s_frameCaptureAutoReturnReady = 0;
         fprintf(stderr,

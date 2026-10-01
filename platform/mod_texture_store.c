@@ -149,6 +149,46 @@ static int         s_rice_resident;
 static uint64_t   s_use_clock;
 static int        s_reports;
 
+/* Resolve timing (see the header). Installed by the renderer only when a
+ * diagnostic asked; while it is NULL nothing below reads a clock or counts. */
+static MdkrModTextureClock          s_timing_clock;
+static MdkrModTextureResolveTiming  s_timing;
+
+/* ---------------------------------------------------------------- timing */
+
+/* 0 when no clock is installed. Callers pass the value straight back to
+ * timing_since() or timing_lap(), which check again, so an uninstrumented run
+ * never calls a clock on either side of the work. */
+static uint64_t timing_now(void) {
+    return s_timing_clock != NULL ? s_timing_clock() : 0u;
+}
+
+static uint64_t timing_since(uint64_t start) {
+    uint64_t now;
+    if (s_timing_clock == NULL) return 0u;
+    now = s_timing_clock();
+    return now > start ? now - start : 0u;
+}
+
+/* Charges the time since `*mark` to `*bucket` and moves the mark to now, so
+ * consecutive phases of one resolution are timed back to back with one clock
+ * read per boundary. */
+static void timing_lap(uint64_t *bucket, uint64_t *mark) {
+    uint64_t now;
+    if (s_timing_clock == NULL) return;
+    now = s_timing_clock();
+    if (now > *mark) *bucket += now - *mark;
+    *mark = now;
+}
+
+/* One finished resolution, timed from `start` (a timing_now() value). */
+static void timing_note_resolve(uint64_t start, int resident) {
+    if (s_timing_clock == NULL) return;
+    s_timing.resolve_ns += timing_since(start);
+    s_timing.resolves++;
+    if (resident) s_timing.loaded++;
+}
+
 /* ------------------------------------------------------------- reporting */
 
 static void report_rejection(const char *digest, const char *reason) {
@@ -378,22 +418,40 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     int            width = 0;
     int            height = 0;
     int            channels = 0;
+    /* Phase boundaries for the resolve timing: opening/locating (and closing)
+     * the file, reading its bytes out, decoding them. No clock is read
+     * uninstrumented. */
+    uint64_t       phase_mark = timing_now();
 
     /* Directory pack or zip pack — the store cannot tell and must not care.
      * Absence is reported through `out_absent` rather than by asking a second
      * time: most textures have no replacement, and probing first meant opening
      * (and for a zip, re-parsing the central directory) twice per resolve. */
     if (out_absent != NULL) *out_absent = 0;
+    if (s_timing_clock != NULL) s_timing.probes++;
     if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
         if (out_absent != NULL) *out_absent = 1;
+        if (s_timing_clock != NULL) {
+            const uint64_t before = s_timing.open_ns;
+            timing_lap(&s_timing.open_ns, &phase_mark);
+            s_timing.absent_ns += s_timing.open_ns - before;
+            s_timing.absent++;
+        }
         return NULL;
     }
+    timing_lap(&s_timing.open_ns, &phase_mark);
 
     file_bytes = read_pack_entry(&file, &file_size, &reason);
+    timing_lap(&s_timing.read_ns, &phase_mark);
     mdkr_mod_registry_close_file(&file);
+    timing_lap(&s_timing.open_ns, &phase_mark);
     if (file_bytes == NULL) {
         report_rejection(key, reason);
         return NULL;
+    }
+    if (s_timing_clock != NULL) {
+        s_timing.files++;
+        s_timing.file_bytes += file_size;
     }
     /* The cap above is far below INT_MAX, so this only documents the bound the
      * decoder's int-typed length depends on. */
@@ -468,6 +526,12 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
     pixels = stbi_load_from_memory(file_bytes, (int)file_size, &width, &height,
                                    &channels, 4);
     free(file_bytes);
+    /* Header inspection plus the decode. A file refused from its header alone
+     * above cost microseconds and is left to the whole-resolution total. */
+    timing_lap(&s_timing.decode_ns, &phase_mark);
+    if (pixels != NULL && s_timing_clock != NULL && width > 0 && height > 0) {
+        s_timing.decoded_bytes += (uint64_t)width * (uint64_t)height * 4u;
+    }
     if (pixels == NULL) {
         /* stb's own wording, so the log names the actual defect in the PNG
          * rather than this module's guess at it. */
@@ -690,7 +754,11 @@ static int texture_lookup_exact(const char *digest_hex, MdkrModTexture *out) {
 
     slot = slot_for(digest_hex);
     if (slot == NULL) return 0;
-    if (slot->state == SLOT_UNRESOLVED) slot_resolve(slot);
+    if (slot->state == SLOT_UNRESOLVED) {
+        const uint64_t start = timing_now();
+        slot_resolve(slot);
+        timing_note_resolve(start, slot->state == SLOT_RESIDENT);
+    }
     if (slot->state != SLOT_RESIDENT) return 0;
 
     slot->last_use = ++s_use_clock;
@@ -742,7 +810,11 @@ int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
     snprintf(key, sizeof key, "rice:%08x:%d:%d", (unsigned)crc, fmt, siz);
     slot = slot_for(key);
     if (slot == NULL) return 0;
-    if (slot->state == SLOT_UNRESOLVED) slot_resolve_rice(slot, crc, fmt, siz);
+    if (slot->state == SLOT_UNRESOLVED) {
+        const uint64_t start = timing_now();
+        slot_resolve_rice(slot, crc, fmt, siz);
+        timing_note_resolve(start, slot->state == SLOT_RESIDENT);
+    }
     if (slot->state != SLOT_RESIDENT) return 0;
 
     slot->last_use = ++s_use_clock;
@@ -766,6 +838,14 @@ void mdkr_mod_texture_set_enabled(bool enabled) {
 
 bool mdkr_mod_texture_enabled(void) {
     return s_enabled;
+}
+
+void mdkr_mod_texture_timing_set_clock(MdkrModTextureClock clock) {
+    s_timing_clock = clock;
+}
+
+void mdkr_mod_texture_timing_totals(MdkrModTextureResolveTiming *out) {
+    if (out != NULL) *out = s_timing;
 }
 
 uint32_t mdkr_mod_texture_generation(void) {

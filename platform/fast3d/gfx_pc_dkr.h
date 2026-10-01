@@ -180,6 +180,15 @@ void gfx_dkr_resource_generation_begin(
 /** Retire prior-stage pointer tokens after its final graphics task is drained. */
 void gfx_dkr_stage_resources_released(void);
 
+/**
+ * Texture-pack transition timing (issue #66), called once per presented frame
+ * by the platform's frame boundary. A cached flag test and nothing else unless
+ * MDKR_TEXTURE_PACK_TIMING=1 (a [TEXPACK-FRAME] row per frame) or the resource
+ * census (MDKR_RESOURCE_STATS=1 / MDKR_TRACE: the per-generation worst frame)
+ * asked for it. See the block above dkr_bind_tile in gfx_pc_dkr.c.
+ */
+void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped);
+
 /*
  * Declare a ping-pong pair of triangle buffers.
  *

@@ -64,6 +64,9 @@
 #define DIGEST_WIDE  "a2222222222222222222222222222222"
 #define DIGEST_SOUND "b2222222222222222222222222222222"
 #define DIGEST_NOTPNG "c3333333333333333333333333333333"
+#define DIGEST_UNTIMED "f6666666666666666666666666666666"
+#define DIGEST_TIMED   "f7777777777777777777777777777777"
+#define DIGEST_ABSENT  "f8888888888888888888888888888888"
 
 /* Handed to the probe as its refusal ceiling. Far above anything these
  * fixtures legitimately need and far below the gigabyte the giant fixture
@@ -514,6 +517,116 @@ static void test_generated_portrait_alias(const char *mods,
            "direct legacy lookup still returns the legacy file");
 }
 
+/* ------------------------------------------------ resolve timing (#66) */
+
+/* A clock that advances a fixed step per call, so every timed phase comes out
+ * as a whole number of steps and a phase that was never timed comes out zero
+ * rather than "small". */
+#define FAKE_CLOCK_STEP 1000u
+static uint64_t fake_clock_ns;
+static unsigned fake_clock_calls;
+
+static uint64_t fake_clock(void) {
+    fake_clock_calls++;
+    fake_clock_ns += FAKE_CLOCK_STEP;
+    return fake_clock_ns;
+}
+
+static int timing_is_zero(const MdkrModTextureResolveTiming *t) {
+    return t->resolves == 0 && t->loaded == 0 && t->probes == 0 &&
+           t->absent == 0 && t->files == 0 && t->file_bytes == 0 &&
+           t->decoded_bytes == 0 && t->open_ns == 0 && t->absent_ns == 0 &&
+           t->read_ns == 0 && t->decode_ns == 0 && t->resolve_ns == 0;
+}
+
+static int timing_equal(const MdkrModTextureResolveTiming *a,
+                        const MdkrModTextureResolveTiming *b) {
+    return memcmp(a, b, sizeof *a) == 0;
+}
+
+/* The issue #66 instrument: what a resolution cost, split into opening the
+ * pack to find the file, reading the file, and decoding it. Off must mean
+ * off -- every earlier case in this file resolved textures with no clock
+ * installed, and none of that may have been counted -- and on must attribute
+ * each phase, count the bytes it actually read and decoded, and leave a cache
+ * hit uncounted. */
+static void test_resolve_timing(const char *mods) {
+    MdkrModTexture              texture;
+    MdkrModTextureResolveTiming before, after;
+    char                        path[1024];
+    struct stat                 info;
+    long                        png_size = -1;
+
+    mdkr_mod_texture_timing_totals(NULL);
+    mdkr_mod_texture_timing_totals(&before);
+    expect(timing_is_zero(&before),
+           "resolutions made with no clock installed are not counted");
+
+    /* Installed, then removed again: the store must stop asking at once. */
+    mdkr_mod_texture_timing_set_clock(fake_clock);
+    mdkr_mod_texture_timing_set_clock(NULL);
+    expect(mdkr_mod_texture_lookup(DIGEST_UNTIMED, &texture) == 1,
+           "an untimed fresh texture still resolves");
+    mdkr_mod_texture_timing_totals(&after);
+    expect(fake_clock_calls == 0 && timing_is_zero(&after),
+           "and with the clock removed it reads no clock and counts nothing");
+
+    path3(path, sizeof path, mods, "probe", "textures/" DIGEST_TIMED ".png");
+    if (stat(path, &info) == 0) png_size = (long)info.st_size;
+
+    mdkr_mod_texture_timing_set_clock(fake_clock);
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    mdkr_mod_texture_timing_totals(&before);
+    expect(mdkr_mod_texture_lookup(DIGEST_TIMED, &texture) == 1,
+           "a timed fresh texture resolves");
+    mdkr_mod_texture_timing_totals(&after);
+    expect(after.resolves == before.resolves + 1 &&
+           after.loaded == before.loaded + 1 &&
+           after.probes == before.probes + 1 &&
+           after.absent == before.absent &&
+           after.files == before.files + 1,
+           "one resolution, one pack probe, one resident result, one file");
+    expect(after.absent_ns == before.absent_ns,
+           "and a probe that found its file is not charged as absent");
+    expect(png_size > 0 &&
+           after.file_bytes == before.file_bytes + (uint64_t)png_size,
+           "the bytes read are the PNG file's own size");
+    expect(after.decoded_bytes == before.decoded_bytes + 8u * 8u * 4u,
+           "the bytes decoded are the RGBA8 picture's size");
+    expect(after.open_ns - before.open_ns >= FAKE_CLOCK_STEP &&
+           after.read_ns - before.read_ns >= FAKE_CLOCK_STEP &&
+           after.decode_ns - before.decode_ns >= FAKE_CLOCK_STEP,
+           "opening, reading and decoding are each timed");
+    expect(after.resolve_ns - before.resolve_ns >=
+               (after.open_ns - before.open_ns) +
+               (after.read_ns - before.read_ns) +
+               (after.decode_ns - before.decode_ns),
+           "the whole resolution contains all three of its phases");
+
+    before = after;
+    expect(mdkr_mod_texture_lookup(DIGEST_TIMED, &texture) == 1,
+           "the timed texture is now a cache hit");
+    mdkr_mod_texture_timing_totals(&after);
+    expect(timing_equal(&before, &after), "and a cache hit costs nothing");
+
+    expect(mdkr_mod_texture_lookup(DIGEST_ABSENT, &texture) == 0,
+           "a digest no pack supplies is absent");
+    mdkr_mod_texture_timing_totals(&after);
+    expect(after.resolves == before.resolves + 1 &&
+           after.probes == before.probes + 1 &&
+           after.absent == before.absent + 1 &&
+           after.absent_ns - before.absent_ns ==
+               after.open_ns - before.open_ns &&
+           after.loaded == before.loaded && after.files == before.files &&
+           after.decoded_bytes == before.decoded_bytes &&
+           after.read_ns == before.read_ns &&
+           after.decode_ns == before.decode_ns &&
+           after.open_ns - before.open_ns >= FAKE_CLOCK_STEP,
+           "an absent answer is a timed probe that reads and decodes nothing");
+
+    mdkr_mod_texture_timing_set_clock(NULL);
+}
+
 /* ------------------------------------------------------- the author dump */
 
 /* Reads a whole scratch file into `out`, returning its length, or -1 when the
@@ -654,7 +767,8 @@ int main(int argc, char **argv) {
     MdkrModRegistry registry;
 
     if (strlen(DIGEST_GIANT) != 32 || strlen(DIGEST_SOUND) != 32 ||
-        strlen(DIGEST_NOTPNG) != 32) {
+        strlen(DIGEST_NOTPNG) != 32 || strlen(DIGEST_UNTIMED) != 32 ||
+        strlen(DIGEST_TIMED) != 32 || strlen(DIGEST_ABSENT) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -669,6 +783,8 @@ int main(int argc, char **argv) {
     write_giant_declared_png(mods, "probe", DIGEST_WIDE, 8192u, 2048u);
     write_small_rgba_png(mods, "probe", DIGEST_SOUND, 0x40u);
     write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
+    write_small_rgba_png(mods, "probe", DIGEST_UNTIMED, 0x50u);
+    write_small_rgba_png(mods, "probe", DIGEST_TIMED, 0x60u);
     write_pack_bytes(mods, "probe", "textures/" DIGEST_NOTPNG ".png",
                      (const unsigned char *)notpng, strlen(notpng));
 
@@ -694,6 +810,7 @@ int main(int argc, char **argv) {
     test_an_unreadable_header_is_refused_before_decode();
     test_decode_matches_admitted_dimensions(&registry);
     test_generated_portrait_alias(mods, &registry);
+    test_resolve_timing(mods);
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();
