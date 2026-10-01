@@ -31,9 +31,11 @@ tick-agreement check runs once per recipe, agreeing or suppressed.
 
 `python3 tests/check_sprite_models_gpu.py --build build-rel --rom /path/to/ROM`
 creates a disposable pack with every model family (one synthetic triangle per
-mesh, 1x1 atlases) and races a track that carries all of them, 3,400 ticks per
-arm, each arm with its own save, video and preference directory. The healthy
-arm requires draws from every family, canopy poses attached to their trunks,
+mesh, 1x1 atlases) and races a track that carries every replaced sprite a race
+can show, 3,400 ticks per arm, each arm with its own save, video and preference
+directory. The two collectible balloons appear only in Adventure; the
+`sprite_models` CTest covers their loading and shared mesh. The healthy arm
+requires draws from every raced sprite, canopy poses attached to their trunks,
 the banana's spin through at least eight phases, fading model draws with no
 depth writes, and shared GPU textures and geometry with exact logical payload
 bytes (cache counters, not VRAM). A 120 Hz interpolating arm requires the
@@ -45,9 +47,9 @@ persistent modern-mesh allocation failures must each switch the model path off
 once, never reinitialize the device or exit, and render the same late frames
 as the arm with models disabled (whose frames must differ from the healthy
 arm's). Every arm compares its simulation-hash stream with the healthy one;
-`--smoke-only` runs just the healthy and disabled arms. Sanitizer and fatal
-markers fail any arm. Real replacement artwork and the banana's spin
-direction against the retail sprite still need a pack to check.
+`--smoke-only` runs just the healthy and disabled arms. Sanitizer, fatal,
+validation and device markers fail any arm. Real replacement artwork and the
+banana's spin direction against the retail sprite still need a pack to check.
 
 Follow the maintainer's current local validation authorization in `AGENTS.md`.
 The maintainer authorized this workstation for behavioral validation on

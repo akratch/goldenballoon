@@ -2912,9 +2912,6 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/tests/test_pulse_material.c
             ${CMAKE_SOURCE_DIR}/game/src/textures_sprites.c
             ${CMAKE_SOURCE_DIR}/game/src/runtime_contracts.c)
-        # A replacement sprite model's material, decoded from what production
-        # material_load_simple emits for the billboard flags both paths share:
-        # fading writes no depth, the light tint follows the ENV cycle.
         # The presentation replay of a sprite-model recipe: interpolated pose
         # and shortest-arc phase, one tick-agreement check per recipe.
         mdkr_add_engine_unit_test(mdkr_sprite_model_replay_test sprite_model_replay
@@ -2925,6 +2922,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/presentation_snapshot.c
             ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_presentation_packet.c
             ${CMAKE_SOURCE_DIR}/platform/sprite_model_mesh.c)
+        # A replacement sprite model's material, decoded from what production
+        # material_load_simple emits for the billboard flags both paths share:
+        # fading writes no depth, the light tint follows the ENV cycle.
         mdkr_add_engine_unit_test(mdkr_sprite_model_material_test sprite_model_material
             ${CMAKE_SOURCE_DIR}/tests/test_sprite_model_material.c
             ${CMAKE_SOURCE_DIR}/game/src/textures_sprites.c

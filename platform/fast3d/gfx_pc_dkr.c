@@ -4084,8 +4084,7 @@ static void dkr_draw_sprite_model(uint32_t sprite) {
         const uint32_t rgb2 = (uint32_t)((rdp.combine_mode >> 28) & 0xffffu);
         const uint8_t prim[4] = {rdp.prim_color.r, rdp.prim_color.g, rdp.prim_color.b, rdp.prim_color.a};
         const uint8_t env[4] = {rdp.env_color.r, rdp.env_color.g, rdp.env_color.b, rdp.env_color.a};
-        gfx_modern_material_resolve(rgb2 & 0xfu, (rgb2 >> 4) & 0xfu, (rgb2 >> 8) & 0x1fu,
-                                    (rgb2 >> 13) & 7u,
+        gfx_modern_material_resolve(rgb2,
                                     (rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE,
                                     prim, env, &material);
     }
@@ -5575,7 +5574,7 @@ static void dkr_dp_set_combine(const Gfx *cmd) {
      * by dkr_generate_cc (identical field layout to mgb64). */
     uint32_t rgb  = color_comb(C0(cmd,20,4), C1(cmd,28,4), C0(cmd,15,5), C1(cmd,15,3));
     uint32_t a    = alpha_comb(C0(cmd,12,3), C1(cmd,12,3), C0(cmd,9,3),  C1(cmd,9,3));
-    uint32_t rgb2 = color_comb(C0(cmd,5,4),  C1(cmd,24,4), C0(cmd,0,5),  C1(cmd,6,3));
+    uint32_t rgb2 = gfx_combine_cycle2_rgb((uint32_t)cmd->words.w0, (uint32_t)cmd->words.w1);
     uint32_t a2   = alpha_comb(C1(cmd,21,3), C1(cmd,3,3),  C1(cmd,18,3), C1(cmd,0,3));
     rdp.combine_mode = (uint64_t)rgb | ((uint64_t)a << 16) |
                        ((uint64_t)rgb2 << 28) | ((uint64_t)a2 << 44);

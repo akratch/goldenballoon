@@ -317,7 +317,8 @@ mods/
   textures, so you can compare against the original sprites. Like `Tab`, which
   turns models off together with textures, it changes no setting.
 - If the graphics device cannot create what the models need, the game logs it
-  once and draws the original sprites for the rest of the session.
+  once and draws the original sprites until the graphics device is rebuilt or
+  the packs are rescanned.
 
 ## Turning packs on and off
 

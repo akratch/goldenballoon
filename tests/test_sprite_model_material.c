@@ -8,8 +8,9 @@
  * material_load_simple. The test follows the display list it emits into the
  * draw table entry it selects and decodes what the RDP would run: whether the
  * render mode writes depth, the cycle type and the second-cycle combiner.
- * That decoded state then goes through gfx_modern_material_resolve, the
- * resolver the DKR renderer hands the mesh backend.
+ * That decoded state then goes through gfx_combine_cycle2_rgb, the decode the
+ * DKR renderer runs on every combine, and gfx_modern_material_resolve, the
+ * resolver it hands the mesh backend.
  *
  * Three claims (audit A1 #2): a fading billboard does not write depth, so its
  * model must not either; a fogged billboard lerps toward the level light
@@ -59,13 +60,14 @@ typedef struct DecodedMaterial {
     uint32_t combine_w0, combine_w1, othermode_h, othermode_l;
 } DecodedMaterial;
 
-static DecodedMaterial load(const Sprite *sprite, s32 objectFlags) {
+/* What material_load_simple emits for these final material flags. */
+static DecodedMaterial load_material(s32 materialFlags) {
     Gfx dl[32];
     Gfx *cursor = dl;
     DecodedMaterial out = {0};
     memset(dl, 0, sizeof dl);
     sprite_opaque(TRUE); /* the game's default; also forces the reload */
-    material_load_simple(&cursor, material_sprite_billboard_flags(sprite, objectFlags));
+    material_load_simple(&cursor, materialFlags);
     for (const Gfx *g = dl; g < cursor; ++g) {
         if ((g->words.w0 >> 24) != (unsigned)G_DMADL) continue;
         const unsigned token = (unsigned)g->words.w1 - 0x40000000u;
@@ -86,13 +88,16 @@ static DecodedMaterial load(const Sprite *sprite, s32 objectFlags) {
     return out;
 }
 
-/* The second-cycle RGB selectors, at the bit positions dkr_dp_set_combine
- * (platform/fast3d/gfx_pc_dkr.c) reads them from. */
+/* The billboard's material: the flags both the billboard and the model load. */
+static DecodedMaterial load(const Sprite *sprite, s32 objectFlags) {
+    return load_material(material_sprite_billboard_flags(sprite, objectFlags));
+}
+
+/* The same decode the DKR renderer runs on every G_SETCOMBINE
+ * (gfx_combine_cycle2_rgb in dkr_dp_set_combine), then its resolver. */
 static void resolve(const DecodedMaterial *m, const uint8_t prim[4], const uint8_t env[4],
                     struct GfxModernMeshMaterial *out) {
-    const unsigned a = (m->combine_w0 >> 5) & 0xFu, b = (m->combine_w1 >> 24) & 0xFu;
-    const unsigned c = m->combine_w0 & 0x1Fu, d = (m->combine_w1 >> 6) & 0x7u;
-    gfx_modern_material_resolve(a, b, c, d,
+    gfx_modern_material_resolve(gfx_combine_cycle2_rgb(m->combine_w0, m->combine_w1),
                                 (m->othermode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE,
                                 prim, env, out);
 }
@@ -122,19 +127,10 @@ int main(void) {
      * masked without the billboard's adjustment, select the interpenetrating
      * entry that DOES write depth, so the check above can fail. */
     {
-        Gfx dl[32];
-        Gfx *cursor = dl;
-        DecodedMaterial raw = {0};
-        sprite_opaque(TRUE);
-        material_load_simple(&cursor, sprite.drawFlags |
+        DecodedMaterial raw = load_material(sprite.drawFlags |
             ((object | RENDER_SEMI_TRANSPARENT) &
              (RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT | RENDER_Z_COMPARE | RENDER_ANTI_ALIASING)));
-        for (const Gfx *g = dl; g < cursor; ++g) {
-            if ((g->words.w0 >> 24) != (unsigned)G_DMADL) continue;
-            const Gfx *entry = (const Gfx *)sTokens[(unsigned)g->words.w1 - 0x40000000u];
-            raw.othermode_l = (uint32_t)entry[1].words.w1;
-        }
-        EXPECT(writes_depth(&raw), "control: unadjusted flags select a depth-writing entry");
+        EXPECT(raw.found && writes_depth(&raw), "control: unadjusted flags select a depth-writing entry");
     }
 
     resolve(&opaque, prim, env, &material);

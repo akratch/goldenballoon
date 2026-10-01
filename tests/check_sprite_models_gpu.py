@@ -4,12 +4,13 @@
 Usage: python3 tests/check_sprite_models_gpu.py --binary build/mdkr64 --rom ROM
 The ROM stays local; every pack, save and preference is synthetic and temporary.
 
-One race on a track that carries every replaced sprite (palms with their
-canopies, beach/blueberry/rubber trees, five weapon-balloon colours and the
-banana) runs in these arms, each in its own save, video and preference
-directory:
+One race on a track that carries every replaced sprite a race can show (palms
+with their canopies, beach/blueberry/rubber trees, five weapon-balloon colours
+and the banana; the two collectible balloons appear only in Adventure, so the
+sprite_models CTest covers them loading and sharing their mesh) runs in these
+arms, each in its own save, video and preference directory:
 
-* models: every family draws; both canopy sizes attach to their trunks; the
+* models: every one of those sprites draws; both canopy sizes attach; the
   banana's spin moves through its phases; fading models never write depth;
   and the five balloon colours and both canopy sizes share their GPU geometry.
   (Retiring renderer references before model storage is freed is the
@@ -39,7 +40,8 @@ import sys
 import tempfile
 
 from check_sprite_models import family_pack
-from harness_utils import find_fatal, resolve_binary, VALIDATION_MARKERS, ABORT_MARKERS
+from harness_utils import (find_fatal, resolve_binary, ABORT_MARKERS, DEVICE_MARKERS,
+                           VALIDATION_MARKERS)
 
 FAULTS = (
     "modern.module", "modern.bind-group-layout", "modern.pipeline-layout",
@@ -48,9 +50,11 @@ FAULTS = (
     "modern.bind-group",
 )
 FRAMES = 3400
-# Late frames, when every family has been on screen many times over.
+# Late frames, when every raced sprite has been on screen many times over.
 DUMP_FROM, DUMP_EVERY = 3100, 100
 TRACK = "8"
+# Every replacement slot a race shows; 154/155 (collectible balloons) are
+# Adventure-only and covered by the sprite_models CTest.
 CANOPIES = (114, 116)
 BALLOONS = (147, 148, 149, 150, 151)
 BANANA = 156
@@ -96,7 +100,8 @@ def run_arm(binary, rom, route, root, name, *, rate="30", fault=None, disabled=F
     output = process.stdout
     require(process.returncode == 0, f"{name}: exit {process.returncode} (the optional model "
             "path must never end the game)", output)
-    marker = find_fatal(output, *VALIDATION_MARKERS, *ABORT_MARKERS, "switched to OpenGL",
+    marker = find_fatal(output, *VALIDATION_MARKERS, *DEVICE_MARKERS, *ABORT_MARKERS,
+                        "switched to OpenGL",
                         r"\[webgpu\] device error", "attempting one native device reinitialization")
     require(marker is None, f"{name}: runtime emitted {marker!r}", output)
     hashes = (case / "hashes.txt").read_text().splitlines()
@@ -192,8 +197,8 @@ def main():
             root = Path(tmp)
             output, baseline, model_frames = run_arm(binary, rom, route, root, "models")
             check_models_arm(output)
-            print("PASS models: every family, canopy attachment, banana spin, no fading depth "
-                  "writes, shared GPU geometry", flush=True)
+            print("PASS models: every raced sprite, canopy attachment, banana spin, no fading "
+                  "depth writes, shared GPU geometry", flush=True)
             output, hashes, disabled_frames = run_arm(binary, rom, route, root, "disabled", disabled=True)
             require(hashes == baseline, "disabled: models changed the simulation")
             require(not model_stats(output)[0], "disabled: the original sprites path drew models")

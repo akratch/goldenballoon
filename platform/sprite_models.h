@@ -10,11 +10,11 @@ extern "C" {
 /* Decodes nothing unless gfx_sprite_models_supported(): the launcher has no
  * game renderer and the OpenGL backend has no model path. */
 void mdkr_sprite_models_init(const MdkrModRegistry *registry);
+/* Sprites a registry supplies a model for (by its near mesh), decoding none. */
+unsigned mdkr_sprite_models_present(const MdkrModRegistry *registry);
 /* Frees all model storage. While any is loaded it first retires every
  * renderer reference to it (retained display lists, then the GPU mesh
  * cache), so no caller can free storage the renderer still names. */
-/* Sprites a registry supplies a model for (by its near mesh), decoding none. */
-unsigned mdkr_sprite_models_present(const MdkrModRegistry *registry);
 void mdkr_sprite_models_shutdown(void);
 void mdkr_sprite_models_toggle(void);
 int mdkr_sprite_models_enabled(void);

@@ -21,9 +21,9 @@ save formats). Everything below 1.0.0 predates that commitment.
   draw (the launcher, OpenGL). A model takes the replaced sprite's material: it
   fades without writing depth where the sprite did, takes the level light tint
   where the sprite did, and its cutout texels never blend while writing depth.
-  `F2` toggles models for comparison (it was `F8`, which opens the Performance
-  developer tool). A modern-mesh allocation failure switches models off for the
-  session and draws the sprites instead of ending the game. Sprites that share
+  `F2` toggles models for comparison. A modern-mesh allocation failure
+  switches models off and draws the sprites instead of ending the game, until
+  the graphics device is rebuilt or the packs are rescanned. Sprites that share
   a mesh file share one parsed copy and one GPU buffer.
 
 ### Changed
