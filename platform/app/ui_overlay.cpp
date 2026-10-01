@@ -755,16 +755,31 @@ void drawConfirmation(float uiScale) {
         } else if (returning) returnToLauncher();
         else quitToDesktop();
     }
+    // The question itself is plain text, which focus never lands on, so the
+    // action that answers it carries it as its help.
+    ui::SpeakFocusedItem(primary, nullptr, description);
     if (actions.sameLine) ImGui::SameLine();
     if (ImGui::Button("Cancel", actions.second)) {
         g_overlay.confirm = ConfirmAction::None;
     }
+    ui::SpeakFocusedItem(
+        "Cancel", nullptr,
+        workshop ? "Goes back to the fit controls and changes nothing."
+                 : "Goes back to the menu and changes nothing.");
 }
 
 void drawOverlayMenu(float uiScale) {
+    const bool review = g_overlay.mode == OverlayMode::CharacterReview;
     const OverlayButtonPair primaryActions =
         fitButtonPair(ui::kBtnSecondary(), ui::kBtnSecondary(), uiScale);
+    // The menu's own buttons speak like every launcher control. Without this a
+    // screen-reader player heard the settings rows and nothing else here: not
+    // the way back to the race, and not the confirmation that ends it.
     if (ui::PrimaryButton("Resume", primaryActions.first)) setOpen(false);
+    ui::SpeakFocusedItem(
+        "Resume", nullptr,
+        review ? "Closes this menu and carries on with the course review."
+               : "Closes this menu and carries on with the race.");
     if (primaryActions.sameLine) ImGui::SameLine();
     if (ImGui::Button(g_overlay.showSettings ? "Hide Settings" : "Settings",
                       primaryActions.second)) {
@@ -773,6 +788,11 @@ void drawOverlayMenu(float uiScale) {
         }
         g_overlay.showSettings = !g_overlay.showSettings;
     }
+    ui::SpeakFocusedItem(
+        g_overlay.showSettings ? "Hide Settings" : "Settings", nullptr,
+        g_overlay.showSettings
+            ? "Closes the settings list."
+            : "Shows the settings you can change without leaving the game.");
 
     if (g_overlay.showSettings) {
         ui::Gap(ui::kGapS);
@@ -790,11 +810,22 @@ void drawOverlayMenu(float uiScale) {
         Settings_draw(g_overlay.window, /*compact=*/true);
         ui::TouchScrollCurrentWindow();
         ImGui::EndChild();
+        // In play the list is one stop in the menu's Tab order rather than
+        // flattened into it, so the stop itself says what it is and how to
+        // get in. (Under the scripted walk it is flattened and not a stop.)
+        ui::SpeakFocusedItem(
+            "Settings list", nullptr,
+            "Press Enter or A to move into the list. Escape or B closes "
+            "Settings.");
         if (Settings_restartPending()) {
             ui::Gap(ui::kGapS);
             if (ui::PrimaryButton("Restart & Apply", ui::kBtnWide())) {
                 g_overlay.confirm = ConfirmAction::RestartGame;
             }
+            ui::SpeakFocusedItem(
+                "Restart & Apply", nullptr,
+                "Restarts the game so the changes that need it take effect. "
+                "Asks first, because it ends the current race.");
         }
     }
 
@@ -808,16 +839,24 @@ void drawOverlayMenu(float uiScale) {
     ui::Gap(ui::kGapM);
     const OverlayButtonPair exitActions =
         fitButtonPair(ui::kBtnWide(), ui::kBtnWide(), uiScale);
-    const bool review = g_overlay.mode == OverlayMode::CharacterReview;
-    if (ImGui::Button(
-            review ? "Stop Review & Return" : "Return to Launcher",
-            exitActions.first)) {
+    const char *returnLabel =
+        review ? "Stop Review & Return" : "Return to Launcher";
+    if (ImGui::Button(returnLabel, exitActions.first)) {
         g_overlay.confirm = ConfirmAction::ReturnToLauncher;
     }
+    ui::SpeakFocusedItem(
+        returnLabel, nullptr,
+        review ? "Asks first, then stops this course review and goes back to "
+                 "the launcher."
+               : "Asks first, then ends the race and goes back to the "
+                 "launcher.");
     if (exitActions.sameLine) ImGui::SameLine();
     if (ImGui::Button("Quit to Desktop", exitActions.second)) {
         g_overlay.confirm = ConfirmAction::QuitToDesktop;
     }
+    ui::SpeakFocusedItem(
+        "Quit to Desktop", nullptr,
+        "Asks first, then ends the race and closes the game.");
 }
 
 void drawOverlay() {
