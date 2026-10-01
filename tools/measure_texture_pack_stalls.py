@@ -49,6 +49,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -352,9 +353,7 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
     run_root = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=artifacts))
     scale = 2 if args.cadence == "enhanced" else 1
     ticks = ROUTE_END_TICKS * scale
-    if pack is not None:
-        (run_root / "mods").mkdir()
-        shutil.copyfile(pack, run_root / "mods" / "texture-pack.zip")
+    mods = run_root / "mods"
     script = run_root / "route.txt"
     script.write_text(route_script(scale), encoding="utf-8")
     env = {key: value for key, value in os.environ.items()
@@ -384,59 +383,70 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         "--input-script", str(script), "--rom", str(args.rom),
     ]
     load = wait_for_quiet(args.max_load, args.load_wait)
-    print(f"{label}: load {load['at_start']} -> running "
-          f"({ticks} ticks, {args.cadence})", flush=True)
-    log_path = run_root / "run.log"
-    started = time.monotonic()
-    timeout = args.timeout or (ticks / (60 if scale == 2 else 30)) * 2 + 180
+    # The private pack is copied only now, after the wait, and is removed in
+    # the finally below however the run ends: completed, failed, timed out,
+    # Ctrl-C, or SIGTERM (which main() turns into SystemExit for exactly this
+    # reason). subprocess.run() kills the game first on any exception, so
+    # nothing still holds the copy open when it is deleted.
     try:
-        with log_path.open("w", encoding="utf-8") as log:
-            process = subprocess.run(
-                command, cwd=run_root, env=env, stdout=log,
-                stderr=subprocess.STDOUT, text=True, timeout=timeout,
-                check=False)
-        returncode = process.returncode
-    except subprocess.TimeoutExpired:
-        returncode = None
-    wall = time.monotonic() - started
-    output = log_path.read_text(encoding="utf-8", errors="replace")
-    record: dict = {
-        "label": label, "renderer": renderer, "pack": pack is not None,
-        "cadence": args.cadence, "realtime": not args.synthetic,
-        "window": args.window_size, "ticks": ticks,
-        "returncode": returncode, "wall_s": round(wall, 1), "load": load,
-        "log": str(log_path),
-        "present_mode": next((line.strip() for line in output.splitlines()
-                              if "[PRESENT-MODE]" in line), None),
-        "pack_used": next((line.strip() for line in output.splitlines()
-                           if "high-resolution texture" in line and
-                           "used this run" in line), None),
-    }
-    problems = []
-    if returncode != 0:
-        problems.append(f"exit {returncode}")
-    if f"renderer backend: {renderer}" not in output:
-        problems.append("requested backend was not active")
-    for marker in FATAL_MARKERS:
-        if marker in output:
-            problems.append(f"fatal marker {marker}")
-    if pack is not None and record["pack_used"] is None:
-        problems.append("the pack supplied no rendered texture")
-    if pack is None and "pack(s) active" in output and \
-            "0 pack(s) active" not in output:
-        problems.append("a pack was active in the no-pack arm")
-    if FRAME_TAG not in output:
-        problems.append("no [TEXPACK-FRAME] rows: instrument missing")
-    if not problems:
-        record.update(analyse(output))
-        error = route_error(record)
-        if error:
-            problems.append(error)
-    record["problems"] = problems
-    if pack is not None and not args.keep_pack:
-        # The run's log stays; the private pack copy does not.
-        shutil.rmtree(run_root / "mods", ignore_errors=True)
-    return record
+        if pack is not None:
+            mods.mkdir()
+            shutil.copyfile(pack, mods / "texture-pack.zip")
+        print(f"{label}: load {load['at_start']} -> running "
+              f"({ticks} ticks, {args.cadence})", flush=True)
+        log_path = run_root / "run.log"
+        started = time.monotonic()
+        tick_hz = 60 if scale == 2 else 30
+        timeout = args.timeout or (ticks / tick_hz) * 2 + 180
+        try:
+            with log_path.open("w", encoding="utf-8") as log:
+                process = subprocess.run(
+                    command, cwd=run_root, env=env, stdout=log,
+                    stderr=subprocess.STDOUT, text=True, timeout=timeout,
+                    check=False)
+            returncode = process.returncode
+        except subprocess.TimeoutExpired:
+            returncode = None
+        wall = time.monotonic() - started
+        output = log_path.read_text(encoding="utf-8", errors="replace")
+        record: dict = {
+            "label": label, "renderer": renderer, "pack": pack is not None,
+            "cadence": args.cadence, "realtime": not args.synthetic,
+            "window": args.window_size, "ticks": ticks,
+            "returncode": returncode, "wall_s": round(wall, 1), "load": load,
+            "log": str(log_path),
+            "present_mode": next((line.strip() for line in output.splitlines()
+                                  if "[PRESENT-MODE]" in line), None),
+            "pack_used": next((line.strip() for line in output.splitlines()
+                               if "high-resolution texture" in line and
+                               "used this run" in line), None),
+        }
+        problems = []
+        if returncode != 0:
+            problems.append(f"exit {returncode}")
+        if f"renderer backend: {renderer}" not in output:
+            problems.append("requested backend was not active")
+        for marker in FATAL_MARKERS:
+            if marker in output:
+                problems.append(f"fatal marker {marker}")
+        if pack is not None and record["pack_used"] is None:
+            problems.append("the pack supplied no rendered texture")
+        if pack is None and "pack(s) active" in output and \
+                "0 pack(s) active" not in output:
+            problems.append("a pack was active in the no-pack arm")
+        if FRAME_TAG not in output:
+            problems.append("no [TEXPACK-FRAME] rows: instrument missing")
+        if not problems:
+            record.update(analyse(output))
+            error = route_error(record)
+            if error:
+                problems.append(error)
+        record["problems"] = problems
+        return record
+    finally:
+        if pack is not None and not args.keep_pack:
+            # The run's log stays; the private pack copy does not.
+            shutil.rmtree(mods, ignore_errors=True)
 
 
 # ------------------------------------------------------------ inventory
@@ -566,7 +576,19 @@ def print_tables(records: list[dict], synthetic: bool) -> None:
                   f"{frame['outside_render_ms']} |")
 
 
+def _terminate(signum, _frame) -> None:
+    """SIGTERM -> SystemExit, so every pending finally still runs.
+
+    Python's default SIGTERM action ends the process without unwinding, which
+    would leave a run's private pack copy behind. Later SIGTERMs are ignored so
+    the cleanup itself cannot be cut short; SIGKILL remains the hard stop.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise SystemExit(128 + signum)
+
+
 def main() -> int:
+    signal.signal(signal.SIGTERM, _terminate)
     parser = argparse.ArgumentParser(
         description=__doc__.split("\n\n")[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
