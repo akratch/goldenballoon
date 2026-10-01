@@ -529,7 +529,10 @@ def compile_bench(artifacts: Path) -> Path | None:
         subprocess.run([compiler, "-O3", "-DNDEBUG", "-w", *includes, "-c",
                         str(source), "-o", str(obj)], check=True)
         objects.append(str(obj))
-    subprocess.run([compiler, "-O3", "-DNDEBUG", "-std=gnu11", *includes,
+    # The store's worker uses SDL threads; the bench resolves on its own
+    # thread (INLINE loader), so it is built without them and without SDL.
+    subprocess.run([compiler, "-O3", "-DNDEBUG", "-std=gnu11",
+                    "-DMDKR_MOD_TEXTURE_NO_WORKER", *includes,
                     *map(str, sources), *objects, "-o", str(out)], check=True)
     return out
 

@@ -18,6 +18,13 @@
  *   may never see. Decoded pixels are capped in total and the least recently
  *   used are dropped past the cap, so a 4K pack cannot quietly exhaust memory.
  *
+ *   Off the frame (issue #66). Finding a file is a lookup in the registry's
+ *   name index, never a file open. Reading and decoding it happens on one
+ *   background worker thread (or, where there are no threads, on the owner
+ *   thread under a per-frame time budget), so the first lookup of a texture
+ *   answers "not yet" with `pending` set and the renderer draws the original
+ *   picture until the replacement is installed by mdkr_mod_texture_store_pump().
+ *
  *   Quiet about the same failure twice. A PNG that will not decode is reported
  *   once, with its digest and the decoder's own reason, and is thereafter
  *   treated as absent. Re-reporting it would put a line in the log every frame
@@ -31,10 +38,15 @@
  * store's lookup path enters -- see mdkr_mod_texture_dump_active() below for
  * why it does not fold into mdkr_mod_texture_store_active().
  *
- * Single-threaded by standing decision (docs/ARCHITECTURE_DECISIONS.md §1: the
- * port is cooperative, with no real threads). There is deliberately no lock and
- * no atomic here; if that decision is ever revisited, this module is one of the
- * places that has to be revisited with it.
+ * Single-owner by standing decision (docs/ARCHITECTURE_DECISIONS.md §1: the
+ * port is cooperative). Every function here is called on the one thread that
+ * runs the game and the renderer, and every piece of store state -- the slot
+ * table, the LRU, eviction, the counters -- belongs to that thread. The
+ * background worker is a host helper in the way the speech worker is: it owns
+ * its own open pack handles, reads the one request it was handed, writes that
+ * request's result and the pixel buffer it allocated, and meets the owner only
+ * at a mutex-guarded hand-off queue in mod_texture_store.c. It never touches
+ * the table, the registry, or any other state declared here.
  */
 #ifndef MDKR64_MOD_TEXTURE_STORE_H
 #define MDKR64_MOD_TEXTURE_STORE_H
@@ -56,14 +68,88 @@ extern "C" {
 typedef struct MdkrModTexture {
     /* Store-owned RGBA8, tightly packed, `width * height * 4` bytes.
      *
-     * Valid until the next mdkr_mod_texture_lookup() or
-     * mdkr_mod_texture_store_shutdown(): a later lookup may evict these pixels
-     * to stay under the cache cap. Every caller so far consumes them
+     * Valid until the next mdkr_mod_texture_lookup(), pump or
+     * mdkr_mod_texture_store_shutdown(): a later install may evict these
+     * pixels to stay under the cache cap. Every caller so far consumes them
      * immediately (uploads them and forgets them), which is the usage this
      * contract is written for — do not retain the pointer across a lookup. */
     const uint8_t *rgba;
     int width, height;
+    /* 1 when the lookup returned 0 only because a pack DOES supply this
+     * texture and it is still being read and decoded: draw the original now,
+     * and ask again once mdkr_mod_texture_settled_serial() has moved. 0 on a
+     * found texture and on every final "no". */
+    int pending;
 } MdkrModTexture;
+
+/* Where a replacement is read and decoded. */
+typedef enum MdkrModTextureLoader {
+    /* Native: WORKER. Browser builds, or a thread that could not be started:
+     * BUDGET. MDKR_MOD_TEXTURE_DUMP set: INLINE, because the author dump
+     * records the pixels a texture is FIRST drawn with. Otherwise
+     * MDKR_TEXTURE_PACK_LOADER=worker|budget|inline picks, for A/B work. */
+    MDKR_MOD_TEXTURE_LOADER_AUTO = 0,
+    /* One background thread with its own open pack handles. */
+    MDKR_MOD_TEXTURE_LOADER_WORKER,
+    /* The owner thread, inside mdkr_mod_texture_store_pump(), within the
+     * pump's time budget. */
+    MDKR_MOD_TEXTURE_LOADER_BUDGET,
+    /* The owner thread, inside the lookup itself: the 1.7 behaviour, minus
+     * the per-lookup pack opens. Never pending. */
+    MDKR_MOD_TEXTURE_LOADER_INLINE
+} MdkrModTextureLoader;
+
+/* Asks for a loader at the next mdkr_mod_texture_store_init(). AUTO is the
+ * default and what the game uses; tools and tests choose explicitly. */
+void mdkr_mod_texture_store_set_loader(MdkrModTextureLoader loader);
+/* The loader the bound store is actually using: WORKER, BUDGET or INLINE, or
+ * AUTO when the store holds no pack that can supply a texture. */
+MdkrModTextureLoader mdkr_mod_texture_store_loader(void);
+
+/* What one pump may spend. Installing a texture costs the renderer one upload
+ * of it (about 0.6-0.7 ms per MiB on the hosts measured for issue #66), so the
+ * install budget is what bounds that work per frame. At least one completion
+ * is installed per pump however large, so nothing can starve. */
+typedef struct MdkrModTexturePumpBudget {
+    uint32_t install_count;  /* completions installed per pump */
+    size_t   install_bytes;  /* RGBA bytes installed per pump */
+    uint64_t work_ns;        /* BUDGET loader: read+decode time per pump */
+} MdkrModTexturePumpBudget;
+#define MDKR_MOD_TEXTURE_INSTALL_COUNT 16u
+#define MDKR_MOD_TEXTURE_INSTALL_BYTES ((size_t)4u * 1024u * 1024u)
+#define MDKR_MOD_TEXTURE_WORK_NS       ((uint64_t)3000000u)
+
+/* Monotonic nanoseconds, callable from any thread. */
+typedef uint64_t (*MdkrModTextureClock)(void);
+
+/* Once per frame, on the owner thread: installs finished replacements within
+ * `budget` (NULL: the defaults above) and keeps the loader fed. Under the
+ * BUDGET loader it also reads and decodes queued textures until `clock` says
+ * the budget's work_ns is spent; with a NULL clock it does one per pump. A
+ * no-op with no texture pack bound. */
+void mdkr_mod_texture_store_pump(const MdkrModTexturePumpBudget *budget,
+                                 MdkrModTextureClock clock);
+
+/* Blocks until nothing is pending: every queued texture read, decoded and
+ * installed, budgets ignored. For tests and offline tools -- never per frame. */
+void mdkr_mod_texture_store_settle(void);
+
+/* Moves whenever any pending texture settles (installed, refused, found
+ * absent, or discarded). A caller holding a "pending" answer re-asks only
+ * when this has moved since it was told. */
+uint32_t mdkr_mod_texture_settled_serial(void);
+
+/* Called on the owner thread for every completion the store applies, with the
+ * slot key (a content digest, or rice:<crc>:<fmt>:<siz>), whether it left
+ * pixels resident, and how long it was pending in pumps and nanoseconds (0
+ * under the INLINE loader; ns only while a timing clock is installed). For
+ * diagnostics; NULL uninstalls. */
+typedef void (*MdkrModTextureInstallObserver)(const char *key, int resident,
+                                              uint32_t latency_pumps,
+                                              uint64_t latency_ns,
+                                              size_t bytes);
+void mdkr_mod_texture_set_install_observer(
+    MdkrModTextureInstallObserver observer);
 
 /* Binds the store to an already-scanned registry. `registry` is borrowed, not
  * copied: it must outlive the store, and a rescan means shutdown then init
@@ -101,10 +187,22 @@ int  mdkr_mod_texture_rice_resident(void);
 /* Owner-thread, allocation-free snapshot. These are retained CPU payloads,
  * not process RSS or GPU memory; registry/ZIP allocations are not included. */
 typedef struct MdkrModTextureMemoryStats {
-    size_t pixel_bytes;
-    size_t pixel_limit;
+    size_t pixel_bytes;     /* resident decoded pixels */
+    size_t pixel_limit;     /* the whole budget, in-flight included */
     size_t table_bytes;
     size_t entries;
+    /* Decoded pixels the worker holds that are not installed yet. Counted
+     * against pixel_limit: with a worker running, residents are kept to
+     * pixel_limit minus the in-flight cap. */
+    size_t inflight_bytes;
+    size_t pending;         /* textures queued or being decoded */
+    /* Identities that became resident for the first time this store
+     * generation, and their bytes. An identity counts once: a re-decode after
+     * eviction does not add to it, but does add to reloads. */
+    size_t first_resident;
+    size_t first_resident_bytes;
+    size_t reloads;
+    size_t evictions;
 } MdkrModTextureMemoryStats;
 void mdkr_mod_texture_memory_stats(MdkrModTextureMemoryStats *out);
 
@@ -148,18 +246,28 @@ typedef struct MdkrModTextureResolveTiming {
     uint64_t files;          /* PNG files read and handed to the decoder */
     uint64_t file_bytes;     /* their size as read (after any ZIP inflate) */
     uint64_t decoded_bytes;  /* RGBA8 bytes the decoder produced from them */
-    uint64_t open_ns;        /* opening the pack and locating the entry, and
-                              * closing it again; absent probes included. For
-                              * a ZIP this is where the archive is opened. */
+    uint64_t open_ns;        /* locating the file: a name-index lookup on the
+                              * owner thread (it used to be an archive open,
+                              * which is what T12a measured here) */
     uint64_t absent_ns;      /* the part of open_ns spent on absent probes */
-    uint64_t read_ns;        /* reading the entry's bytes (ZIP: inflate+CRC) */
-    uint64_t decode_ns;      /* PNG header inspection + pixel decode */
-    uint64_t resolve_ns;     /* whole resolutions: the three above, plus Rice
-                              * alpha merging and cache eviction */
+    uint64_t read_ns;        /* reading the entry's bytes (ZIP: inflate+CRC),
+                              * on whichever thread decoded it */
+    uint64_t decode_ns;      /* PNG header inspection + pixel decode, ditto */
+    uint64_t resolve_ns;     /* lookups that resolved a slot, on the owner
+                              * thread: the locate, queueing the request, and
+                              * under the INLINE loader the read+decode too */
+    /* Added for the off-frame loaders. Owner-thread time per frame is
+     * resolve_ns + pump_ns; worker_ns is not on the game thread at all. */
+    uint64_t pump_ns;        /* pump: draining and installing completions,
+                              * evicting, and BUDGET-loader read+decode */
+    uint64_t worker_ns;      /* whole requests executed on the worker */
+    uint64_t queued;         /* requests created (PENDING entered) */
+    uint64_t installed;      /* completions applied to their slot */
+    uint64_t discarded;      /* completions dropped as stale or cancelled */
 } MdkrModTextureResolveTiming;
 
-/* Monotonic nanoseconds. NULL uninstalls, which is also the initial state. */
-typedef uint64_t (*MdkrModTextureClock)(void);
+/* NULL uninstalls, which is also the initial state. The clock is copied into
+ * each request, so it must be callable from the worker thread too. */
 void mdkr_mod_texture_timing_set_clock(MdkrModTextureClock clock);
 /* The running totals. Always safe; all zero when no clock was ever set. */
 void mdkr_mod_texture_timing_totals(MdkrModTextureResolveTiming *out);
@@ -264,6 +372,23 @@ void mdkr_mod_texture_dump_observe(const char *digest_hex, const uint8_t *rgba,
                                    uint8_t siz,
                                    const MdkrModTextureSource *source,
                                    const char *first_seen);
+
+#ifdef MDKR_MOD_TEXTURE_STORE_TESTING
+/* Seams compiled only into tests/test_mod_texture_store.c's target. */
+/* Make the next init's worker thread fail to start. */
+void mdkr_mod_texture_store_test_fail_worker_start(int fail);
+/* Replace the 512 MiB budget (0 restores it); applies at the next init. */
+void mdkr_mod_texture_store_test_set_cache_limit(size_t bytes);
+/* While held, the worker parks after taking a request and before reading it.
+ * wait_parked() blocks until it is parked and returns 1, or returns 0 when no
+ * worker is running. */
+void mdkr_mod_texture_store_test_hold_worker(int hold);
+int  mdkr_mod_texture_store_test_wait_parked(void);
+/* Blocks until the worker has nothing queued and nothing in hand, WITHOUT
+ * installing what it finished: completions stay queued for the next pump.
+ * Returns 0 when no worker is running. */
+int  mdkr_mod_texture_store_test_wait_idle(void);
+#endif
 
 #ifdef __cplusplus
 }

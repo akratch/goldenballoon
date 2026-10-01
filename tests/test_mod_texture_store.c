@@ -29,13 +29,23 @@
  * turns into a confident wrong CRC offline rather than a visible failure here
  * -- which is the only reason a text file is worth asserting field by field.
  *
+ * The issue #66 cases are about WHERE the work happens. A lookup must answer
+ * from the registry's name index without touching a pack, a texture a pack
+ * does supply must come back "pending" and be read and decoded off the frame,
+ * and the hand-off between the owner thread and the worker must survive every
+ * way the store can be torn down or retargeted while a request is in flight.
+ * Those cases park the real worker thread at a test seam rather than racing
+ * it, and count pack I/O through mod_source's test counters.
+ *
  * Every byte written lands beneath the scratch root given by argv[1], which is
  * removed before the first case and after the last.
  */
 #include "mod_texture_store.h"
 
 #include "mod_registry.h"
+#include "mod_source.h"
 #include "mod_texture_store_probe.h"
+#include "miniz.h"
 
 #include <dirent.h>
 #include <stdint.h>
@@ -67,6 +77,27 @@
 #define DIGEST_UNTIMED "f6666666666666666666666666666666"
 #define DIGEST_TIMED   "f7777777777777777777777777777777"
 #define DIGEST_ABSENT  "f8888888888888888888888888888888"
+#define DIGEST_ZIPPED  "a3333333333333333333333333333333"
+#define DIGEST_IO      "a5555555555555555555555555555555"
+#define DIGEST_BUDGET1 "b1111111111111111111111111111111"
+#define DIGEST_BUDGET2 "b3333333333333333333333333333333"
+#define DIGEST_FALLBACK "b4444444444444444444444444444444"
+#define DIGEST_STALE1  "c1111111111111111111111111111111"
+#define DIGEST_STALE2  "c2222222222222222222222222222222"
+#define DIGEST_FLIGHT0 "c4444444444444444444444444444444"
+#define DIGEST_FLIGHT1 "c5555555555555555555555555555555"
+#define DIGEST_FLIGHT2 "c6666666666666666666666666666666"
+#define DIGEST_FLIGHT3 "c7777777777777777777777777777777"
+#define DIGEST_WTIMED  "f9999999999999999999999999999999"
+/* Eviction fixtures are generated: "9" + 31 digits of the index. */
+#define EVICT_FIXTURES 12
+
+/* Rice identities, written as a manifest-less pack the scan recognises by its
+ * file names. MERGED has an _rgb and an _a half of the same size; MISMATCHED
+ * has an _a half of a different size, which the format reads as opaque. */
+#define RICE_MERGED_CRC     0x1234abcdu
+#define RICE_MISMATCHED_CRC 0x5678ef01u
+#define RICE_UNKNOWN_CRC    0x0badf00du
 
 /* Handed to the probe as its refusal ceiling. Far above anything these
  * fixtures legitimately need and far below the gigabyte the giant fixture
@@ -309,29 +340,52 @@ static void write_giant_declared_png(const char *root, const char *pack,
     write_pack_bytes(root, pack, relative, png.bytes, png.length);
 }
 
-/* A real, decodable 8x8 RGBA PNG. Its image data is a single stored (BTYPE=0)
- * deflate block, which is a legal zlib stream and keeps the whole fixture
- * inspectable: no compressor is involved in a test about what a decoder is
- * allowed to be asked for. Pixel (x, y) is (x * 16, y * 16, 0x40, 0xFF), so a
- * lookup that returned some other picture would not match. */
-static void write_small_rgba_png(const char *root, const char *pack,
-                                 const char *digest, unsigned char blue) {
+/* Pixel generators for the fixtures below. */
+typedef void (*PixelFn)(int x, int y, unsigned char out[4], unsigned char param);
+
+/* (x * 16, y * 16, param, 0xFF): every pixel distinct, so a lookup that
+ * returned some other picture fails on the pixels, not just the size. */
+static void pixel_gradient(int x, int y, unsigned char out[4],
+                           unsigned char param) {
+    out[0] = (unsigned char)(x * 16);
+    out[1] = (unsigned char)(y * 16);
+    out[2] = param;
+    out[3] = 0xFFu;
+}
+
+/* A Rice `_a` half: the alpha lives in RED. */
+static unsigned char alpha_key(int x, int y) {
+    return (unsigned char)(x * 32 + y * 4 + 1);
+}
+
+static void pixel_alpha_half(int x, int y, unsigned char out[4],
+                             unsigned char param) {
+    out[0] = alpha_key(x, y);
+    out[1] = param;
+    out[2] = param;
+    out[3] = 0xFFu;
+}
+
+/* A real, decodable `side` x `side` RGBA PNG (side <= 8). Its image data is a
+ * single stored (BTYPE=0) deflate block, which is a legal zlib stream and
+ * keeps the whole fixture inspectable: no compressor is involved in a test
+ * about what a decoder is allowed to be asked for. */
+static void build_rgba_png(PngBuffer *png, int side, PixelFn fn,
+                           unsigned char param) {
     unsigned char raw[8 * (1 + 8 * 4)];
     unsigned char idat[5 + sizeof raw + 6];
-    PngBuffer     png;
-    char          relative[128];
+    size_t        raw_length = (size_t)side * (1u + (size_t)side * 4u);
     size_t        cursor = 0;
     uint32_t      adler;
     int           x;
     int           y;
 
-    for (y = 0; y < 8; y++) {
+    if (side < 1 || side > 8) fatal("fixture PNG side out of range", "build");
+    for (y = 0; y < side; y++) {
         raw[cursor++] = 0; /* filter: none */
-        for (x = 0; x < 8; x++) {
-            raw[cursor++] = (unsigned char)(x * 16);
-            raw[cursor++] = (unsigned char)(y * 16);
-            raw[cursor++] = blue;
-            raw[cursor++] = 0xFFu;
+        for (x = 0; x < side; x++) {
+            fn(x, y, raw + cursor, param);
+            cursor += 4;
         }
     }
 
@@ -339,25 +393,113 @@ static void write_small_rgba_png(const char *root, const char *pack,
     idat[cursor++] = 0x78u;  /* zlib: deflate, 32 KiB window */
     idat[cursor++] = 0x01u;  /* zlib: no preset dictionary, check bits */
     idat[cursor++] = 0x01u;  /* final block, stored */
-    idat[cursor++] = (unsigned char)(sizeof raw & 0xFFu);
-    idat[cursor++] = (unsigned char)((sizeof raw >> 8) & 0xFFu);
-    idat[cursor++] = (unsigned char)(~(sizeof raw) & 0xFFu);
-    idat[cursor++] = (unsigned char)((~(sizeof raw) >> 8) & 0xFFu);
-    memcpy(idat + cursor, raw, sizeof raw);
-    cursor += sizeof raw;
-    adler = adler32_of(raw, sizeof raw);
+    idat[cursor++] = (unsigned char)(raw_length & 0xFFu);
+    idat[cursor++] = (unsigned char)((raw_length >> 8) & 0xFFu);
+    idat[cursor++] = (unsigned char)(~raw_length & 0xFFu);
+    idat[cursor++] = (unsigned char)((~raw_length >> 8) & 0xFFu);
+    memcpy(idat + cursor, raw, raw_length);
+    cursor += raw_length;
+    adler = adler32_of(raw, raw_length);
     idat[cursor++] = (unsigned char)(adler >> 24);
     idat[cursor++] = (unsigned char)(adler >> 16);
     idat[cursor++] = (unsigned char)(adler >> 8);
     idat[cursor++] = (unsigned char)adler;
 
-    png_begin(&png);
-    png_put_ihdr(&png, 8, 8, 6);
-    png_put_chunk(&png, "IDAT", idat, cursor);
-    png_put_chunk(&png, "IEND", NULL, 0);
+    png_begin(png);
+    png_put_ihdr(png, (uint32_t)side, (uint32_t)side, 6);
+    png_put_chunk(png, "IDAT", idat, cursor);
+    png_put_chunk(png, "IEND", NULL, 0);
+}
 
-    snprintf(relative, sizeof relative, "textures/%s.png", digest);
+static void write_png_file(const char *root, const char *pack,
+                           const char *relative, int side, PixelFn fn,
+                           unsigned char param) {
+    PngBuffer png;
+    build_rgba_png(&png, side, fn, param);
     write_pack_bytes(root, pack, relative, png.bytes, png.length);
+}
+
+/* The 8x8 gradient, at textures/<digest>.png: what a digest-keyed pack
+ * supplies. */
+static void write_small_rgba_png(const char *root, const char *pack,
+                                 const char *digest, unsigned char blue) {
+    char relative[128];
+    snprintf(relative, sizeof relative, "textures/%s.png", digest);
+    write_png_file(root, pack, relative, 8, pixel_gradient, blue);
+}
+
+/* A zipped digest pack: pack.ini plus one 8x8 gradient, deflated by miniz so
+ * the worker's own archive handle has something real to inflate. */
+static void write_zip_digest_pack(const char *root, const char *name,
+                                  const char *digest, unsigned char blue) {
+    static const char manifest[] = "[pack]\nname=Zipped\npriority=200\n";
+    char           full[1024];
+    char           relative[128];
+    PngBuffer      png;
+    mz_zip_archive zip;
+
+    path2(full, sizeof full, root, name);
+    make_parent_directories(full);
+    build_rgba_png(&png, 8, pixel_gradient, blue);
+    snprintf(relative, sizeof relative, "textures/%s.png", digest);
+    memset(&zip, 0, sizeof zip);
+    if (!mz_zip_writer_init_file(&zip, full, 0) ||
+        !mz_zip_writer_add_mem(&zip, "pack.ini", manifest,
+                               sizeof manifest - 1u, MZ_DEFAULT_COMPRESSION) ||
+        !mz_zip_writer_add_mem(&zip, relative, png.bytes, png.length,
+                               MZ_DEFAULT_COMPRESSION) ||
+        !mz_zip_writer_finalize_archive(&zip)) {
+        mz_zip_writer_end(&zip);
+        fatal("cannot write the scratch archive", full);
+    }
+    mz_zip_writer_end(&zip);
+}
+
+static void rice_name(char *out, size_t size, uint32_t crc,
+                      const char *variant) {
+    snprintf(out, size, "DIDDY KONG RACING/DIDDY KONG RACING#%08x#0#2_%s.png",
+             (unsigned)crc, variant);
+}
+
+static void eviction_digest(char out[33], int index) {
+    snprintf(out, 33, "9%031d", index);
+}
+
+/* ------------------------------------------------------------- lookups */
+
+/* A texture a pack supplies now answers "pending" first and is read and
+ * decoded off the frame. The admission cases below are about what happens to
+ * the FILE, wherever that runs, so they ask, let the store settle, and ask
+ * again -- exactly what the renderer does across frames. */
+static int lookup_settled(const char *digest, MdkrModTexture *texture) {
+    int found = mdkr_mod_texture_lookup(digest, texture);
+    if (!found && texture->pending) {
+        mdkr_mod_texture_store_settle();
+        found = mdkr_mod_texture_lookup(digest, texture);
+    }
+    return found;
+}
+
+static int lookup_rice_settled(uint32_t crc, MdkrModTexture *texture) {
+    int found = mdkr_mod_texture_lookup_rice(crc, 0, 2, texture);
+    if (!found && texture->pending) {
+        mdkr_mod_texture_store_settle();
+        found = mdkr_mod_texture_lookup_rice(crc, 0, 2, texture);
+    }
+    return found;
+}
+
+static void store_reinit(MdkrModRegistry *registry, MdkrModTextureLoader loader) {
+    mdkr_mod_texture_store_set_loader(loader);
+    mdkr_mod_texture_store_init(registry);
+}
+
+static int pixels_are_gradient(const MdkrModTexture *texture,
+                               unsigned char blue) {
+    return texture->rgba != NULL && texture->width == 8 &&
+           texture->height == 8 && texture->rgba[4] == 16 &&
+           texture->rgba[5] == 0 && texture->rgba[6] == blue &&
+           texture->rgba[7] == 0xFFu;
 }
 
 /* ------------------------------------------------------------------ cases */
@@ -370,7 +512,7 @@ static void test_declared_size_is_refused_before_the_decode(void) {
     int            found;
 
     mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
-    found = mdkr_mod_texture_lookup(DIGEST_GIANT, &texture);
+    found = lookup_settled(DIGEST_GIANT, &texture);
 
     expect(found == 0, "a pack texture whose header declares more than the cache "
                        "holds is refused");
@@ -396,7 +538,7 @@ static void test_a_side_no_backend_can_upload_is_refused(void) {
     int            found;
 
     mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
-    found = mdkr_mod_texture_lookup(DIGEST_WIDE, &texture);
+    found = lookup_settled(DIGEST_WIDE, &texture);
 
     expect(found == 0, "a texture wider than any backend uploads is refused "
                        "even though it fits the cache");
@@ -414,7 +556,7 @@ static void test_a_texture_that_fits_still_loads(void) {
 
     mdkr_mod_texture_memory_stats(&before);
     mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
-    found = mdkr_mod_texture_lookup(DIGEST_SOUND, &texture);
+    found = lookup_settled(DIGEST_SOUND, &texture);
 
     expect(found == 1, "a pack texture inside the cap still loads");
     expect(texture.width == 8 && texture.height == 8,
@@ -453,7 +595,7 @@ static void test_an_unreadable_header_is_refused_before_decode(void) {
     int            found;
 
     mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
-    found = mdkr_mod_texture_lookup(DIGEST_NOTPNG, &texture);
+    found = lookup_settled(DIGEST_NOTPNG, &texture);
 
     expect(found == 0, "a pack texture that is not a PNG at all is refused");
     expect(mdkr_texture_probe_decode_calls() == 0,
@@ -478,7 +620,7 @@ static void test_decode_matches_admitted_dimensions(MdkrModRegistry *registry) {
         mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
         mdkr_texture_probe_override_decoded_dimensions(
             dimensions[index][0], dimensions[index][1]);
-        found = mdkr_mod_texture_lookup(DIGEST_SOUND, &texture);
+        found = lookup_settled(DIGEST_SOUND, &texture);
         expect(mdkr_texture_probe_decode_calls() == 1,
                "dimension agreement is checked after a real ordinary decode");
         expect(found == 0 && texture.rgba == NULL &&
@@ -493,7 +635,7 @@ static void test_decode_matches_admitted_dimensions(MdkrModRegistry *registry) {
 static void test_generated_portrait_alias(const char *mods,
                                           MdkrModRegistry *registry) {
     MdkrModTexture texture;
-    int found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    int found = lookup_settled(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
     expect(found && texture.width == 8 && texture.height == 8 &&
            texture.rgba[2] == 0x40u,
            "a pre-1.7 Taj pack still replaces the recoloured card");
@@ -504,15 +646,23 @@ static void test_generated_portrait_alias(const char *mods,
            "turning packs off also disables generated-portrait aliases");
     mdkr_mod_texture_set_enabled(true);
 
-    found = mdkr_mod_texture_lookup("dcd45f4f32c9e1da4abeb3c1c1f8011a", &texture);
+    found = lookup_settled("dcd45f4f32c9e1da4abeb3c1c1f8011a", &texture);
     expect(!found, "a different digest cannot inherit Taj's legacy override");
 
+    /* A file added to a pack is seen at the next scan: the name index is the
+     * scan's (issue #66), and a rescan is store shutdown, registry rescan,
+     * store init -- the order platform_content_packs_init() uses. */
     write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_DIGEST, 0xE0u);
+    mdkr_mod_texture_store_shutdown();
+    mdkr_mod_registry_shutdown(registry);
+    if (mdkr_mod_registry_init(registry, mods) != 0) {
+        fatal("the scratch pack tree did not rescan", mods);
+    }
     mdkr_mod_texture_store_init(registry);
-    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
+    found = lookup_settled(MDKR_MOD_TAJ_PORTRAIT_DIGEST, &texture);
     expect(found && texture.rgba[2] == 0xE0u,
            "a current-name replacement takes precedence over the legacy name");
-    found = mdkr_mod_texture_lookup(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, &texture);
+    found = lookup_settled(MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, &texture);
     expect(found && texture.rgba[2] == 0x40u,
            "direct legacy lookup still returns the legacy file");
 }
@@ -526,17 +676,20 @@ static void test_generated_portrait_alias(const char *mods,
 static uint64_t fake_clock_ns;
 static unsigned fake_clock_calls;
 
+/* Atomic: once a request carries the clock, the worker reads it too. */
 static uint64_t fake_clock(void) {
-    fake_clock_calls++;
-    fake_clock_ns += FAKE_CLOCK_STEP;
-    return fake_clock_ns;
+    __atomic_fetch_add(&fake_clock_calls, 1u, __ATOMIC_RELAXED);
+    return __atomic_add_fetch(&fake_clock_ns, FAKE_CLOCK_STEP,
+                              __ATOMIC_RELAXED);
 }
 
 static int timing_is_zero(const MdkrModTextureResolveTiming *t) {
     return t->resolves == 0 && t->loaded == 0 && t->probes == 0 &&
            t->absent == 0 && t->files == 0 && t->file_bytes == 0 &&
            t->decoded_bytes == 0 && t->open_ns == 0 && t->absent_ns == 0 &&
-           t->read_ns == 0 && t->decode_ns == 0 && t->resolve_ns == 0;
+           t->read_ns == 0 && t->decode_ns == 0 && t->resolve_ns == 0 &&
+           t->pump_ns == 0 && t->worker_ns == 0 && t->queued == 0 &&
+           t->installed == 0 && t->discarded == 0;
 }
 
 static int timing_equal(const MdkrModTextureResolveTiming *a,
@@ -550,13 +703,16 @@ static int timing_equal(const MdkrModTextureResolveTiming *a,
  * installed, and none of that may have been counted -- and on must attribute
  * each phase, count the bytes it actually read and decoded, and leave a cache
  * hit uncounted. */
-static void test_resolve_timing(const char *mods) {
+static void test_resolve_timing(const char *mods, MdkrModRegistry *registry) {
     MdkrModTexture              texture;
     MdkrModTextureResolveTiming before, after;
     char                        path[1024];
     struct stat                 info;
     long                        png_size = -1;
 
+    /* The INLINE loader, where a resolution still nests all three phases
+     * inside the lookup; the off-frame accounting has its own case below. */
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_INLINE);
     mdkr_mod_texture_timing_totals(NULL);
     mdkr_mod_texture_timing_totals(&before);
     expect(timing_is_zero(&before),
@@ -596,7 +752,7 @@ static void test_resolve_timing(const char *mods) {
     expect(after.open_ns - before.open_ns >= FAKE_CLOCK_STEP &&
            after.read_ns - before.read_ns >= FAKE_CLOCK_STEP &&
            after.decode_ns - before.decode_ns >= FAKE_CLOCK_STEP,
-           "opening, reading and decoding are each timed");
+           "locating, reading and decoding are each timed");
     expect(after.resolve_ns - before.resolve_ns >=
                (after.open_ns - before.open_ns) +
                (after.read_ns - before.read_ns) +
@@ -624,6 +780,499 @@ static void test_resolve_timing(const char *mods) {
            after.open_ns - before.open_ns >= FAKE_CLOCK_STEP,
            "an absent answer is a timed probe that reads and decodes nothing");
 
+    mdkr_mod_texture_timing_set_clock(NULL);
+}
+
+/* ------------------------------------------------ off the frame (#66) */
+
+/* Every number this file compares is one of these, so the cases below can
+ * read "what did that step cost" as a difference. */
+static MdkrModTextureMemoryStats memory_now(void) {
+    MdkrModTextureMemoryStats stats;
+    mdkr_mod_texture_memory_stats(&stats);
+    return stats;
+}
+
+static MdkrModTextureResolveTiming timing_now_totals(void) {
+    MdkrModTextureResolveTiming timing;
+    mdkr_mod_texture_timing_totals(&timing);
+    return timing;
+}
+
+/* 6. The Rice convention's split halves, merged off the frame.
+ *
+ * `_rgb` carries colour, `_a` carries alpha in its RED channel, and the store
+ * merges them -- now on the worker, through its own pack handle. An `_a` of a
+ * different size is not alpha for this picture: the result is opaque and the
+ * mismatch is reported. A CRC the pack does not index is answered from the
+ * index alone. */
+static void test_rice_split_alpha_merge(void) {
+    MdkrModTexture texture;
+    const int      used_before = mdkr_mod_texture_rice_resident();
+    int            found;
+
+    found = mdkr_mod_texture_lookup_rice(RICE_MERGED_CRC, 0, 2, &texture);
+    expect(found == 0 && texture.pending == 1,
+           "a Rice texture the pack supplies is pending at first ask");
+    found = lookup_rice_settled(RICE_MERGED_CRC, &texture);
+    expect(found == 1 && texture.width == 8 && texture.height == 8,
+           "and resolves to the pack's picture once settled");
+    if (found && texture.rgba != NULL) {
+        const unsigned char *p10 = texture.rgba + (0 * 8 + 1) * 4;
+        const unsigned char *p23 = texture.rgba + (3 * 8 + 2) * 4;
+        expect(p10[0] == 16 && p10[1] == 0 && p10[2] == 0x33u &&
+               p23[0] == 32 && p23[1] == 48 && p23[2] == 0x33u,
+               "its colour comes from the _rgb half");
+        expect(p10[3] == alpha_key(1, 0) && p23[3] == alpha_key(2, 3),
+               "and its alpha from the RED channel of the _a half");
+    }
+    found = lookup_rice_settled(RICE_MISMATCHED_CRC, &texture);
+    expect(found == 1 && texture.rgba != NULL &&
+           texture.rgba[3] == 0xFFu && texture.rgba[8 * 8 * 4 - 1] == 0xFFu,
+           "an _a half of another size leaves the texture opaque");
+    expect(mdkr_mod_texture_rice_resident() == used_before + 2,
+           "and both identities count as used, once each");
+    found = mdkr_mod_texture_lookup_rice(RICE_UNKNOWN_CRC, 0, 2, &texture);
+    expect(found == 0 && texture.pending == 0,
+           "a CRC the pack does not index is a final no, not pending");
+}
+
+/* 7. A zipped pack read through the worker's own archive handle. */
+static void test_zip_pack_through_the_worker(void) {
+    MdkrModTexture texture;
+    expect(mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_WORKER,
+           "the native store runs the worker loader");
+    expect(mdkr_mod_texture_lookup(DIGEST_ZIPPED, &texture) == 0 &&
+           texture.pending == 1,
+           "a digest a zipped pack supplies is pending at first ask");
+    expect(lookup_settled(DIGEST_ZIPPED, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x70u),
+           "and the worker inflates and decodes it from the zip");
+}
+
+/* 8. A lookup does no pack I/O, and a pack is opened once per generation.
+ *
+ * T12a measured the pack being opened -- its 2,120-entry central directory
+ * re-parsed -- for every texture lookup, half of them for a digest-named file
+ * a Rice pack can never hold. The worker is parked first, so any I/O counted
+ * between "before" and "after" can only have been the lookup's own. */
+static void test_lookups_do_no_pack_io(MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+    unsigned long  opens_at_init;
+    unsigned long  opens;
+    unsigned long  queries;
+    int            absent_ok;
+    int            settled;
+
+    opens_at_init = mdkr_mod_source_test_opens();
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    expect(mdkr_mod_source_test_opens() - opens_at_init == 3,
+           "init opens each texture pack once (folder, zip, Rice)");
+
+    mdkr_mod_texture_store_test_hold_worker(1);
+    opens = mdkr_mod_source_test_opens();
+    queries = mdkr_mod_source_test_queries();
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    absent_ok =
+        mdkr_mod_texture_lookup("0123456789abcdef0123456789abcdef", &texture) == 0 &&
+        texture.pending == 0 &&
+        mdkr_mod_texture_lookup("1123456789abcdef0123456789abcdef", &texture) == 0 &&
+        texture.pending == 0 &&
+        mdkr_mod_texture_lookup_rice(RICE_UNKNOWN_CRC, 0, 2, &texture) == 0 &&
+        texture.pending == 0;
+    expect(absent_ok, "absent digests and unknown Rice keys are a final no");
+    expect(mdkr_mod_texture_lookup(DIGEST_IO, &texture) == 0 &&
+           texture.pending == 1,
+           "a present digest is pending");
+    expect(mdkr_mod_texture_store_test_wait_parked() == 1,
+           "and its request reached the worker, which is parked on it");
+    expect(mdkr_mod_source_test_opens() == opens &&
+           mdkr_mod_source_test_queries() == queries,
+           "none of those lookups opened, probed or read a pack");
+    expect(mdkr_texture_probe_decode_calls() == 0,
+           "and nothing was decoded on the asking thread");
+    mdkr_mod_texture_store_test_hold_worker(0);
+
+    settled = lookup_settled(DIGEST_IO, &texture);
+    expect(settled == 1 && pixels_are_gradient(&texture, 0x55u),
+           "the worker then reads and decodes it");
+    expect(mdkr_mod_source_test_opens() == opens,
+           "through the archive the store already had open");
+}
+
+static unsigned s_observed;
+static char     s_observed_key[64];
+static int      s_observed_resident;
+static uint32_t s_observed_pumps;
+
+static void observe_install(const char *key, int resident, uint32_t pumps,
+                            uint64_t ns, size_t bytes) {
+    (void)ns;
+    (void)bytes;
+    s_observed++;
+    snprintf(s_observed_key, sizeof s_observed_key, "%s", key);
+    s_observed_resident = resident;
+    s_observed_pumps = pumps;
+}
+
+/* 9. PENDING -> RESIDENT on the owner thread, inside the pump's budget.
+ *
+ * The browser build has no worker; it serves the same queue from the pump,
+ * bounded per frame. Nothing is read at the lookup, one install per pump when
+ * the budget says one, and the serial a renderer polls moves exactly when a
+ * texture settles. */
+static void test_budget_loader_installs_within_budget(MdkrModRegistry *registry) {
+    const MdkrModTexturePumpBudget one = { 1u, MDKR_MOD_TEXTURE_INSTALL_BYTES,
+                                           MDKR_MOD_TEXTURE_WORK_NS };
+    MdkrModTexture texture;
+    uint32_t       serial;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_BUDGET);
+    expect(mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_BUDGET,
+           "the budget loader can be chosen");
+    mdkr_mod_texture_set_install_observer(observe_install);
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET1, &texture) == 0 &&
+           texture.pending == 1 &&
+           mdkr_mod_texture_lookup(DIGEST_BUDGET2, &texture) == 0 &&
+           texture.pending == 1,
+           "two present digests are pending");
+    expect(mdkr_texture_probe_decode_calls() == 0 &&
+           memory_now().pending == 2,
+           "and neither was decoded by the lookup");
+    serial = mdkr_mod_texture_settled_serial();
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET1, &texture) == 0 &&
+           texture.pending == 1 && mdkr_texture_probe_decode_calls() == 0,
+           "asking again while pending queues nothing new");
+
+    mdkr_mod_texture_store_pump(&one, NULL);
+    expect(mdkr_texture_probe_decode_calls() == 1 && memory_now().pending == 1,
+           "a pump with an install budget of one decodes and installs one");
+    expect(mdkr_mod_texture_settled_serial() != serial,
+           "and the settled serial moves");
+    expect(s_observed == 1 && strcmp(s_observed_key, DIGEST_BUDGET1) == 0 &&
+           s_observed_resident == 1 && s_observed_pumps == 1,
+           "the observer sees the first request, resident, one pump after it "
+           "was queued");
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET1, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x11u),
+           "the first is resident with its own pixels");
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET2, &texture) == 0 &&
+           texture.pending == 1,
+           "the second is still pending");
+    serial = mdkr_mod_texture_settled_serial();
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET1, &texture) == 1 &&
+           mdkr_mod_texture_settled_serial() == serial,
+           "a resident hit does not move the serial");
+    mdkr_mod_texture_store_pump(NULL, NULL);
+    expect(mdkr_mod_texture_lookup(DIGEST_BUDGET2, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x33u) && s_observed == 2,
+           "the next pump installs the second");
+    mdkr_mod_texture_set_install_observer(NULL);
+}
+
+/* 10. A worker that cannot start leaves the budget loader doing its job. */
+static void test_worker_failure_falls_back_to_budget(MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+
+    mdkr_mod_texture_store_test_fail_worker_start(1);
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    mdkr_mod_texture_store_test_fail_worker_start(0);
+    expect(mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_BUDGET,
+           "a worker that fails to start falls back to the budget loader");
+    expect(mdkr_mod_texture_store_test_wait_parked() == 0,
+           "with no worker running");
+    expect(mdkr_mod_texture_lookup(DIGEST_FALLBACK, &texture) == 0 &&
+           texture.pending == 1,
+           "a present digest is pending");
+    mdkr_mod_texture_store_pump(NULL, NULL);
+    expect(mdkr_mod_texture_lookup(DIGEST_FALLBACK, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x44u),
+           "and the next pump installs it on the owner thread");
+}
+
+/* 11. A completion from before a toggle is discarded, its buffer freed, and
+ * never written into the slot -- whether the toggle caught the request still
+ * waiting to be read or already decoded. ASan and the leak check run this
+ * file; a buffer this drops on the floor fails them. */
+static void test_stale_completions_are_discarded(MdkrModRegistry *registry) {
+    MdkrModTexture              texture;
+    MdkrModTextureResolveTiming before;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    mdkr_mod_texture_timing_set_clock(fake_clock);
+
+    /* (a) toggled while the worker holds the request, before any read. */
+    mdkr_mod_texture_store_test_hold_worker(1);
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    expect(mdkr_mod_texture_lookup(DIGEST_STALE1, &texture) == 0 &&
+           texture.pending == 1 &&
+           mdkr_mod_texture_store_test_wait_parked() == 1,
+           "a request is in the worker's hands");
+    before = timing_now_totals();
+    mdkr_mod_texture_set_enabled(false);
+    mdkr_mod_texture_set_enabled(true);
+    expect(memory_now().pending == 0,
+           "a toggle returns every pending texture to unresolved");
+    expect(mdkr_mod_texture_lookup(DIGEST_STALE1, &texture) == 0 &&
+           texture.pending == 1,
+           "and asking again queues a fresh request");
+    mdkr_mod_texture_store_test_hold_worker(0);
+    mdkr_mod_texture_store_settle();
+    expect(timing_now_totals().discarded == before.discarded + 1 &&
+           timing_now_totals().installed == before.installed + 1,
+           "the stale request is discarded and only the fresh one installs");
+    expect(mdkr_texture_probe_decode_calls() == 1,
+           "the stale request was never decoded");
+    expect(timing_now_totals().files == before.files + 1,
+           "nor even read: the worker drops it before touching the pack");
+    expect(mdkr_mod_texture_lookup(DIGEST_STALE1, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x11u),
+           "and the slot holds the fresh result");
+
+    /* (b) toggled after the worker decoded, before the owner installed. */
+    expect(mdkr_mod_texture_lookup(DIGEST_STALE2, &texture) == 0 &&
+           texture.pending == 1,
+           "a second request is queued");
+    expect(mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           memory_now().inflight_bytes == 8u * 8u * 4u,
+           "the worker finished it; its pixels are in flight, not installed");
+    before = timing_now_totals();
+    mdkr_mod_texture_set_enabled(false);
+    mdkr_mod_texture_set_enabled(true);
+    mdkr_mod_texture_store_pump(NULL, NULL);
+    expect(timing_now_totals().discarded == before.discarded + 1 &&
+           timing_now_totals().installed == before.installed &&
+           memory_now().inflight_bytes == 0,
+           "the decoded completion is discarded and its bytes released");
+    expect(mdkr_mod_texture_lookup(DIGEST_STALE2, &texture) == 0 &&
+           texture.pending == 1,
+           "the slot was not written; asking again queues it afresh");
+    expect(lookup_settled(DIGEST_STALE2, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x22u),
+           "and the fresh request installs");
+    mdkr_mod_texture_timing_set_clock(NULL);
+}
+
+/* 12. Shutdown and reload with requests at every stage of the hand-off: one
+ * finished and waiting, one in the worker's hands, two still queued. The join
+ * must not hang, nothing may leak, and the next generation must work. */
+static void prime_requests_in_flight(void) {
+    MdkrModTexture texture;
+    expect(mdkr_mod_texture_lookup(DIGEST_FLIGHT0, &texture) == 0 &&
+           texture.pending == 1 &&
+           mdkr_mod_texture_store_test_wait_idle() == 1,
+           "one completion is waiting to be installed");
+    mdkr_mod_texture_store_test_hold_worker(1);
+    expect(mdkr_mod_texture_lookup(DIGEST_FLIGHT1, &texture) == 0 &&
+           mdkr_mod_texture_lookup(DIGEST_FLIGHT2, &texture) == 0 &&
+           mdkr_mod_texture_lookup(DIGEST_FLIGHT3, &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_parked() == 1 &&
+           memory_now().pending == 4,
+           "one request is in the worker's hands and two are queued");
+}
+
+static void test_shutdown_and_reload_in_flight(MdkrModRegistry *registry) {
+    MdkrModTexture            texture;
+    MdkrModTextureMemoryStats stats;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    prime_requests_in_flight();
+    mdkr_mod_texture_store_shutdown();
+    mdkr_mod_texture_store_test_hold_worker(0);
+    stats = memory_now();
+    expect(!mdkr_mod_texture_store_active() &&
+           mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_AUTO &&
+           stats.pending == 0 && stats.inflight_bytes == 0 &&
+           stats.pixel_bytes == 0 && stats.entries == 0,
+           "shutdown joins the worker and frees every request in flight");
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    prime_requests_in_flight();
+    /* Init over a live store is a reload: it shuts the old generation down
+     * first, with the worker still parked on a request. */
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    mdkr_mod_texture_store_test_hold_worker(0);
+    expect(memory_now().pending == 0 && memory_now().entries == 0,
+           "a reload discards the old generation's requests");
+    expect(lookup_settled(DIGEST_FLIGHT1, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x51u),
+           "and the new generation resolves the same texture");
+}
+
+/* 13. Eviction picks only resident textures. A pending one has no pixels, so
+ * "least recently used" must never be read as "never used yet": evicting it
+ * would orphan its completion, which would then be discarded and the texture
+ * would never appear. Budget loader for a deterministic install order. */
+static void test_eviction_never_touches_pending(MdkrModRegistry *registry) {
+    const MdkrModTexturePumpBudget one = { 1u, MDKR_MOD_TEXTURE_INSTALL_BYTES,
+                                           MDKR_MOD_TEXTURE_WORK_NS };
+    MdkrModTexture texture;
+    char           digest[33];
+    int            index;
+    int            ok = 1;
+
+    /* Room for exactly eight 8x8 textures. */
+    mdkr_mod_texture_store_test_set_cache_limit(8u * 8u * 8u * 4u);
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_BUDGET);
+    for (index = 0; index < 8; index++) {
+        eviction_digest(digest, index);
+        ok &= lookup_settled(digest, &texture);
+    }
+    expect(ok && memory_now().pixel_bytes == 8u * 8u * 8u * 4u &&
+           memory_now().evictions == 0,
+           "the cache fills to its limit without evicting");
+    eviction_digest(digest, 8);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 0 && texture.pending,
+           "texture 8 is queued");
+    for (index = 1; index < 8; index++) {        /* 0 becomes the LRU */
+        char held[33];
+        eviction_digest(held, index);
+        ok &= mdkr_mod_texture_lookup(held, &texture);
+    }
+    eviction_digest(digest, 9);
+    expect(ok && mdkr_mod_texture_lookup(digest, &texture) == 0 &&
+           texture.pending,
+           "texture 9 is queued behind it");
+    mdkr_mod_texture_store_pump(&one, NULL);
+    expect(memory_now().evictions == 1 && memory_now().pending == 1,
+           "installing texture 8 evicts one resident");
+    eviction_digest(digest, 0);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 0 && texture.pending,
+           "the least recently used resident was the one evicted");
+    eviction_digest(digest, 9);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 0 && texture.pending,
+           "while texture 9 stayed pending through that eviction");
+    mdkr_mod_texture_store_pump(&one, NULL);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0x99u),
+           "and installs normally on the next pump");
+    mdkr_mod_texture_store_settle();
+    eviction_digest(digest, 0);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 1 &&
+           memory_now().reloads == 1 && memory_now().first_resident == 10 &&
+           memory_now().first_resident_bytes == 10u * 8u * 8u * 4u,
+           "the evicted texture reloads once and counts as a reload, not as "
+           "a new identity");
+    mdkr_mod_texture_store_test_set_cache_limit(0);
+}
+
+/* 14. In-flight pixels are counted against the cache budget. With the worker
+ * running, residents are held to the limit minus the in-flight cap (one
+ * eighth), so resident plus in-flight never exceeds the limit. */
+static void test_inflight_counts_against_the_budget(MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+    char           digest[33];
+    int            index;
+    int            ok = 1;
+
+    mdkr_mod_texture_store_test_set_cache_limit(8u * 8u * 8u * 4u);
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    for (index = 0; index < 8; index++) {
+        eviction_digest(digest, index);
+        ok &= lookup_settled(digest, &texture);
+    }
+    expect(ok && memory_now().pixel_limit == 8u * 8u * 8u * 4u &&
+           memory_now().pixel_bytes == 7u * 8u * 8u * 4u &&
+           memory_now().evictions == 1,
+           "with a worker, residents stop one in-flight cap short of the limit");
+    eviction_digest(digest, 10);
+    expect(mdkr_mod_texture_lookup(digest, &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           memory_now().pixel_bytes + memory_now().inflight_bytes <=
+               memory_now().pixel_limit &&
+           memory_now().inflight_bytes == 8u * 8u * 4u,
+           "and a decoded texture waiting to install fits in that gap");
+    mdkr_mod_texture_store_settle();
+    mdkr_mod_texture_store_test_set_cache_limit(0);
+}
+
+/* 15. Off-frame accounting. The lookup on the owner thread is charged to
+ * resolve_ns and queues a request; the read and decode are charged when the
+ * completion is installed, along with the worker's whole time. */
+static void test_worker_timing(MdkrModRegistry *registry) {
+    MdkrModTexture              texture;
+    MdkrModTextureResolveTiming before, queued, after;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    mdkr_mod_texture_timing_set_clock(fake_clock);
+    before = timing_now_totals();
+    expect(mdkr_mod_texture_lookup(DIGEST_WTIMED, &texture) == 0 &&
+           texture.pending == 1, "a timed fresh texture is pending");
+    mdkr_mod_texture_store_test_wait_idle();
+    queued = timing_now_totals();
+    expect(queued.resolves == before.resolves + 1 &&
+           queued.probes == before.probes + 1 &&
+           queued.queued == before.queued + 1 &&
+           queued.resolve_ns > before.resolve_ns,
+           "the lookup is one timed resolution that queued one request");
+    expect(queued.files == before.files && queued.read_ns == before.read_ns &&
+           queued.decode_ns == before.decode_ns &&
+           queued.installed == before.installed,
+           "and no read or decode is charged until the result is installed");
+    mdkr_mod_texture_store_pump(NULL, fake_clock);
+    after = timing_now_totals();
+    expect(after.installed == queued.installed + 1 &&
+           after.loaded == queued.loaded + 1 &&
+           after.files == queued.files + 1 &&
+           after.decoded_bytes == queued.decoded_bytes + 8u * 8u * 4u &&
+           after.read_ns - queued.read_ns >= FAKE_CLOCK_STEP &&
+           after.decode_ns - queued.decode_ns >= FAKE_CLOCK_STEP,
+           "installing it charges one file, its bytes, its read and decode");
+    expect(after.worker_ns - queued.worker_ns >=
+               (after.read_ns - queued.read_ns) +
+               (after.decode_ns - queued.decode_ns) &&
+           after.pump_ns > queued.pump_ns,
+           "the worker's whole time contains both; the pump is timed too");
+    expect(after.resolve_ns == queued.resolve_ns,
+           "and none of it lands in the owner's resolve time");
+    mdkr_mod_texture_timing_set_clock(NULL);
+}
+
+/* 16. The owner keeps working while the worker does. Every case above hands
+ * the worker one request and waits; this one is what a scene change looks
+ * like -- the owner asks for a dozen textures every frame, pumps with a small
+ * budget and, halfway, toggles packs off and on, all while the worker is
+ * reading and decoding. Run under ThreadSanitizer it is the case that puts
+ * owner-side state and worker-side execution in the same instant. */
+static void test_owner_and_worker_overlap(MdkrModRegistry *registry) {
+    const MdkrModTexturePumpBudget two = { 2u, MDKR_MOD_TEXTURE_INSTALL_BYTES,
+                                           MDKR_MOD_TEXTURE_WORK_NS };
+    MdkrModTexture texture;
+    char           digest[33];
+    int            round;
+    int            index;
+    int            resident = 0;
+    int            pixels_ok = 1;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    mdkr_mod_texture_timing_set_clock(fake_clock);
+    for (round = 0; round < 20000 && resident < EVICT_FIXTURES; round++) {
+        resident = 0;
+        for (index = 0; index < EVICT_FIXTURES; index++) {
+            eviction_digest(digest, index);
+            if (mdkr_mod_texture_lookup(digest, &texture)) resident++;
+        }
+        (void)memory_now();
+        mdkr_mod_texture_store_pump(&two, fake_clock);
+        if (round == 3) {
+            mdkr_mod_texture_set_enabled(false);
+            mdkr_mod_texture_store_pump(&two, fake_clock);
+            mdkr_mod_texture_set_enabled(true);
+        }
+    }
+    mdkr_mod_texture_store_settle();
+    for (index = 0; index < EVICT_FIXTURES; index++) {
+        eviction_digest(digest, index);
+        if (!lookup_settled(digest, &texture) ||
+            !pixels_are_gradient(&texture, (unsigned char)(0x90 + index))) {
+            pixels_ok = 0;
+        }
+    }
+    expect(pixels_ok && memory_now().pending == 0 &&
+           memory_now().inflight_bytes == 0,
+           "every texture asked for under load ends resident with its own "
+           "pixels, nothing left pending or in flight");
     mdkr_mod_texture_timing_set_clock(NULL);
 }
 
@@ -764,11 +1413,19 @@ int main(int argc, char **argv) {
     const char     *scratch = argc > 1 ? argv[1] : "mod_texture_store_scratch";
     const char     *notpng = "this is not a PNG, it is a sentence";
     char            mods[1024];
+    char            rice[256];
     MdkrModRegistry registry;
+    int             index;
 
     if (strlen(DIGEST_GIANT) != 32 || strlen(DIGEST_SOUND) != 32 ||
         strlen(DIGEST_NOTPNG) != 32 || strlen(DIGEST_UNTIMED) != 32 ||
-        strlen(DIGEST_TIMED) != 32 || strlen(DIGEST_ABSENT) != 32) {
+        strlen(DIGEST_TIMED) != 32 || strlen(DIGEST_ABSENT) != 32 ||
+        strlen(DIGEST_ZIPPED) != 32 || strlen(DIGEST_IO) != 32 ||
+        strlen(DIGEST_BUDGET1) != 32 || strlen(DIGEST_BUDGET2) != 32 ||
+        strlen(DIGEST_FALLBACK) != 32 || strlen(DIGEST_STALE1) != 32 ||
+        strlen(DIGEST_STALE2) != 32 || strlen(DIGEST_FLIGHT0) != 32 ||
+        strlen(DIGEST_FLIGHT1) != 32 || strlen(DIGEST_FLIGHT2) != 32 ||
+        strlen(DIGEST_FLIGHT3) != 32 || strlen(DIGEST_WTIMED) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -785,12 +1442,39 @@ int main(int argc, char **argv) {
     write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
     write_small_rgba_png(mods, "probe", DIGEST_UNTIMED, 0x50u);
     write_small_rgba_png(mods, "probe", DIGEST_TIMED, 0x60u);
+    write_small_rgba_png(mods, "probe", DIGEST_IO, 0x55u);
+    write_small_rgba_png(mods, "probe", DIGEST_BUDGET1, 0x11u);
+    write_small_rgba_png(mods, "probe", DIGEST_BUDGET2, 0x33u);
+    write_small_rgba_png(mods, "probe", DIGEST_FALLBACK, 0x44u);
+    write_small_rgba_png(mods, "probe", DIGEST_STALE1, 0x11u);
+    write_small_rgba_png(mods, "probe", DIGEST_STALE2, 0x22u);
+    write_small_rgba_png(mods, "probe", DIGEST_FLIGHT0, 0x50u);
+    write_small_rgba_png(mods, "probe", DIGEST_FLIGHT1, 0x51u);
+    write_small_rgba_png(mods, "probe", DIGEST_FLIGHT2, 0x52u);
+    write_small_rgba_png(mods, "probe", DIGEST_FLIGHT3, 0x53u);
+    write_small_rgba_png(mods, "probe", DIGEST_WTIMED, 0x77u);
+    for (index = 0; index < EVICT_FIXTURES; index++) {
+        char digest[33];
+        eviction_digest(digest, index);
+        write_small_rgba_png(mods, "probe", digest, (unsigned char)(0x90 + index));
+    }
     write_pack_bytes(mods, "probe", "textures/" DIGEST_NOTPNG ".png",
                      (const unsigned char *)notpng, strlen(notpng));
+    write_zip_digest_pack(mods, "zipped.zip", DIGEST_ZIPPED, 0x70u);
+    /* A Rice pack: no pack.ini, recognised by its file names. */
+    rice_name(rice, sizeof rice, RICE_MERGED_CRC, "rgb");
+    write_png_file(mods, "ricepack", rice, 8, pixel_gradient, 0x33u);
+    rice_name(rice, sizeof rice, RICE_MERGED_CRC, "a");
+    write_png_file(mods, "ricepack", rice, 8, pixel_alpha_half, 0x07u);
+    rice_name(rice, sizeof rice, RICE_MISMATCHED_CRC, "rgb");
+    write_png_file(mods, "ricepack", rice, 8, pixel_gradient, 0x34u);
+    rice_name(rice, sizeof rice, RICE_MISMATCHED_CRC, "a");
+    write_png_file(mods, "ricepack", rice, 4, pixel_alpha_half, 0x07u);
 
     if (mdkr_mod_registry_init(&registry, mods) != 0) {
         fatal("the scratch pack tree did not initialise", mods);
     }
+    mdkr_mod_texture_store_set_loader(MDKR_MOD_TEXTURE_LOADER_WORKER);
     mdkr_mod_texture_store_init(&registry);
     if (!mdkr_mod_texture_store_active()) {
         fatal("the store is inactive over the scratch pack", mods);
@@ -810,7 +1494,20 @@ int main(int argc, char **argv) {
     test_an_unreadable_header_is_refused_before_decode();
     test_decode_matches_admitted_dimensions(&registry);
     test_generated_portrait_alias(mods, &registry);
-    test_resolve_timing(mods);
+    test_rice_split_alpha_merge();
+    test_zip_pack_through_the_worker();
+    test_lookups_do_no_pack_io(&registry);
+    test_budget_loader_installs_within_budget(&registry);
+    test_worker_failure_falls_back_to_budget(&registry);
+    test_shutdown_and_reload_in_flight(&registry);
+    test_eviction_never_touches_pending(&registry);
+    test_inflight_counts_against_the_budget(&registry);
+    /* Every case above ran with no timing clock; this one checks that none of
+     * it was counted, then installs the clock itself. */
+    test_resolve_timing(mods, &registry);
+    test_stale_completions_are_discarded(&registry);
+    test_worker_timing(&registry);
+    test_owner_and_worker_overlap(&registry);
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();

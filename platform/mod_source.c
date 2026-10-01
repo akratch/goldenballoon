@@ -33,6 +33,21 @@ struct MdkrModSource {
 #endif
 };
 
+#ifdef MDKR_MOD_SOURCE_TESTING
+static unsigned long s_test_opens;
+static unsigned long s_test_queries;
+#define MOD_SOURCE_TEST_COUNT(counter) \
+    ((void)__atomic_fetch_add(&(counter), 1ul, __ATOMIC_RELAXED))
+unsigned long mdkr_mod_source_test_opens(void) {
+    return __atomic_load_n(&s_test_opens, __ATOMIC_RELAXED);
+}
+unsigned long mdkr_mod_source_test_queries(void) {
+    return __atomic_load_n(&s_test_queries, __ATOMIC_RELAXED);
+}
+#else
+#define MOD_SOURCE_TEST_COUNT(counter) ((void)0)
+#endif
+
 /* ---------------------------------------------------------------- paths */
 
 int mdkr_mod_source_path_is_safe(const char *rel) {
@@ -306,6 +321,7 @@ static int zip_query(MdkrModSource *src, const char *rel, int want_data,
  * primitive below, uses the same relative-path validator before opening. */
 static int mod_source_query(MdkrModSource *src, const char *rel, int want_data,
                             void *buf, size_t cap, size_t *out_len) {
+    MOD_SOURCE_TEST_COUNT(s_test_queries);
     if (out_len != NULL) *out_len = 0;
     if (src == NULL) return MDKR_MOD_SOURCE_IO_ERROR;
     if (!mdkr_mod_source_path_is_safe(rel)) return MDKR_MOD_SOURCE_REJECTED;
@@ -354,6 +370,7 @@ MdkrModSource *mdkr_mod_source_open(const char *path, int is_zip) {
     MdkrModSource *src;
     size_t length;
 
+    MOD_SOURCE_TEST_COUNT(s_test_opens);
     if (path == NULL || path[0] == '\0') return NULL;
     length = strlen(path);
     if (length + 1 > MDKR_MOD_PATH_MAX) return NULL;
@@ -512,6 +529,7 @@ static int directory_enumerate(int fd, const char *prefix, int depth,
 
 int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
                               void *user) {
+    MOD_SOURCE_TEST_COUNT(s_test_queries);
     if (src == NULL || visit == NULL) return 1;
     if (!src->is_zip) {
 #if MDKR_PACK_BY_PATH

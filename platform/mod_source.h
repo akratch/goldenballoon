@@ -139,6 +139,15 @@ int mdkr_mod_source_path_is_safe(const char *rel);
  * a player why their pack did not do anything. Never NULL. */
 const char *mdkr_mod_source_result_text(int result);
 
+#ifdef MDKR_MOD_SOURCE_TESTING
+/* Test-only counters, compiled into nothing that ships: sources opened, and
+ * name queries (has/read) and walks made, process-wide and thread-safe. A
+ * test that claims "this answer needed no file I/O" reads them before and
+ * after. */
+unsigned long mdkr_mod_source_test_opens(void);
+unsigned long mdkr_mod_source_test_queries(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

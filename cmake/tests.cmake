@@ -991,7 +991,18 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_mod_texture_store_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/lib/stb
-        ${CMAKE_SOURCE_DIR}/lib/miniz)
+        ${CMAKE_SOURCE_DIR}/lib/miniz
+        ${SDL2_INCLUDE_DIRS})
+    # Issue #66: the store decodes on a background thread, so this links SDL
+    # for its threads and mutexes (never initialised, no device opened, as in
+    # the speech-worker test below). The two TESTING defines compile the
+    # store's park/fail/limit seams and mod_source's I/O counters into THIS
+    # target only; nothing that ships contains either.
+    target_link_directories(mdkr_mod_texture_store_test PRIVATE
+        ${SDL2_LIBRARY_DIRS})
+    target_link_libraries(mdkr_mod_texture_store_test PRIVATE ${SDL2_LIBRARIES})
+    target_compile_definitions(mdkr_mod_texture_store_test PRIVATE
+        SDL_MAIN_HANDLED MDKR_MOD_TEXTURE_STORE_TESTING MDKR_MOD_SOURCE_TESTING)
     # The probe instantiates stb_image, which is third-party and does not
     # survive this project's warning baseline -- the same one-file exemption
     # lib/stb/stb_image_impl.c and lib/miniz/miniz.c already have.
@@ -1007,6 +1018,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME mod_texture_store COMMAND mdkr_mod_texture_store_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_texture_store_scratch)
+    # Every wait in it is bounded by the worker's own progress; this is the
+    # backstop for a hand-off deadlock, which must fail rather than hang.
+    set_tests_properties(mod_texture_store PROPERTIES TIMEOUT 120)
 
     # The accessibility semantic model. ImGui exposes no accessibility tree, so
     # this module is the tree: it emits text, which is why the whole behaviour

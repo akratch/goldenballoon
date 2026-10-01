@@ -2581,6 +2581,19 @@ struct DkrTexCacheEntry {
     uint32_t upload_w, upload_h;
     uint32_t src_hash;    /* content hash at upload time (verify mode only) */
     bool valid;
+    /* Filled from ROM because a pack's replacement was still loading
+     * (issue #66). The entry keeps what it asked the store -- the digest and
+     * the Rice key -- and the store's settled serial at that moment, so a hit
+     * re-asks only when something has settled since, without re-hashing the
+     * texels, and refills only this entry when the answer is now resident. */
+    bool pack_pending;
+    /* Resident in the store, but drawn from ROM because this frame's
+     * replacement-upload budget was spent; re-asked on a later frame. */
+    bool pack_deferred;
+    bool pack_rice_keyed;
+    uint32_t pack_rice_key;
+    uint32_t pack_serial;
+    char pack_digest[33];
 };
 static struct DkrTexCacheEntry tex_cache[DKR_TEXCACHE_SIZE];
 static int tex_cache_next;
@@ -2805,13 +2818,22 @@ static uint32_t dkr_palette_fmt_key(uint8_t fmt) {
  * off by subtraction rather than guessed.
  *
  * Off by default and inert when off: one cached flag test per site, no clock
- * read, nothing counted, and no clock installed in the store. On under either
- *   MDKR_TEXTURE_PACK_TIMING=1  a [TEXPACK-FRAME] row per presented frame,
- *                              plus the census row below; or
- *   MDKR_RESOURCE_STATS=1 / MDKR_TRACE  the census row only: one
+ * read, nothing counted, and no clock installed in the store. Two switches,
+ * which are independent and are used together by the measurement tool:
+ *   MDKR_TEXTURE_PACK_TIMING=1  a [TEXPACK-FRAME] row per presented frame and
+ *                              a [TEXPACK-INSTALL] row per pack texture the
+ *                              store installs. On its own it prints no
+ *                              census row: that is emitted from the resource
+ *                              generation boundary, which returns early
+ *                              unless the resource trace is on.
+ *   MDKR_RESOURCE_STATS=1 / MDKR_TRACE  the census row: one
  *                              texture_pack_generation line per level
  *                              generation, next to renderer_generation.
- * tools/measure_texture_pack_stalls.py reads both.
+ * tools/measure_texture_pack_stalls.py sets both and reads both.
+ *
+ * Since the off-frame loader (issue #66), a replacement's read and decode run
+ * on the store's worker thread; what this frame's game thread spent on pack
+ * textures is hashUs + resolveUs + pumpUs + overrideUploadUs.
  *
  * Every counter is a running total. The frame row and the generation row each
  * keep their own last snapshot and print the difference, so neither consumer
@@ -2826,7 +2848,15 @@ typedef struct DkrTexpackTotals {
     uint64_t rom_ns;
     uint64_t walk_ns;           /* gfx_run(), real and replay walks */
     uint64_t end_ns;            /* gfx_end_frame(): submit, and present on
-                                 * WebGPU */
+                                 * WebGPU. Replay presents (a presentation
+                                 * rate above the authored tick) do not pass
+                                 * through gfx_end_frame, so at those rates
+                                 * WebGPU's present lands in a row's
+                                 * remainder ("outside"), not here. */
+    uint64_t refills;           /* entries re-uploaded in place because a
+                                 * pending replacement became resident */
+    uint64_t deferred;          /* resident replacements drawn from ROM for a
+                                 * frame because the upload budget was spent */
 } DkrTexpackTotals;
 
 static int s_texpack_timing = -1;   /* -1 until first asked */
@@ -2861,18 +2891,75 @@ static uint64_t dkr_texpack_thread_cpu_ns(void) {
 #endif
 }
 
+/* One row per pack texture the store applies: which identity, whether it
+ * left pixels resident, and how long it was pending -- in pumps (game frames)
+ * and microseconds. The latency and key-set evidence for issue #66. */
+static void dkr_texpack_observe_install(const char *key, int resident,
+                                        uint32_t latency_pumps,
+                                        uint64_t latency_ns, size_t bytes) {
+    fprintf(stderr,
+            "[TEXPACK-INSTALL] frame=%d key=%s resident=%d frames=%u us=%llu "
+            "bytes=%llu\n",
+            dkr_frame_index, key, resident, (unsigned)latency_pumps,
+            (unsigned long long)(latency_ns / 1000u),
+            (unsigned long long)bytes);
+}
+
 static bool dkr_texpack_timing_on(void) {
     if (s_texpack_timing < 0) {
         const char *value = getenv("MDKR_TEXTURE_PACK_TIMING");
         s_texpack_rows = value != NULL && value[0] == '1' && value[1] == '\0';
         s_texpack_timing = s_texpack_rows || mdkr_resource_trace_enabled();
         /* The store gets a clock only now, so it is never timing a run that
-         * did not ask. Resolution happens only from dkr_bind_tile, which asks
-         * this first. */
+         * did not ask. Resolution happens only from dkr_bind_tile and the
+         * pump, which both ask this first. The clock is copied into each
+         * request, and clock_gettime is callable from the worker thread. */
         mdkr_mod_texture_timing_set_clock(
             s_texpack_timing ? dkr_texpack_clock_ns : NULL);
+        mdkr_mod_texture_set_install_observer(
+            s_texpack_rows ? dkr_texpack_observe_install : NULL);
     }
     return s_texpack_timing != 0;
+}
+
+/* Replacement uploads per frame (issue #66). Installing textures a few per
+ * frame bounds the uploads of NEW replacements, but not the re-uploads of
+ * resident ones: a level load invalidates this cache's entries (arena reuse),
+ * and a warm return to a course re-uploaded every replacement it draws in its
+ * first frame -- 124 of them, 33.7 MiB, 4.7 ms on WebGPU and 10.2 ms on GL in
+ * the T12a measurement. So replacement uploads share one per-frame time
+ * budget; past it a resident replacement is drawn from ROM this frame and its
+ * entry is refilled in place on a later one, exactly like a pending one. At
+ * least one replacement is uploaded per frame, so nothing starves. The INLINE
+ * loader keeps the 1.7 behaviour and has no budget. */
+#define DKR_TEXPACK_UPLOAD_BUDGET_NS UINT64_C(2000000)
+static uint64_t s_texpack_upload_frame_ns;
+static uint32_t s_texpack_upload_frame_count;
+
+static bool dkr_texpack_upload_budgeted(void) {
+    const MdkrModTextureLoader loader = mdkr_mod_texture_store_loader();
+    return loader == MDKR_MOD_TEXTURE_LOADER_WORKER ||
+           loader == MDKR_MOD_TEXTURE_LOADER_BUDGET;
+}
+
+static bool dkr_texpack_upload_room(void) {
+    return !dkr_texpack_upload_budgeted() ||
+           s_texpack_upload_frame_count == 0 ||
+           s_texpack_upload_frame_ns < DKR_TEXPACK_UPLOAD_BUDGET_NS;
+}
+
+/* Once per real walk, on this (the owner) thread, before any bind: open a
+ * new upload budget, and install the pack textures the loader finished since
+ * the last frame, within the store's default per-frame budget. A no-op with
+ * no texture pack bound. */
+static void dkr_texpack_pump(void) {
+    s_texpack_upload_frame_ns = 0;
+    s_texpack_upload_frame_count = 0;
+    if (mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_AUTO) {
+        return;
+    }
+    (void)dkr_texpack_timing_on();
+    mdkr_mod_texture_store_pump(NULL, dkr_texpack_clock_ns);
 }
 
 /* 0 when off; hand it to dkr_texpack_add(), which reads no clock either. */
@@ -2898,6 +2985,7 @@ static inline void dkr_texpack_add(uint64_t *bucket, uint64_t start) {
 
 void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
     MdkrModTextureResolveTiming store;
+    MdkrModTextureMemoryStats memory;
     const DkrTexpackTotals *base = &s_texpack_frame_base;
     const MdkrModTextureResolveTiming *store_base =
         &s_texpack_store_frame_base;
@@ -2920,10 +3008,14 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
         ? cpu_now - s_texpack_last_cpu_ns : 0u;
     s_texpack_last_cpu_ns = cpu_now;
     mdkr_mod_texture_timing_totals(&store);
+    mdkr_mod_texture_memory_stats(&memory);
     /* dtUs is present-to-present wall time, so this row's work is the work
      * that delayed this present; cpuUs is how much of it this thread spent
-     * running. walkUs contains hashUs, resolveUs and both upload terms;
-     * resolveUs contains openUs, readUs and decodeUs. */
+     * running. walkUs contains hashUs, resolveUs and both upload terms.
+     * readUs and decodeUs are charged when a texture is installed, wherever
+     * it was decoded: inside resolveUs under the INLINE loader, inside pumpUs
+     * under BUDGET, and on the worker (workerUs, not this thread) otherwise.
+     * pending is the number queued or decoding at the end of the frame. */
     fprintf(stderr,
             "[TEXPACK-FRAME] frame=%d tick=%d swap=%d dtUs=%llu cpuUs=%llu "
             "walkUs=%llu endUs=%llu misses=%llu hashUs=%llu resolves=%llu "
@@ -2931,7 +3023,9 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             "decodedBytes=%llu openUs=%llu absentUs=%llu readUs=%llu "
             "decodeUs=%llu resolveUs=%llu overrideUploads=%llu "
             "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
-            "romUploadUs=%llu\n",
+            "romUploadUs=%llu pumpUs=%llu workerUs=%llu queued=%llu "
+            "installed=%llu discarded=%llu refills=%llu deferred=%llu "
+            "pending=%llu\n",
             frame, tick, swapped ? 1 : 0, (unsigned long long)(dt / 1000u),
             (unsigned long long)(cpu / 1000u), DKR_TEXPACK_US(walk_ns),
             DKR_TEXPACK_US(end_ns),
@@ -2945,7 +3039,11 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             DKR_TEXPACK_STORE_US(resolve_ns),
             DKR_TEXPACK_DIFF(override_uploads),
             DKR_TEXPACK_DIFF(override_bytes), DKR_TEXPACK_US(override_ns),
-            DKR_TEXPACK_DIFF(rom_uploads), DKR_TEXPACK_US(rom_ns));
+            DKR_TEXPACK_DIFF(rom_uploads), DKR_TEXPACK_US(rom_ns),
+            DKR_TEXPACK_STORE_US(pump_ns), DKR_TEXPACK_STORE_US(worker_ns),
+            DKR_TEXPACK_STORE_DIFF(queued), DKR_TEXPACK_STORE_DIFF(installed),
+            DKR_TEXPACK_STORE_DIFF(discarded), DKR_TEXPACK_DIFF(refills),
+            DKR_TEXPACK_DIFF(deferred), (unsigned long long)memory.pending);
     s_texpack_frame_base = s_texpack;
     s_texpack_store_frame_base = store;
 }
@@ -2967,7 +3065,9 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
         "fileBytes=%llu decodedBytes=%llu openUs=%llu absentUs=%llu "
         "readUs=%llu decodeUs=%llu resolveUs=%llu overrideUploads=%llu "
         "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
-        "romUploadUs=%llu walkUs=%llu endUs=%llu",
+        "romUploadUs=%llu walkUs=%llu endUs=%llu pumpUs=%llu workerUs=%llu "
+        "queued=%llu installed=%llu discarded=%llu refills=%llu "
+        "deferred=%llu",
         level, players, cutscene,
         (unsigned long long)s_texpack_gen_frames,
         (unsigned long long)(s_texpack_gen_worst_ns / 1000u),
@@ -2982,7 +3082,10 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
         DKR_TEXPACK_DIFF(override_uploads), DKR_TEXPACK_DIFF(override_bytes),
         DKR_TEXPACK_US(override_ns), DKR_TEXPACK_DIFF(rom_uploads),
         DKR_TEXPACK_US(rom_ns), DKR_TEXPACK_US(walk_ns),
-        DKR_TEXPACK_US(end_ns));
+        DKR_TEXPACK_US(end_ns), DKR_TEXPACK_STORE_US(pump_ns),
+        DKR_TEXPACK_STORE_US(worker_ns), DKR_TEXPACK_STORE_DIFF(queued),
+        DKR_TEXPACK_STORE_DIFF(installed), DKR_TEXPACK_STORE_DIFF(discarded),
+        DKR_TEXPACK_DIFF(refills), DKR_TEXPACK_DIFF(deferred));
     s_texpack_gen_base = s_texpack;
     s_texpack_store_gen_base = store;
     s_texpack_gen_frames = 0u;
@@ -2993,6 +3096,23 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
 #undef DKR_TEXPACK_STORE_DIFF
 #undef DKR_TEXPACK_STORE_US
 #undef DKR_TEXPACK_US
+
+/* Asks the store again for a texture an entry was told was still loading, in
+ * the miss path's order: the digest first, and the Rice identity only once the
+ * digest has settled to "no". No texels are re-hashed; the entry kept both
+ * keys. */
+static bool dkr_texpack_reask(const struct DkrTexCacheEntry *entry,
+                              uint8_t fmt, uint8_t siz, MdkrModTexture *over,
+                              bool *pending) {
+    bool used = mdkr_mod_texture_lookup(entry->pack_digest, over) != 0;
+    if (!used && over->pending == 0 && entry->pack_rice_keyed &&
+        mdkr_mod_texture_rice_active()) {
+        used = mdkr_mod_texture_lookup_rice(entry->pack_rice_key, (int)fmt,
+                                            (int)siz, over) != 0;
+    }
+    *pending = !used && over->pending != 0;
+    return used;
+}
 
 /* Bind the render tile's texture to a sampler unit; import+cache on miss.
  * Returns the uploaded dimensions (for UV normalization). */
@@ -3052,14 +3172,62 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     const bool verify = dkr_texcache_verify_on();
     const uint32_t now_hash =
         verify ? dkr_src_hash(addr, source_size_bytes) : 0;
+    /*
+     * A hit drawn from ROM while a pack's replacement was still being read
+     * and decoded off the frame (issue #66). It re-asks the store only when
+     * the store's settled serial has moved, and when the replacement is now
+     * resident this one entry is refilled in place -- same slot, same texture
+     * id -- exactly as a ring reuse refills one. Nothing else is invalidated
+     * and the override generation does not move, so no other texture is
+     * re-uploaded. Settled to "no" (rejected, or packs switched off), the
+     * entry stops asking and keeps its ROM pixels.
+     */
+    int refill = -1;
+    MdkrModTexture refill_over = { NULL, 0, 0, 0 };
+    if (hit >= 0 && tex_cache[hit].pack_pending) {
+        struct DkrTexCacheEntry *entry = &tex_cache[hit];
+        const uint32_t serial = mdkr_mod_texture_settled_serial();
+        /* A deferred entry waits for upload room, not for the store. */
+        const bool ask = entry->pack_deferred ? dkr_texpack_upload_room()
+                                              : entry->pack_serial != serial;
+        if (ask) {
+            bool still_pending = false;
+            entry->pack_serial = serial;
+            if (dkr_texpack_reask(entry, fmt, siz, &refill_over,
+                                  &still_pending)) {
+                if (dkr_texpack_upload_room()) {
+                    refill = hit;
+                    hit = -1;
+                } else {
+                    /* Resident, but no upload room left this frame: wait
+                     * for room, not for the store, which may not move
+                     * again. */
+                    entry->pack_deferred = true;
+                }
+            } else {
+                entry->pack_deferred = false;
+                if (!still_pending) entry->pack_pending = false;
+            }
+        }
+    }
     const bool was_hit = (hit >= 0);
     if (hit < 0) {
-        if (dkr_texpack_timing_on()) s_texpack.misses++;
-        int slot = tex_cache_next;
-        bool acquired = !tex_cache[slot].valid;
-        tex_cache_next = (tex_cache_next + 1) % DKR_TEXCACHE_SIZE;
-        uint32_t tid = acquired ? gfx_rapi->new_texture()
-                                : tex_cache[slot].texture_id;
+        int slot;
+        bool acquired;
+        uint32_t tid;
+        if (refill >= 0) {
+            if (dkr_texpack_timing_on()) s_texpack.refills++;
+            slot = refill;
+            acquired = false;
+            tid = tex_cache[slot].texture_id;
+        } else {
+            if (dkr_texpack_timing_on()) s_texpack.misses++;
+            slot = tex_cache_next;
+            acquired = !tex_cache[slot].valid;
+            tex_cache_next = (tex_cache_next + 1) % DKR_TEXCACHE_SIZE;
+            tid = acquired ? gfx_rapi->new_texture()
+                           : tex_cache[slot].texture_id;
+        }
         if (tid == 0) {
             return false;
         }
@@ -3087,8 +3255,14 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * the arena edge, and the decode drops those rows rather than reading
          * them. Hashing further than the decoder reads would read off the end
          * of the arena for the sake of a name. */
-        MdkrModTexture over = { NULL, 0, 0 };
-        bool over_used = false;
+        MdkrModTexture over = refill_over;
+        bool over_used = refill >= 0;
+        /* The replacement exists but is still loading: this fill draws the
+         * ROM texture and the entry remembers how to ask again. */
+        bool pack_pending = false;
+        bool rice_keyed = false;
+        uint32_t rice_key = 0;
+        uint32_t pack_serial = 0;
         char digest[33];
         bool digest_known = false;
         /* The span the digest was actually taken over, kept for the dump
@@ -3104,7 +3278,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * site needs: mdkr_mod_texture_lookup() already returns 0 without a
          * pack, so over_used still comes out false and the ROM path below still
          * runs unchanged. */
-        if (mdkr_mod_texture_store_active() || mdkr_mod_texture_dump_active()) {
+        if (refill < 0 &&
+            (mdkr_mod_texture_store_active() || mdkr_mod_texture_dump_active())) {
             size_t digest_room = dkr_arena_room(addr);
             digest_bytes = source_size_bytes;
             if (digest_room != (size_t)-1 && digest_bytes > digest_room) {
@@ -3115,32 +3290,54 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             dkr_texpack_add(&s_texpack.hash_ns, hash_start);
             digest_known = true;
             over_used = mdkr_mod_texture_lookup(digest, &over) != 0;
+            const bool digest_pending = over.pending != 0;
             /* A Rice/GLideN64 pack names this texture by an identity computed
              * over the very bytes in hand, so it is asked here and only on a
              * miss: a digest-keyed replacement is the player's more specific
-             * choice and keeps winning. The key needs the tile's geometry and
-             * its ROW PITCH -- the measured variant hashes the span as it sits
-             * in RDRAM, padding included, not as a tightly packed image. */
+             * choice and keeps winning -- including while it is still loading,
+             * when the Rice identity is computed (the entry must be able to
+             * ask for it later without the texels) but not yet asked for. The
+             * key needs the tile's geometry and its ROW PITCH -- the measured
+             * variant hashes the span as it sits in RDRAM, padding included,
+             * not as a tightly packed image. */
             if (!over_used && mdkr_mod_texture_rice_active()) {
-                uint32_t rice_key = 0;
-                bool rice_keyed;
                 hash_start = dkr_texpack_now();
                 rice_keyed = mdkr_rice_crc32(addr, digest_bytes, (int)tw,
                                              (int)th, (int)siz,
                                              (int)source_line_bytes,
                                              &rice_key);
                 dkr_texpack_add(&s_texpack.hash_ns, hash_start);
-                if (rice_keyed) {
+                if (rice_keyed && !digest_pending) {
                     over_used = mdkr_mod_texture_lookup_rice(
                         rice_key, (int)fmt, (int)siz, &over) != 0;
                 }
             }
+            pack_pending = !over_used && over.pending != 0;
+            pack_serial = mdkr_mod_texture_settled_serial();
+        }
+        bool pack_deferred = false;
+        if (over_used && refill < 0 && !dkr_texpack_upload_room()) {
+            /* Resident, but this frame's replacement uploads are spent: the
+             * original now, the replacement on a later frame. */
+            over_used = false;
+            pack_pending = true;
+            pack_deferred = true;
+            if (dkr_texpack_timing_on()) s_texpack.deferred++;
         }
         const uint64_t upload_start = dkr_texpack_now();
+        const bool budgeted = over_used && dkr_texpack_upload_budgeted();
+        const uint64_t budget_start = budgeted ? dkr_texpack_clock_ns() : 0u;
         const bool uploaded =
             over_used ? gfx_rapi->upload_texture(over.rgba, over.width,
                                                  over.height)
                       : dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived);
+        if (budgeted) {
+            const uint64_t budget_end = dkr_texpack_clock_ns();
+            if (budget_end > budget_start) {
+                s_texpack_upload_frame_ns += budget_end - budget_start;
+            }
+            s_texpack_upload_frame_count++;
+        }
         if (over_used) {
             dkr_texpack_add(&s_texpack.override_ns, upload_start);
             if (dkr_texpack_timing_on()) {
@@ -3254,7 +3451,13 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         tex_cache[slot] = (struct DkrTexCacheEntry){
             .key = achieved,
             .texture_id = tid, .upload_w = uw, .upload_h = uh,
-            .src_hash = now_hash, .valid = true };
+            .src_hash = now_hash, .valid = true,
+            .pack_pending = pack_pending, .pack_deferred = pack_deferred,
+            .pack_rice_keyed = rice_keyed,
+            .pack_rice_key = rice_key, .pack_serial = pack_serial };
+        if (pack_pending) {
+            memcpy(tex_cache[slot].pack_digest, digest, sizeof digest);
+        }
         hit = slot;
     } else {
         gfx_rapi->select_texture(unit, tex_cache[hit].texture_id);
@@ -8789,6 +8992,9 @@ bool gfx_start_frame(uint64_t authored_tick) {
         return false;
     }
     mdkr_web_startup_phase("gfx-backend-after");
+    /* Pack textures finished off the frame are installed here, once per
+     * real walk and before any bind can ask for them (issue #66). */
+    dkr_texpack_pump();
     mdkr_web_startup_phase("gfx-shadow-before");
     gfx_shadow_capture_begin();
     mdkr_web_startup_phase("gfx-shadow-after");

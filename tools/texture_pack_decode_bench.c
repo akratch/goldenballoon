@@ -8,16 +8,20 @@
  * and runs it over an isolated mods directory holding one pack. It answers
  * the questions a prefetch or background-decode design has to be sized from:
  *
- *   open    what one pack open + entry probe costs on its own. The store opens
- *           the pack once per file it looks for (mdkr_mod_registry_open_file),
- *           absent probes included, so this is paid per texture regardless of
- *           how small the texture is.
+ *   open    what one pack open + entry probe costs on its own, through
+ *           mdkr_mod_registry_open_file(). Before issue #66 the store paid this
+ *           per file it looked for, absent probes included; it now opens each
+ *           pack once per store generation and finds files in the registry's
+ *           name index.
  *   engine  every identity the pack indexes, resolved through the store's real
- *           lookup (mdkr_mod_texture_lookup_rice) with its resolve timing on:
+ *           lookup (mdkr_mod_texture_lookup_rice) with its resolve timing on,
+ *           under the INLINE loader so the whole cost lands in this thread:
  *           what "decode everything now" costs with today's resolver.
  *   stream  the same files read through ONE open source and decoded with the
- *           same stb_image call: the floor a resolver that keeps the archive
- *           open would pay, split into read+inflate and PNG decode.
+ *           same stb_image call: the floor any resolver pays, split into
+ *           read+inflate and PNG decode.
+ *
+ * Built with MDKR_MOD_TEXTURE_NO_WORKER, so the store needs no SDL here.
  *
  * Output is one JSON object on stdout. Usage:
  *   texture_pack_decode_bench <mods-dir> [open-probe-repeats]
@@ -130,7 +134,8 @@ int main(int argc, char **argv) {
         open_ns += now_ns() - start;
     }
 
-    /* 2. Every identity through the store's own resolver. */
+    /* 2. Every identity through the store's own resolver, on this thread. */
+    mdkr_mod_texture_store_set_loader(MDKR_MOD_TEXTURE_LOADER_INLINE);
     mdkr_mod_texture_store_init(&registry);
     mdkr_mod_texture_timing_set_clock(now_ns);
     start = now_ns();
