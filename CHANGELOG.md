@@ -10,7 +10,25 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+
+- Spaceport Alpha's pulsing floor ring (track model 18, texture 211, a 16x32
+  RGBA16 image) is drawn from its own pixels only. Retail loads two 2048-byte
+  images from every pulsing texture, which only the 64x32 and 32x64 layouts
+  hold. For this 1 KiB texture the N64 sampled its own pixels as a
+  32-texel-wide tile over half of the ring, and read past the allocation (its
+  display list, then the next texture) for the rest of the ring and the whole
+  second image; 1.7.0 issued the same out-of-bounds reads against native
+  memory. Native uploads keep the retail commands for the two full layouts and,
+  for any smaller texture, sample the N64's byte wherever it lies inside the
+  texture and wrap every other address back into it. Half of the ring now
+  matches an ares capture of the console's texture memory texel for texel; the
+  other half, and the pulse's second image, show the ring's own pixels where the
+  console showed unrelated memory. The ring's far edge, the only part on screen
+  during a normal race, is in that second half: the console shows a cream and
+  yellow fragment of a neighbouring texture there, and this build shows the
+  ring's blue panel. `pulse_material` decodes the production display list for
+  every admitted shape.
 
 ## [1.7.0] — 2026-09-11
 

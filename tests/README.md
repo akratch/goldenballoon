@@ -428,8 +428,20 @@ production `tracks.c` walker. MinGW additionally requires supported
 link-time optimization to discard unrelated engine references before linking;
 configuration fails if that capability is unavailable rather than omitting the
 test. GNU link-time work for this target is limited to one compiler worker.
-`ainode_route`, `engine_guards` and `save_records` link production engine files
-the same way, through `mdkr_add_engine_unit_test` in `cmake/tests.cmake`.
+`ainode_route`, `engine_guards`, `save_records` and `pulse_material` link
+production engine files the same way, through `mdkr_add_engine_unit_test` in
+`cmake/tests.cmake`.
+
+`pulse_material` decodes the display list the production
+`material_set_blinking_lights` emits into a small TMEM model. Retail loads two
+2048-byte images from every pulsing texture, a 64x16 or 32x32 tile at the texel
+base and another 2048 bytes later; only the 64x32 and 32x64 layouts are that
+large, and their texture commands must stay byte-identical to retail. For every
+other admitted shape (Spaceport Alpha's 16x32 floor ring is the retail case) each
+load must stay inside the texture, and every texel coordinate of both tiles must
+sample the byte the N64 samples, with addresses past the texture wrapped back
+into it. A positive control runs retail's 16x32 commands through the same model
+and must see them overrun the texture.
 
 The CI contract also pins Windows portable-settings read-back to a literal,
 whole-line match against the fresh process's read log. Its controls cover the
@@ -3100,8 +3112,9 @@ exercised without a ROM it has a behavioural unit, which this gate also runs:
 the route search's stale-link checks, and the route search against the original
 algorithm), `engine_guards` (`weather_reset` refuses a negative weather type
 before tearing anything down; `clear_lap_records` clears appended courses
-instead of reading defaults past the retail asset) and `save_records` (all four
-progress and record codecs use the retail save inventory). The rest are token
+instead of reading defaults past the retail asset), `save_records` (all four
+progress and record codecs use the retail save inventory) and `pulse_material`
+(see below). The rest are token
 checks of the essential guard inside the function that needs it, in the code
 the native build compiles: whitespace, line breaks, comments and braces do not
 matter, nothing is counted, and an `ordered` guard must come before the read it

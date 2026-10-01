@@ -32,9 +32,17 @@ unqualified; raw misc/header reference admission is still a separate step.
 
 Further September 27 work composes selected pulsing-texture payload checks into
 both model paths, including package-local versus immutable retail resolution.
-Native split-image uploads are dimension-aware; full retail compatibility and
-GL/WebGPU Spaceport sanitizer smokes pass. Command fixtures cover every supported
-split layout and preserve the two legacy layouts byte-for-byte. Active-wave
+Correction (2026-10-01): native pulsing uploads are bounded, not fully
+retail-compatible. Retail loads two 2048-byte images from every pulsing texture,
+so only the 64x32 and 32x64 layouts keep the retail commands (byte-for-byte).
+Smaller textures, of which Spaceport Alpha's 16x32 floor ring is the only retail
+case, sample the byte the N64 samples wherever it lies inside the texture and
+wrap every other address back into it; the N64 read unrelated memory there, so
+that part of the ring deliberately differs from the console (see the CHANGELOG).
+A custom pulsing texture therefore pulses between two distinct images only in
+those two full layouts. The `pulse_material` CTest decodes the production
+commands for every admitted shape; GL/WebGPU Spaceport sanitizer smokes pass.
+Active-wave
 strip command limits and ordinary draw-batch limits are also admitted. These
 are not a complete material/renderer semantic proof or visual acceptance.
 

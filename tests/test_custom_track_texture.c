@@ -1,6 +1,5 @@
 #include "custom_track_texture.h"
 #include "runtime_contracts.h"
-#include "f3ddkr.h"
 #include <stdio.h>
 #include <string.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "texture admission line %d\n", __LINE__); return 1; } } while (0)
@@ -9,48 +8,28 @@ static void header(unsigned char *p, unsigned frames) {
     p[0x12] = (unsigned char)frames; p[0x17] = 64;
 }
 int main(void) {
-    unsigned shapes[33][2] = {{64,32}, {32,64}, {16,32}};
-    unsigned shape_count = 3;
+    /* Admission shares the renderer's upload plan; the emitted commands and
+     * the sampled bytes are decoded from the production material function in
+     * test_pulse_material.c. Here: the plan for every admitted shape. */
     for (unsigned width = 4; width <= 64; width *= 2)
-        for (unsigned height = 2; height <= 64; height *= 2)
-            if (width * height <= 2048) {
-                CHECK(shape_count < sizeof shapes / sizeof shapes[0]);
-                shapes[shape_count][0] = width;
-                shapes[shape_count++][1] = height;
+        for (unsigned height = 2; height <= 64; height *= 2) {
+            if (width * height > 2048) continue;
+            MdkrPulseUpload plan;
+            CHECK(mdkr_texture_pulse_upload(width, height, 1, &plan));
+            const size_t bytes = (size_t)width * height * 2;
+            CHECK(plan.textureBytes == bytes && plan.wrapped == (bytes < 4096));
+            const MdkrPulseTile *tiles[2] = {&plan.texel1, &plan.texel0};
+            for (unsigned i = 0; i < 2; ++i) {
+                const MdkrPulseTile *tile = tiles[i];
+                const size_t loaded = (size_t)tile->width * tile->height * 2;
+                CHECK(tile->offsetBytes + loaded <= bytes);
+                CHECK((1u << tile->maskS) == tile->width && (1u << tile->maskT) == tile->height);
+                CHECK(tile->clampT == (tile->height == 1));
+                CHECK(loaded == (bytes < 2048 ? bytes : 2048));
             }
-    for (unsigned shape = 0; shape < shape_count; ++shape) {
-        MdkrPulseTextureLayout layout;
-        CHECK(mdkr_texture_pulse_layout(shapes[shape][0], shapes[shape][1], 1, &layout));
-        CHECK(layout.halfBytes == shapes[shape][0] * shapes[shape][1]);
-        CHECK((1u << layout.maskS) == layout.width);
-        CHECK((1u << layout.maskT) == layout.halfHeight);
-        Gfx generated[32] = {0}, original[32] = {0};
-        Gfx *g = generated, *o = original;
-        gDPLoadMultiBlock(g++, 0x1000, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b,
-            layout.width, layout.halfHeight, 0, 0, 0, layout.maskS, layout.maskT, 0, 0);
-        gDPLoadTextureBlock(g++, 0x1000 + layout.halfBytes, G_IM_FMT_RGBA, G_IM_SIZ_16b,
-            layout.width, layout.halfHeight, 0, 0, 0, layout.maskS, layout.maskT, 0, 0);
-        if (shape == 0) {
-            gDPLoadMultiBlock(o++, 0x1000, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 64, 16, 0, 0, 0, 6, 4, 0, 0);
-            gDPLoadTextureBlock(o++, 0x1800, G_IM_FMT_RGBA, G_IM_SIZ_16b, 64, 16, 0, 0, 0, 6, 4, 0, 0);
-        } else if (shape == 1) {
-            gDPLoadMultiBlock(o++, 0x1000, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
-            gDPLoadTextureBlock(o++, 0x1800, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
+            if (bytes == 4096) CHECK(plan.texel1.offsetBytes == 0 && plan.texel0.offsetBytes == 2048);
+            else CHECK(plan.texel1.offsetBytes == 0 && plan.texel0.offsetBytes == 0);
         }
-        if (shape < 2) CHECK(g - generated == o - original && !memcmp(generated, original, sizeof generated));
-        unsigned images = 0, blocks = 0;
-        for (Gfx *command = generated; command < g; ++command) {
-            if ((command->words.w0 >> 24) == G_SETTIMG) {
-                CHECK(command->words.w1 == 0x1000 + images * layout.halfBytes);
-                ++images;
-            }
-            if ((command->words.w0 >> 24) == G_LOADBLOCK) {
-                CHECK((((command->words.w1 >> 12) & 0xFFF) + 1) * 2 == layout.halfBytes);
-                ++blocks;
-            }
-        }
-        CHECK(images == 2 && blocks == 2);
-    }
     unsigned char authored[32 + 129 * 129 * 4] = {0};
     static const unsigned bits[] = {32, 16, 8, 4, 16, 8, 4};
     for (unsigned format = 0; format < 7; ++format)
@@ -72,13 +51,12 @@ int main(void) {
                     result.meaningful_bytes == 99 && result.runtime_allocation_bytes == 99);
                 result = (MdkrTrackTextureInfo){99, 99, 99, 99};
                 const int pulse_valid = valid && format == 1 && width >= 4 && height >= 2;
-                MdkrPulseTextureLayout layout = {99, 99, 99, 99, 99};
-                CHECK(mdkr_texture_pulse_layout(width, height, format, &layout) == pulse_valid);
-                if (pulse_valid) {
-                    CHECK(layout.halfBytes * 2 == texels);
-                    CHECK((1u << layout.maskS) == width && (1u << layout.maskT) == height / 2);
-                } else CHECK(layout.width == 99 && layout.halfHeight == 99 &&
-                    layout.maskS == 99 && layout.maskT == 99 && layout.halfBytes == 99);
+                MdkrPulseUpload upload;
+                memset(&upload, 0x63, sizeof(upload));
+                MdkrPulseUpload untouched = upload;
+                CHECK(mdkr_texture_pulse_upload(width, height, format, &upload) == pulse_valid);
+                if (pulse_valid) CHECK(upload.textureBytes == texels);
+                else CHECK(!memcmp(&upload, &untouched, sizeof(upload)));
                 CHECK(mdkr_track_texture_pulse_payload(authored, size, NULL, 0, &result) ==
                     (pulse_valid ? MDKR_TRACK_TEXTURE_OK : MDKR_TRACK_TEXTURE_MATERIAL_LIMIT));
                 if (!pulse_valid) CHECK(result.frames == 99 && result.translucent_frames == 99 &&

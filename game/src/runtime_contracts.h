@@ -69,14 +69,29 @@ s32 mdkr_trophy_state(u32 trophies, s32 worldId, u32 *state);
 /* Furthest medal per world, not bitwise union of encoded medal ranks. */
 u32 mdkr_trophy_records_merge(u32 left, u32 right);
 s32 mdkr_extension_bit(char extension, u32 *bit);
-typedef struct MdkrPulseTextureLayout {
-    unsigned width, halfHeight, maskS, maskT;
-    size_t halfBytes;
-} MdkrPulseTextureLayout;
-/* Two contiguous RGBA16 images. Rows must fit whole 64-bit TMEM words;
- * both halves together fit 4 KiB. Output unchanged on invalid dimensions. */
-s32 mdkr_texture_pulse_layout(unsigned width, unsigned height, unsigned format,
-    MdkrPulseTextureLayout *out);
+/* One of the two images a pulsing-light material loads: the source offset
+ * from the texel base and the RGBA16 tile it is loaded as. clampT marks a
+ * one-row tile whose rows all repeat that row. */
+typedef struct MdkrPulseTile {
+    size_t offsetBytes;
+    unsigned width, height, maskS, maskT, clampT;
+} MdkrPulseTile;
+/* texel1 is retail's first image (TMEM 256, tile 1), texel0 its second. */
+typedef struct MdkrPulseUpload {
+    MdkrPulseTile texel1, texel0;
+    size_t textureBytes;
+    s32 wrapped;
+} MdkrPulseUpload;
+/* Retail loads two 2048-byte RGBA16 images from every pulsing texture: a
+ * 64x16 tile (64-wide textures) or a 32x32 tile (any other width) at the texel
+ * base and another at +2048 bytes. That is exactly the 64x32 and 32x64
+ * layouts, whose plan reproduces the retail commands. A smaller texture made
+ * the N64 sample past its allocation; the plan samples the same byte wherever
+ * that byte is inside the texture and wraps every other address back into it,
+ * so no load reads past the texture. Requires RGBA16, power-of-two sides
+ * 4..64 wide and 2..64 high, at most 4 KiB. Output unchanged on refusal. */
+s32 mdkr_texture_pulse_upload(unsigned width, unsigned height, unsigned format,
+    MdkrPulseUpload *out);
 s32 mdkr_texture_allocation_size(size_t dataBytes, size_t frameCount,
                                  size_t textureCommandBytes,
                                  size_t paletteCommandBytes,

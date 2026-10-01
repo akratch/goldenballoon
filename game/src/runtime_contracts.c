@@ -219,14 +219,53 @@ static s32 checked_size_mul(size_t left, size_t right, size_t *result) {
     return TRUE;
 }
 
-s32 mdkr_texture_pulse_layout(unsigned width, unsigned height, unsigned format,
-    MdkrPulseTextureLayout *out) {
+static unsigned pulse_log2(unsigned value) {
+    unsigned bits = 0;
+    while (value > 1u) {
+        value >>= 1;
+        ++bits;
+    }
+    return bits;
+}
+
+s32 mdkr_texture_pulse_upload(unsigned width, unsigned height, unsigned format,
+    MdkrPulseUpload *out) {
     if (!out || format != 1 || width < 4 || width > 64 || height < 2 || height > 64 ||
         (width & (width - 1)) || (height & (height - 1)) || width * height > 2048)
         return 0;
-    MdkrPulseTextureLayout result = {width, height / 2, 0, 0, (size_t)width * height};
-    for (unsigned n = width; n > 1; n >>= 1) ++result.maskS;
-    for (unsigned n = height / 2; n > 1; n >>= 1) ++result.maskT;
+    /* The retail tile, and the address each image starts at. */
+    const unsigned tileWidth = width == 64 ? 64u : 32u;
+    const unsigned tileHeight = width == 64 ? 16u : 32u;
+    const size_t retailImageBytes = (size_t)tileWidth * tileHeight * 2u;
+    const size_t textureBytes = (size_t)width * height * 2u;
+    MdkrPulseUpload result;
+    memset(&result, 0, sizeof(result));
+    result.textureBytes = textureBytes;
+    result.wrapped = textureBytes < 2u * retailImageBytes;
+    for (unsigned image = 0; image < 2; ++image) {
+        MdkrPulseTile *tile = image == 0 ? &result.texel1 : &result.texel0;
+        /* Both sizes are powers of two: when the texture is smaller than one
+         * retail image, every retail address modulo the texture size is the
+         * texture's own bytes repeated, which a tile of exactly those bytes
+         * with power-of-two wrap masks samples identically. */
+        tile->offsetBytes = (image * retailImageBytes) % textureBytes;
+        if (textureBytes >= retailImageBytes) {
+            tile->width = tileWidth;
+            tile->height = tileHeight;
+        } else if (textureBytes >= (size_t)tileWidth * 2u) {
+            tile->width = tileWidth;
+            tile->height = (unsigned)(textureBytes / ((size_t)tileWidth * 2u));
+        } else {
+            /* Fewer texels than one retail row: that run repeats along the
+             * row, and every row is the same row. */
+            tile->width = (unsigned)(textureBytes / 2u);
+            tile->height = 1u;
+        }
+        tile->maskS = pulse_log2(tile->width);
+        tile->maskT = pulse_log2(tile->height);
+        /* A zero mask does not wrap: hold one-row tiles on their only row. */
+        tile->clampT = tile->height == 1u;
+    }
     *out = result;
     return 1;
 }

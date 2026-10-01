@@ -64,9 +64,9 @@ static MdkrTrackTextureResult material_payload(const void *data, size_t size,
         if (width > 64 || height > 64 || (width & (width - 1)) ||
             (height & (height - 1)) || row * height > 4096)
             return MDKR_TRACK_TEXTURE_MATERIAL_LIMIT;
-        MdkrPulseTextureLayout pulse_layout;
-        if (pulsing && !mdkr_texture_pulse_layout(width, height,
-                header[2] & 15, &pulse_layout))
+        MdkrPulseUpload pulse_upload;
+        if (pulsing && !mdkr_texture_pulse_upload(width, height,
+                header[2] & 15, &pulse_upload))
             return MDKR_TRACK_TEXTURE_MATERIAL_LIMIT;
     }
     *out = result;

@@ -4,8 +4,9 @@
 The ROM-free unit executables exercise the shared boundary helpers and, since
 1.8, the guards themselves: runtime_contracts (the helpers), ainode_route (the
 AI-node rebuild and route-search guards), engine_guards (weather_reset and
-clear_lap_records) and save_records (record bytes and the retail save
-inventory). This gate runs all four.
+clear_lap_records), save_records (record bytes and the retail save
+inventory) and pulse_material (the pulsing-light uploads). This gate runs all
+five.
 
 The source census complements them where a guard has no ROM-free behavioural
 witness. Two kinds of check:
@@ -239,11 +240,6 @@ GUARDS = (
           ("mdkr_light_cycle_time(data->time, timeDelta, data->totalTime)",
            "mdkr_light_fraction(data->frames[nextFrameIndex].value,"),
           why="pulsating lights advance and interpolate through the bounded helpers"),
-    Guard("game/src/textures_sprites.c", "material_set_blinking_lights",
-          ("mdkr_texture_pulse_layout(texture_list->width, texture_list->height,",
-           "tblock = mblock + layout.halfBytes / sizeof(*mblock);"),
-          ordered=True,
-          why="the second pulse image is located from a validated layout"),
     Guard("game/src/objects.c", "allocate_object_pools",
           ("for (i = 0; i < MDKR_OBJ_BHV_CACHE_N; ++i) sObjectBehaviorCache[i] = -3;",),
           why="the behaviour cache is reset with the object pools"),
@@ -277,6 +273,8 @@ BEHAVIOUR_UNITS = {
                                "clear_lap_records past the retail inventory",
     "mdkr_save_records_test": "save_data.c codecs use the retail inventory "
                               "(level_count_for_save); record bytes are deterministic",
+    "mdkr_pulse_material_test": "textures_sprites.c material_set_blinking_lights loads only "
+                                "the texture and samples the N64's bytes (wrapped)",
 }
 
 TOKEN_RE = re.compile(r"""

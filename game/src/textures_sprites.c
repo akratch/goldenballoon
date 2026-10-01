@@ -1168,33 +1168,38 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
     }
     mblock = (u16 *) (texture_list + 1);
 #ifdef NATIVE_PORT
-    MdkrPulseTextureLayout layout;
-    if (!mdkr_texture_pulse_layout(texture_list->width, texture_list->height,
-            TEX_FORMAT(texture_list->format), &layout)) {
+    /* Retail loads 2048 bytes at the texel base and 2048 more after them.
+     * Only the 64x32 and 32x64 layouts hold that much; Spaceport Alpha's
+     * 16x32 floor ring made the N64 sample its own Gfx list and the next
+     * texture. The plan keeps the retail commands for both full layouts and,
+     * for smaller textures, samples the byte the N64 sampled wherever it lay
+     * inside the texture, wrapping every other address back into it. */
+    MdkrPulseUpload upload;
+    if (!mdkr_texture_pulse_upload(texture_list->width, texture_list->height,
+            TEX_FORMAT(texture_list->format), &upload)) {
         material_set(dList, texture_list, flags & ~RENDER_PULSING_LIGHTS, 0);
         return;
     }
-    tblock = mblock + layout.halfBytes / sizeof(*mblock);
+    tblock = mblock + upload.texel0.offsetBytes / sizeof(*mblock);
     /* Bounded diagnostic: witness the actual selected frame, not just an
      * asset carrying the pulse bit. No texture bytes or addresses are logged. */
     if (mdkr_trace_level() >= 2) {
         static unsigned seenLayouts;
-        int splitLayout = TEX_FORMAT(texture_list->format) == TEX_FORMAT_RGBA16 &&
-            ((texture_list->width == 64 && texture_list->height == 32) ||
-             (texture_list->width == 32 && texture_list->height == 64));
-        unsigned bit = splitLayout ? 1u : 2u;
+        unsigned bit = upload.wrapped ? 2u : 1u;
         if (!(seenLayouts & bit)) {
             seenLayouts |= bit;
-            mdkr_trace("pulse_material: width=%u height=%u format=%u legacy_layout=%d half_bytes=%zu",
-                texture_list->width, texture_list->height, texture_list->format, splitLayout, layout.halfBytes);
+            mdkr_trace("pulse_material: width=%u height=%u format=%u wrapped=%d texture_bytes=%zu "
+                       "tile=%ux%u second_offset=%zu",
+                texture_list->width, texture_list->height, texture_list->format, (int)upload.wrapped,
+                upload.textureBytes, upload.texel1.width, upload.texel1.height, upload.texel0.offsetBytes);
         }
     }
-    gDPLoadMultiBlock((*dList)++, OS_K0_TO_PHYSICAL(mblock), 256, 1,
-        G_IM_FMT_RGBA, G_IM_SIZ_16b, layout.width, layout.halfHeight,
-        0, 0, 0, layout.maskS, layout.maskT, 0, 0);
+    gDPLoadMultiBlock((*dList)++, OS_K0_TO_PHYSICAL(mblock + upload.texel1.offsetBytes / sizeof(*mblock)), 256, 1,
+        G_IM_FMT_RGBA, G_IM_SIZ_16b, upload.texel1.width, upload.texel1.height,
+        0, 0, upload.texel1.clampT ? G_TX_CLAMP : G_TX_WRAP, upload.texel1.maskS, upload.texel1.maskT, 0, 0);
     gDPLoadTextureBlock((*dList)++, OS_K0_TO_PHYSICAL(tblock),
-        G_IM_FMT_RGBA, G_IM_SIZ_16b, layout.width, layout.halfHeight,
-        0, 0, 0, layout.maskS, layout.maskT, 0, 0);
+        G_IM_FMT_RGBA, G_IM_SIZ_16b, upload.texel0.width, upload.texel0.height,
+        0, 0, upload.texel0.clampT ? G_TX_CLAMP : G_TX_WRAP, upload.texel0.maskS, upload.texel0.maskT, 0, 0);
 #else
     tblock = mblock + 0x400;
     if (texture_list->width == 64) {
