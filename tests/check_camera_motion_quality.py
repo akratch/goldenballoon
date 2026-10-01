@@ -78,6 +78,9 @@ MAX_EMERGENCY_DWELL_TICKS = 300
 # and they must equal these, so neither side can drift alone.
 MAX_HELD_DWELL_SECONDS = 2.0
 MAX_HELD_DIVERGENCE_DEGREES = 60.0
+# The held view's divergence leash (MDKR_CAMERA_HELD_SOFT_DIVERGENCE_DEGREES):
+# not a failure bound, but the binary must report the shipped value.
+HELD_LEASH_DEGREES = 45.0
 # One authored tick of float accumulation slack on the measured dwell.
 HELD_DWELL_SLACK_SECONDS = 1.0 / 60.0
 
@@ -125,6 +128,22 @@ ROUTES: tuple[Route, ...] = (
         extra_env={"MDKR_AUTOPILOT": "1"},
         description="3P Ancient Lake with the fourth viewport on the T.T. "
                     "spectator camera, as check_camera_3p_tt_runtime.py pins",
+    ),
+    # The shipped default cadence. The release hold and its grazing extension
+    # are counted in ticks, so at Original they last twice as long in seconds
+    # and a held view turns further than it can at Enhanced; with
+    # Camera.Comfort's slower return on top, this is where held views meet
+    # their divergence bound in normal play.
+    Route(
+        name="3p-tt-original-comfort",
+        script="tests/input_scripts/race_3p_tt_camera.txt",
+        frames=7000,
+        window="1920x1080",
+        timeout=1200,
+        extra_env={"MDKR_AUTOPILOT": "1", "MDKR_SIMULATION_CADENCE": "original",
+                   "MDKR_CAMERA_COMFORT": "reduced"},
+        description="the 3P route at the default Original cadence with "
+                    "Camera.Comfort reduced",
     ),
 )
 
@@ -225,6 +244,11 @@ def parse_summary(row: str) -> dict[str, float]:
         "release_hold_ticks": block_scalar(row, "release_hold", "held_ticks"),
         "release_hold_spans": block_scalar(row, "release_hold", "spans"),
         "release_hold_window": block_scalar(row, "release_hold", "window"),
+        "release_extension_ticks": block_scalar(row, "release_hold", "extension_ticks"),
+        "release_extension_releases": block_scalar(row, "release_hold", "extension_releases"),
+        "release_extension_contacts": block_scalar(row, "release_hold", "extension_contacts"),
+        "release_extension_margin": block_real(row, "release_hold", "extension_margin"),
+        "release_extension_bound": block_scalar(row, "release_hold", "extension_bound"),
         "profile_full": block_scalar(row, "profiles", "full"),
         "profile_safety_only": block_scalar(row, "profiles", "safety_only"),
         "profile_depenetrate_only": block_scalar(row, "profiles", "depenetrate_only"),
@@ -253,6 +277,10 @@ def parse_summary(row: str) -> dict[str, float]:
         "max_held_dwell_ms": block_real(row, "held", "max_dwell_ms"),
         "max_held_divergence_deg": block_real(row, "held", "max_divergence_deg"),
         "held_bound_exits": block_scalar(row, "held", "bound_exits"),
+        "held_bound_handovers": block_scalar(row, "held", "handovers"),
+        "held_bound_handovers_unflagged": block_scalar(row, "held", "unflagged_handovers"),
+        "held_leash_ticks": block_scalar(row, "held", "leash_ticks"),
+        "held_leash_bound_deg": block_real(row, "held", "leash_bound_deg"),
         "held_dwell_bound_ms": block_real(row, "held", "dwell_bound_ms"),
         "held_divergence_bound_deg": block_real(row, "held", "divergence_bound_deg"),
         "max_held_episode_ms": block_real(row, "held", "max_episode_ms"),
@@ -417,11 +445,14 @@ def cut_census_failures(name: str, summary: dict, stats: dict) -> list[str]:
 def held_bound_failures(name: str, summary: dict) -> list[str]:
     failures = []
     if abs(summary["held_dwell_bound_ms"] - MAX_HELD_DWELL_SECONDS * 1000.0) > 0.05 or \
-            abs(summary["held_divergence_bound_deg"] - MAX_HELD_DIVERGENCE_DEGREES) > 0.0005:
+            abs(summary["held_divergence_bound_deg"] - MAX_HELD_DIVERGENCE_DEGREES) > 0.0005 or \
+            abs(summary["held_leash_bound_deg"] - HELD_LEASH_DEGREES) > 0.0005:
         failures.append(
             f"{name}: runtime held-shot bounds "
             f"{summary['held_dwell_bound_ms']}ms/{summary['held_divergence_bound_deg']}deg "
-            f"are not the shipped {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg")
+            f"(leash {summary['held_leash_bound_deg']}deg) are not the shipped "
+            f"{MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg "
+            f"(leash {HELD_LEASH_DEGREES}deg)")
     if summary["max_held_dwell_ms"] > (MAX_HELD_DWELL_SECONDS + HELD_DWELL_SLACK_SECONDS) * 1000.0:
         failures.append(
             f"{name}: a held shot held for {summary['max_held_dwell_ms']:.1f} ms "
@@ -431,6 +462,13 @@ def held_bound_failures(name: str, summary: dict) -> list[str]:
             f"{name}: a published held view turned "
             f"{summary['max_held_divergence_deg']:.2f} degrees from the authored view "
             f"(> {MAX_HELD_DIVERGENCE_DEGREES})")
+    # A bound handover replaces a held view with the ordinary path's; that is a
+    # shot change and must be published as a cut, never interpolated as a whip.
+    if summary["held_bound_handovers_unflagged"] > 0:
+        failures.append(
+            f"{name}: {summary['held_bound_handovers_unflagged']} of "
+            f"{summary['held_bound_handovers']} held-shot bound handovers were "
+            "not published as a cut")
     return failures
 
 
@@ -472,6 +510,14 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
           f"window={summary['release_hold_window']}t "
           f"-- ticks a latched retraction stayed engaged over a corridor its "
           f"own sweep called clear; this is the entire cost of the hysteresis")
+    print(f"    grazing extension        "
+          f"ticks={summary['release_extension_ticks']} "
+          f"deferred_releases={summary['release_extension_releases']} "
+          f"carried_to_contact={summary['release_extension_contacts']} "
+          f"margin={summary['release_extension_margin']:.2f} "
+          f"bound={summary['release_extension_bound']}t "
+          f"-- the part of those held ticks served past the hold because the "
+          f"clear corridor still grazed")
     print(f"    published cuts           {summary['discontinuities']} "
           f"({summary['discontinuity_per_1000_ticks']:.4f} per 1000 slot ticks)")
     if "transition_invoked" in summary:
@@ -501,8 +547,12 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
     print(f"    held shots (HARD bounds) episodes={summary['held_episodes']} "
           f"max_dwell={summary['max_held_dwell_ms']:.1f}ms "
           f"max_divergence={summary['max_held_divergence_deg']:.2f}deg "
-          f"bound_exits={summary['held_bound_exits']} "
-          f"-- bounds {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg; "
+          f"refusals={summary['held_bound_exits']} "
+          f"handovers={summary['held_bound_handovers']} "
+          f"(unflagged {summary['held_bound_handovers_unflagged']}) "
+          f"leashed={summary['held_leash_ticks']} "
+          f"-- bounds {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg, "
+          f"leash {HELD_LEASH_DEGREES}deg; "
           f"longest episode incl. recovery {summary['max_held_episode_ms']:.1f}ms (reported)")
     print(f"  [{name}] BASELINE distributions -- reported, NOT asserted; "
           "section 7.3's signed review sets thresholds from these")

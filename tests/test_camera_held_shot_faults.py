@@ -2,7 +2,7 @@
 """ROM-free evidence rules for check_camera_held_shot_faults.py; never launches the game."""
 import unittest
 
-from check_camera_held_shot_faults import (BOUND_ARMS,
+from check_camera_held_shot_faults import (BOUND_ARMS, LEASH_ARM, LEASH_FULL_STEP,
                                            NEAR_CONTACT_EXTENSION_TICKS,
                                            RELEASE_HOLD_TICKS, epochs,
                                            release_hold_invariant, probes,
@@ -14,26 +14,30 @@ CENSUS = ("camera_motion summary slot_ticks=100 ticks=100 cut_ticks=0 "
           "profiles={full=100 safety_only=0 depenetrate_only=0} "
           "events={retract=1 recovery=1 alternate_entry=1 alternate_exit=1 "
           "emergency_entry=0 discontinuity=0 degenerate=0} "
-          "release_hold={held_ticks=0 spans=0 window=%d} "
+          "release_hold={held_ticks=0 spans=0 window=%d extension_ticks=0 "
+          "extension_releases=0 extension_contacts=0 extension_margin=4.50 "
+          "extension_bound=12} "
           "chatter={oscillation_cycles=0 oscillation_cycles_excused=0 "
           "correction_reengagements=%d} "
           "shoulder={flips=0 continuous_surface=0 new_surface=0 basis_crossings=0} "
           "churn={blocker_changes=0 same_surface=0 new_surface=0} "
           "emergency={max_dwell=0} "
           "held={episodes=1 max_dwell_ms=%.1f max_divergence_deg=%.3f bound_exits=%d "
-          "dwell_bound_ms=%.1f divergence_bound_deg=%.3f max_episode_ms=100.0} "
+          "handovers=0 unflagged_handovers=%d leash_ticks=%d "
+          "dwell_bound_ms=%.1f divergence_bound_deg=%.3f leash_bound_deg=%.3f "
+          "max_episode_ms=100.0} "
           "discontinuity_per_1000_ticks=0.0000")
 STATS = ("camera_motion stat name=cut_pos_step unit=wu/cut samples=0 min=0.0 mean=0.0 p95=0.0 max=0.0\n"
          "camera_motion stat name=cut_ang_step unit=deg/cut samples=0 min=0.0 mean=0.0 p95=0.0 max=0.0")
 
 
 def probe(tick, continued, length, recovering=0, contact=1, near=0, valid=1,
-          rejection="none", dwell=0.0167, divergence=1.0):
+          rejection="none", dwell=0.0167, divergence=1.0, leash=0.0):
     return (f"camera_held_chain_probe tick={tick} slot={SLOT} continued={continued} "
             f"prior_length={length} valid={valid} target=(0.10000,-0.20000) "
             f"recovering={recovering} remaining={'2.00000' if valid else 'nan'} "
             f"returned=0 rejection={rejection} contact={contact} near={near} "
-            f"dwell={dwell:.4f} divergence={divergence:.3f}")
+            f"dwell={dwell:.4f} divergence={divergence:.3f} leash={leash:.3f}")
 
 
 def summary(tick, degraded=0, hidden=0, penetrated=0):
@@ -68,9 +72,9 @@ def published(tick, active=1, dwell=0.0167, divergence=1.0):
 
 
 def census(reengagements=0, max_dwell=100.0, max_divergence=1.0, exits=0,
-           bounds=(2000.0, 60.0)):
+           bounds=(2000.0, 60.0), leash=45.0, leash_ticks=0, unflagged=0):
     return CENSUS % (RELEASE_HOLD_TICKS, reengagements, max_dwell, max_divergence,
-                     exits, bounds[0], bounds[1])
+                     exits, unflagged, leash_ticks, bounds[0], bounds[1], leash)
 
 
 def trace(armed, ticks, reengagements=0, extra=(), census_row=None):
@@ -153,7 +157,7 @@ def query(consumed=True, rejected=True, marked=True):
 
 
 def bound_arm(kind="dwell_bound", republished=False, published_past=False,
-              ordinary_ok=True, exits=1, lowered=True, seed=False):
+              ordinary_ok=True, exits=1, lowered=True, seed=False, cut=True):
     """A held shot (or, with `seed`, a held seed) refused by a lowered bound,
     then the ordinary path."""
     dwell_bound, divergence_bound = BOUND_ARMS[kind]
@@ -161,9 +165,11 @@ def bound_arm(kind="dwell_bound", republished=False, published_past=False,
     ticks = holding(10, 3)
     refused = 13
     status = "1" if ordinary_ok else "1 valid=0"
+    handover = detail(refused, status=status)
+    if cut:
+        handover = handover.replace(" discontinuity=0 ", " discontinuity=1 ")
     ticks.append((refused, [probe(refused, 0 if seed else 1, 0 if seed else 3,
-                                  valid=0, rejection=reason),
-                            detail(refused, status=status)]))
+                                  valid=0, rejection=reason), handover]))
     reseed = [probe(14, 0, 0), published(14)] if seed else \
         ([published(14)] if republished else [])
     ticks.append((14, [detail(14, status=2)] + reseed))
@@ -188,6 +194,21 @@ def soft_arm(held_too=False, declined=True, deferrals=1):
             lines.append(published(tick))
         ticks.append((tick, lines))
     return trace(None, ticks)
+
+
+def leash_arm(turned=True, slack=False, ticks_counted=True, lowered=True):
+    """Held shots past a 2-degree leash, turned back at the full rate."""
+    leash_bound = LEASH_ARM[2]
+    rows = holding(10, 2)
+    for tick in range(12, 16):
+        turn = LEASH_FULL_STEP if turned else 0.0
+        if slack and tick == 14:
+            turn = LEASH_FULL_STEP / 2
+        rows.append((tick, [probe(tick, 1, tick - 10, divergence=leash_bound + 5.0,
+                                  leash=turn), published(tick)]))
+    return trace(None, rows, census_row=census(
+        leash=leash_bound if lowered else 45.0,
+        leash_ticks=4 if ticks_counted else 0, bounds=(3600000.0, 180.0)))
 
 
 class HeldShotEvidence(unittest.TestCase):
@@ -267,7 +288,8 @@ class HeldShotEvidence(unittest.TestCase):
                         (bound_arm(kind, exits=0), "reached the lowered"),
                         (bound_arm(kind, republished=True), "re-seeded"),
                         (bound_arm(kind, published_past=True), "past its bound"),
-                        (bound_arm(kind, ordinary_ok=False), "ordinary path")):
+                        (bound_arm(kind, ordinary_ok=False), "ordinary path"),
+                        (bound_arm(kind, cut=False), "handover was not a cut")):
                     with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
                         verify(output, kind)
                 # A refused seed published nothing, so the next tick may seed.
@@ -277,6 +299,15 @@ class HeldShotEvidence(unittest.TestCase):
             verify(bound_arm("dwell_bound").replace("dwell_bound_ms=200.0 divergence_bound_deg=180.000",
                                                     "dwell_bound_ms=3600000.0 divergence_bound_deg=2.000"),
                    other)
+
+    def test_leash_arm(self):
+        self.assertEqual(verify(leash_arm(), "leash"), 4)
+        for output, reason in ((leash_arm(lowered=False), "lowered leash"),
+                               (leash_arm(ticks_counted=False), "never turned"),
+                               (leash_arm(turned=False, ticks_counted=True), "turned back only"),
+                               (leash_arm(slack=True), "turned back only")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                verify(output, "leash")
 
     def test_soft_decline_arm(self):
         self.assertEqual(verify(soft_arm(deferrals=3), "soft_decline"), 3)

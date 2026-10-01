@@ -17,7 +17,7 @@ ROW = re.compile(
     r"recovering=([01]) remaining=(\S+) returned=([01])"
     r"(?: rejection=(history|dwell|pose|divergence|endpoint|transition|boom|visibility|"
     r"degraded|framing|none))?"
-    r"(?: contact=([01]) near=([01]) dwell=(\S+) divergence=(\S+))?$")
+    r"(?: contact=([01]) near=([01]) dwell=(\S+) divergence=(\S+)(?: leash=(\S+))?)?$")
 
 
 def audit(lines, required_returns=()):
@@ -49,6 +49,11 @@ def audit(lines, required_returns=()):
                 raise ValueError(f"line {number}: invalid held dwell")
             if valid and not (math.isfinite(divergence) and 0 <= divergence <= 180):
                 raise ValueError(f"line {number}: accepted an unmeasured view divergence")
+            leash = float(match[16]) if match[16] is not None else 0.0
+            if not (math.isfinite(leash) and 0 <= leash <= 22.5):
+                raise ValueError(f"line {number}: invalid leash turn")
+            if leash > 0 and recovering:
+                raise ValueError(f"line {number}: leash turned a recovering view")
         previous = history.get(slot)
         if continued and previous != (tick - 1, length):
             raise ValueError(f"line {number}: continuation lacks matching accepted history")

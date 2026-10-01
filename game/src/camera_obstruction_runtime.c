@@ -57,48 +57,67 @@
  */
 #define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U
 /*
- * Grazing extension (resolver: release_near_contact_extension_ticks). A served hold
- * releases at once when the clear corridor also clears every surface by
- * MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN; while it is clear but still grazing
- * within that margin, the hold may wait up to the chatter window longer.
+ * Grazing extension of the release hold (resolver:
+ * release_near_contact_extension_ticks): distance hysteresis on top of the
+ * hold's time hysteresis. Contact is a corridor sweep that hits; a corridor
+ * that has merely stopped hitting may still be grazing the surface it left.
+ * A served hold therefore releases at once only when the clear corridor also
+ * clears every surface by GRAZING_MARGIN (the exact lens with its skin grown
+ * by that much, swept over the same corridor). While it still grazes, release
+ * waits up to GRAZING_EXTENSION_TICKS more clear ticks, then lets go anyway,
+ * so a camera riding along a wall without touching it is not corrected
+ * indefinitely.
  *
- * Measured, not chosen: on the Ancient Lake route the authored boom leaves one
- * canyon-wall facet, stays clear of the wall by between 2 and 4 units for 19
- * ticks without ever moving away from it, and meets the next facet. A
- * 9-tick hold released inside that gap and the next facet re-engaged the
- * correction 11 ticks later -- the MOTION-01 re-engagement 1.7.0 already
- * failed. 4 units is the smallest probed margin that reads that gap as
- * grazing. The window bound keeps a camera that rides along a wall without
- * touching it from staying corrected indefinitely: it still releases after
- * hold + window clear ticks.
+ * Both values are measured on the MOTION-01 routes at both simulation
+ * cadences. The case the extension exists for is Ancient Lake's tick-2136
+ * re-engagement (which 1.7.0 Modern also fails): the boom leaves one canyon
+ * facet, grazes the wall for 19 clear ticks and meets the next. A margin
+ * sweep in quarter units shows that gap needs 2.75 (it re-engages at 2.5);
+ * 4.5 carries 1.75 units of headroom. The hub tour's ordinary corridor
+ * driving grazes at 4.5 to 5 units, so 5, 6 and 8 start extending there --
+ * doubling its held ticks at Original cadence -- without changing a single
+ * re-engagement outcome on any route. The bound follows the hold's own rule
+ * (the smallest value covering every measured case, plus one tick): the
+ * 19-tick gap needs 11 ticks past the 9-tick hold.
+ *
+ * Every profile that retracts takes it, SAFETY_ONLY included: forcing the
+ * follow families to SAFETY_ONLY reproduces the same tick-2136 re-engagement
+ * without it and none with it. DEPENETRATE_ONLY never retracts or releases,
+ * and returns before the corridor sweep this reads.
  */
-#define MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN 4.0f
-#define MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS 12U
+#define MDKR_CAMERA_OBSTRUCTION_GRAZING_MARGIN 4.5f
+#define MDKR_CAMERA_OBSTRUCTION_GRAZING_EXTENSION_TICKS 12U
 /*
  * Held-shot bounds. A held shot keeps the last validated view and translates
  * it with the subject while the authored boom is blocked; nothing about the
  * blockage bounds how long that lasts or how far the frozen view turns away
- * from the one the game authored as the subject turns under it. Past either
- * bound the held shot ends and the slot takes the ordinary boom path --
- * retraction along the authored ray, its alternate shot or emergency framing
- * -- and does not seed another held shot until that correction has fully
- * released.
+ * from the one the game authored as the subject turns under it.
  *
- * MAX_DWELL bounds how long a held view stays frozen: consecutive holding
- * time, contact plus release hold (a recovery is already bounded by the return
- * rates, and resets it). MAX_DIVERGENCE bounds the angle between the published
- * view direction and the authored one, in any phase.
+ * SOFT_DIVERGENCE is a leash: while holding, a view that has turned further
+ * than this from the authored view turns back toward it -- the eye stays held
+ * -- by as much as returns it to the leash, never faster than the 90 degrees
+ * per second the held return uses, and every leashed view is proven like any
+ * other held tick. MAX_DIVERGENCE (any phase) and MAX_DWELL (how long a view
+ * stays frozen: consecutive holding, contact plus release hold, reset by a
+ * recovery) are hard: past either the held shot ends, its handover tick is
+ * published as a cut (a shot change, never an interpolated whip), and the
+ * slot takes the ordinary boom path -- retraction along the authored ray, its
+ * alternate shot or emergency framing -- without seeding another held shot
+ * until that correction has released.
  *
- * Measured on the three MOTION-01 routes at both simulation cadences, with
- * and without Camera.Comfort, both bounds lifted: a held view stays frozen
- * for at most 1.1 s, and held shots seeded from the authored view turn at
- * most 44 degrees from it (Original cadence; 36 at Enhanced). The only shots
- * past that (84 to 143 degrees) were seeded from an alternate or emergency
- * composition that was already looking away -- the ordinary ladder's job.
- * Both bounds leave every measured shot seeded from the authored view
- * untouched and stop a held view well short of side-on.
+ * Measured on the motion routes at both simulation cadences, with and without
+ * Camera.Comfort, bounds lifted: a held view stays frozen for at most 1.1 s.
+ * Held shots seeded from the authored view turn up to 36 degrees at Enhanced;
+ * at the default Original cadence, where the release hold's ticks last twice
+ * as long, up to 44 on Ancient Lake and 59 on the 3P route (61.5 with
+ * Comfort). Shots seeded from an alternate or emergency composition start at
+ * 84 to 143 degrees -- the ordinary ladder's job. The leash sits at 45: above
+ * every measured Enhanced view and Ancient Lake at Original, half way to
+ * side-on, and 15 degrees under the hard bound: a sixth of a second at the
+ * leash rate for a subject turning faster than the leash can follow.
  */
 #define MDKR_CAMERA_HELD_MAX_DWELL_SECONDS 2.0f
+#define MDKR_CAMERA_HELD_SOFT_DIVERGENCE_DEGREES 45.0f
 #define MDKR_CAMERA_HELD_MAX_DIVERGENCE_DEGREES 60.0f
 /*
  * Soft-occluder mitigation, interim form (docs/architecture/camera-obstruction.md
@@ -319,6 +338,8 @@ typedef struct MdkrCameraMotionSlot {
     uint8_t block_span_degenerate;
     uint8_t retract_pending;
     uint8_t release_held;
+    /* The previous sample was held only by the grazing extension. */
+    uint8_t release_extended;
     /* Diagnostic contact history survives clear/held ticks. Unlike the churn
      * history above, it is never used to classify a hard motion verdict. */
     uint64_t last_contact_tick;
@@ -423,6 +444,10 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t held_bound_tripped;
     /* This tick's held proof was refused by a bound (telemetry only). */
     uint8_t held_bound_exit;
+    /* ...and the refused shot had been published: a bound handover. */
+    uint8_t held_bound_handover;
+    /* This tick's published held view was turned by the leash. */
+    uint8_t held_leashed;
     uint8_t elevated_emergency;
     /* Soft-occluder mitigation census for this tick: a small dynamic blocker
      * failed both correction gates, and whether its correction was actually
@@ -467,6 +492,8 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t blocker_normal_valid;
     /* This tick was RETRACTED by the resolver's release hold, not by contact. */
     uint8_t release_held;
+    /* ...and only because the grazing extension deferred a served hold. */
+    uint8_t release_extended;
     /*
      * Camera.Comfort's vertical smoother (reduced motion only).
      *
@@ -778,17 +805,20 @@ static MdkrCameraSweepStatus camera_obstruction_held_fault_corridor(
 }
 
 /*
- * Held-shot bound seam. MDKR_TEST_CAMERA_HELD_BOUNDS=<seconds>:<degrees>
- * replaces the shipped dwell and divergence bounds, so a gate can drive the
- * bound branch on a route whose natural held shots never reach the shipped
- * values, and a measurement run can lift them. Read once; absent or
- * unparsable means the shipped bounds.
+ * Held-shot bound seam. MDKR_TEST_CAMERA_HELD_BOUNDS=<seconds>:<degrees>[:<leash>]
+ * replaces the shipped dwell, hard divergence and leash bounds, so a gate can
+ * drive each branch on a route whose natural held shots never reach the
+ * shipped values, and a measurement run can lift them. Without a leash value
+ * the leash sits at the hard bound (off). Read once; absent or unparsable
+ * means the shipped bounds.
  */
 static int sCameraHeldBoundsParsed;
 static float sCameraHeldMaxDwellSeconds = MDKR_CAMERA_HELD_MAX_DWELL_SECONDS;
 static float sCameraHeldMaxDivergenceDegrees = MDKR_CAMERA_HELD_MAX_DIVERGENCE_DEGREES;
+static float sCameraHeldSoftDivergenceDegrees = MDKR_CAMERA_HELD_SOFT_DIVERGENCE_DEGREES;
 
-static void camera_obstruction_held_bounds(float *out_dwell, float *out_divergence) {
+static void camera_obstruction_held_bounds(float *out_dwell, float *out_divergence,
+                                           float *out_soft) {
     if (!sCameraHeldBoundsParsed) {
         const char *value = getenv("MDKR_TEST_CAMERA_HELD_BOUNDS");
         sCameraHeldBoundsParsed = TRUE;
@@ -796,29 +826,46 @@ static void camera_obstruction_held_bounds(float *out_dwell, float *out_divergen
             char *end = NULL;
             const double dwell = strtod(value, &end);
             double divergence = NAN;
+            double soft = NAN;
             if (end != NULL && *end == ':') {
                 const char *degrees = end + 1;
                 divergence = strtod(degrees, &end);
-                if (end == degrees || *end != '\0') {
+                if (end == degrees) {
+                    divergence = NAN;
+                } else if (*end == '\0') {
+                    soft = divergence;
+                } else if (*end == ':') {
+                    const char *leash = end + 1;
+                    soft = strtod(leash, &end);
+                    if (end == leash || *end != '\0') {
+                        soft = NAN;
+                    }
+                } else {
                     divergence = NAN;
                 }
             }
             if (isfinite(dwell) && dwell > 0.0 && dwell <= 3600.0 &&
-                isfinite(divergence) && divergence > 0.0 && divergence <= 180.0) {
+                isfinite(divergence) && divergence > 0.0 && divergence <= 180.0 &&
+                isfinite(soft) && soft > 0.0 && soft <= divergence) {
                 sCameraHeldMaxDwellSeconds = (float)dwell;
                 sCameraHeldMaxDivergenceDegrees = (float)divergence;
+                sCameraHeldSoftDivergenceDegrees = (float)soft;
                 fprintf(stderr, "camera_obstruction: held-shot bounds dwell=%.3fs "
-                        "divergence=%.2fdeg (MDKR_TEST_CAMERA_HELD_BOUNDS)\n",
-                        dwell, divergence);
+                        "divergence=%.2fdeg leash=%.2fdeg "
+                        "(MDKR_TEST_CAMERA_HELD_BOUNDS)\n",
+                        dwell, divergence, soft);
             } else {
                 fprintf(stderr, "camera_obstruction: ignoring unparsable "
-                        "MDKR_TEST_CAMERA_HELD_BOUNDS=%s (<seconds>:<degrees>)\n",
-                        value);
+                        "MDKR_TEST_CAMERA_HELD_BOUNDS=%s "
+                        "(<seconds>:<degrees>[:<leash degrees>])\n", value);
             }
         }
     }
     *out_dwell = sCameraHeldMaxDwellSeconds;
     *out_divergence = sCameraHeldMaxDivergenceDegrees;
+    if (out_soft != NULL) {
+        *out_soft = sCameraHeldSoftDivergenceDegrees;
+    }
 }
 
 /* Angle between two view directions, in degrees; NAN when either is not a
@@ -1557,6 +1604,8 @@ static void camera_obstruction_snapshot_authored_slots(void) {
         observe->soft_blocker_declined = FALSE;
         observe->soft_blocker_extent = 0.0f;
         observe->held_bound_exit = FALSE;
+        observe->held_bound_handover = FALSE;
+        observe->held_leashed = FALSE;
         observe->resolved_stationary_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_outcome = MDKR_CAMERA_OBSTRUCTION_TWO_PHASE_INVALID;
@@ -2996,9 +3045,6 @@ static int camera_obstruction_select_alternate_shot(
  * distinct obstruction.
  */
 #define MDKR_CAMERA_MOTION_OSCILLATION_TICKS 12U
-_Static_assert(MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS ==
-                   MDKR_CAMERA_MOTION_OSCILLATION_TICKS,
-               "the grazing extension's bound is the chatter window it protects");
 /*
  * Two surfaces whose contact normals agree this closely are treated as one
  * continuous surface. Static track blockers carry a per-triangle stable ID (see
@@ -3067,6 +3113,16 @@ typedef struct MdkrCameraMotionCensus {
     uint64_t release_hold_ticks;
     uint64_t release_hold_spans;
     /*
+     * The grazing extension's share of those held ticks: ticks held past the
+     * served hold because the corridor still grazed, extension runs that
+     * ended in a release (deferred, then let go), and runs that ended in a
+     * new contact (the correction carried across a grazing gap, the case the
+     * extension exists for).
+     */
+    uint64_t release_extension_ticks;
+    uint64_t release_extension_releases;
+    uint64_t release_extension_contacts;
+    /*
      * Authored ticks on which at least one sampled slot published a cut, and
      * the last such tick so slots inside one tick are not double counted.
      * `discontinuities` counts slot ticks and is the right denominator for a
@@ -3113,6 +3169,12 @@ typedef struct MdkrCameraMotionCensus {
     double max_held_episode_seconds;
     double max_held_divergence_degrees;
     uint64_t held_bound_exits;
+    /* Published held shots a bound ended, and those whose handover tick was
+     * not published as a cut. */
+    uint64_t held_bound_handovers;
+    uint64_t held_bound_handovers_unflagged;
+    /* Published held ticks the divergence leash turned. */
+    uint64_t held_leash_ticks;
 } MdkrCameraMotionCensus;
 
 static int sCameraMotionEnabled = -1;
@@ -3430,7 +3492,7 @@ static int camera_obstruction_publish_wide_lens_shoulder(
 
 /*
  * Does this tick's CLEAR anchor->desired corridor still graze geometry within
- * MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN? The authoritative exact lens, its
+ * MDKR_CAMERA_OBSTRUCTION_GRAZING_MARGIN? The authoritative exact lens, its
  * skin grown by the margin, is swept over the same corridor. Runs on a copy so
  * it cannot leave telemetry, cache entries or degradation on the slot; an
  * unprovable probe reads as grazing, the conservative answer for a release.
@@ -3459,7 +3521,7 @@ static int camera_obstruction_corridor_near_contact(
 
     if (!mdkr_camera_rounded_lens_guard_expand_skin(
             &observe->exact_guard,
-            observe->exact_guard.skin + MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN,
+            observe->exact_guard.skin + MDKR_CAMERA_OBSTRUCTION_GRAZING_MARGIN,
             &band)) {
         return TRUE;
     }
@@ -3475,13 +3537,22 @@ static int camera_obstruction_corridor_near_contact(
 /* Held-shot return rate for orientation. Successful steps retain their own
  * camera history; a failed proof ends the chain rather than silently
  * continuing it. */
-static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
+/* Turn one s16 angle toward another by at most `cap` angle units. */
+static s16 camera_obstruction_turn_angle(s16 from, s16 to, float cap) {
     const int delta = (s16)(u16)((u16)to - (u16)from);
-    /* Experimental return cap: 90 degrees per authored second, never a
-     * presentation snap. Zero-time validation must not spend recovery. */
-    const float cap = fminf(16384.0f * dt, 4096.0f);
-    const int step = (int)fminf(fabsf((float)delta), floorf(cap));
+    const int step = (int)fminf(fabsf((float)delta), floorf(fmaxf(cap, 0.0f)));
     return (s16)(u16)((u16)from + (delta < 0 ? -step : step));
+}
+
+/* The held return rate in angle units for one step: 90 degrees per authored
+ * second (16384 units), never a presentation snap (4096 units). Zero-time
+ * validation must not spend recovery. */
+static float camera_obstruction_held_turn_cap(float dt) {
+    return fminf(16384.0f * dt, 4096.0f);
+}
+
+static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
+    return camera_obstruction_turn_angle(from, to, camera_obstruction_held_turn_cap(dt));
 }
 
 /*
@@ -3529,14 +3600,15 @@ static int camera_obstruction_probe_held_chain(
     float target_x = NAN, target_y = NAN;
     const char *rejection = "history";
     MdkrCameraFinalPose pose;
-    float max_dwell, max_divergence;
+    float max_dwell, max_divergence, soft_divergence;
+    float leash_degrees = 0.0f;
     /* Dwell is how long the view has been frozen: consecutive holding time
      * (contact or release hold). A released recovery resets it. */
     const float dwell = recovering ? 0.0f :
         (continued && chain->recovering_run == 0U ? chain->dwell_seconds : 0.0f) +
         (isfinite(dt) && dt > 0.0f ? dt : 0.0f);
     float divergence = NAN;
-    camera_obstruction_held_bounds(&max_dwell, &max_divergence);
+    camera_obstruction_held_bounds(&max_dwell, &max_divergence, &soft_divergence);
     if (valid && dwell > max_dwell) {
         rejection = "dwell";
         valid = FALSE;
@@ -3601,10 +3673,37 @@ static int camera_obstruction_probe_held_chain(
             divergence = observe->exact_guard_valid ?
                 camera_obstruction_view_divergence_degrees(
                     pose.guard.forward, observe->exact_guard.forward) : NAN;
-            rejection = "divergence";
-            valid = isfinite(divergence) && divergence <= max_divergence;
-            if (!valid) {
-                observe->held_bound_exit = TRUE;
+            /* Leash: a holding view past the soft bound turns back toward the
+             * authored view, by what returns it to the leash and never faster
+             * than the held return rate. The eye keeps its held position. */
+            if (!recovering && dt > 0.0f && isfinite(divergence) &&
+                soft_divergence < max_divergence && divergence > soft_divergence) {
+                const float cap = fminf(camera_obstruction_held_turn_cap(dt),
+                    (divergence - soft_divergence) * (65536.0f / 360.0f));
+                const s16 held_pitch = (s16)(u16)((u16)probe.authored.trans.rotation.x_rotation +
+                    (u16)probe.authored.pitch);
+                probe.authored.trans.rotation.y_rotation = camera_obstruction_turn_angle(
+                    probe.authored.trans.rotation.y_rotation,
+                    observe->authored.trans.rotation.y_rotation, cap);
+                probe.authored.trans.rotation.z_rotation = camera_obstruction_turn_angle(
+                    probe.authored.trans.rotation.z_rotation,
+                    observe->authored.trans.rotation.z_rotation, cap);
+                probe.authored.trans.rotation.x_rotation = camera_obstruction_turn_angle(
+                    held_pitch,
+                    (s16)(u16)((u16)observe->authored.trans.rotation.x_rotation +
+                        (u16)observe->authored.pitch), cap);
+                probe.authored.pitch = 0;
+                leash_degrees = floorf(cap) * (360.0f / 65536.0f);
+                valid = camera_obstruction_build_final_pose(&probe, eye, FALSE, &pose);
+                divergence = valid ? camera_obstruction_view_divergence_degrees(
+                    pose.guard.forward, observe->exact_guard.forward) : NAN;
+            }
+            if (valid) {
+                rejection = "divergence";
+                valid = isfinite(divergence) && divergence <= max_divergence;
+                if (!valid) {
+                    observe->held_bound_exit = TRUE;
+                }
             }
         }
         if (valid) {
@@ -3673,16 +3772,21 @@ static int camera_obstruction_probe_held_chain(
                 (u16)((u16)observe->authored.trans.rotation.x_rotation + (u16)observe->authored.pitch);
         if (returned) chain->valid = FALSE;
     }
-    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s contact=%d near=%d dwell=%.4f divergence=%.3f\n",
+    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s contact=%d near=%d dwell=%.4f divergence=%.3f leash=%.3f\n",
         (unsigned long long)tick, physical_slot, continued, previous_length, valid, target_x, target_y,
         recovering, valid ? camera_obstruction_distance(pose.rendered_eye, desired) : NAN, returned,
-        valid ? "none" : rejection, contact != 0, near_contact != 0, dwell, divergence);
+        valid ? "none" : rejection, contact != 0, near_contact != 0, dwell, divergence,
+        leash_degrees);
     /* Only a published shot that a bound ended latches the slot. A refused
      * seed (a view that was already too far turned, typically an alternate or
      * emergency composition) published nothing to re-seed, and every later
      * seed is judged against the bounds again. */
     if (!valid && observe->held_bound_exit && publish && continued) {
+        /* A published held view is about to be replaced by the ordinary
+         * path's: a shot change, so a cut, never an interpolated whip. */
         observe->held_bound_tripped = TRUE;
+        observe->held_bound_handover = TRUE;
+        observe->presentation_discontinuity = TRUE;
     }
     if (!valid || !publish) return FALSE;
 
@@ -3705,6 +3809,8 @@ static int camera_obstruction_probe_held_chain(
     /* A clear corridor that is still serving the hold is a held tick, exactly
      * as the resolver reports one: RETRACTED, measured as no blocker. */
     observe->release_held = (uint8_t)(!contact && !recovering);
+    observe->release_extended = (uint8_t)(observe->release_held &&
+        clear_run >= config->release_hold_ticks);
     observe->resolver_status = returned ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR :
         recovering ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING :
                      MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
@@ -3712,6 +3818,7 @@ static int camera_obstruction_probe_held_chain(
      * bounded return completes. Do not relabel the ordinary resolver's pose. */
     observe->alternate_active = !returned;
     observe->held_shot_active = !returned;
+    observe->held_leashed = (uint8_t)(leash_degrees > 0.0f);
     observe->was_obstructed = !returned;
     if (!returned) observe->correction_applied = TRUE;
     observe->previous_pivot = observe->intent.pivot;
@@ -3840,7 +3947,7 @@ static void camera_obstruction_resolve_slot(
         .max_recovery_step = 20.0f * comfort_recovery_scale,
         .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
         .release_near_contact_extension_ticks =
-            MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS,
+            MDKR_CAMERA_OBSTRUCTION_GRAZING_EXTENSION_TICKS,
         .max_recovery_fraction = mdkr_camera_recovery_fraction_for_step(
             0.25f * comfort_recovery_scale,
             MDKR_CAMERA_RECOVERY_FRACTION_REFERENCE_SECONDS, fixed_delta_seconds),
@@ -3869,6 +3976,7 @@ static void camera_obstruction_resolve_slot(
     observe->blocker_stable_id = 0U;
     observe->blocker_normal_valid = FALSE;
     observe->release_held = FALSE;
+    observe->release_extended = FALSE;
     if (observe->held_shot_active) {
         /* A held candidate owns its own orientation. If it cannot continue,
          * fall back to the ordinary boom policy, not the fan-shot retargeter.
@@ -3986,7 +4094,8 @@ static void camera_obstruction_resolve_slot(
             use_exact, &boom_anchor);
         return;
     }
-    /* Grazing extension: measured only on a tick whose served hold could release. */
+    /* Grazing extension: measured only on a tick whose served hold could
+     * release. DEPENETRATE_ONLY returned above; it never latches. */
     if (use_exact && status == MDKR_CAMERA_SWEEP_CLEAR &&
         observe->resolver.retraction_latched &&
         observe->resolver.clear_run_ticks + 1U >= config.release_hold_ticks) {
@@ -4292,6 +4401,8 @@ static void camera_obstruction_resolve_slot(
     observe->blocker_normal = result.blocker_normal;
     observe->blocker_normal_valid = result.blocker_stable_id != 0U;
     observe->release_held = (uint8_t)(result.release_held != 0);
+    observe->release_extended = (uint8_t)(result.release_held &&
+        observe->resolver.clear_run_ticks >= config.release_hold_ticks);
     if (result.accepted) {
         MdkrCameraVec3 alternate;
         MdkrCameraVec3 preferred_alternate;
@@ -4728,7 +4839,17 @@ static void camera_obstruction_motion_sample(
             sCameraMotion.release_hold_spans++;
         }
     }
+    if (held && observe->release_extended) {
+        sCameraMotion.release_extension_ticks++;
+    } else if (motion->release_extended) {
+        if (retracted) {
+            sCameraMotion.release_extension_contacts++;
+        } else {
+            sCameraMotion.release_extension_releases++;
+        }
+    }
     motion->release_held = (uint8_t)(held != 0);
+    motion->release_extended = (uint8_t)(held && observe->release_extended);
 
     if (recovering && !motion->recovering) {
         sCameraMotion.recovery_events++;
@@ -4760,6 +4881,15 @@ static void camera_obstruction_motion_sample(
     /* Held-shot bounds, measured on the published view. */
     if (observe->held_bound_exit) {
         sCameraMotion.held_bound_exits++;
+    }
+    if (observe->held_shot_active && observe->held_leashed) {
+        sCameraMotion.held_leash_ticks++;
+    }
+    if (observe->held_bound_handover) {
+        sCameraMotion.held_bound_handovers++;
+        if (!cut) {
+            sCameraMotion.held_bound_handovers_unflagged++;
+        }
     }
     if (observe->held_shot_active) {
         MdkrCameraLensPose authored;
@@ -5643,11 +5773,13 @@ void camera_obstruction_motion_summary(void) {
     double per_thousand;
     float held_dwell_bound;
     float held_divergence_bound;
+    float held_leash_bound;
 
     if (!camera_obstruction_motion_enabled()) {
         return;
     }
-    camera_obstruction_held_bounds(&held_dwell_bound, &held_divergence_bound);
+    camera_obstruction_held_bounds(&held_dwell_bound, &held_divergence_bound,
+                                   &held_leash_bound);
     per_thousand = sCameraMotion.sampled_slot_ticks == 0U ? 0.0 :
         (double)sCameraMotion.discontinuities * 1000.0 /
             (double)sCameraMotion.sampled_slot_ticks;
@@ -5658,15 +5790,18 @@ void camera_obstruction_motion_summary(void) {
             "events={retract=%llu recovery=%llu alternate_entry=%llu "
             "alternate_exit=%llu emergency_entry=%llu discontinuity=%llu "
             "degenerate=%llu} "
-            "release_hold={held_ticks=%llu spans=%llu window=%u} "
+            "release_hold={held_ticks=%llu spans=%llu window=%u "
+            "extension_ticks=%llu extension_releases=%llu extension_contacts=%llu "
+            "extension_margin=%.2f extension_bound=%u} "
             "chatter={oscillation_cycles=%llu oscillation_cycles_excused=%llu "
             "correction_reengagements=%llu} "
             "shoulder={flips=%llu continuous_surface=%llu new_surface=%llu basis_crossings=%llu} "
             "churn={blocker_changes=%llu same_surface=%llu new_surface=%llu} "
             "emergency={max_dwell=%llu} "
             "held={episodes=%llu max_dwell_ms=%.1f max_divergence_deg=%.3f "
-            "bound_exits=%llu dwell_bound_ms=%.1f divergence_bound_deg=%.3f "
-            "max_episode_ms=%.1f} "
+            "bound_exits=%llu handovers=%llu unflagged_handovers=%llu "
+            "leash_ticks=%llu dwell_bound_ms=%.1f divergence_bound_deg=%.3f "
+            "leash_bound_deg=%.3f max_episode_ms=%.1f} "
             "discontinuity_per_1000_ticks=%.4f\n",
             (unsigned long long)sCameraMotion.sampled_slot_ticks,
             (unsigned long long)sCameraMotion.sampled_ticks,
@@ -5689,6 +5824,11 @@ void camera_obstruction_motion_summary(void) {
             (unsigned long long)sCameraMotion.release_hold_ticks,
             (unsigned long long)sCameraMotion.release_hold_spans,
             (unsigned)MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
+            (unsigned long long)sCameraMotion.release_extension_ticks,
+            (unsigned long long)sCameraMotion.release_extension_releases,
+            (unsigned long long)sCameraMotion.release_extension_contacts,
+            (double)MDKR_CAMERA_OBSTRUCTION_GRAZING_MARGIN,
+            (unsigned)MDKR_CAMERA_OBSTRUCTION_GRAZING_EXTENSION_TICKS,
             (unsigned long long)sCameraMotion.oscillation_cycles,
             (unsigned long long)sCameraMotion.oscillation_cycles_excused,
             (unsigned long long)sCameraMotion.correction_reengagements,
@@ -5704,8 +5844,12 @@ void camera_obstruction_motion_summary(void) {
             sCameraMotion.max_held_dwell_seconds * 1000.0,
             sCameraMotion.max_held_divergence_degrees,
             (unsigned long long)sCameraMotion.held_bound_exits,
+            (unsigned long long)sCameraMotion.held_bound_handovers,
+            (unsigned long long)sCameraMotion.held_bound_handovers_unflagged,
+            (unsigned long long)sCameraMotion.held_leash_ticks,
             (double)held_dwell_bound * 1000.0,
             (double)held_divergence_bound,
+            (double)held_leash_bound,
             sCameraMotion.max_held_episode_seconds * 1000.0,
             per_thousand);
     /*

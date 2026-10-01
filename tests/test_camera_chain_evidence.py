@@ -42,6 +42,16 @@ class ChainEvidence(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "malformed"):
                 audit([row() + bad])
 
+    def test_leash_field(self):
+        held = " rejection=none contact=1 near=0 dwell=0.0167 divergence=46.000"
+        self.assertEqual(audit([row() + held + " leash=1.500"])["accepted"], 1)
+        self.assertEqual(audit([row() + held])["accepted"], 1)
+        with self.assertRaisesRegex(ValueError, "invalid leash turn"):
+            audit([row() + held + " leash=30.000"])
+        with self.assertRaisesRegex(ValueError, "leash turned a recovering view"):
+            audit([row(), row(2, 1, 1, recovering=1) +
+                   " rejection=none contact=0 near=0 dwell=0.0000 divergence=46.000 leash=1.500"])
+
     def test_bound_fields(self):
         refused = row(valid=0) + " rejection=dwell contact=1 near=0 dwell=2.0167 divergence=nan"
         self.assertEqual(audit([refused])["rejections"], {"dwell": 1})

@@ -27,10 +27,14 @@ because the route's natural held shots stay inside the shipped ones:
                     than the bound
 
 and both require that the ordinary boom path took the tick a bound refused,
-that no held shot re-seeded before that correction released, that the census
+that a published shot's handover tick was published as a cut, that no held
+shot re-seeded before that correction released, that the census
 measured every published held tick inside the bound, and that the binary
 reported the bound it ran with.
 
+  leash             a 2-degree leash (hard bound lifted): every holding view
+                    past it must be turning back at the full held return
+                    rate, and the census must count the leashed ticks
   soft_decline      drives the 3P route with MDKR_TEST_CAMERA_SOFT_STATIC, so
                     static blockers qualify for the soft-occluder decline: a
                     held shot may not freeze the view for a blocker the boom
@@ -69,6 +73,11 @@ BOUND_ARMS = {
     "dwell_bound": (0.2, 180.0),
     "divergence_bound": (3600.0, 2.0),
 }
+# Leash arm: hard bounds lifted, leash at 2 degrees, so every held shot turns.
+LEASH_ARM = (3600.0, 180.0, 2.0)
+# The held return rate at the gate's Enhanced cadence, in degrees per tick:
+# 90 degrees per second over 60 ticks, floored to whole s16 angle units.
+LEASH_FULL_STEP = int(16384 / 60) * 360.0 / 65536.0
 # The 3P route is where held shots meet blockers the decline would release.
 SOFT_ROUTE = "3p-tt-spectate"
 SOFT_STATIC_EXTENT = "1"
@@ -80,7 +89,7 @@ ARMED = re.compile(r"camera_held_fault armed kind=(\w+) tick=(\d+) slot=(\d+) "
 PROBE = re.compile(r"camera_held_chain_probe tick=(\d+) slot=(\d+) continued=([01]) "
                    r"prior_length=(\d+) valid=([01]) .* recovering=([01]) "
                    r"remaining=(\S+) returned=([01]) rejection=(\w+) contact=([01]) "
-                   r"near=([01]) dwell=(\S+) divergence=(\S+)$")
+                   r"near=([01]) dwell=(\S+) divergence=(\S+) leash=(\S+)$")
 PUBLISHED = re.compile(r"camera_held_shot_published tick=(\d+) slot=(\d+) "
                        r"frame=\d+ active=([01]) dwell=(\S+) divergence=(\S+)$")
 VEC = r"\(([^,]+),([^,]+),([^)]+)\)"
@@ -134,7 +143,7 @@ def probes(output):
                            recovering=int(match[6]), returned=int(match[8]),
                            rejection=match[9], contact=int(match[10]),
                            near=int(match[11]), dwell=float(match[12]),
-                           divergence=float(match[13]))
+                           divergence=float(match[13]), leash=float(match[14]))
     return parsed
 
 
@@ -259,6 +268,9 @@ def verify_bound(output, kind):
             if row["valid"] or row["rejection"] != reason:
                 continue
             exits += 1
+            detail = details(epoch, "camera_obstruction_observe detail", tick, slot)
+            if row["continued"] and not re.search(r"resolve=\{[^}]* discontinuity=1 ", detail):
+                raise ValueError(f"tick {tick}: a bounded held shot's handover was not a cut")
             if not row["continued"]:
                 # A refused seed published nothing; later seeds are judged
                 # against the bound again, so only the handover is checked.
@@ -320,9 +332,39 @@ def verify_soft(output):
     return deferred
 
 
+def verify_leash(output):
+    """Past the leash a holding view turns back at the full held return rate."""
+    common(output)
+    _dwell, _divergence, leash_bound = LEASH_ARM
+    census = motion.parse_summary(
+        [row for row in output.splitlines() if motion.MOTION_SUMMARY in row][-1])
+    if abs(census["held_leash_bound_deg"] - leash_bound) > 0.0005:
+        raise ValueError("the runtime did not run with the lowered leash")
+    if census["held_leash_ticks"] < 1:
+        raise ValueError("the leash never turned a held view")
+    if census["held_bound_handovers_unflagged"]:
+        raise ValueError("a bound handover was not published as a cut")
+    leashed = 0
+    for epoch in epochs(output):
+        for (tick, slot), row in sorted(probes(epoch).items()):
+            if not row["valid"] or row["recovering"]:
+                continue
+            leashed += row["leash"] > 0
+            if row["divergence"] > leash_bound + 1.0 and \
+                    row["leash"] < LEASH_FULL_STEP - 1e-3:
+                raise ValueError(f"tick {tick}: a held view {row['divergence']:.2f} degrees "
+                                 f"out turned back only {row['leash']:.3f} (full rate "
+                                 f"{LEASH_FULL_STEP:.3f})")
+    if leashed == 0:
+        raise ValueError("no held proof records a leash turn")
+    return leashed
+
+
 def verify(output, kind):
     if kind == "soft_decline":
         return verify_soft(output)
+    if kind == "leash":
+        return verify_leash(output)
     if kind in BOUND_ARMS:
         return verify_bound(output, kind)
     if kind not in ARMS:
@@ -413,13 +455,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=motion.DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--only", choices=(*ARMS, *BOUND_ARMS, "soft_decline"))
+    parser.add_argument("--only", choices=(*ARMS, *BOUND_ARMS, "leash", "soft_decline"))
     args = parser.parse_args()
     binary = Path(motion.resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
     if not binary.is_file() or not rom.is_file():
         parser.error("missing binary or ROM")
-    for kind in (args.only,) if args.only else (*ARMS, *BOUND_ARMS, "soft_decline"):
+    for kind in (args.only,) if args.only else (*ARMS, *BOUND_ARMS, "leash", "soft_decline"):
         output = motion.run_route(arm_route(kind), binary, rom, None,
                                   present_env=arm_env(kind))
         verify(output, kind)
@@ -436,6 +478,8 @@ def arm_env(kind):
     env = {"MDKR_CAMERA_TRACE": "2"}
     if kind == "soft_decline":
         env["MDKR_TEST_CAMERA_SOFT_STATIC"] = SOFT_STATIC_EXTENT
+    elif kind == "leash":
+        env["MDKR_TEST_CAMERA_HELD_BOUNDS"] = ":".join(str(value) for value in LEASH_ARM)
     elif kind in BOUND_ARMS:
         dwell, divergence = BOUND_ARMS[kind]
         env["MDKR_TEST_CAMERA_HELD_BOUNDS"] = f"{dwell}:{divergence}"
