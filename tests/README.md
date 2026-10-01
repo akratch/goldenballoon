@@ -6741,7 +6741,7 @@ This WebGPU gate generates and installs an isolated CC0 fixture, then opens the
 exact saved Overview, Package, Identity, Rig & Motion, Gameplay, Offset Studio,
 Performance, and Test tabs. The 200% Overview route requires each unfinished
 readiness area and the header next step to announce the workspace they open,
-a real Workshop operation to leave an acknowledgeable message in the recent-
+a real Workshop operation to leave an acknowledgeable result in the recent-
 status stack, and the Package route requires the vehicle echo to name Offset
 Studio; no tab may render another tab's undo/redo controls. The
 `character-workshop-ux` line reports only what it computes -- layout, the
@@ -6782,6 +6782,17 @@ and bounded eviction.
 python3 tests/check_character_workshop_history_ui.py \
   --build build-character-tests
 ```
+
+That operation (the failed-import recovery check) is a real subprocess, timed
+by the wall clock, while the walk's Tab presses and its Ctrl+I/Escape shortcuts
+are timed by frames, and a running character job disables both shortcuts. The
+Overview route therefore holds the walk on the smoke character-job wait until
+the check settles and asserts that it did. Without the wait the gate passed
+while presentation paced frames at the display's refresh and failed when it
+did not -- seen on a workstation whose display had been off for a long time,
+where 520 frames took about a quarter of a second and the shortcuts landed
+inside the check. The raw-intake recovery walk in
+`check_character_raw_intake_ui.py` waits the same way.
 
 The rendered gate is registered as the `app_character_workshop_history` CTest
 and `character_workshop_history_ui` run-check. It needs neither a ROM nor a

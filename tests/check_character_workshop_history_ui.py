@@ -682,10 +682,21 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
         # One real Workshop operation, so the recent-status stack has
         # something to keep and acknowledge. It reads private recovery
         # metadata only and installs nothing.
+        #
+        # The check is a real subprocess, timed by the wall clock; the walk's
+        # Tab presses and its Ctrl+I/Escape shortcuts are timed by frames. A
+        # running character job disables the Workshop's controls and both
+        # shortcuts, so which of them the walk met depended on the frame rate:
+        # paced at the display's refresh the check ended before the shortcuts;
+        # unpaced (seen after the display had been off a long time) it
+        # outlasted them. Settle it first, as a player would see the Workshop.
         environment.update({
             "MDKR_APP_SMOKE_CHARACTER_RECOVERY_ACTION": "check",
             "MDKR_APP_SMOKE_CHARACTER_RECOVERY_TOKEN":
                 "mdkr64-character-recovery-v1",
+            "MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS": "1",
+            "MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS_TOKEN":
+                "mdkr64-character-jobs-v1",
         })
     if accessible:
         environment.update({
@@ -815,11 +826,19 @@ def run_tab(binary: Path, root: Path, characters: Path, tab: str,
                     "Overview lost a readiness jump-link: " + spoken + "\n"
                     + process.stdout[-8000:]
                 )
-        # The recovery check above reports through setStatus; its message has
-        # to survive in the stack with a reachable way to dismiss it.
-        if "text=Acknowledge Workshop message, " not in process.stdout:
+        # The recovery check above reports through setStatus; its result has
+        # to survive in the stack with a reachable way to dismiss it. The walk
+        # began only once the check had settled.
+        if not re.search(r"Character Workshop serviceFrames=\d+ settled=1",
+                         process.stdout):
             raise RuntimeError(
-                "the Workshop status stack kept no acknowledgeable message "
+                "the overview walk did not wait for the recovery check to "
+                "settle\n" + process.stdout[-8000:]
+            )
+        if ("text=Acknowledge Workshop message, Failed-import recovery is "
+                "up to date." not in process.stdout):
+            raise RuntimeError(
+                "the Workshop status stack kept no acknowledgeable result "
                 "after a real operation\n" + process.stdout[-8000:]
             )
     if tab == "package":

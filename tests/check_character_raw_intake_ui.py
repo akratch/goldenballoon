@@ -339,6 +339,12 @@ def main() -> int:
                 "MDKR_APP_SMOKE_CHARACTER_RECOVERY_ACTION": "check",
                 "MDKR_APP_SMOKE_CHARACTER_RECOVERY_TOKEN":
                     "mdkr64-character-recovery-v1",
+                # The recovery check is a wall-clock subprocess and the walk
+                # counts frames: unpaced frames could finish the Tab pass
+                # before the rows below existed. Walk the settled panel.
+                "MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS": "1",
+                "MDKR_APP_SMOKE_WAIT_CHARACTER_JOBS_TOKEN":
+                    "mdkr64-character-jobs-v1",
             })
             run(
                 binary, hostile, hostile_accessible,
