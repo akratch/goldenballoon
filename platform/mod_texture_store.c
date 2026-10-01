@@ -207,6 +207,14 @@ enum {
     RESULT_CANCELLED
 };
 
+/* A pack that may serve one part of a request, and the name it stores that
+ * file under: a digest-named texture matches whatever its case (see
+ * mdkr_mod_registry_name_hits), so the spelling is the pack's own. */
+typedef struct TexCandidate {
+    int         pack;
+    const char *path;
+} TexCandidate;
+
 /* One texture to read and decode. The owner fills the spec half, hands the
  * request over, and does not touch it again until it is handed back; the
  * executing thread fills the result half. Freed by the owner, always. */
@@ -217,12 +225,14 @@ typedef struct TexRequest {
     uint32_t    serial;
     int         rice;
     char        key[MDKR_MOD_TEXTURE_KEY_CHARS + 1];
-    /* Digest: path[0]. Rice: path[0] = _all, or path[1] = _rgb with path[2]
-     * = _a; NULL where the pack supplies no such variant. packs[i] holds the
-     * candidate packs for path[i], highest bit = highest priority, exactly
-     * the set mdkr_mod_registry_open_file() would have walked. */
-    const char *path[3];
-    uint64_t    packs[3];
+    /* Digest: part 0. Rice: part 0 = _all when `rice_all`, otherwise part 1
+     * = _rgb and part 2 = _a. Each part lists, highest priority first, the
+     * usable packs that may serve it with the name each stores it under --
+     * the walk mdkr_mod_registry_open_file() would have made. An empty part
+     * is a variant no usable pack supplies. */
+    int           rice_all;
+    TexCandidate *part[3];
+    int           part_count[3];
     uint64_t    queued_pump;
     uint64_t    queued_ns;
     MdkrModTextureClock clock;   /* NULL: untimed */
@@ -242,7 +252,9 @@ typedef struct TexRequest {
     uint64_t    read_ns;
     uint64_t    decode_ns;
     uint64_t    work_ns;
-    char        names[];         /* path strings, owned with the request */
+    /* Candidate arrays, then the path strings they point at, all owned with
+     * the request so the executing thread needs nothing else. */
+    TexCandidate candidates[];
 } TexRequest;
 
 typedef struct LoaderShared LoaderShared;
@@ -570,27 +582,34 @@ static FILE *store_open_write(const char *path) {
 }
 #endif
 
-/* The first candidate pack that can serve `relative`, highest priority first,
+/* The first candidate that can serve part `part`, highest priority first,
  * passing over one that cannot (absent, over the entry cap, unreadable) --
- * the same walk mdkr_mod_registry_open_file() makes, through sources that are
- * already open. Fills the entry's size. Executing thread. */
-static MdkrModSource *exec_locate(const Executor *ex, uint64_t packs,
-                                  const char *relative, size_t *out_size) {
+ * the same walk mdkr_mod_registry_open_file() makes, through sources that
+ * are already open, each asked by its own spelling. Fills the entry's size.
+ * Executing thread. */
+static const TexCandidate *exec_locate(const Executor *ex,
+                                       const TexRequest *req, int part,
+                                       MdkrModSource **out_source,
+                                       size_t *out_size) {
     int index;
 
-    for (index = MDKR_MOD_MAX_PACKS - 1; index >= 0; index--) {
-        MdkrModSource *source;
-        size_t         size = 0;
-        int            result;
+    for (index = 0; index < req->part_count[part]; index++) {
+        const TexCandidate *candidate = &req->part[part][index];
+        MdkrModSource      *source;
+        size_t              size = 0;
+        int                 result;
 
-        if ((packs & (UINT64_C(1) << index)) == 0) continue;
-        source = ex->sources[index];
+        if (candidate->pack < 0 || candidate->pack >= MDKR_MOD_MAX_PACKS) {
+            continue;
+        }
+        source = ex->sources[candidate->pack];
         if (source == NULL) continue;
-        result = mdkr_mod_source_read(source, relative, NULL, 0, &size);
+        result = mdkr_mod_source_read(source, candidate->path, NULL, 0, &size);
         if (result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL ||
             result == MDKR_MOD_SOURCE_OK) {
+            *out_source = source;
             *out_size = size;
-            return source;
+            return candidate;
         }
     }
     return NULL;
@@ -704,11 +723,11 @@ static void exec_release(Executor *ex, TexRequest *req, size_t bytes) {
  * candidate pack holds this path" from a rejection whose reason has been
  * recorded on the request. A cancelled request returns NULL with
  * req->status == RESULT_CANCELLED. */
-static unsigned char *exec_load_png(Executor *ex, TexRequest *req,
-                                    uint64_t packs, const char *relative,
+static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
                                     int *out_width, int *out_height,
                                     int *out_absent) {
-    MdkrModSource *source;
+    const TexCandidate *found;
+    MdkrModSource *source = NULL;
     const char    *reason = NULL;
     unsigned char *file_bytes;
     size_t         size = 0;
@@ -725,13 +744,13 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req,
     uint64_t       phase_mark = req->clock != NULL ? req->clock() : 0u;
 
     if (out_absent != NULL) *out_absent = 0;
-    source = exec_locate(ex, packs, relative, &size);
-    if (source == NULL) {
+    found = exec_locate(ex, req, part, &source, &size);
+    if (found == NULL) {
         if (out_absent != NULL) *out_absent = 1;
         request_lap(req, &req->read_ns, &phase_mark);
         return NULL;
     }
-    file_bytes = read_entry(source, relative, size, &file_size, &reason);
+    file_bytes = read_entry(source, found->path, size, &file_size, &reason);
     request_lap(req, &req->read_ns, &phase_mark);
     if (file_bytes == NULL) {
         request_reason(req, reason);
@@ -873,28 +892,25 @@ static void request_execute(Executor *ex, TexRequest *req) {
     req->status = RESULT_NONE;
     if (!req->rice) {
         int absent = 0;
-        pixels = exec_load_png(ex, req, req->packs[0], req->path[0], &width,
-                               &height, &absent);
+        pixels = exec_load_png(ex, req, 0, &width, &height, &absent);
         if (pixels == NULL && req->status != RESULT_CANCELLED) {
             /* Absent is ordinary (the file left a folder pack after the
              * scan); anything else already recorded its reason. */
             req->status = absent ? RESULT_ABSENT : RESULT_REJECTED;
         }
     } else {
-        if (req->path[0] != NULL) {
-            pixels = exec_load_png(ex, req, req->packs[0], req->path[0],
-                                   &width, &height, NULL);
+        if (req->rice_all) {
+            pixels = exec_load_png(ex, req, 0, &width, &height, NULL);
         } else {
-            pixels = exec_load_png(ex, req, req->packs[1], req->path[1],
-                                   &width, &height, NULL);
+            pixels = exec_load_png(ex, req, 1, &width, &height, NULL);
             if (pixels != NULL) {
                 const size_t   count = (size_t)width * (size_t)height;
                 const size_t   own = count * 4u;
                 int            alpha_width = 0;
                 int            alpha_height = 0;
-                unsigned char *alpha = req->path[2] == NULL ? NULL :
-                    exec_load_png(ex, req, req->packs[2], req->path[2],
-                                  &alpha_width, &alpha_height, NULL);
+                unsigned char *alpha = req->part_count[2] == 0 ? NULL :
+                    exec_load_png(ex, req, 2, &alpha_width, &alpha_height,
+                                  NULL);
                 size_t         i;
                 if (req->status == RESULT_CANCELLED) {
                     stbi_image_free(pixels);
@@ -953,37 +969,46 @@ static void request_free(TexRequest *req) {
     free(req);
 }
 
-/* A request for `key`, owner thread. Path strings are copied in, so the
- * request owns everything the executing thread will read. NULL when out of
- * memory, which leaves the slot unresolved and the next lookup to try again. */
-static TexRequest *request_new(const char *key, int rice,
-                               const char *const path[3],
-                               const uint64_t packs[3]) {
-    size_t      lengths[3] = { 0, 0, 0 };
-    size_t      total = 0;
+/* A request for `key`, owner thread. Candidates and their path strings are
+ * copied in, so the request owns everything the executing thread will read.
+ * NULL when out of memory, which leaves the slot unresolved and the next
+ * lookup to try again. */
+static TexRequest *request_new(const char *key, int rice, int rice_all,
+                               const TexCandidate *const part[3],
+                               const int count[3]) {
+    size_t      candidates = 0;
+    size_t      strings = 0;
     TexRequest *req;
     char       *cursor;
+    size_t      next = 0;
     int         i;
+    int         j;
 
     for (i = 0; i < 3; i++) {
-        if (path[i] == NULL) continue;
-        lengths[i] = strlen(path[i]) + 1u;
-        total += lengths[i];
+        candidates += (size_t)count[i];
+        for (j = 0; j < count[i]; j++) strings += strlen(part[i][j].path) + 1u;
     }
-    req = (TexRequest *)calloc(1, sizeof *req + total);
+    req = (TexRequest *)calloc(1, sizeof *req +
+                                  candidates * sizeof(TexCandidate) + strings);
     if (req == NULL) return NULL;
-    cursor = req->names;
+    cursor = (char *)(req->candidates + candidates);
     for (i = 0; i < 3; i++) {
-        if (path[i] == NULL) continue;
-        memcpy(cursor, path[i], lengths[i]);
-        req->path[i] = cursor;
-        req->packs[i] = packs[i];
-        cursor += lengths[i];
+        req->part[i] = req->candidates + next;
+        req->part_count[i] = count[i];
+        for (j = 0; j < count[i]; j++) {
+            const size_t length = strlen(part[i][j].path) + 1u;
+            memcpy(cursor, part[i][j].path, length);
+            req->candidates[next].pack = part[i][j].pack;
+            req->candidates[next].path = cursor;
+            cursor += length;
+            next++;
+        }
     }
     req->generation = s_load_generation;
     req->serial = ++s_request_serial;
     if (req->serial == 0) req->serial = ++s_request_serial;
     req->rice = rice;
+    req->rice_all = rice_all;
     snprintf(req->key, sizeof req->key, "%s", key);
     req->queued_pump = s_pump_count;
     req->clock = s_timing_clock;
@@ -1463,16 +1488,53 @@ static void loader_enqueue(StoreSlot *slot, TexRequest *req) {
 #endif
 }
 
+/* The usable packs that may serve `relative`, highest priority first, each
+ * with the name it stores the file under, into `out`; how many. From the
+ * registry's index, no I/O. A pack whose index could not be completed is
+ * listed too, asked by the name as given. Owner thread; the spellings point
+ * into the registry and are copied into the request. */
+static int slot_candidates(const char *relative, TexCandidate *out, int max) {
+    MdkrModNameHit hits[8];
+    const int      hit_count = mdkr_mod_registry_name_hits(s_registry, relative,
+                                                           hits, 8);
+    int            count = 0;
+    int            pack;
+
+    for (pack = MDKR_MOD_MAX_PACKS - 1; pack >= 0 && count < max; pack--) {
+        const uint64_t bit = UINT64_C(1) << pack;
+        const char    *spelling = NULL;
+        int            hit;
+
+        if ((s_usable_packs & bit) == 0) continue;
+        for (hit = 0; hit < hit_count; hit++) {
+            if ((hits[hit].packs & bit) != 0) {
+                spelling = hits[hit].name;
+                break;
+            }
+        }
+        if (spelling == NULL && (s_registry->names_unindexed & bit) != 0) {
+            spelling = relative;
+        }
+        if (spelling == NULL) continue;
+        out[count].pack = pack;
+        out[count].path = spelling;
+        count++;
+    }
+    return count;
+}
+
 /* An UNRESOLVED slot, decided as far as the owner can without I/O: absent
  * from the indexes, refused on what the index alone shows, or a request. */
 static void slot_begin(StoreSlot *slot, int rice, uint32_t crc, int fmt,
                        int siz) {
-    const char *path[3] = { NULL, NULL, NULL };
-    uint64_t    packs[3] = { 0, 0, 0 };
-    char        relative[MDKR_MOD_TEXTURE_KEY_CHARS + 32];
-    uint64_t    mark = timing_now();
-    TexRequest *req;
-    int         index;
+    TexCandidate  candidates[3][MDKR_MOD_MAX_PACKS];
+    const TexCandidate *part[3] = { candidates[0], candidates[1],
+                                    candidates[2] };
+    int           count[3] = { 0, 0, 0 };
+    int           rice_all = 0;
+    char          relative[MDKR_MOD_TEXTURE_KEY_CHARS + 32];
+    uint64_t      mark = timing_now();
+    TexRequest   *req;
 
     if (!rice) {
         /* No usable pack holds any digest-named texture -- every Rice pack --
@@ -1483,9 +1545,9 @@ static void slot_begin(StoreSlot *slot, int rice, uint32_t crc, int fmt,
         }
         snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
         if (s_timing_clock != NULL) s_timing.probes++;
-        packs[0] = mdkr_mod_registry_name_packs(s_registry, relative) &
-                   s_usable_packs;
-        if (packs[0] == 0) {
+        count[0] = slot_candidates(relative, candidates[0],
+                                   MDKR_MOD_MAX_PACKS);
+        if (count[0] == 0) {
             if (s_timing_clock != NULL) {
                 const uint64_t before = s_timing.open_ns;
                 timing_lap(&s_timing.open_ns, &mark);
@@ -1495,7 +1557,6 @@ static void slot_begin(StoreSlot *slot, int rice, uint32_t crc, int fmt,
             slot->state = SLOT_ABSENT;
             return;
         }
-        path[0] = relative;
     } else {
         const MdkrModRiceTexture *found =
             mdkr_mod_registry_rice_lookup(s_registry, crc, fmt, siz);
@@ -1513,18 +1574,18 @@ static void slot_begin(StoreSlot *slot, int rice, uint32_t crc, int fmt,
             return;
         }
         if (found->all != NULL) {
-            path[0] = found->all;
+            rice_all = 1;
+            count[0] = slot_candidates(found->all, candidates[0],
+                                       MDKR_MOD_MAX_PACKS);
         } else {
-            path[1] = found->rgb;
-            path[2] = found->alpha;
+            count[1] = slot_candidates(found->rgb, candidates[1],
+                                       MDKR_MOD_MAX_PACKS);
+            if (found->alpha != NULL) {
+                count[2] = slot_candidates(found->alpha, candidates[2],
+                                           MDKR_MOD_MAX_PACKS);
+            }
         }
-        for (index = 0; index < 3; index++) {
-            if (path[index] == NULL) continue;
-            packs[index] = mdkr_mod_registry_name_packs(s_registry,
-                                                        path[index]) &
-                           s_usable_packs;
-        }
-        if (packs[found->all != NULL ? 0 : 1] == 0) {
+        if (count[rice_all ? 0 : 1] == 0) {
             report_rejection(slot->digest,
                              "the pack file it names could not be opened");
             slot->state = SLOT_REJECTED;
@@ -1533,7 +1594,7 @@ static void slot_begin(StoreSlot *slot, int rice, uint32_t crc, int fmt,
     }
     timing_lap(&s_timing.open_ns, &mark);
 
-    req = request_new(slot->digest, rice, path, packs);
+    req = request_new(slot->digest, rice, rice_all, part, count);
     if (req == NULL) return;   /* still UNRESOLVED; the next miss retries */
     loader_enqueue(slot, req);
 }

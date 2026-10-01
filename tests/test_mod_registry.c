@@ -516,6 +516,91 @@ static void test_names_are_indexed_at_scan(const char *scratch) {
            "a shut-down registry indexes nothing");
 }
 
+static int same_ignoring_case(const char *a, const char *b) {
+    while (*a != '\0' && *b != '\0') {
+        char x = *a++, y = *b++;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+/* 11. Digest-named textures match whatever their case (#66 fix round 1).
+ *
+ * 1.7.0 found textures/<digest>.png by asking the filesystem, which on macOS
+ * and Windows ignores case: a folder pack spelling it Textures/ABC...PNG
+ * worked there. The scan-time index must not quietly drop that pack, so a
+ * name that is a content digest in everything but case is indexed under its
+ * lowercase form and remembers how the pack spells it -- in a folder pack and
+ * a zip alike. Nothing else changes case: other names, Rice ones included,
+ * still match exactly. A file under textures/ that can never be used (not
+ * digest-shaped) is counted and named, so the scan can say why. */
+static void test_digest_names_ignore_case(const char *scratch) {
+    static const char folder_lower[] =
+        "textures/abcdef0123456789abcdef0123456789.png";
+    static const char folder_spelled[] =
+        "Textures/ABCDEF0123456789ABCDEF0123456789.PNG";
+    static const char zip_lower[] =
+        "textures/0011223344556677889900aabbccddee.png";
+    static const char zip_spelled[] =
+        "TEXTURES/0011223344556677889900AABBCCDDEE.Png";
+    char mods[1024];
+    MdkrModRegistry reg;
+    MdkrModNameHit hits[4];
+    int folder = -1, zipped = -1, index, count;
+
+    path2(mods, sizeof mods, scratch, "case");
+    write_pack_file(mods, "upper", "pack.ini", "[pack]\nname=Upper\n");
+    write_pack_file(mods, "upper", folder_spelled, "U");
+    write_pack_file(mods, "upper", "textures/not-a-digest.png", "U");
+    write_pack_file(mods, "upper",
+                    "Textures/nested/0123456789abcdef0123456789abcdef.png", "U");
+    write_pack_file(mods, "upper", "music/Track.ogg", "U");
+    write_zip_pack(mods, "upperzip.zip", "[pack]\nname=UpperZip\n", zip_spelled);
+
+    expect(mdkr_mod_registry_init(&reg, mods) == 0, "case fixture initialises");
+    for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
+        if (strcmp(reg.entries[index].manifest.name, "Upper") == 0) folder = index;
+        if (strcmp(reg.entries[index].manifest.name, "UpperZip") == 0) zipped = index;
+    }
+    if (folder < 0 || zipped < 0) {
+        expect(0, "both case packs are discovered");
+        mdkr_mod_registry_shutdown(&reg);
+        return;
+    }
+    expect(mdkr_mod_registry_find_file(&reg, folder_lower) == folder &&
+           mdkr_mod_registry_find_file(&reg, folder_spelled) == folder,
+           "a folder pack's Textures/<UPPER>.PNG answers the lowercase digest");
+    count = mdkr_mod_registry_name_hits(&reg, folder_lower, hits, 4);
+    expect(count == 1 && hits[0].packs == (UINT64_C(1) << folder) &&
+           strcmp(hits[0].name, folder_spelled) == 0,
+           "and the index hands back the pack's own spelling to read it by");
+    count = mdkr_mod_registry_name_hits(&reg, zip_lower, hits, 4);
+    expect(mdkr_mod_registry_find_file(&reg, zip_lower) == zipped &&
+           count == 1 && strcmp(hits[0].name, zip_spelled) == 0,
+           "a zip's TEXTURES/<UPPER>.Png answers it too, with its spelling");
+    expect(reg.entries[folder].digest_textures == 1 &&
+           reg.entries[zipped].digest_textures == 1,
+           "both count as digest-named textures");
+    expect(mdkr_mod_registry_find_file(&reg, "MUSIC/track.ogg") == -1 &&
+           mdkr_mod_registry_find_file(&reg, "music/Track.ogg") == folder,
+           "a name that is not a digest still matches exactly");
+    /* Compared ignoring case: on a filesystem that ignores case (macOS,
+     * Windows) the fixture's Textures/ and textures/ are one directory, so
+     * the scan reports whichever spelling the directory was created with. */
+    expect(reg.entries[folder].textures_skipped == 2 &&
+           (same_ignoring_case(reg.entries[folder].textures_skipped_first,
+                               "textures/not-a-digest.png") ||
+            same_ignoring_case(
+                reg.entries[folder].textures_skipped_first,
+                "textures/nested/0123456789abcdef0123456789abcdef.png")),
+           "files under textures/ that can never be used are counted and named");
+    expect(reg.entries[zipped].textures_skipped == 0,
+           "and a pack with none reports none");
+    mdkr_mod_registry_shutdown(&reg);
+}
+
 int main(int argc, char **argv) {
     const char *scratch = argc > 1 ? argv[1] : "mod_registry_scratch";
 
@@ -532,6 +617,7 @@ int main(int argc, char **argv) {
     test_overflowing_skip_list_names_what_it_explains(scratch);
     test_disabled_pack_never_wins(scratch);
     test_names_are_indexed_at_scan(scratch);
+    test_digest_names_ignore_case(scratch);
 
     remove_tree(scratch);
 

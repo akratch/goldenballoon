@@ -181,38 +181,53 @@ static uint32_t name_hash(const char *name) {
     return hash;
 }
 
-/* textures/<32 characters>.png, the only shape a digest lookup builds. */
-static int is_digest_texture_name(const char *rel) {
+#define MDKR_MOD_DIGEST_NAME_CHARS (9u + 32u + 4u)   /* textures/ + 32 + .png */
+
+static int ascii_ncasecmp(const char *a, const char *b, size_t count);
+
+/* textures/<32 hex digits>.png in any case: the only shape a digest lookup can
+ * match. Writes the lowercase form (the index key) when `folded` is given.
+ *
+ * Any case, because 1.7.0 found these files by asking the filesystem, and the
+ * filesystems macOS and Windows ship ignore case: a pack spelling them
+ * Textures/ABC...PNG worked there and must keep working (#66). Only this shape
+ * is folded. Every other name is matched exactly, as it always was. */
+static int digest_name_fold(const char *rel, char *folded) {
     size_t index;
-    if (strlen(rel) != 9u + 32u + 4u) return 0;
-    if (memcmp(rel, "textures/", 9) != 0) return 0;
-    if (memcmp(rel + 41, ".png", 4) != 0) return 0;
+
+    if (strlen(rel) != MDKR_MOD_DIGEST_NAME_CHARS) return 0;
+    if (ascii_ncasecmp(rel, "textures/", 9) != 0) return 0;
+    if (ascii_ncasecmp(rel + 41, ".png", 4) != 0) return 0;
     for (index = 9; index < 41; index++) {
-        if (rel[index] == '/') return 0;
+        if (!isxdigit((unsigned char)rel[index])) return 0;
+    }
+    if (folded != NULL) {
+        for (index = 0; index < MDKR_MOD_DIGEST_NAME_CHARS; index++) {
+            folded[index] = (char)ascii_lower((unsigned char)rel[index]);
+        }
+        folded[MDKR_MOD_DIGEST_NAME_CHARS] = '\0';
     }
     return 1;
 }
 
-static const MdkrModNameSlot *name_slot_find(const MdkrModRegistry *reg,
-                                             const char *name,
-                                             uint32_t hash) {
-    size_t mask;
-    size_t index;
-    size_t probe;
+static int is_digest_texture_name(const char *rel) {
+    return digest_name_fold(rel, NULL);
+}
 
-    if (reg->name_capacity == 0) return NULL;
-    mask = reg->name_capacity - 1u;
-    index = (size_t)hash & mask;
-    for (probe = 0; probe < reg->name_capacity; probe++) {
-        const MdkrModNameSlot *slot = &reg->names[index];
-        if (slot->packs == 0) return NULL;
-        if (slot->hash == hash &&
-            strcmp(reg->name_pool + slot->offset, name) == 0) {
-            return slot;
-        }
-        index = (index + 1u) & mask;
-    }
-    return NULL;
+/* A .png under textures/ (any case) that is NOT digest-shaped: a file a
+ * digest pack ships that no lookup can ever reach. */
+static int is_unusable_texture_name(const char *rel) {
+    const size_t length = strlen(rel);
+    if (length < 9 + 4 + 1) return 0;
+    if (ascii_ncasecmp(rel, "textures/", 9) != 0) return 0;
+    if (ascii_ncasecmp(rel + length - 4, ".png", 4) != 0) return 0;
+    return !is_digest_texture_name(rel);
+}
+
+/* The key a name is indexed and looked up under: its lowercase form when it
+ * is a texture digest, itself otherwise. */
+static const char *name_key(const char *rel, char *buffer) {
+    return digest_name_fold(rel, buffer) ? buffer : rel;
 }
 
 static int name_table_grow(MdkrModRegistry *reg, size_t capacity) {
@@ -235,15 +250,47 @@ static int name_table_grow(MdkrModRegistry *reg, size_t capacity) {
     return 1;
 }
 
+/* Appends `text` to the pool; its offset, or UINT32_MAX when out of room. */
+static uint32_t name_pool_put(MdkrModRegistry *reg, const char *text) {
+    const size_t length = strlen(text) + 1u;
+    uint32_t     offset;
+
+    if (reg->name_pool_size + length > (size_t)UINT32_MAX - 1u) {
+        return UINT32_MAX;
+    }
+    if (reg->name_pool_size + length > reg->name_pool_capacity) {
+        size_t capacity = reg->name_pool_capacity == 0
+                              ? MDKR_MOD_NAME_POOL_MIN
+                              : reg->name_pool_capacity;
+        char *grown;
+        while (capacity < reg->name_pool_size + length) capacity *= 2u;
+        grown = (char *)realloc(reg->name_pool, capacity);
+        if (grown == NULL) return UINT32_MAX;
+        reg->name_pool = grown;
+        reg->name_pool_capacity = capacity;
+    }
+    offset = (uint32_t)reg->name_pool_size;
+    memcpy(reg->name_pool + reg->name_pool_size, text, length);
+    reg->name_pool_size += length;
+    return offset;
+}
+
 /* Records that pack `pack` serves `name`. 0 when memory ran out, which the
  * caller turns into "this pack's index is incomplete", never into a wrong
- * "absent". */
+ * "absent".
+ *
+ * One slot per (key, spelling): packs that spell a name the same way share a
+ * slot and its pack bits, and a digest name two packs spell differently gets
+ * two slots under one key, each knowing how to read it back. */
 static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
-    const uint32_t hash = name_hash(name);
+    char           folded[MDKR_MOD_DIGEST_NAME_CHARS + 1];
+    const char    *key = name_key(name, folded);
+    const uint32_t hash = name_hash(key);
     const uint64_t bit = UINT64_C(1) << pack;
-    const size_t length = strlen(name) + 1u;
-    size_t mask;
-    size_t index;
+    size_t         mask;
+    size_t         index;
+    uint32_t       key_offset;
+    uint32_t       spelling_offset;
 
     if (reg->name_capacity == 0 ||
         (reg->name_count + 1u) * 10u >= reg->name_capacity * 7u) {
@@ -256,32 +303,60 @@ static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
     while (reg->names[index].packs != 0) {
         MdkrModNameSlot *slot = &reg->names[index];
         if (slot->hash == hash &&
-            strcmp(reg->name_pool + slot->offset, name) == 0) {
+            strcmp(reg->name_pool + slot->offset, key) == 0 &&
+            strcmp(reg->name_pool + slot->spelling, name) == 0) {
             slot->packs |= bit;
             return 1;
         }
         index = (index + 1u) & mask;
     }
 
-    if (reg->name_pool_size + length > (size_t)UINT32_MAX) return 0;
-    if (reg->name_pool_size + length > reg->name_pool_capacity) {
-        size_t capacity = reg->name_pool_capacity == 0
-                              ? MDKR_MOD_NAME_POOL_MIN
-                              : reg->name_pool_capacity;
-        char *grown;
-        while (capacity < reg->name_pool_size + length) capacity *= 2u;
-        grown = (char *)realloc(reg->name_pool, capacity);
-        if (grown == NULL) return 0;
-        reg->name_pool = grown;
-        reg->name_pool_capacity = capacity;
+    key_offset = name_pool_put(reg, key);
+    if (key_offset == UINT32_MAX) return 0;
+    spelling_offset = key_offset;
+    if (strcmp(key, name) != 0) {
+        spelling_offset = name_pool_put(reg, name);
+        if (spelling_offset == UINT32_MAX) return 0;
     }
-    memcpy(reg->name_pool + reg->name_pool_size, name, length);
     reg->names[index].packs = bit;
     reg->names[index].hash = hash;
-    reg->names[index].offset = (uint32_t)reg->name_pool_size;
-    reg->name_pool_size += length;
+    reg->names[index].offset = key_offset;
+    reg->names[index].spelling = spelling_offset;
     reg->name_count++;
     return 1;
+}
+
+/* Calls `visit` for every slot indexed under `relative_path`'s key, stopping
+ * early when it returns non-zero. Slots are never removed, so every slot of a
+ * key lies on its probe run before the first empty one. */
+typedef int (*NameSlotVisit)(const MdkrModRegistry *reg,
+                             const MdkrModNameSlot *slot, void *user);
+
+static void name_slots_for(const MdkrModRegistry *reg,
+                           const char *relative_path, NameSlotVisit visit,
+                           void *user) {
+    char        folded[MDKR_MOD_DIGEST_NAME_CHARS + 1];
+    const char *key;
+    uint32_t    hash;
+    size_t      mask;
+    size_t      index;
+    size_t      probe;
+
+    if (reg == NULL || reg->name_capacity == 0) return;
+    key = name_key(relative_path, folded);
+    hash = name_hash(key);
+    mask = reg->name_capacity - 1u;
+    index = (size_t)hash & mask;
+    for (probe = 0; probe < reg->name_capacity; probe++) {
+        const MdkrModNameSlot *slot = &reg->names[index];
+        if (slot->packs == 0) return;
+        if (slot->hash == hash &&
+            strcmp(reg->name_pool + slot->offset, key) == 0 &&
+            visit(reg, slot, user) != 0) {
+            return;
+        }
+        index = (index + 1u) & mask;
+    }
 }
 
 static void name_index_release(MdkrModRegistry *reg) {
@@ -576,6 +651,12 @@ static int pack_index_visit(const char *rel, void *user) {
     }
     if (is_digest_texture_name(rel)) {
         scan->reg->entries[scan->pack].digest_textures++;
+    } else if (!scan->rice && is_unusable_texture_name(rel)) {
+        MdkrModEntry *entry = &scan->reg->entries[scan->pack];
+        if (entry->textures_skipped++ == 0) {
+            copy_bounded(entry->textures_skipped_first,
+                         sizeof entry->textures_skipped_first, rel);
+        }
     }
     if (scan->rice && rice_visit(rel, &scan->rice_scan) != 0) {
         /* Out of memory for the Rice index: stop, keep what we have, and
@@ -979,19 +1060,61 @@ int mdkr_mod_registry_resolve(const MdkrModRegistry *reg,
     return 0;
 }
 
+static uint64_t registry_live_packs(const MdkrModRegistry *reg) {
+    return reg->count >= 64 ? ~UINT64_C(0)
+                            : (UINT64_C(1) << reg->count) - 1u;
+}
+
+static int name_packs_visit(const MdkrModRegistry *reg,
+                            const MdkrModNameSlot *slot, void *user) {
+    (void)reg;
+    *(uint64_t *)user |= slot->packs;
+    return 0;
+}
+
 uint64_t mdkr_mod_registry_name_packs(const MdkrModRegistry *reg,
                                       const char *relative_path) {
-    const MdkrModNameSlot *slot;
-    uint64_t live;
+    uint64_t packs = 0;
 
     if (reg == NULL || reg->count <= 0) return 0;
     /* The same validator every pack read passes, so a name the packs could
      * never serve is never reported as served. */
     if (!mdkr_mod_source_path_is_safe(relative_path)) return 0;
-    live = reg->count >= 64 ? ~UINT64_C(0)
-                            : (UINT64_C(1) << reg->count) - 1u;
-    slot = name_slot_find(reg, relative_path, name_hash(relative_path));
-    return ((slot != NULL ? slot->packs : 0) | reg->names_unindexed) & live;
+    name_slots_for(reg, relative_path, name_packs_visit, &packs);
+    return (packs | reg->names_unindexed) & registry_live_packs(reg);
+}
+
+typedef struct NameHits {
+    MdkrModNameHit *out;
+    int             max;
+    int             count;
+    uint64_t        live;
+} NameHits;
+
+static int name_hits_visit(const MdkrModRegistry *reg,
+                           const MdkrModNameSlot *slot, void *user) {
+    NameHits *hits = (NameHits *)user;
+    if ((slot->packs & hits->live) == 0) return 0;
+    if (hits->count >= hits->max) return 1;
+    hits->out[hits->count].packs = slot->packs & hits->live;
+    hits->out[hits->count].name = reg->name_pool + slot->spelling;
+    hits->count++;
+    return 0;
+}
+
+int mdkr_mod_registry_name_hits(const MdkrModRegistry *reg,
+                                const char *relative_path,
+                                MdkrModNameHit *out, int max) {
+    NameHits hits;
+
+    if (reg == NULL || reg->count <= 0 || out == NULL || max <= 0) return 0;
+    if (!mdkr_mod_source_path_is_safe(relative_path)) return 0;
+    hits.out = out;
+    hits.max = max;
+    hits.count = 0;
+    hits.live = registry_live_packs(reg);
+    name_slots_for(reg, relative_path, name_hits_visit, &hits);
+    return hits.count;
 }
 
 int mdkr_mod_registry_find_file(const MdkrModRegistry *reg,
@@ -1008,3 +1131,4 @@ int mdkr_mod_registry_find_file(const MdkrModRegistry *reg,
     }
     return -1;
 }
+

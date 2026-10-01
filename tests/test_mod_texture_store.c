@@ -89,6 +89,10 @@
 #define DIGEST_FLIGHT2 "c6666666666666666666666666666666"
 #define DIGEST_FLIGHT3 "c7777777777777777777777777777777"
 #define DIGEST_WTIMED  "f9999999999999999999999999999999"
+/* Asked for in lowercase, as the renderer always does; stored by their packs
+ * as Textures/<UPPER>.PNG (folder) and TEXTURES/<UPPER>.Png (zip). */
+#define DIGEST_CASE_FOLDER "ab00000000000000000000000000cdef"
+#define DIGEST_CASE_ZIP    "cd00000000000000000000000000abef"
 /* Eviction fixtures are generated: "9" + 31 digits of the index. */
 #define EVICT_FIXTURES 12
 
@@ -428,24 +432,22 @@ static void write_small_rgba_png(const char *root, const char *pack,
     write_png_file(root, pack, relative, 8, pixel_gradient, blue);
 }
 
-/* A zipped digest pack: pack.ini plus one 8x8 gradient, deflated by miniz so
- * the worker's own archive handle has something real to inflate. */
-static void write_zip_digest_pack(const char *root, const char *name,
-                                  const char *digest, unsigned char blue) {
-    static const char manifest[] = "[pack]\nname=Zipped\npriority=200\n";
+/* A zipped pack: pack.ini plus one 8x8 gradient at `relative`, deflated by
+ * miniz so the worker's own archive handle has something real to inflate. */
+static void write_zip_png_pack(const char *root, const char *name,
+                               const char *manifest, const char *relative,
+                               unsigned char blue) {
     char           full[1024];
-    char           relative[128];
     PngBuffer      png;
     mz_zip_archive zip;
 
     path2(full, sizeof full, root, name);
     make_parent_directories(full);
     build_rgba_png(&png, 8, pixel_gradient, blue);
-    snprintf(relative, sizeof relative, "textures/%s.png", digest);
     memset(&zip, 0, sizeof zip);
     if (!mz_zip_writer_init_file(&zip, full, 0) ||
-        !mz_zip_writer_add_mem(&zip, "pack.ini", manifest,
-                               sizeof manifest - 1u, MZ_DEFAULT_COMPRESSION) ||
+        !mz_zip_writer_add_mem(&zip, "pack.ini", manifest, strlen(manifest),
+                               MZ_DEFAULT_COMPRESSION) ||
         !mz_zip_writer_add_mem(&zip, relative, png.bytes, png.length,
                                MZ_DEFAULT_COMPRESSION) ||
         !mz_zip_writer_finalize_archive(&zip)) {
@@ -453,6 +455,28 @@ static void write_zip_digest_pack(const char *root, const char *name,
         fatal("cannot write the scratch archive", full);
     }
     mz_zip_writer_end(&zip);
+}
+
+static void write_zip_digest_pack(const char *root, const char *name,
+                                  const char *digest, unsigned char blue) {
+    char relative[128];
+    snprintf(relative, sizeof relative, "textures/%s.png", digest);
+    write_zip_png_pack(root, name, "[pack]\nname=Zipped\npriority=200\n",
+                       relative, blue);
+}
+
+/* `textures/<digest>.png` as a pack author might spell it: the directory,
+ * every hex digit and the extension in other cases. */
+static void spell_upper(char *out, size_t size, const char *directory,
+                        const char *digest, const char *extension) {
+    char   upper[33];
+    size_t index;
+    for (index = 0; index < 32 && digest[index] != '\0'; index++) {
+        char c = digest[index];
+        upper[index] = (c >= 'a' && c <= 'f') ? (char)(c - 'a' + 'A') : c;
+    }
+    upper[index] = '\0';
+    snprintf(out, size, "%s/%s%s", directory, upper, extension);
 }
 
 static void rice_name(char *out, size_t size, uint32_t crc,
@@ -866,8 +890,9 @@ static void test_lookups_do_no_pack_io(MdkrModRegistry *registry) {
 
     opens_at_init = mdkr_mod_source_test_opens();
     store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
-    expect(mdkr_mod_source_test_opens() - opens_at_init == 3,
-           "init opens each texture pack once (folder, zip, Rice)");
+    expect(mdkr_mod_source_test_opens() - opens_at_init == 5,
+           "init opens each texture pack once (probe, zipped, Rice, and the "
+           "two case packs)");
 
     mdkr_mod_texture_store_test_hold_worker(1);
     opens = mdkr_mod_source_test_opens();
@@ -1276,6 +1301,21 @@ static void test_owner_and_worker_overlap(MdkrModRegistry *registry) {
     mdkr_mod_texture_timing_set_clock(NULL);
 }
 
+/* 17. A digest-named texture is found whatever case its pack spells it in,
+ * as it was in 1.7.0 on case-insensitive filesystems -- in a folder pack and
+ * in a zip -- and read back through the worker by the pack's own spelling. */
+static void test_digest_names_ignore_case(MdkrModRegistry *registry) {
+    MdkrModTexture texture;
+
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+    expect(lookup_settled(DIGEST_CASE_FOLDER, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xC1u),
+           "a folder pack's Textures/<UPPER>.PNG replaces the lowercase digest");
+    expect(lookup_settled(DIGEST_CASE_ZIP, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xC2u),
+           "and so does a zip's TEXTURES/<UPPER>.Png");
+}
+
 /* ------------------------------------------------------- the author dump */
 
 /* Reads a whole scratch file into `out`, returning its length, or -1 when the
@@ -1425,7 +1465,8 @@ int main(int argc, char **argv) {
         strlen(DIGEST_FALLBACK) != 32 || strlen(DIGEST_STALE1) != 32 ||
         strlen(DIGEST_STALE2) != 32 || strlen(DIGEST_FLIGHT0) != 32 ||
         strlen(DIGEST_FLIGHT1) != 32 || strlen(DIGEST_FLIGHT2) != 32 ||
-        strlen(DIGEST_FLIGHT3) != 32 || strlen(DIGEST_WTIMED) != 32) {
+        strlen(DIGEST_FLIGHT3) != 32 || strlen(DIGEST_WTIMED) != 32 ||
+        strlen(DIGEST_CASE_FOLDER) != 32 || strlen(DIGEST_CASE_ZIP) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -1462,6 +1503,12 @@ int main(int argc, char **argv) {
                      (const unsigned char *)notpng, strlen(notpng));
     write_zip_digest_pack(mods, "zipped.zip", DIGEST_ZIPPED, 0x70u);
     /* A Rice pack: no pack.ini, recognised by its file names. */
+    write_pack_text(mods, "casepack", "pack.ini", "[pack]\nname=Case\n");
+    spell_upper(rice, sizeof rice, "Textures", DIGEST_CASE_FOLDER, ".PNG");
+    write_png_file(mods, "casepack", rice, 8, pixel_gradient, 0xC1u);
+    spell_upper(rice, sizeof rice, "TEXTURES", DIGEST_CASE_ZIP, ".Png");
+    write_zip_png_pack(mods, "casezip.zip", "[pack]\nname=CaseZip\n", rice,
+                       0xC2u);
     rice_name(rice, sizeof rice, RICE_MERGED_CRC, "rgb");
     write_png_file(mods, "ricepack", rice, 8, pixel_gradient, 0x33u);
     rice_name(rice, sizeof rice, RICE_MERGED_CRC, "a");
@@ -1508,6 +1555,7 @@ int main(int argc, char **argv) {
     test_stale_completions_are_discarded(&registry);
     test_worker_timing(&registry);
     test_owner_and_worker_overlap(&registry);
+    test_digest_names_ignore_case(&registry);
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();

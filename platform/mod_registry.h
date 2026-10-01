@@ -57,6 +57,12 @@ typedef struct MdkrModEntry {
      * lookup can match. Zero lets the texture store skip that probe for this
      * pack entirely, which for a Rice pack is every probe it would make. */
     int  digest_textures;
+    /* Files under textures/ (any case) ending in .png that are NOT named by a
+     * content digest, so no lookup can ever reach them -- counted at scan,
+     * with the first one's name, so the player can be told why. Zero for a
+     * Rice pack, whose own convention names its files. */
+    int  textures_skipped;
+    char textures_skipped_first[128];
 } MdkrModEntry;
 
 /* One texture in a Rice/GLideN64 high-resolution pack.
@@ -84,9 +90,11 @@ typedef struct MdkrModRiceTexture {
  * packs (bit i = entries[i]) serve it. Private to mod_registry.c; declared
  * here only because the registry is a plain value its owners embed. */
 typedef struct MdkrModNameSlot {
-    uint64_t packs;   /* 0 marks an empty slot */
-    uint32_t hash;
-    uint32_t offset;  /* into name_pool */
+    uint64_t packs;     /* 0 marks an empty slot */
+    uint32_t hash;      /* of the key */
+    uint32_t offset;    /* the key, in name_pool */
+    uint32_t spelling;  /* the name as these packs store it; == offset unless
+                         * the key was folded to lowercase */
 } MdkrModNameSlot;
 
 typedef struct MdkrModRegistry {
@@ -173,12 +181,31 @@ const char *mdkr_mod_registry_skip_reason(const MdkrModRegistry *reg, int i);
  * no allocation; 0 for a name no pack serves, for a name the validator
  * refuses, and for a shut-down registry.
  *
- * Matching is exact and case-sensitive on every platform, the same rule the
- * zip arm of mod_source has always applied. The index is the scan's answer:
+ * Matching is exact, except that a texture-digest name ignores case (see
+ * name_hits() below), on every platform. The index is the scan's answer:
  * a file added or removed afterwards is seen at the next rescan, the same
  * point at which a new pack is. */
 uint64_t mdkr_mod_registry_name_packs(const MdkrModRegistry *reg,
                                       const char *relative_path);
+
+/* One way the packs spell a name: the packs that store it this way, and the
+ * spelling to read it by. Points into the registry; valid until shutdown. */
+typedef struct MdkrModNameHit {
+    uint64_t    packs;
+    const char *name;
+} MdkrModNameHit;
+
+/* Every spelling under which some pack serves `relative_path`, up to `max`;
+ * returns how many were written. Usually one, spelled as asked. A name that is
+ * a texture digest -- textures/<32 hex>.png -- matches whatever its case, in
+ * the directory, the digest and the extension alike, because 1.7.0 found such
+ * files through filesystems that ignore case; each hit then carries the
+ * spelling the pack really uses. Every other name, Rice textures included,
+ * matches exactly. No I/O. Packs that could not be indexed are not listed
+ * here (see name_packs()). */
+int mdkr_mod_registry_name_hits(const MdkrModRegistry *reg,
+                                const char *relative_path,
+                                MdkrModNameHit *out, int max);
 
 /* The index of the highest-priority ENABLED pack the index says serves
  * `relative_path`, or -1. The same choice open_file() makes, without opening

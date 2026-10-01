@@ -2233,6 +2233,18 @@ void platform_content_packs_init(void) {
                      entry->manifest.author);
             fprintf(stderr, "[MODS]   active: %s%s (priority %d)\n",
                     entry->manifest.name, credit, entry->manifest.priority);
+            /* Files the scan found under textures/ that no lookup can ever
+             * reach. Said once, at the scan, rather than leaving the author
+             * to wonder why a texture never changed. */
+            if (entry->textures_skipped > 0) {
+                fprintf(stderr,
+                        "[MODS]     %d file%s under textures/ will not be "
+                        "used: a replacement must be named "
+                        "textures/<32-character digest>.png (first: %s)\n",
+                        entry->textures_skipped,
+                        entry->textures_skipped == 1 ? "" : "s",
+                        entry->textures_skipped_first);
+            }
         } else if (platform_content_pack_name_disabled(
                        disabled_list, entry->manifest.name)) {
             fprintf(stderr,
