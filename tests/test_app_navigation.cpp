@@ -343,6 +343,54 @@ void settingsListClosed(bool recover, ImGuiKey key) {
            "Tab after closing the Settings list lands on the first control");
 }
 
+// A launcher card (ui::CardBegin: a flattened child) scrolled fully out of view
+// by the wheel while a control inside it holds keyboard focus. Dear ImGui then
+// stops drawing the card's controls, but re-submits them as soon as a Tab is
+// pending, so stock Tab carries on inside the card. The recovery must not take
+// that for a vanished control and send Tab back to the window's first stop.
+void scrolledCardKeepsTab(bool recover) {
+    ImGuiID top = 0, first = 0, second = 0;
+    ImGuiWindow *card = nullptr;
+    Ui ui(recover, [&] {
+        ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f),
+                          ImGuiChildFlags_NavFlattened);
+        ImGui::Button("Top");
+        top = ImGui::GetItemID();
+        ImGui::BeginChild("##card", ImVec2(0.0f, 80.0f),
+                          ImGuiChildFlags_Borders |
+                              ImGuiChildFlags_NavFlattened);
+        card = ImGui::GetCurrentWindow();
+        ImGui::Button("First in card");
+        first = ImGui::GetItemID();
+        ImGui::Button("Second in card");
+        second = ImGui::GetItemID();
+        ImGui::EndChild();
+        ImGui::Dummy(ImVec2(10.0f, 1200.0f));
+        ImGui::Button("Bottom");
+        ImGui::EndChild();
+    });
+    expect(ui.tabTo(first), "Tab reaches the first control in the card");
+    ImGuiIO &io = ImGui::GetIO();
+    io.AddMousePosEvent(100.0f, 100.0f);
+    for (int notch = 0; notch < 10; ++notch) {
+        io.AddMouseWheelEvent(0.0f, -3.0f);
+        ui.frame();
+    }
+    ui.frame();
+    ui.frame();
+    // The fixture must really reach the state: card drawn but its controls
+    // skipped, focus on one of them, highlight still showing.
+    expect(card != nullptr && card->Active && card->SkipItems,
+           "fixture scrolls the card fully out of view");
+    expect(!ImGui::GetCurrentContext()->NavIdIsAlive,
+           "...so the focused control is not drawn");
+    ui.press(ImGuiKey_Tab);
+    expect(ui.focused() != top,
+           "Tab from a scrolled-away card does not start over at the top");
+    expect(ui.focused() == second,
+           "Tab from a scrolled-away card carries on inside it");
+}
+
 // The recovery must not undo Dear ImGui's own focus moves: a popup opened from
 // the keyboard focuses its first item with the highlight showing, and Escape
 // closes it back onto the control that opened it (the launcher configuration
@@ -433,6 +481,9 @@ int main() {
         settingsListClosed(recover, ImGuiKey_Escape);
         settingsListClosed(recover, ImGuiKey_GamepadFaceRight);
     }
+    // Stock Dear ImGui carries on here; the recovery must leave it so.
+    scrolledCardKeepsTab(false);
+    scrolledCardKeepsTab(true);
     popupKeepsFocus();
     textEntryKeepsFocus();
 

@@ -412,8 +412,13 @@ more cases keep the recovery out of Dear ImGui's way and pin what Escape still
 does under the launcher configuration: a popup opened from the keyboard
 focuses its first item with the highlight showing and Escape closes it back
 onto its opener, and Escape in a text field drops the unfinished edit and
-keeps focus on the field. Disabling the recovery, or letting it run while a
-window's default focus is still pending, each fails a named case.
+keeps focus on the field. A third keeps it out of a launcher card's way: with
+focus inside a flattened card (`ui::CardBegin`) that the wheel scrolls fully
+out of view, Dear ImGui skips drawing the card's controls but submits them
+again for the next Tab, which must carry on inside the card (run both with and
+without the recovery; stock Dear ImGui carries on). Disabling the recovery,
+letting it run while a window's default focus is still pending, or letting it
+reset focus in a scrolled-away card each fails a named case.
 
 The Windows validation build includes every registered unit target, not just
 the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
@@ -8244,15 +8249,20 @@ the screen it names, so a layout change fails by name rather than testing
 something else. Before the fix all eight ended with `focus=stale cursor=1`
 and nothing spoken.
 
-The two launcher arms walk Settings and About by Tab only
-(`MDKR_APP_SMOKE_A11Y_ESCAPE=<tabs>` with token `mdkr64-a11y-escape-v1`
-queues an Escape in place of one Tab and prints the frame ImGui receives it).
-Tab after that Escape must announce at least three controls, the first of
-them one the walk had not passed yet. Replacing `AppNavigation_configure` in
-`app_host.cpp` with the old two flag lines fails both arms: "started over"
-while the end-of-frame recovery is present, "stopped" without it. CTest runs
-them as `app_keyboard_dead_ends` (gpu); `tools/run_checks.py` runs every arm
-with the ROM.
+The launcher arms walk by Tab only. `MDKR_APP_SMOKE_A11Y_KEY=<escape|enter>:<tabs>`
+with token `mdkr64-a11y-key-v1` queues that key in place of one Tab and
+prints the frame ImGui receives it. Two arms press an Escape nothing claims
+on Settings and About: Tab after it must announce at least three controls, the
+first of them one the walk had not passed yet. Replacing
+`AppNavigation_configure` in `app_host.cpp` with the old two flag lines fails
+both: "started over" while the end-of-frame recovery is present, "stopped"
+without it. A third arm, with a remembered ROM, presses Enter on Change ROM…:
+the next announcement must be the same button as Cancel Change. Without its
+`###` id it announced Play, the top of the launcher. Likewise the overlay arm
+for the Settings button opening the list requires its final Tab to announce
+"Settings list"; without the button's `###` id it announced Resume. CTest runs
+the two ROM-free arms as `app_keyboard_dead_ends` (gpu); `tools/run_checks.py`
+runs every arm with the ROM.
 
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 

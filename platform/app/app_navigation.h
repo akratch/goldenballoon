@@ -42,8 +42,9 @@ inline void AppNavigation_configure(ImGuiIO &io) {
 // whenever Dear ImGui is still settling focus itself (a move, Tab or focus
 // request, or a window picking its default control resolves at the next
 // NewFrame), while a widget drawn this frame is active (text entry, a held
-// slider), and when the focused window was not drawn at all (Dear ImGui
-// refocuses the topmost window on its own then). A button pressed with Enter
+// slider), when the focused window was not drawn at all (Dear ImGui
+// refocuses the topmost window on its own then), and when it is a flattened
+// child scrolled out of view (see below). A button pressed with Enter
 // stays "active" for one frame after it disappears; that does not count, or
 // a Tab pressed straight after Enter on Cancel would still hit the dead end.
 // Returns true when it reset focus.
@@ -57,6 +58,14 @@ inline bool AppNavigation_recoverLostFocus() {
         return false;
     }
     if (g.NavId != 0 && g.NavIdIsAlive) return false;
+    // A flattened child (a launcher card, ui::CardBegin) scrolled fully out
+    // of view skips drawing its controls, but Dear ImGui submits them again
+    // as soon as a Tab or move is pending, so Tab carries on from the focused
+    // control inside it. Not a vanished control: leave focus where it is.
+    if (window->SkipItems &&
+        (window->ChildFlags & ImGuiChildFlags_NavFlattened) != 0) {
+        return false;
+    }
     if (g.NavMoveSubmitted || g.NavMoveForwardToNextFrame ||
         g.NavInitRequest || g.NavInitResult.ID != 0 ||
         g.NavWindowingTarget != nullptr ||

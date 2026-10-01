@@ -331,9 +331,14 @@ The supported behavior is explicit:
   hides the highlight and forgets the vanished control, so the next Tab,
   arrow or D-pad press starts at the window's first control. Without it,
   Tab keeps looking for the vanished control to move past and does
-  nothing. A button whose label changes when pressed (the
-  overlay's Settings / Hide Settings) keeps one `###` id, so focus stays on
-  it rather than needing that recovery;
+  nothing. The recovery cannot keep the player's place, so these two
+  buttons, which relabel themselves when pressed, keep one `###` id each and
+  focus stays on the one that was pressed: the overlay's Settings / Hide
+  Settings and the launcher's Change ROM… / Cancel Change. This is not a
+  shell-wide rule; other controls whose label (and so id) changes fall back
+  to the recovery. A launcher card
+  scrolled out of view with focus inside it is left alone: Dear ImGui draws
+  its controls again for the next Tab, which carries on from the focused one;
 - the in-game F1 overlay uses Escape and controller B symmetrically: close an
   ImGui popup first, dismiss confirmation, leave Settings, then close overlay.
   Its own buttons (Resume, Settings, the Settings list as one Tab stop,

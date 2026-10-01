@@ -44,7 +44,7 @@
 #include "ui_settings.h"
 #include "user_paths.h"
 
-#include "imgui.h"          // the accessibility Escape walk's key observation
+#include "imgui.h"          // the accessibility key walk's key observation
 #include "video_config.h"   // mdkr_video_config_init / _schema (settings panel)
 
 #include <SDL.h>
@@ -3225,33 +3225,54 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         return 2;
     }
     /*
-     * An Escape that nothing on the panel claims, pressed after N Tabs of the
-     * keyboard walk (tests/check_keyboard_dead_ends.py). The walk stays on Tab
-     * for its whole length so every control announced after the Escape was
-     * reached by Tab, and the frame on which ImGui receives the Escape is
-     * printed beside the speech trace, so the check can tell "carried on",
-     * "started over" and "stopped" apart.
+     * One key pressed after N Tabs of the keyboard walk
+     * (tests/check_keyboard_dead_ends.py): MDKR_APP_SMOKE_A11Y_KEY is
+     * "escape:<tabs>" (an Escape the panel may not claim) or "enter:<tabs>"
+     * (activating the control Tab reached). The walk stays on Tab for its
+     * whole length so every control announced after the key was reached by
+     * Tab, and the frame on which ImGui receives the key is printed beside
+     * the speech trace, so the check can tell "carried on", "started over"
+     * and "stopped" apart.
      */
-    const char *smokeA11yEscape = std::getenv("MDKR_APP_SMOKE_A11Y_ESCAPE");
-    const char *smokeA11yEscapeToken =
-        std::getenv("MDKR_APP_SMOKE_A11Y_ESCAPE_TOKEN");
-    const bool anyA11yEscapeContract =
-        (smokeA11yEscape && smokeA11yEscape[0]) ||
-        (smokeA11yEscapeToken && smokeA11yEscapeToken[0]);
-    char *a11yEscapeEnd = nullptr;
-    const long smokeA11yEscapeTabs = smokeA11yEscape
-        ? std::strtol(smokeA11yEscape, &a11yEscapeEnd, 10) : 0;
-    const bool smokeA11yEscapeArmed =
-        anyA11yEscapeContract && smokeA11yWalk && !smokeUsesGamepad &&
+    const char *smokeA11yKey = std::getenv("MDKR_APP_SMOKE_A11Y_KEY");
+    const char *smokeA11yKeyToken =
+        std::getenv("MDKR_APP_SMOKE_A11Y_KEY_TOKEN");
+    const bool anyA11yKeyContract =
+        (smokeA11yKey && smokeA11yKey[0]) ||
+        (smokeA11yKeyToken && smokeA11yKeyToken[0]);
+    const char *smokeA11yKeyName = "";
+    SDL_Keycode smokeA11yKeyCode = SDLK_UNKNOWN;
+    ImGuiKey smokeA11yKeyImGui = ImGuiKey_None;
+    long smokeA11yKeyTabs = 0;
+    bool smokeA11yKeyParsed = false;
+    if (const char *colon =
+            smokeA11yKey ? std::strchr(smokeA11yKey, ':') : nullptr) {
+        const std::string name(smokeA11yKey,
+                               static_cast<size_t>(colon - smokeA11yKey));
+        if (name == "escape") {
+            smokeA11yKeyName = "escape";
+            smokeA11yKeyCode = SDLK_ESCAPE;
+            smokeA11yKeyImGui = ImGuiKey_Escape;
+        } else if (name == "enter") {
+            smokeA11yKeyName = "enter";
+            smokeA11yKeyCode = SDLK_RETURN;
+            smokeA11yKeyImGui = ImGuiKey_Enter;
+        }
+        char *end = nullptr;
+        smokeA11yKeyTabs = std::strtol(colon + 1, &end, 10);
+        smokeA11yKeyParsed = end != colon + 1 && *end == '\0';
+    }
+    const bool smokeA11yKeyArmed =
+        anyA11yKeyContract && smokeA11yWalk && !smokeUsesGamepad &&
         !smokeCharacterImportFocusArmed &&
-        !smokeCharacterWorkshopReturnArmed && smokeA11yEscape &&
-        a11yEscapeEnd != smokeA11yEscape && *a11yEscapeEnd == '\0' &&
-        smokeA11yEscapeTabs >= 1 && smokeA11yEscapeTabs <= 64 &&
-        smokeA11yEscapeToken &&
-        std::strcmp(smokeA11yEscapeToken, "mdkr64-a11y-escape-v1") == 0;
-    if (anyA11yEscapeContract && !smokeA11yEscapeArmed) {
+        !smokeCharacterWorkshopReturnArmed &&
+        smokeA11yKeyCode != SDLK_UNKNOWN && smokeA11yKeyParsed &&
+        smokeA11yKeyTabs >= 1 && smokeA11yKeyTabs <= 64 &&
+        smokeA11yKeyToken &&
+        std::strcmp(smokeA11yKeyToken, "mdkr64-a11y-key-v1") == 0;
+    if (anyA11yKeyContract && !smokeA11yKeyArmed) {
         std::fprintf(stderr,
-                     "[app] smoke: invalid accessibility Escape contract\n");
+                     "[app] smoke: invalid accessibility key contract\n");
         shutdownLauncherHost(host, launcher);
         return 2;
     }
@@ -3566,13 +3587,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
         observeSmokeQuit(action);
-        if (smokeA11yEscapeArmed && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        if (smokeA11yKeyArmed && ImGui::IsKeyPressed(smokeA11yKeyImGui, false)) {
             // After the panel drew (and spoke) this frame, beside the speech
             // trace on stdout: what is spoken after this line came after the
-            // Escape. The walk queues input faster than ImGui consumes it, so
-            // the frame that queued the Escape is not this one.
-            std::printf("[app-a11y-walk] escape reached imgui frame=%d\n",
-                        smokeA11yWalkFrame);
+            // key. The walk queues input faster than ImGui consumes it, so the
+            // frame that queued the key is not this one.
+            std::printf("[app-a11y-walk] %s reached imgui frame=%d\n",
+                        smokeA11yKeyName, smokeA11yWalkFrame);
             std::fflush(stdout);
         }
         const bool smokeSequenceFinalFrame = smokeA11yWalk
@@ -3923,7 +3944,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * the shorter directional-reversal phase.
              */
             const int tabFrames =
-                smokeA11yEscapeArmed ? frames : frames - frames / 4;
+                smokeA11yKeyArmed ? frames : frames - frames / 4;
             const int importFocusFrame = 16;
             const int workshopReturnFrame = 24;
             const bool shortcutSettle =
@@ -3965,11 +3986,11 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 // Leave one complete post-shortcut frame free of navigation
                 // input so the newly focused source control is both rendered
                 // and announced before the ordinary traversal resumes.
-            } else if (smokeA11yEscapeArmed &&
-                       smokeA11yWalkFrame == smokeA11yEscapeTabs) {
+            } else if (smokeA11yKeyArmed &&
+                       smokeA11yWalkFrame == smokeA11yKeyTabs) {
                 // In place of one Tab, so exactly N Tabs precede it in the
                 // queue whatever the frame rate.
-                host.queueKeyPressForSmoke(SDLK_ESCAPE);
+                host.queueKeyPressForSmoke(smokeA11yKeyCode);
             } else if (smokeA11yWalkFrame < tabFrames) {
                 if (smokeUsesGamepad) {
                     // Sweep across each responsive row before advancing. A

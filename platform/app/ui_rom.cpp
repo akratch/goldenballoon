@@ -990,8 +990,11 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
     // ---- Changing or forgetting the remembered selection -----------------
     if (ready) {
         const char *changeLabel = g_changing ? "Cancel Change" : "Change ROM…";
-        const bool changePressed =
-            ImGui::Button(changeLabel, ui::kBtnSecondary());
+        // One id for both labels, so pressing it keeps keyboard focus on the
+        // button (now with its other label) instead of on one that is gone.
+        const bool changePressed = ImGui::Button(
+            g_changing ? "Cancel Change###change-rom" : "Change ROM…###change-rom",
+            ui::kBtnSecondary());
         ui::SpeakFocusedItem(
             changeLabel, nullptr,
             g_changing ? "Keeps the game you already have."
