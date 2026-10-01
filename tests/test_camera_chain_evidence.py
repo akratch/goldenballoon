@@ -29,6 +29,18 @@ class ChainEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit([row()], [99])
 
+    def test_contact_fields(self):
+        seed = row() + " rejection=none contact=1 near=0"
+        self.assertEqual(audit([seed, row(2, 1, 1) + " rejection=none contact=0 near=1"])["accepted"], 2)
+        with self.assertRaisesRegex(ValueError, "recovery claimed on a contact tick"):
+            audit([seed, row(2, 1, 1, recovering=1) + " rejection=none contact=1 near=0"])
+        with self.assertRaisesRegex(ValueError, "release band read on a contact tick"):
+            audit([row() + " rejection=none contact=1 near=1"])
+        for bad in (" rejection=none contact=2 near=0", " rejection=none contact=1",
+                    " rejection=none contact=0 near=2"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "malformed"):
+                audit([row() + bad])
+
     def test_rejection_classification(self):
         self.assertEqual(audit([row(valid=0) + " rejection=boom"])["rejections"], {"boom": 1})
         for line in (row() + " rejection=boom", row(valid=0) + " rejection=none",

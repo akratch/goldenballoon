@@ -57,6 +57,24 @@
  */
 #define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U
 /*
+ * Release band (resolver: release_near_contact_extension_ticks). A served hold
+ * releases at once when the clear corridor also clears every surface by
+ * MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN; while it is clear but still grazing
+ * within that margin, the hold may wait up to the chatter window longer.
+ *
+ * Measured, not chosen: on the Ancient Lake route the authored boom leaves one
+ * canyon-wall facet, stays clear of the wall by between 2 and 4 units for 19
+ * ticks without ever moving away from it, and meets the next facet. A
+ * 9-tick hold released inside that gap and the next facet re-engaged the
+ * correction 11 ticks later -- the MOTION-01 re-engagement 1.7.0 already
+ * failed. 4 units is the smallest probed margin that reads that gap as
+ * grazing. The window bound keeps a camera that rides along a wall without
+ * touching it from staying corrected indefinitely: it still releases after
+ * hold + window clear ticks.
+ */
+#define MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN 4.0f
+#define MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS 12U
+/*
  * Soft-occluder mitigation, interim form (docs/architecture/camera-obstruction.md
  * VIS-01). Foliage, fences and small signs carry no reviewed soft/hard
  * provenance yet, so they fail closed to HARD and retract the boom exactly like
@@ -299,6 +317,10 @@ typedef struct MdkrCameraHeldChainProbe {
     uint64_t tick;
     uint32_t length;
     uint8_t valid, apply_shake;
+    /* The last accepted tick held on a corridor contact. */
+    uint8_t contact;
+    /* Consecutive accepted released (recovering) ticks, ending at `tick`. */
+    uint32_t recovering_run;
 } MdkrCameraHeldChainProbe;
 
 typedef struct MdkrCameraObstructionObserveSlot {
@@ -529,6 +551,199 @@ static int camera_obstruction_test_projection_failure(uint64_t tick) {
 static int camera_obstruction_test_disable_alternate_shot(void) {
     const char *value = getenv("MDKR_TEST_CAMERA_DISABLE_ALTERNATE");
     return value != NULL && value[0] == '1' && value[1] == '\0';
+}
+
+/*
+ * Held-shot fault seam (tests/check_camera_held_shot_faults.py).
+ *
+ * MDKR_TEST_CAMERA_HELD_FAULT=<kind>[:<ticks>] arms ONE injection into the
+ * first held shot that qualifies. The trigger finds its own episode, so the
+ * gate never pins a route tick that an unrelated timing or tuning change would
+ * move. Every kind but false_contact triggers once a shot has published
+ * MDKR_CAMERA_HELD_FAULT_MIN_LENGTH consecutive held ticks and was still
+ * holding on contact the tick before:
+ *
+ *   projection     the slot's projection latch fails on the trigger tick
+ *   query          the first exact static probe of the held chain's OWN proof
+ *                  on the trigger tick reports INVALID
+ *   false_clear:N  the corridor sweep reports CLEAR for N consecutive ticks
+ *                  from the trigger tick: the measured false-negative shape
+ *                  the release hold exists to absorb
+ *   false_contact  triggers instead on the third tick of the first released
+ *                  held recovery, and reports that one tick's corridor as a
+ *                  contact: a correction that lets go and comes straight back,
+ *                  the chatter the motion census must count
+ *
+ * It fires once per process and says so (camera_held_fault ... row), and the
+ * query kind says again when the held proof actually consumed it. Read once
+ * and cached like the other diagnostic seams; absent or unparsable is inert.
+ */
+#define MDKR_CAMERA_HELD_FAULT_MIN_LENGTH 4U
+
+static int camera_obstruction_token_matches(
+    const char *token, size_t length, const char *name);
+
+typedef enum MdkrCameraHeldFaultKind {
+    MDKR_CAMERA_HELD_FAULT_NONE = 0,
+    MDKR_CAMERA_HELD_FAULT_PROJECTION,
+    MDKR_CAMERA_HELD_FAULT_QUERY,
+    MDKR_CAMERA_HELD_FAULT_FALSE_CLEAR,
+    MDKR_CAMERA_HELD_FAULT_FALSE_CONTACT,
+} MdkrCameraHeldFaultKind;
+
+typedef struct MdkrCameraHeldFaultSeam {
+    uint8_t parsed;
+    uint8_t kind;
+    uint8_t fired;
+    /* Trigger-tick effects, valid only while tick == trigger_tick. */
+    uint8_t projection_pending;
+    uint8_t proof_invalid_pending;
+    /* Set only while a held chain's own proof is querying. */
+    uint8_t in_held_proof;
+    s16 slot;
+    uint32_t ticks;
+    uint32_t false_clear_remaining;
+    uint8_t false_contact_pending;
+    uint64_t trigger_tick;
+} MdkrCameraHeldFaultSeam;
+
+static MdkrCameraHeldFaultSeam sCameraHeldFault;
+
+static void camera_obstruction_held_fault_parse(void) {
+    const char *value;
+    const char *colon;
+    size_t name_length;
+
+    if (sCameraHeldFault.parsed) {
+        return;
+    }
+    sCameraHeldFault.parsed = TRUE;
+    value = getenv("MDKR_TEST_CAMERA_HELD_FAULT");
+    if (value == NULL || value[0] == '\0') {
+        return;
+    }
+    colon = strchr(value, ':');
+    name_length = colon != NULL ? (size_t)(colon - value) : strlen(value);
+    if (camera_obstruction_token_matches(value, name_length, "projection") &&
+        colon == NULL) {
+        sCameraHeldFault.kind = MDKR_CAMERA_HELD_FAULT_PROJECTION;
+    } else if (camera_obstruction_token_matches(value, name_length, "query") &&
+               colon == NULL) {
+        sCameraHeldFault.kind = MDKR_CAMERA_HELD_FAULT_QUERY;
+    } else if (camera_obstruction_token_matches(value, name_length, "false_contact") &&
+               colon == NULL) {
+        sCameraHeldFault.kind = MDKR_CAMERA_HELD_FAULT_FALSE_CONTACT;
+    } else if (camera_obstruction_token_matches(value, name_length, "false_clear") &&
+               colon != NULL) {
+        char *end = NULL;
+        const unsigned long long ticks = strtoull(colon + 1, &end, 10);
+        if (end != colon + 1 && *end == '\0' && ticks > 0U && ticks <= 1000U) {
+            sCameraHeldFault.kind = MDKR_CAMERA_HELD_FAULT_FALSE_CLEAR;
+            sCameraHeldFault.ticks = (uint32_t)ticks;
+        }
+    }
+    if (sCameraHeldFault.kind == MDKR_CAMERA_HELD_FAULT_NONE) {
+        fprintf(stderr,
+                "camera_obstruction: ignoring unparsable "
+                "MDKR_TEST_CAMERA_HELD_FAULT=%s (projection, query, "
+                "false_clear:<ticks>, false_contact)\n", value);
+    }
+}
+
+/* Called once per solved slot, before the projection latch, so the trigger is
+ * judged on the previous tick's published held state. */
+static void camera_obstruction_held_fault_begin_tick(
+    const MdkrCameraObstructionObserveSlot *observe, s32 physical_slot) {
+    static const char *const kNames[] = {
+        "none", "projection", "query", "false_clear", "false_contact",
+    };
+    const uint64_t tick = sCameraObstructionRuntime.tick_serial;
+    const MdkrCameraHeldChainProbe *chain = &observe->held_chain_probe;
+    int due;
+
+    camera_obstruction_held_fault_parse();
+    if (sCameraHeldFault.kind == MDKR_CAMERA_HELD_FAULT_NONE) {
+        return;
+    }
+    if (sCameraHeldFault.fired && sCameraHeldFault.trigger_tick != tick) {
+        sCameraHeldFault.projection_pending = FALSE;
+        sCameraHeldFault.proof_invalid_pending = FALSE;
+        sCameraHeldFault.false_contact_pending = FALSE;
+    }
+    if (sCameraHeldFault.fired || !observe->held_shot_active ||
+        !chain->valid || chain->tick + 1U != tick) {
+        return;
+    }
+    due = sCameraHeldFault.kind == MDKR_CAMERA_HELD_FAULT_FALSE_CONTACT ?
+        chain->recovering_run >= 2U :
+        chain->contact && chain->length >= MDKR_CAMERA_HELD_FAULT_MIN_LENGTH;
+    if (!due) {
+        return;
+    }
+    sCameraHeldFault.fired = TRUE;
+    sCameraHeldFault.slot = (s16)physical_slot;
+    sCameraHeldFault.trigger_tick = tick;
+    switch (sCameraHeldFault.kind) {
+        case MDKR_CAMERA_HELD_FAULT_PROJECTION:
+            sCameraHeldFault.projection_pending = TRUE;
+            break;
+        case MDKR_CAMERA_HELD_FAULT_QUERY:
+            sCameraHeldFault.proof_invalid_pending = TRUE;
+            break;
+        case MDKR_CAMERA_HELD_FAULT_FALSE_CLEAR:
+            sCameraHeldFault.false_clear_remaining = sCameraHeldFault.ticks;
+            break;
+        case MDKR_CAMERA_HELD_FAULT_FALSE_CONTACT:
+            sCameraHeldFault.false_contact_pending = TRUE;
+            break;
+        default:
+            break;
+    }
+    fprintf(stderr,
+            "camera_held_fault armed kind=%s tick=%llu slot=%d ticks=%u "
+            "prior_length=%u\n",
+            kNames[sCameraHeldFault.kind], (unsigned long long)tick,
+            physical_slot, (unsigned)sCameraHeldFault.ticks,
+            (unsigned)chain->length);
+}
+
+static int camera_obstruction_held_fault_projection(s32 physical_slot) {
+    return sCameraHeldFault.projection_pending &&
+           sCameraHeldFault.slot == physical_slot &&
+           sCameraHeldFault.trigger_tick == sCameraObstructionRuntime.tick_serial;
+}
+
+/* The corridor status the held/ordinary decision sees this tick. */
+static MdkrCameraSweepStatus camera_obstruction_held_fault_corridor(
+    s32 physical_slot, MdkrCameraSweepStatus status) {
+    if (sCameraHeldFault.slot != physical_slot ||
+        status == MDKR_CAMERA_SWEEP_INVALID) {
+        return status;
+    }
+    if (sCameraHeldFault.false_contact_pending &&
+        sCameraHeldFault.trigger_tick == sCameraObstructionRuntime.tick_serial) {
+        sCameraHeldFault.false_contact_pending = FALSE;
+        return MDKR_CAMERA_SWEEP_HIT;
+    }
+    if (sCameraHeldFault.false_clear_remaining == 0U) {
+        return status;
+    }
+    sCameraHeldFault.false_clear_remaining--;
+    return MDKR_CAMERA_SWEEP_CLEAR;
+}
+
+/* Consumed by the first exact static probe of the held proof only. */
+static int camera_obstruction_held_fault_proof_invalid_take(void) {
+    if (!sCameraHeldFault.proof_invalid_pending ||
+        !sCameraHeldFault.in_held_proof ||
+        sCameraHeldFault.trigger_tick != sCameraObstructionRuntime.tick_serial) {
+        return FALSE;
+    }
+    sCameraHeldFault.proof_invalid_pending = FALSE;
+    fprintf(stderr, "camera_held_fault consumed kind=query tick=%llu slot=%d\n",
+            (unsigned long long)sCameraObstructionRuntime.tick_serial,
+            (int)sCameraHeldFault.slot);
+    return TRUE;
 }
 
 /*
@@ -996,7 +1211,8 @@ static MdkrCameraSweepStatus camera_obstruction_track_rounded_sweep_adapter(
     const uint64_t started = camera_obstruction_perf_begin();
 
     (void)context;
-    if (camera_obstruction_test_exact_invalid_take()) {
+    if (camera_obstruction_test_exact_invalid_take() ||
+        camera_obstruction_held_fault_proof_invalid_take()) {
         memset(out_hit, 0, sizeof(*out_hit));
         camera_obstruction_perf_add(MDKR_CAMERA_PERF_EXACT_STATIC_QUERY, started);
         return MDKR_CAMERA_SWEEP_INVALID;
@@ -2626,6 +2842,9 @@ static int camera_obstruction_select_alternate_shot(
  * distinct obstruction.
  */
 #define MDKR_CAMERA_MOTION_OSCILLATION_TICKS 12U
+_Static_assert(MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS ==
+                   MDKR_CAMERA_MOTION_OSCILLATION_TICKS,
+               "the release band's bound is the chatter window it protects");
 /*
  * Two surfaces whose contact normals agree this closely are treated as one
  * continuous surface. Static track blockers carry a per-triangle stable ID (see
@@ -3012,9 +3231,53 @@ static int camera_obstruction_publish_wide_lens_shoulder(
     return TRUE;
 }
 
-/* Held-eye trajectory, diagnostic-only unless the explicit rendered trial
- * requests publication. Successful steps retain their own camera history;
- * a failed proof ends the chain rather than silently continuing it. */
+/*
+ * Does this tick's CLEAR anchor->desired corridor still graze geometry within
+ * MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN? The authoritative exact lens, its
+ * skin grown by the margin, is swept over the same corridor. Runs on a copy so
+ * it cannot leave telemetry, cache entries or degradation on the slot; an
+ * unprovable probe reads as grazing, the conservative answer for a release.
+ */
+static int camera_obstruction_corridor_near_contact(
+    const MdkrCameraObstructionObserveSlot *observe,
+    const MdkrCameraSweepInput *corridor) {
+    MdkrCameraObstructionObserveSlot probe = *observe;
+    const MdkrCameraObstructionQuerySource sources[] = {
+        { camera_obstruction_track_sweep_adapter, NULL },
+        { camera_obstruction_dynamic_sweep_adapter, &probe },
+    };
+    const MdkrCameraObstructionCombinedQuery combined = {
+        sources, ARRAY_COUNT(sources), ARRAY_COUNT(sources),
+    };
+    const MdkrCameraObstructionRoundedLensQuerySource exact_sources[] = {
+        { camera_obstruction_track_rounded_sweep_adapter, NULL },
+        { camera_obstruction_dynamic_rounded_sweep_adapter, &probe },
+    };
+    const MdkrCameraObstructionRoundedLensCombinedQuery exact_combined = {
+        exact_sources, ARRAY_COUNT(exact_sources), ARRAY_COUNT(exact_sources),
+    };
+    MdkrCameraRoundedLensGuard band;
+    MdkrCameraSweepHit hit;
+    MdkrCameraObstructionLensQuery query = { 0 };
+
+    if (!mdkr_camera_rounded_lens_guard_expand_skin(
+            &observe->exact_guard,
+            observe->exact_guard.skin + MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN,
+            &band)) {
+        return TRUE;
+    }
+    query.sphere = &combined;
+    query.exact = &exact_combined;
+    query.guard = &band;
+    query.observe = &probe;
+    return camera_obstruction_lens_sweep(&query, corridor, &hit) !=
+               MDKR_CAMERA_SWEEP_CLEAR ||
+           probe.query_source_degraded;
+}
+
+/* Held-shot return rate for orientation. Successful steps retain their own
+ * camera history; a failed proof ends the chain rather than silently
+ * continuing it. */
 static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
     const int delta = (s16)(u16)((u16)to - (u16)from);
     /* Experimental return cap: 90 degrees per authored second, never a
@@ -3024,9 +3287,20 @@ static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
     return (s16)(u16)((u16)from + (delta < 0 ? -step : step));
 }
 
+/*
+ * One tick of the held shot: hold the last validated view (contact, or a clear
+ * corridor still serving the release hold) or, once released, return it to the
+ * authored pose. `contact` is this tick's corridor result, `near_contact` its
+ * release-band reading, and `recovering` the release decision
+ * mdkr_camera_release_hold_step() made from them;
+ * `latched`/`clear_run` are the stepped hysteresis state, committed to the
+ * resolver only if this tick publishes, so a failed proof hands the ordinary
+ * path the state it would have stepped itself.
+ */
 static int camera_obstruction_probe_held_chain(
     MdkrCameraObstructionObserveSlot *observe, s32 physical_slot,
-    MdkrCameraVec3 boom_anchor, MdkrCameraVec3 desired, int recovering,
+    MdkrCameraVec3 boom_anchor, MdkrCameraVec3 desired, int contact,
+    int near_contact, int recovering, uint8_t latched, uint32_t clear_run,
     float dt, const MdkrCameraObstructionResolverConfig *config, int publish) {
     MdkrCameraHeldChainProbe *chain = &observe->held_chain_probe;
     const uint64_t tick = sCameraObstructionRuntime.tick_serial;
@@ -3046,8 +3320,11 @@ static int camera_obstruction_probe_held_chain(
         old_pivot = chain->pivot;
     }
     MdkrCameraLensPose previous;
+    /* Only contact may seed a held shot. A clear corridor can continue one
+     * (holding through the release hold, or recovering after it) but never
+     * start one: there is nothing to hold for. */
     int valid = isfinite(dt) && dt >= 0 &&
-        (!recovering || continued) &&
+        (contact || continued) &&
         probe.last_validated_camera_valid && probe.last_validated_exact_guard_valid &&
         !observe->intent.discontinuity && observe->intent.target_valid &&
         cam_lens_pose_from_camera_snapshot(&probe.last_validated_camera,
@@ -3104,6 +3381,7 @@ static int camera_obstruction_probe_held_chain(
             {camera_obstruction_dynamic_rounded_sweep_adapter, &probe}};
         const MdkrCameraObstructionRoundedLensCombinedQuery exact = {exact_sources, 2, 2};
         MdkrCameraSweepHit hit;
+        sCameraHeldFault.in_held_proof = TRUE;
         rejection = "pose";
         valid = camera_obstruction_build_final_pose(&probe, eye, FALSE, &pose);
         if (valid) {
@@ -3145,7 +3423,13 @@ static int camera_obstruction_probe_held_chain(
                     fabsf(target_x) <= 1 && fabsf(target_y) <= 1;
             }
         }
+        sCameraHeldFault.in_held_proof = FALSE;
     }
+    /* The proof ran on a copy. Whatever it could not prove belongs in this
+     * tick's telemetry latch whether or not the candidate survives; it must
+     * not veto the ordinary path's own proofs, so query_source_degraded is
+     * left alone. */
+    observe->probe_degraded_seen |= probe.probe_degraded_seen | probe.query_source_degraded;
     int returned = FALSE;
     if (valid) {
         chain->camera = pose.camera; chain->projection = pose.projection;
@@ -3153,6 +3437,10 @@ static int camera_obstruction_probe_held_chain(
         chain->pivot = observe->intent.pivot; chain->tick = tick;
         chain->desired = desired;
         chain->length = previous_length < UINT32_MAX ? previous_length + 1 : UINT32_MAX;
+        chain->contact = (uint8_t)(contact != 0);
+        chain->recovering_run = !recovering ? 0U :
+            (continued && chain->recovering_run < UINT32_MAX ?
+                chain->recovering_run + 1U : 1U);
         chain->valid = TRUE;
         returned = recovering && camera_obstruction_distance(pose.rendered_eye, desired) == 0 &&
             (u16)pose.camera.trans.rotation.y_rotation == (u16)observe->authored.trans.rotation.y_rotation &&
@@ -3161,10 +3449,10 @@ static int camera_obstruction_probe_held_chain(
                 (u16)((u16)observe->authored.trans.rotation.x_rotation + (u16)observe->authored.pitch);
         if (returned) chain->valid = FALSE;
     }
-    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s\n",
+    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s contact=%d near=%d\n",
         (unsigned long long)tick, physical_slot, continued, previous_length, valid, target_x, target_y,
         recovering, valid ? camera_obstruction_distance(pose.rendered_eye, desired) : NAN, returned,
-        valid ? "none" : rejection);
+        valid ? "none" : rejection, contact != 0, near_contact != 0);
     if (!valid || !publish) return FALSE;
 
     camera_obstruction_publish_final_pose(observe, physical_slot, &pose);
@@ -3172,7 +3460,7 @@ static int camera_obstruction_probe_held_chain(
         chain->valid = FALSE;
         return FALSE;
     }
-    observe->probe_degraded_seen |= observe->query_source_degraded | probe.probe_degraded_seen;
+    observe->probe_degraded_seen |= observe->query_source_degraded;
     observe->query_source_degraded = FALSE;
     observe->transition_invoked = probe.transition_invoked;
     observe->transition_clear = probe.transition_clear;
@@ -3181,8 +3469,11 @@ static int camera_obstruction_probe_held_chain(
     observe->resolver.last_safe_eye = pose.rendered_eye;
     observe->resolver.last_safe_valid = TRUE;
     observe->resolver.projection_generation = pose.projection.generation;
-    observe->resolver.retraction_latched = !recovering;
-    observe->resolver.clear_run_ticks = 0;
+    observe->resolver.retraction_latched = latched;
+    observe->resolver.clear_run_ticks = clear_run;
+    /* A clear corridor that is still serving the hold is a held tick, exactly
+     * as the resolver reports one: RETRACTED, measured as no blocker. */
+    observe->release_held = (uint8_t)(!contact && !recovering);
     observe->resolver_status = returned ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR :
         recovering ? MDKR_CAMERA_OBSTRUCTION_RESOLVER_RECOVERING :
                      MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED;
@@ -3242,6 +3533,8 @@ static void camera_obstruction_resolve_slot(
         .recovery_speed = 600.0f * comfort_recovery_scale,
         .max_recovery_step = 20.0f * comfort_recovery_scale,
         .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
+        .release_near_contact_extension_ticks =
+            MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS,
         .max_recovery_fraction = 0.25f * comfort_recovery_scale,
     };
     MdkrCameraObstructionResolverInput input;
@@ -3258,6 +3551,7 @@ static void camera_obstruction_resolve_slot(
     const int prior_alternate = observe->alternate_active && !observe->held_shot_active;
     const float shake = gNoCamShake ? observe->authored.shakeMagnitude : 0.0f;
     MdkrCameraObstructionTreatment treatment;
+    int near_contact = FALSE;
 
     observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR;
     observe->resolved_valid = TRUE;
@@ -3371,12 +3665,20 @@ static void camera_obstruction_resolve_slot(
     };
     status = active_query.sweep(active_query.context, &corridor, &hit);
     camera_obstruction_shadow_exact_corridor(observe, &corridor);
+    status = camera_obstruction_held_fault_corridor(physical_slot, status);
     if (status == MDKR_CAMERA_SWEEP_INVALID) {
         observe->resolver_status = MDKR_CAMERA_OBSTRUCTION_RESOLVER_INVALID;
         observe->resolved_valid = camera_obstruction_publish_safe_fallback(
             observe, physical_slot, &combined, &exact_combined,
             use_exact, &boom_anchor);
         return;
+    }
+    /* Release band: measured only on a tick whose served hold could release. */
+    if (use_exact && status == MDKR_CAMERA_SWEEP_CLEAR &&
+        observe->resolver.retraction_latched &&
+        observe->resolver.clear_run_ticks + 1U >= config.release_hold_ticks) {
+        near_contact = camera_obstruction_corridor_near_contact(
+            observe, &corridor);
     }
 
     /* Accepted held-shot recovery belongs to full Modern treatment. Observe
@@ -3386,8 +3688,24 @@ static void camera_obstruction_resolve_slot(
     if ((held_shot_enabled || camera_obstruction_reengagement_probe_enabled()) &&
         (status == MDKR_CAMERA_SWEEP_HIT || observe->held_chain_probe.valid) &&
         observe->resolver.last_safe_valid && observe->previous_pivot_valid) {
+        /*
+         * The held shot recovers through the same release hysteresis as the
+         * boom (MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS): a clear corridor
+         * keeps the shot held until it has stayed clear for the whole hold,
+         * because the corridor sweep's measured false negatives at facet seams
+         * look exactly like a first clear tick. Stepped on copies; the held
+         * chain commits them only if it publishes.
+         */
+        const int contact = status == MDKR_CAMERA_SWEEP_HIT;
+        uint8_t held_latched = observe->resolver.retraction_latched;
+        uint32_t held_clear_run = observe->resolver.clear_run_ticks;
+        const int released = mdkr_camera_release_hold_step(
+            &held_latched, &held_clear_run, contact, near_contact,
+            fixed_delta_seconds, config.release_hold_ticks,
+            config.release_near_contact_extension_ticks);
         if (camera_obstruction_probe_held_chain(observe, physical_slot, boom_anchor,
-                desired, status == MDKR_CAMERA_SWEEP_CLEAR, fixed_delta_seconds, &config,
+                desired, contact, near_contact, !contact && released, held_latched,
+                held_clear_run, fixed_delta_seconds, &config,
                 held_shot_enabled)) {
             if (status == MDKR_CAMERA_SWEEP_HIT) {
                 observe->blocker_kind = hit.kind;
@@ -3578,6 +3896,7 @@ static void camera_obstruction_resolve_slot(
     input.fixed_delta_seconds = fixed_delta_seconds;
     input.mask = MDKR_CAMERA_OBSTRUCTION_HARD_MASK;
     input.discontinuity = observe->intent.discontinuity;
+    input.corridor_near_contact = (uint8_t)(near_contact != 0);
     /* Diagnostic only: record the caller's candidate separately from the
      * accepted result. The resolver may reject this candidate and use its
      * last-safe eye or pivot; do not label it the accepted sweep anchor. */
@@ -3872,8 +4191,14 @@ static void camera_obstruction_motion_sample(
     held = retracted && observe->release_held != 0;
     /* This census measures active retraction/alternate/emergency constraints.
      * Recovery is tracked separately below: a lingering recovery offset must
-     * not hide a newly re-engaged obstruction from the chatter gate. */
-    blocked = retracted || alternate || emergency;
+     * not hide a newly re-engaged obstruction from the chatter gate. That holds
+     * for every path that recovers. A held shot publishes its alternate
+     * eye/orientation all the way back to the authored pose, but while it is
+     * RECOVERING its correction is letting go exactly as the boom's does, so it
+     * is the clear phase here and a contact that brings it back inside the
+     * chatter window is a re-engagement. Only an alternate shot that is still
+     * holding counts as blocked. */
+    blocked = retracted || emergency || (alternate && !recovering);
     cut = observe->presentation_discontinuity != 0;
     continuous = pose_valid && !cut && motion->continuity_run != 0U &&
         motion->previous_tick + 1U == tick;
@@ -4272,6 +4597,7 @@ static void camera_obstruction_observe_slot(
         return;
     }
     observe->last_solve_tick = sCameraObstructionRuntime.tick_serial;
+    camera_obstruction_held_fault_begin_tick(observe, physical_slot);
     observe->selected = TRUE;
     observe->solve_count = 1;
     observe->viewport = (s16)viewport;
@@ -4292,6 +4618,7 @@ static void camera_obstruction_observe_slot(
 
     projection_ready = !camera_obstruction_test_projection_failure(
             sCameraObstructionRuntime.tick_serial) &&
+        !camera_obstruction_held_fault_projection(physical_slot) &&
         cam_latch_effective_projection_for_viewport_context(
             viewport, physical_slot, gameplay_projection,
             &observe->render_projection) &&

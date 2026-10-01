@@ -52,6 +52,19 @@ typedef struct MdkrCameraObstructionResolverConfig {
      * hold and restores release-on-first-clear-tick.
      */
     uint32_t release_hold_ticks;
+    /*
+     * Further consecutive clear ticks a served hold may wait while the caller
+     * still reports the corridor as near contact (see
+     * MdkrCameraObstructionResolverInput::corridor_near_contact). A boom that
+     * stays clear but keeps grazing the surface it retracted from has not
+     * moved away from it, and releasing there lets the next facet of the same
+     * wall re-engage the correction a few ticks later. The extension is a
+     * bound, not a second hold: a corridor that is clear by the caller's
+     * margin releases at release_hold_ticks as before, and one that keeps
+     * grazing still releases after release_hold_ticks plus this many ticks.
+     * 0 disables it.
+     */
+    uint32_t release_near_contact_extension_ticks;
     /* Optional expansion cap as a fraction of remaining error, [0, 1].
      * Zero preserves constant-speed recovery. Positive values ease arrival;
      * numerical settling may finish within four float epsilons at world scale.
@@ -103,6 +116,13 @@ typedef struct MdkrCameraObstructionResolverInput {
     uint32_t mask;
     uint32_t ignored_object_generation;
     uint8_t discontinuity;
+    /*
+     * The caller measured this tick's clear anchor->desired corridor within
+     * its release margin of geometry: clear, but still grazing. Read only
+     * while a served release hold is deciding whether to let go; see
+     * release_near_contact_extension_ticks.
+     */
+    uint8_t corridor_near_contact;
 } MdkrCameraObstructionResolverInput;
 
 typedef enum MdkrCameraObstructionResolverStatus {
@@ -155,6 +175,33 @@ typedef struct MdkrCameraObstructionResolverResult {
 
 void mdkr_camera_obstruction_resolver_reset(
     MdkrCameraObstructionResolverState *state);
+
+/*
+ * One authored tick of the release hysteresis described on
+ * release_hold_ticks above. mdkr_camera_obstruction_resolve() spends its hold
+ * through this function, and so must any caller that recovers a latched
+ * correction on a path of its own, so that no sibling path can release on the
+ * first clear tick the hold exists to distrust.
+ *
+ * contact: this tick's corridor sweep reported a blocker. Contact latches the
+ * retraction and restarts the clear run at once, at any dt; the hold never
+ * delays engagement. Otherwise a latched retraction counts this tick only when
+ * fixed_delta_seconds is positive (zero-time revalidation proves geometry, not
+ * elapsed authored time) and releases once the run reaches
+ * release_hold_ticks -- unless near_contact reports the clear corridor still
+ * grazing geometry, in which case it waits until the run also reaches
+ * release_hold_ticks + near_contact_extension_ticks.
+ *
+ * Returns 1 when the correction may recover this tick, 0 while it must hold.
+ * Null state pointers return 0 and change nothing.
+ */
+int mdkr_camera_release_hold_step(uint8_t *retraction_latched,
+                                  uint32_t *clear_run_ticks,
+                                  int contact,
+                                  int near_contact,
+                                  float fixed_delta_seconds,
+                                  uint32_t release_hold_ticks,
+                                  uint32_t near_contact_extension_ticks);
 
 /* Transport an eye's correction relative to the authored horizontal boom.
  * Preserves lateral/longitudinal/vertical correction as the target or authored

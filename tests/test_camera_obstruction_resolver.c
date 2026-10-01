@@ -572,6 +572,133 @@ static void test_zero_release_hold_is_the_pre_hysteresis_control(void) {
     expect_true("no hold: nothing is reported as held", !result.release_held);
 }
 
+/*
+ * mdkr_camera_release_hold_step() is the one place the hysteresis lives, so a
+ * sibling path that recovers a correction on its own (the runtime's held shot)
+ * cannot skip it. Its contract, tick by tick.
+ */
+static void test_release_hold_step_contract(void) {
+    uint8_t latched = 0U;
+    uint32_t run = 0U;
+    int tick;
+
+    expect_true("step: null state is refused",
+                !mdkr_camera_release_hold_step(NULL, &run, 0, 0, 0.1f, 4U, 0U) &&
+                !mdkr_camera_release_hold_step(&latched, NULL, 0, 0, 0.1f, 4U, 0U));
+    expect_true("step: nothing latched recovers freely",
+                mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 0U) &&
+                !latched && run == 0U);
+    expect_true("step: contact latches and holds at zero time too",
+                !mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.0f, 4U, 0U) &&
+                latched && run == 0U);
+    /* A false-clear run shorter than the hold never releases. */
+    for (tick = 1; tick < 4; tick++) {
+        expect_true("step: a short clear run holds",
+                    !mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 0U) &&
+                    latched && run == (uint32_t)tick);
+        expect_true("step: zero time does not spend the hold",
+                    !mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.0f, 4U, 0U) &&
+                    run == (uint32_t)tick);
+    }
+    expect_true("step: contact inside the run restarts it",
+                !mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 0U) &&
+                latched && run == 0U);
+    for (tick = 1; tick < 4; tick++) {
+        (void)mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 0U);
+    }
+    expect_true("step: the hold-th clear tick releases",
+                mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 0U) &&
+                !latched && run == 0U);
+
+    /* Release band: a served hold waits while the corridor still grazes. */
+    latched = 0U;
+    run = 0U;
+    (void)mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 3U);
+    for (tick = 1; tick < 4 + 3; tick++) {
+        expect_true("band: grazing keeps a served hold engaged",
+                    !mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
+                    latched && run == (uint32_t)tick);
+    }
+    expect_true("band: the bound releases even while grazing",
+                mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
+                !latched && run == 0U);
+    latched = 0U;
+    run = 0U;
+    (void)mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 3U);
+    for (tick = 1; tick < 4; tick++) {
+        expect_true("band: grazing cannot shorten the hold",
+                    !mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 3U));
+    }
+    expect_true("band: grazing at the served hold waits",
+                !mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
+                latched && run == 4U);
+    expect_true("band: leaving the band releases on that tick",
+                mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 3U) &&
+                !latched && run == 0U);
+    latched = 0U;
+    run = 0U;
+    (void)mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 0U);
+    for (tick = 1; tick < 4; tick++) {
+        (void)mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 0U);
+    }
+    expect_true("band: a zero bound is the band-free hold",
+                mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 0U));
+}
+
+/* The resolver spends its hold through the shared step, so the two agree on
+ * every tick of a mixed contact/clear sequence, including the band. */
+static void test_resolver_hold_is_the_shared_step(void) {
+    const MdkrCameraVec3 vertices[] = {
+        { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },
+    };
+    const uint32_t indices[] = { 0U, 1U, 2U };
+    const MdkrCameraOcclusionTriangle triangles[] = { { 11U, 1U, 1U, 0U } };
+    const MdkrCameraOcclusionWorld world = one_wall_world(vertices, indices, triangles);
+    const MdkrCameraOcclusionWorld empty_world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    /* 1 = contact, 0 = clear, 2 = clear but grazing (band), 3 = paused clear. */
+    static const int pattern[] = {
+        1, 0, 0, 1, 0, 0, 0, 3, 0, 0, 1, 2, 2, 2, 2, 2, 2, 0, 0, 1, 2, 2, 2, 2,
+        2, 2, 2, 2, 2,
+    };
+    MdkrCameraObstructionResolverConfig config =
+        test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+    MdkrCameraObstructionResolverInput input = resolver_input(
+        &world, &projection, (MdkrCameraVec3){ 0.0f, 0.0f, 0.0f },
+        (MdkrCameraVec3){ 10.0f, 0.0f, 0.0f });
+    MdkrCameraObstructionResolverState state;
+    MdkrCameraObstructionResolverResult result;
+    uint8_t latched = 0U;
+    uint32_t run = 0U;
+    unsigned tick;
+
+    config.release_hold_ticks = 4U;
+    config.release_near_contact_extension_ticks = 3U;
+    mdkr_camera_obstruction_resolver_reset(&state);
+    for (tick = 0U; tick < sizeof(pattern) / sizeof(pattern[0]); tick++) {
+        const int contact = pattern[tick] == 1;
+        const int near = pattern[tick] == 2;
+        const float dt = pattern[tick] == 3 ? 0.0f : 0.1f;
+        int released;
+
+        input.query.context = contact ? &world : &empty_world;
+        input.corridor_near_contact = (uint8_t)near;
+        input.fixed_delta_seconds = dt;
+        (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+        released = mdkr_camera_release_hold_step(
+            &latched, &run, contact, near, dt, config.release_hold_ticks,
+            config.release_near_contact_extension_ticks);
+        expect_true("shared step: accepted", result.accepted);
+        expect_true("shared step: same latch and run",
+                    state.retraction_latched == latched && state.clear_run_ticks == run);
+        if (!contact) {
+            expect_true("shared step: same hold decision",
+                        released == !result.release_held);
+        }
+        input.start_safe_eye = result.resolved_eye;
+    }
+}
+
 static void test_fractional_recovery_bound(void) {
     const MdkrCameraOcclusionWorld world = { 0 };
     const MdkrCameraProjection projection = test_projection(1U);
@@ -705,6 +832,8 @@ int main(void) {
     test_zero_time_does_not_serve_release_hold();
     test_release_hold_reengages_without_latency_and_resets();
     test_zero_release_hold_is_the_pre_hysteresis_control();
+    test_release_hold_step_contract();
+    test_resolver_hold_is_the_shared_step();
 
     if (s_failures != 0) {
         fprintf(stderr, "%d camera-obstruction-resolver assertion(s) failed\n", s_failures);

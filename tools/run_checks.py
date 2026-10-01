@@ -568,9 +568,10 @@ CHECKS = (
           "one injected unprovable exact probe leaves its telemetry mark and "
           "costs no tick its published, target-visible pose"),
     Check("camera_held_shot_faults", "check_camera_held_shot_faults.py", "release",
-          "normal Modern held-shot projection/query fault recovery and safe publication"),
+          "normal Modern held-shot projection/query fault recovery, false-clear "
+          "release hold, chatter census positive control and safe publication"),
     Check("camera_held_shot_faults_asan", "check_camera_held_shot_faults.py", "asan",
-          "sanitizer held-shot projection/query fault recovery in isolated saves"),
+          "sanitizer held-shot fault, release-hold and chatter arms in isolated saves"),
     Check("camera_obstruction_lifecycle_runtime", "check_camera_obstruction_lifecycle_runtime.py", "release",
           "Modern camera state retirement and fresh safe solves across quit, restart, and hub/race reloads"),
     Check("camera_obstruction_performance_runtime", "check_camera_obstruction_performance_runtime.py", "release",

@@ -15,7 +15,8 @@ ROW = re.compile(
     r"camera_held_chain_probe tick=(\d+) slot=(\d+) continued=([01]) "
     r"prior_length=(\d+) valid=([01]) target=\(([^,]+),([^\)]+)\) "
     r"recovering=([01]) remaining=(\S+) returned=([01])"
-    r"(?: rejection=(history|pose|endpoint|transition|boom|visibility|degraded|framing|none))?$")
+    r"(?: rejection=(history|pose|endpoint|transition|boom|visibility|degraded|framing|none))?"
+    r"(?: contact=([01]) near=([01]))?$")
 
 
 def audit(lines, required_returns=()):
@@ -34,8 +35,13 @@ def audit(lines, required_returns=()):
         recovering, returned = map(int, match.group(8, 10))
         remaining = float(match[9])
         rejection = match[11]
+        contact = match[12]
         if rejection is not None and (rejection == "none") != bool(valid):
             raise ValueError(f"line {number}: rejection disagrees with proof result")
+        if contact == "1" and recovering:
+            raise ValueError(f"line {number}: recovery claimed on a contact tick")
+        if contact == "1" and match[13] == "1":
+            raise ValueError(f"line {number}: release band read on a contact tick")
         previous = history.get(slot)
         if continued and previous != (tick - 1, length):
             raise ValueError(f"line {number}: continuation lacks matching accepted history")

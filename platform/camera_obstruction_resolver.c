@@ -134,6 +134,40 @@ void mdkr_camera_obstruction_resolver_reset(
     }
 }
 
+int mdkr_camera_release_hold_step(uint8_t *retraction_latched,
+                                  uint32_t *clear_run_ticks,
+                                  int contact,
+                                  int near_contact,
+                                  float fixed_delta_seconds,
+                                  uint32_t release_hold_ticks,
+                                  uint32_t near_contact_extension_ticks) {
+    if (retraction_latched == NULL || clear_run_ticks == NULL) {
+        return 0;
+    }
+    if (contact) {
+        /* Engage on contact, always this tick: the hold gates release only. */
+        *retraction_latched = 1U;
+        *clear_run_ticks = 0U;
+        return 0;
+    }
+    if (!*retraction_latched) {
+        return 1;
+    }
+    /* Paused/projection-only revalidation proves geometry, not an elapsed
+     * authored tick. It must not spend the release hold. */
+    if (fixed_delta_seconds > 0.0f && *clear_run_ticks < UINT32_MAX) {
+        (*clear_run_ticks)++;
+    }
+    if (*clear_run_ticks >= release_hold_ticks &&
+        (!near_contact ||
+         *clear_run_ticks - release_hold_ticks >= near_contact_extension_ticks)) {
+        *retraction_latched = 0U;
+        *clear_run_ticks = 0U;
+        return 1;
+    }
+    return 0;
+}
+
 MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     const MdkrCameraObstructionResolverConfig *config,
     const MdkrCameraObstructionResolverInput *input,
@@ -160,7 +194,7 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
      * against the hold: leaving the latch untouched is the conservative
      * reading, and it matches how last_safe_eye is already handled.
      */
-    int retraction_latched;
+    uint8_t retraction_latched;
     uint32_t clear_run_ticks;
     int release_held = 0;
 
@@ -204,7 +238,7 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
         state->retraction_latched = 0;
         state->clear_run_ticks = 0U;
     }
-    retraction_latched = state->retraction_latched != 0;
+    retraction_latched = (uint8_t)(state->retraction_latched != 0);
     clear_run_ticks = state->clear_run_ticks;
 
     /* The caller's previous resolved eye is preferred, but always revalidated. */
@@ -290,25 +324,18 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
             safe_fraction = 0.0f;
         }
         candidate = mdkr_camera_resolver_lerp(anchor, input->desired_eye, safe_fraction);
-        /* Engage on contact, always this tick: the hold gates release only. */
-        retraction_latched = 1;
-        clear_run_ticks = 0U;
+        (void)mdkr_camera_release_hold_step(
+            &retraction_latched, &clear_run_ticks, 1, 0,
+            input->fixed_delta_seconds, config->release_hold_ticks,
+            config->release_near_contact_extension_ticks);
     } else if (distance > 0.0f) {
         float recovery;
 
-        if (retraction_latched) {
-            /* Paused/projection-only revalidation proves geometry, not an
-             * elapsed authored tick. It must not spend the release hold. */
-            if (input->fixed_delta_seconds > 0.0f) {
-                clear_run_ticks++;
-            }
-            if (clear_run_ticks >= config->release_hold_ticks) {
-                retraction_latched = 0;
-                clear_run_ticks = 0U;
-            } else {
-                release_held = 1;
-            }
-        }
+        release_held = !mdkr_camera_release_hold_step(
+            &retraction_latched, &clear_run_ticks, 0,
+            input->corridor_near_contact != 0, input->fixed_delta_seconds,
+            config->release_hold_ticks,
+            config->release_near_contact_extension_ticks);
         if (release_held) {
             /*
              * Hold the boom where the caller anchored it. The anchor is
@@ -375,7 +402,7 @@ MdkrCameraObstructionResolverStatus mdkr_camera_obstruction_resolve(
     state->last_safe_eye = candidate;
     state->projection_generation = input->projection->generation;
     state->last_safe_valid = 1;
-    state->retraction_latched = (uint8_t)(retraction_latched != 0);
+    state->retraction_latched = retraction_latched;
     state->clear_run_ticks = clear_run_ticks;
     memset(out_result, 0, sizeof(*out_result));
     /*
