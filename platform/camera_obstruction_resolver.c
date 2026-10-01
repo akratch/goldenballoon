@@ -39,6 +39,31 @@ int mdkr_camera_recovery_transport(MdkrCameraVec3 previous_eye,
     return 1;
 }
 
+float mdkr_camera_recovery_fraction_for_step(float fraction_per_reference,
+                                             float reference_seconds,
+                                             float fixed_delta_seconds) {
+    double steps;
+
+    if (!isfinite(fraction_per_reference) || !isfinite(reference_seconds) ||
+        !isfinite(fixed_delta_seconds) || reference_seconds <= 0.0f) {
+        return NAN;
+    }
+    if (fixed_delta_seconds <= 0.0f || fraction_per_reference <= 0.0f) {
+        return 0.0f;
+    }
+    if (fraction_per_reference >= 1.0f) {
+        return 1.0f;
+    }
+    if (fixed_delta_seconds == reference_seconds) {
+        /* Exactly the reference step: no rounding through exp/log. */
+        return fraction_per_reference;
+    }
+    /* 1 - (1 - f)^k, evaluated as -expm1(k * log1p(-f)) so a short step's
+     * small fraction keeps its precision. */
+    steps = (double)fixed_delta_seconds / (double)reference_seconds;
+    return (float)-expm1(steps * log1p(-(double)fraction_per_reference));
+}
+
 static MdkrCameraVec3 mdkr_camera_resolver_lerp(
     MdkrCameraVec3 a,
     MdkrCameraVec3 b,

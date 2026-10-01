@@ -203,6 +203,19 @@ int mdkr_camera_release_hold_step(uint8_t *retraction_latched,
                                   uint32_t release_hold_ticks,
                                   uint32_t near_contact_extension_ticks);
 
+/*
+ * max_recovery_fraction for one fixed step. `fraction_per_reference` is the
+ * share of the remaining error recovery may close per `reference_seconds` of
+ * authored time; the result is the per-step cap that closes the same share per
+ * second at any step length, 1 - (1 - fraction)^(step / reference). It equals
+ * the input when the step is the reference, is 0 for a zero (paused) step, and
+ * two half steps leave exactly the remaining error one full step does. A
+ * nonfinite input or reference returns NAN, which the resolver rejects.
+ */
+float mdkr_camera_recovery_fraction_for_step(float fraction_per_reference,
+                                             float reference_seconds,
+                                             float fixed_delta_seconds);
+
 /* Transport an eye's correction relative to the authored horizontal boom.
  * Preserves lateral/longitudinal/vertical correction as the target or authored
  * eye moves, before recovery shrinks it. This is geometry, not clearance:

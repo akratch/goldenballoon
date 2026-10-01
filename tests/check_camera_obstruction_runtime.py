@@ -128,11 +128,16 @@ HELD_PUBLICATION = re.compile(
 
 @dataclass(frozen=True)
 class HeldExemption:
-    """Corrections split into the ordinary ones and proven held publications."""
+    """Corrections split into the ordinary ones and proven held publications.
+
+    `nonheld` counts every other corrected tick; `nonheld_recovering` is the
+    part of it the resolver published while RECOVERING (status 2).
+    """
 
     nonheld: int
     publications: int
     episodes: int
+    nonheld_recovering: int = 0
 
 
 def held_exemption(output: str) -> HeldExemption:
@@ -182,27 +187,40 @@ def held_exemption(output: str) -> HeldExemption:
                 block_field(row, "resolve", "status") not in (1, 2):
             raise RuntimeError("held publication lacks matching safe correction")
     episodes = sum((epoch, tick - 1, slot) not in active for epoch, tick, slot in active)
+    nonheld = [row for key, row in details.items()
+               if key not in active and field(row, "corrected")]
     return HeldExemption(
-        nonheld=sum(field(row, "corrected") for row in details.values()) - len(active),
-        publications=len(active), episodes=episodes)
+        nonheld=len(nonheld), publications=len(active), episodes=episodes,
+        nonheld_recovering=sum(block_field(row, "resolve", "status") == 2
+                               for row in nonheld))
 
 
 def comfort_inflation_failures(comfort: HeldExemption, modern: HeldExemption) -> list[str]:
-    """Comfort may lengthen held recovery; it may not create corrections.
+    """Comfort may lengthen recovery; it may not create corrections.
 
-    Ordinary corrections keep the original 2x bound. Held shots start where the
-    geometry blocks the authored boom, which comfort does not change, so their
-    episode count keeps the same 2x bound. Their length is the only thing
-    comfort may stretch: recovery at 0.4x speed and fraction takes at most
+    Everything comfort does not stretch keeps the original 2x bound: the
+    ordinary corrections that are not recovery (retraction, emergency and any
+    corrected-but-clear tick, which is the comfort-offset-counted-as-correction
+    signature) and the number of held shots, which start where geometry blocks
+    the authored boom. Recovery is the one thing comfort stretches, and only by
+    its own rate: at 0.4x speed and fraction a return takes at most
     1/0.4 = 2.5x (speed-limited) or ln(0.75)/ln(0.9) = 2.73x (fraction-limited)
-    as many ticks, so held publications are bounded at 3x.
+    as many ticks, so ordinary recovery ticks and held publications are bounded
+    at 3x.
     """
     failures = []
-    if comfort.nonheld > 2 * modern.nonheld:
+    comfort_other = comfort.nonheld - comfort.nonheld_recovering
+    modern_other = modern.nonheld - modern.nonheld_recovering
+    if comfort_other > 2 * modern_other:
         failures.append(
-            f"comfort arm reported {comfort.nonheld} non-held corrections "
-            f"against the authored-motion arm's {modern.nonheld}; the "
+            f"comfort arm reported {comfort_other} non-held, non-recovery "
+            f"corrections against the authored-motion arm's {modern_other}; the "
             "comfort offset is being counted as an obstruction correction")
+    if comfort.nonheld_recovering > 3 * modern.nonheld_recovering:
+        failures.append(
+            f"comfort arm spent {comfort.nonheld_recovering} non-held ticks "
+            f"recovering against the authored-motion arm's "
+            f"{modern.nonheld_recovering}; recovery outran the reduced rate's bound")
     if comfort.episodes > 2 * modern.episodes:
         failures.append(
             f"comfort arm started {comfort.episodes} held shots against the "

@@ -67,6 +67,9 @@ class MotionReportingTests(unittest.TestCase):
         self.assertEqual(runtime.held_exemption(detail).nonheld, 1)
         self.assertEqual(runtime.held_exemption(published + "\n" + detail),
                          runtime.HeldExemption(nonheld=0, publications=1, episodes=1))
+        self.assertEqual(runtime.held_exemption(detail).nonheld_recovering, 1)
+        self.assertEqual(runtime.held_exemption(
+            detail.replace("status=2", "status=1")).nonheld_recovering, 0)
         self.assertEqual(runtime.held_exemption("\n".join((
             published, detail, detail.replace("tick=1", "tick=2"), published, detail))).nonheld, 1)
         self.assertEqual(runtime.held_exemption(
@@ -104,13 +107,21 @@ class MotionReportingTests(unittest.TestCase):
                 runtime.held_exemption(trace(pair))
 
     def test_comfort_guard_bounds_held_inflation(self):
-        modern = runtime.HeldExemption(nonheld=100, publications=50, episodes=5)
+        modern = runtime.HeldExemption(nonheld=100, publications=50, episodes=5,
+                                       nonheld_recovering=60)
+        # Retraction at 2x and recovery at 3x are both inside the bounds.
         self.assertEqual(runtime.comfort_inflation_failures(
-            runtime.HeldExemption(nonheld=200, publications=150, episodes=10), modern), [])
+            runtime.HeldExemption(nonheld=80 + 180, publications=150, episodes=10,
+                                  nonheld_recovering=180), modern), [])
         for comfort, reason in (
-                (runtime.HeldExemption(nonheld=201, publications=50, episodes=5), "non-held"),
-                (runtime.HeldExemption(nonheld=100, publications=50, episodes=11), "held shots"),
-                (runtime.HeldExemption(nonheld=100, publications=151, episodes=5), "held ticks")):
+                (runtime.HeldExemption(nonheld=81 + 60, publications=50, episodes=5,
+                                       nonheld_recovering=60), "non-recovery"),
+                (runtime.HeldExemption(nonheld=40 + 181, publications=50, episodes=5,
+                                       nonheld_recovering=181), "recovering"),
+                (runtime.HeldExemption(nonheld=100, publications=50, episodes=11,
+                                       nonheld_recovering=60), "held shots"),
+                (runtime.HeldExemption(nonheld=100, publications=151, episodes=5,
+                                       nonheld_recovering=60), "held ticks")):
             with self.subTest(reason=reason):
                 failures = runtime.comfort_inflation_failures(comfort, modern)
                 self.assertEqual(len(failures), 1)

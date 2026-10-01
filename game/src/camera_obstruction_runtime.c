@@ -1172,6 +1172,14 @@ static int camera_obstruction_comfort_reduced(void) {
  * a motion knob, and lengthening it would trade correctness for comfort.
  */
 #define MDKR_CAMERA_COMFORT_RECOVERY_SCALE 0.4f
+/*
+ * Recovery closes at most 25% of the remaining error per this much authored
+ * time -- the Original cadence's NTSC step, two 60 Hz fields, written exactly
+ * as camera_obstruction_tick() derives it so that cadence's per-step cap is
+ * exactly 0.25. Other cadences (enhanced, PAL) take the per-step cap that
+ * closes the same share per second; see mdkr_camera_recovery_fraction_for_step.
+ */
+#define MDKR_CAMERA_RECOVERY_FRACTION_REFERENCE_SECONDS (2.0f / 60.0f)
 
 static float camera_obstruction_comfort_smooth_y(
     MdkrCameraObstructionObserveSlot *observe,
@@ -3680,7 +3688,9 @@ static void camera_obstruction_resolve_slot(
         .release_hold_ticks = MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS,
         .release_near_contact_extension_ticks =
             MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS,
-        .max_recovery_fraction = 0.25f * comfort_recovery_scale,
+        .max_recovery_fraction = mdkr_camera_recovery_fraction_for_step(
+            0.25f * comfort_recovery_scale,
+            MDKR_CAMERA_RECOVERY_FRACTION_REFERENCE_SECONDS, fixed_delta_seconds),
     };
     MdkrCameraObstructionResolverInput input;
     MdkrCameraObstructionResolverResult result;
@@ -4695,8 +4705,19 @@ static void camera_obstruction_motion_sample(
     } else if (!alternate && motion->alternate) {
         sCameraMotion.alternate_exits++;
     }
+    /*
+     * A shoulder is the side one correction holds against one obstruction, so
+     * its history lives only through the blocked phase, exactly like the
+     * blocker history above. A recovering alternate shot (a held shot easing
+     * back, or the boom recovering from a fan shot) is the clear phase: the
+     * correction is letting go. Comparing a later correction's side with one
+     * held before that release would call a new obstruction's choice a flap.
+     * A flap that does cross a short release is still a failure, as the
+     * re-engagement it necessarily is.
+     */
     const MdkrCameraShoulderChange shoulder_change = mdkr_camera_shoulder_sample(
-        &motion->shoulder, eye, observe->intent.pivot, side, alternate && pose_valid);
+        &motion->shoulder, eye, observe->intent.pivot, side,
+        alternate && pose_valid && blocked);
     if (shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING) {
         basis_crossing = TRUE;
         sCameraMotion.shoulder_basis_crossings++;

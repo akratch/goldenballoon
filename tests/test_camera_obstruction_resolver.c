@@ -746,8 +746,10 @@ static void test_fractional_recovery_converges_at_authored_rates(void) {
             (MdkrCameraVec3){ target, 0, 0 });
         config.recovery_speed = 600.0f;
         config.max_recovery_step = 20.0f;
-        config.max_recovery_fraction = 0.25f;
+        /* The shipped cap: 25 percent per 1/30 s of authored time. */
         input.fixed_delta_seconds = 1.0f / rates[r];
+        config.max_recovery_fraction = mdkr_camera_recovery_fraction_for_step(
+            0.25f, 1.0f / 30.0f, input.fixed_delta_seconds);
         const float tolerance = 4.0f * FLT_EPSILON * fmaxf(1.0f, fmaxf(fabsf(offsets[o]), fabsf(target)));
         int reached95 = 0;
         for (int tick = 1; tick <= 256; tick++) {
@@ -761,7 +763,7 @@ static void test_fractional_recovery_converges_at_authored_rates(void) {
             expect_true("fractional recovery speed and absolute bounds",
                 step <= fminf(20.0f, 600.0f / rates[r]) + tolerance);
             expect_true("fractional error bound with numerical settling",
-                step <= 0.25f * remaining + tolerance);
+                step <= config.max_recovery_fraction * remaining + tolerance);
             if (!reached95 && target - result.resolved_eye.x <= lengths[d] * 0.05f)
                 reached95 = tick;
             input.start_safe_eye = result.resolved_eye;
@@ -771,6 +773,69 @@ static void test_fractional_recovery_converges_at_authored_rates(void) {
                     result.status == MDKR_CAMERA_OBSTRUCTION_RESOLVER_CLEAR && result.resolved_eye.x == target);
         expect_true("fractional recovery meets 95 percent timing",
                     reached95 > 0 && reached95 <= (int)ceilf(rates[r] * (lengths[d] <= 250.0f ? 0.75f : 1.25f)));
+    }
+}
+
+/*
+ * The 25% recovery cap is per 1/30 s of authored time (the Original NTSC
+ * step), not per call: Gameplay.SimulationCadence and PAL change the step, and
+ * a per-call cap made the eye's return slower in wall-clock time at 30 Hz than
+ * at 60 Hz while the time-based speed cap and orientation return did not.
+ */
+static void test_recovery_fraction_is_per_second(void) {
+    const float reference = 1.0f / 30.0f;
+    const MdkrCameraOcclusionWorld world = { 0 };
+    const MdkrCameraProjection projection = test_projection(1U);
+    const int rates[] = { 25, 30, 50, 60 };
+    float remaining_at[4];
+    unsigned r;
+
+    expect_true("per-second: the reference step keeps 25 percent exactly",
+                mdkr_camera_recovery_fraction_for_step(0.25f, reference, 2.0f / 60.0f) == 0.25f);
+    expect_true("per-second: a paused step recovers nothing",
+                mdkr_camera_recovery_fraction_for_step(0.25f, reference, 0.0f) == 0.0f);
+    expect_true("per-second: no cap stays no cap and a full cap stays full",
+                mdkr_camera_recovery_fraction_for_step(0.0f, reference, 1.0f / 60.0f) == 0.0f &&
+                mdkr_camera_recovery_fraction_for_step(1.0f, reference, 1.0f / 60.0f) == 1.0f);
+    expect_true("per-second: nonfinite inputs are refused",
+                isnan(mdkr_camera_recovery_fraction_for_step(NAN, reference, 1.0f / 60.0f)) &&
+                isnan(mdkr_camera_recovery_fraction_for_step(0.25f, INFINITY, 1.0f / 60.0f)));
+    {
+        const float half = mdkr_camera_recovery_fraction_for_step(0.25f, reference, 1.0f / 60.0f);
+        expect_near("per-second: two half steps equal one full step",
+                    (1.0f - half) * (1.0f - half), 0.75f, 1.0e-6f);
+        expect_true("per-second: a shorter step closes less",
+                    half > 0.0f && half < 0.25f);
+    }
+
+    /* The resolver driven at each cadence for the same 0.4 s of authored time
+     * (a whole number of steps at every rate), on a correction small enough
+     * that only the fraction cap binds, leaves the same remaining error. */
+    for (r = 0U; r < 4U; r++) {
+        MdkrCameraObstructionResolverConfig config =
+            test_config(MDKR_CAMERA_OBSTRUCTION_POLICY_MODERN);
+        MdkrCameraObstructionResolverState state = { 0 };
+        MdkrCameraObstructionResolverResult result;
+        MdkrCameraObstructionResolverInput input = resolver_input(
+            &world, &projection, (MdkrCameraVec3){ 0, 0, 0 },
+            (MdkrCameraVec3){ 4, 0, 0 });
+        const float dt = 1.0f / (float)rates[r];
+        int tick;
+
+        config.recovery_speed = 600.0f;
+        config.max_recovery_step = 20.0f;
+        config.max_recovery_fraction =
+            mdkr_camera_recovery_fraction_for_step(0.25f, reference, dt);
+        input.fixed_delta_seconds = dt;
+        for (tick = 0; tick < rates[r] * 2 / 5; tick++) {
+            (void)mdkr_camera_obstruction_resolve(&config, &input, &state, &result);
+            input.start_safe_eye = result.resolved_eye;
+        }
+        remaining_at[r] = 4.0f - result.resolved_eye.x;
+    }
+    for (r = 1U; r < 4U; r++) {
+        expect_near("per-second: the same authored time leaves the same error",
+                    remaining_at[r], remaining_at[0], 0.02f * remaining_at[0]);
     }
 }
 
@@ -819,6 +884,7 @@ int main(void) {
     test_recovery_transport();
     test_fractional_recovery_bound();
     test_fractional_recovery_converges_at_authored_rates();
+    test_recovery_fraction_is_per_second();
     test_immediate_retract_has_skin_and_no_penetration();
     test_recovery_is_monotonic_and_bounded();
     test_zero_time_revalidates_without_recovery_motion();

@@ -118,7 +118,10 @@ def main() -> int:
         "camera_obstruction_motion_sample",
         "MdkrCameraShoulderHistory shoulder;",
         "mdkr_camera_shoulder_sample(",
-        "&motion->shoulder, eye, observe->intent.pivot, side, alternate && pose_valid)",
+        "&motion->shoulder, eye, observe->intent.pivot, side,",
+        # Shoulder history lives only through the blocked phase (recovery is
+        # the census's clear phase), like the blocker history beside it.
+        "alternate && pose_valid && blocked);",
         "shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING",
         "shoulder_change == MDKR_CAMERA_SHOULDER_FLIP",
         "sCameraMotion.shoulder_basis_crossings++;",
