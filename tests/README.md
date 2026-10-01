@@ -3901,9 +3901,14 @@ must be identical to the one with it off, inside and outside the frame opening.
 The fault capture must lose banner pixels right of x = drawable height and
 nothing left of it, so the arm cannot pass on a frame without a banner or with
 the option silently off. The non-first banner ends left of that edge at 16:9,
-so it runs at 21:9 only. Measured before the fix, every arm failed with its
-first missing column at x = 1080 on a 1080-row drawable, or at the banner's own
-left edge where the whole banner sat right of it at 21:9.
+so it runs at 21:9 only. Measured before the fix, every Restored and WebGPU arm
+failed with its first missing column at x = 1080 on a 1080-row drawable, or at
+the banner's own left edge where the whole banner sat right of it at 21:9.
+
+The 1ST and FINISH arms also run on OpenGL Remastered, which draws the HUD in a
+separate output pass. That pass must keep the frame's clip. Before it did, the
+1ST arm's fault could not cut anything and the FINISH arm found the Time Trial
+stopwatch drawn beside the frame.
 
 `check_shadow_visual_ab.py` is the slower pixel-level companion:
 

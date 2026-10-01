@@ -4889,6 +4889,15 @@ static bool gfx_opengl_begin_output_overlay(void) {
         }
     }
 
+    /*
+     * Sample the scissor test before the resolve below, which turns it off.
+     * The HUD drawn next is still clipped by the scissor the world pass left
+     * (the post-race wooden frame, a split-screen viewport), as it is on
+     * WebGPU and without this overlay. Sampled afterwards, the overlay drew
+     * unclipped: the Time Trial stopwatch showed outside the post-race frame.
+     */
+    saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
+
     /* Finish supersampling/MSAA and all world-space post effects first. */
     gfx_opengl_wireframe_suspend();
     gfx_opengl_resolve_scene_target();
@@ -4902,7 +4911,6 @@ static bool gfx_opengl_begin_output_overlay(void) {
      */
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, drawable_w, drawable_h);
-    saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
     glGetBooleanv(GL_DEPTH_WRITEMASK, &saved_depth_mask);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(GL_TRUE);

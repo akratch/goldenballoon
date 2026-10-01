@@ -277,14 +277,19 @@ WIDE_HUD_BANNER_SCENES = {
 # The 1ST and FINISH banners reach past it at both ratios. The non-first
 # banner ends left of it at 16:9, so only the 21:9 capture can see the fault
 # there. At 4:3 the two mappings coincide and there is nothing to test.
+# Remastered on OpenGL draws the HUD into a separate output pass; the fault
+# can only cut the banner there if that pass keeps the world's scissor, and
+# the Time Trial stopwatch left of the frame must stay hidden in it.
 WIDE_HUD_BANNER_ARMS = (
     ("first", "webgpu", "960x540", "restored"),
     ("first", "webgpu", "1260x540", "restored"),
     ("first", "gl", "960x540", "restored"),
     ("first", "webgpu", "960x540", "remastered"),
+    ("first", "gl", "960x540", "remastered"),
     ("time-trial", "webgpu", "960x540", "restored"),
     ("time-trial", "webgpu", "1260x540", "restored"),
     ("time-trial", "gl", "960x540", "restored"),
+    ("time-trial", "gl", "960x540", "remastered"),
     ("second", "webgpu", "1260x540", "restored"),
     ("second", "gl", "1260x540", "restored"),
 )
@@ -926,8 +931,9 @@ def validate_wide_hud_banner(label: str, arms: dict[str, Arm]) -> str:
             f"{label}: the deliberate fault removed {cut_in_band} banner "
             f"pixels right of x={height} ({cut_in_band / band_area:.2%} of "
             "that part of the opening, want >= 1%). The capture no longer "
-            "shows a banner reaching past the fault's clip edge, or "
-            "Widescreen HUD did not engage, so this arm cannot see issue #67."
+            "shows a banner reaching past the fault's clip edge, Widescreen "
+            "HUD did not engage, or the HUD is not clipped by the frame at "
+            "all, so this arm cannot see issue #67."
         )
     early = [column for column in cut if column < height - 1]
     if early:
