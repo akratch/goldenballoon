@@ -95,7 +95,52 @@ static void test_rounding_across_deadband_cannot_hide_slow_motion(void) {
            "cumulative measurable motion cannot hide behind per-tick rounding");
 }
 
+/*
+ * The census's own phase predicates feeding the sampler, as the runtime
+ * composes them. A held shot is an alternate shot: holding (RETRACTED) it is
+ * blocked, recovering it is the clear phase.
+ */
+static MdkrCameraShoulderChange census_tick(MdkrCameraShoulderHistory *history,
+                                            float lateral, int retracted,
+                                            int recovering) {
+    const MdkrCameraVec3 pivot = { 0.0f, 0.0f, 0.0f };
+    const MdkrCameraVec3 eye = { lateral, 50.0f, 100.0f };
+    const int alternate = 1;
+    const int blocked = mdkr_camera_motion_blocked(retracted, 0, alternate, recovering);
+    const int side = lateral > MDKR_CAMERA_MOTION_SHOULDER_EPSILON ? 1 :
+                     lateral < -MDKR_CAMERA_MOTION_SHOULDER_EPSILON ? -1 : 0;
+
+    return mdkr_camera_shoulder_sample(
+        history, eye, pivot, side, mdkr_camera_shoulder_tracked(alternate, 1, blocked));
+}
+
+static void test_census_counts_a_flip_within_one_blocked_phase(void) {
+    MdkrCameraShoulderHistory history = { 0 };
+
+    expect(mdkr_camera_motion_blocked(1, 0, 1, 0) && mdkr_camera_motion_blocked(0, 1, 0, 0) &&
+               mdkr_camera_motion_blocked(0, 0, 1, 0),
+           "holding, emergency and a holding alternate shot are blocked");
+    expect(!mdkr_camera_motion_blocked(0, 0, 1, 1) && !mdkr_camera_motion_blocked(0, 0, 0, 0),
+           "a recovering alternate shot and an uncorrected camera are clear");
+    /* A held shot swings from the left shoulder to the right while it holds:
+     * one blocked phase, a flap the census must count. */
+    (void)census_tick(&history, -6.0f, 1, 0);
+    (void)census_tick(&history, -3.0f, 1, 0);
+    (void)census_tick(&history, 0.5f, 1, 0);
+    expect(census_tick(&history, 6.0f, 1, 0) == MDKR_CAMERA_SHOULDER_FLIP,
+           "a held shot changing shoulders inside one blocked phase is a flip");
+    /* The same swing with a recovery between: the first correction let go,
+     * so the second one's side is a new choice, not a flap. */
+    history = (MdkrCameraShoulderHistory){ 0 };
+    (void)census_tick(&history, -6.0f, 1, 0);
+    (void)census_tick(&history, -3.0f, 0, 1);
+    (void)census_tick(&history, 0.5f, 0, 1);
+    expect(census_tick(&history, 6.0f, 1, 0) == MDKR_CAMERA_SHOULDER_UNCHANGED,
+           "a side chosen after a recovery is not compared with the released one");
+}
+
 int main(void) {
+    test_census_counts_a_flip_within_one_blocked_phase();
     test_held_eye_and_translating_pivot();
     test_real_switches_survive_the_deadband();
     test_float_quantization_is_not_a_motion_tolerance();

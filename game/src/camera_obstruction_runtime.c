@@ -4628,7 +4628,7 @@ static void camera_obstruction_motion_sample(
      * is the clear phase here and a contact that brings it back inside the
      * chatter window is a re-engagement. Only an alternate shot that is still
      * holding counts as blocked. */
-    blocked = retracted || emergency || (alternate && !recovering);
+    blocked = mdkr_camera_motion_blocked(retracted, emergency, alternate, recovering);
     cut = observe->presentation_discontinuity != 0;
     continuous = pose_valid && !cut && motion->continuity_run != 0U &&
         motion->previous_tick + 1U == tick;
@@ -5014,7 +5014,7 @@ static void camera_obstruction_motion_sample(
      */
     const MdkrCameraShoulderChange shoulder_change = mdkr_camera_shoulder_sample(
         &motion->shoulder, eye, observe->intent.pivot, side,
-        alternate && pose_valid && blocked);
+        mdkr_camera_shoulder_tracked(alternate, pose_valid, blocked));
     if (shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING) {
         basis_crossing = TRUE;
         sCameraMotion.shoulder_basis_crossings++;

@@ -19,6 +19,25 @@ typedef struct MdkrCameraShoulderHistory {
     int moved;
 } MdkrCameraShoulderHistory;
 
+/*
+ * MOTION-01's phase classification for one published tick: an active
+ * correction constrains the camera. A retraction (contact or release hold)
+ * and emergency framing are blocked; an alternate shot -- a fan shot or a held
+ * shot -- is blocked while it holds and is the clear phase while it RECOVERS,
+ * because recovery, on every path, is the correction letting go.
+ */
+static inline int mdkr_camera_motion_blocked(int retracted, int emergency,
+                                             int alternate, int recovering) {
+    return retracted || emergency || (alternate && !recovering);
+}
+
+/* A shoulder is the side one correction holds against one obstruction, so the
+ * census tracks it only for a valid alternate shot in the blocked phase. */
+static inline int mdkr_camera_shoulder_tracked(int alternate, int pose_valid,
+                                               int blocked) {
+    return alternate && pose_valid && blocked;
+}
+
 typedef enum MdkrCameraShoulderChange {
     MDKR_CAMERA_SHOULDER_UNCHANGED = 0,
     MDKR_CAMERA_SHOULDER_FLIP,

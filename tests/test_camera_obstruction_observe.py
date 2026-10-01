@@ -121,7 +121,8 @@ def main() -> int:
         "&motion->shoulder, eye, observe->intent.pivot, side,",
         # Shoulder history lives only through the blocked phase (recovery is
         # the census's clear phase), like the blocker history beside it.
-        "alternate && pose_valid && blocked);",
+        "mdkr_camera_shoulder_tracked(alternate, pose_valid, blocked));",
+        "blocked = mdkr_camera_motion_blocked(retracted, emergency, alternate, recovering);",
         "shoulder_change == MDKR_CAMERA_SHOULDER_BASIS_CROSSING",
         "shoulder_change == MDKR_CAMERA_SHOULDER_FLIP",
         "sCameraMotion.shoulder_basis_crossings++;",
