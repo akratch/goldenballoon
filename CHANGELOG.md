@@ -37,14 +37,17 @@ save formats). Everything below 1.0.0 predates that commitment.
   second image; 1.7.0 issued the same out-of-bounds reads against native
   memory. Native uploads keep the retail commands for the two full layouts and,
   for any smaller texture, sample the N64's byte wherever it lies inside the
-  texture and wrap every other address back into it. Half of the ring now
-  matches an ares capture of the console's texture memory texel for texel; the
-  other half, and the pulse's second image, show the ring's own pixels where the
-  console showed unrelated memory. The ring's far edge, the only part on screen
-  during a normal race, is in that second half: the console shows a cream and
-  yellow fragment of a neighbouring texture there, and this build shows the
-  ring's blue panel. `pulse_material` decodes the production display list for
-  every admitted shape.
+  texture and wrap every other address back into it. Checked against an RDRAM
+  dump from the ares oracle: wherever the console sampled the ring's own bytes
+  (half of the ring, in the pulse's first image) this build samples the same
+  texels; everywhere else, including all of the pulse's second image, the
+  console sampled unrelated memory and this build samples the ring's own
+  pixels. The ring's far edge, the only part on screen during a normal race
+  (a sliver at the bottom of the dive shaft), is in that second half: the
+  console and 1.7.0 show a cream and yellow fragment of a neighbouring
+  texture there, and this build shows the ring's blue panel.
+  `pulse_material` decodes the production display list for every admitted
+  shape.
 - Every PNG decode of pack, model-atlas and custom-character data now runs
   under a per-thread allocation bound derived from the header it admitted.
   stb_image's zlib stage grows its buffer until the IDAT stream ends, so a few
