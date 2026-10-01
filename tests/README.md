@@ -7952,15 +7952,23 @@ isolated preferences/mods directory. This arm requires nonzero rendered
 replacement-texture evidence, not merely successful indexing. Use
 `--artifacts-dir /private/path` to retain logs and the copied pack privately.
 The counters cover engine pools, renderer ownership, and retained decoded
-texture pixels/lookup-table bytes. The final three equivalent texture-cache
-samples must match and decoded pixels must remain within the reported budget.
-They do not measure process RSS, registry/ZIP memory, or frame-time spikes and
-cannot alone prove that total process memory has plateaued.
+texture pixels/lookup-table bytes. Decoded pixels must stay within the reported
+budget. Across the final three equivalent races the texture cache must either
+hold still or grow by first use only: every byte it gains must belong to an
+identity resident for the first time (`firstResidentBytes`), nothing may be
+reloaded or evicted (`reloads`, `evictions`), and the lookup table may grow only
+with new entries. The races are not identical scenes -- the post-race and
+ghost state changes what each one draws, and on WebGPU the set of textures drawn
+varies a little from run to run -- so a texture can be first drawn in a late
+race however long the route; T12a saw exactly that fail the old byte-for-byte
+comparison about one WebGPU run in six. The PASS line reports any such late
+first use. Logs from builds whose census lacks those
+counters are still held to the byte-for-byte comparison. The counters do not
+measure process RSS, registry/ZIP memory, or frame-time spikes and cannot alone
+prove that total process memory has plateaued.
 
 For a longer cache-warmup check, use `--frames 75000`; generated retry pulses
-remain within the native loader's 512-entry capacity. A short run may legitimately
-fail the strict cache plateau requirement while still discovering new textures.
-Keep that result and compare it with an actually repeated longer route.
+remain within the native loader's 512-entry capacity.
 
 `python3 tests/check_input_script_capacity.py --binary build/mdkr64 --rom
 baserom.us.v80.z64` checks that exactly 512 entries are accepted and 513 fail

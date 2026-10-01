@@ -50,6 +50,41 @@ class CachePlateauTests(unittest.TestCase):
         self.assertIsNotNone(cache_plateau_error([oversized] + [self.row] * 3))
         self.assertIsNotNone(cache_plateau_error([(5, 0, 100, 0, 0, 0, 0)] * 4))
 
+    # Issue #66: the census carries what the cache did, and growth that is
+    # exactly first use passes. Rows gain inflight, pending, firstResident,
+    # firstResidentBytes, reloads, evictions.
+    ACCOUNTED = (5, 0, 100, 1000, 4096, 320, 4, 0, 0, 4, 1000, 0, 0)
+
+    def accounted(self, **changes):
+        names = ("level", "players", "cutscene", "pixels", "limit", "table",
+                 "entries", "inflight", "pending", "first", "first_bytes",
+                 "reloads", "evictions")
+        row = dict(zip(names, self.ACCOUNTED))
+        row.update(changes)
+        return tuple(row[name] for name in names)
+
+    def test_late_first_use_is_not_growth(self):
+        late = self.accounted(pixels=1100, entries=5, first=5, first_bytes=1100)
+        self.assertIsNone(cache_plateau_error([self.ACCOUNTED] * 3 + [late]))
+        # A new key the pack does not supply: a table entry, no pixels.
+        absent = self.accounted(entries=5)
+        self.assertIsNone(cache_plateau_error([self.ACCOUNTED] * 3 + [absent]))
+
+    def test_growth_beyond_first_use_fails(self):
+        for grown in (
+                self.accounted(pixels=1100),                       # no first use
+                self.accounted(pixels=1100, first=5, first_bytes=1050),
+                self.accounted(pixels=1100, first_bytes=1100, reloads=1),
+                self.accounted(evictions=1),
+                self.accounted(table=640),                         # no entries
+                self.accounted(entries=3)):
+            self.assertIsNotNone(
+                cache_plateau_error([self.ACCOUNTED] * 3 + [grown]), grown)
+
+    def test_accounted_rows_still_respect_the_budget(self):
+        over = self.accounted(pixels=5000, first_bytes=5000, first=9)
+        self.assertIsNotNone(cache_plateau_error([self.ACCOUNTED] * 3 + [over]))
+
     def test_long_route_keeps_retrying(self):
         rows = extended_route(75000).splitlines()
         ticks = [int(row.split()[0]) for row in rows

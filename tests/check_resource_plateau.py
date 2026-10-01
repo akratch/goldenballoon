@@ -58,7 +58,20 @@ REGISTRY_RE = re.compile(
 CACHE_RE = re.compile(
     r"texture_cache_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
     r"pixels=(\d+) limit=(\d+) table=(\d+) entries=(\d+)"
+    # Since issue #66 the census also says what the cache did to get there.
+    # Optional, so a log from an older build still parses (and is held to the
+    # strict comparison, having nothing finer to offer).
+    r"(?: inflight=(\d+) pending=(\d+) firstResident=(\d+) "
+    r"firstResidentBytes=(\d+) reloads=(\d+) evictions=(\d+))?"
 )
+# Row layout: level, players, cutscene, pixels, limit, table, entries, then,
+# when the census carries them, inflight, pending, firstResident,
+# firstResidentBytes, reloads, evictions.
+CACHE_ACCOUNTED_FIELDS = 13
+
+
+def cache_row(match: re.Match) -> tuple[int, ...]:
+    return tuple(int(value) for value in match.groups() if value is not None)
 FATAL_MARKERS = (
     "[CRASH]",
     "[FATAL]",
@@ -88,14 +101,69 @@ def extended_route(frames: int = DEFAULT_FRAMES) -> str:
 
 
 def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
+    """The decoded pack-texture cache across the last three equivalent races.
+
+    Identical samples are a plateau. Otherwise the cache may still have grown
+    for exactly one reason: the race drew an identity for the FIRST time. The
+    races are not identical scenes -- the post-race and ghost state changes the
+    asset mix, and on WebGPU the set of textures drawn varies a little from run
+    to run -- so a texture can be first drawn in a late race however long the
+    route (the T12a flake: one 138,240-byte texture first drawn inside the final
+    window). That is bounded by the game's own texture set and is not growth. Growth is the cache holding more than its
+    first uses explain: re-decoding what it already had, evicting and
+    reloading, or pixel/table accounting that moves on its own. So, within the
+    warmed window, every pixel byte the cache gains must be the bytes of an
+    identity resident for the first time, nothing may be reloaded or evicted,
+    and the lookup table may grow only with new entries. A census without
+    those counters (an older build) gets the strict comparison.
+    """
     races = [row for row in rows if row[:3] == (5, 0, 100)]
     if len(races) < 4:
         return "missing repeated texture-cache boundary samples"
     if any(row[3] > row[4] or row[4] == 0 for row in rows):
         return "decoded texture cache exceeded its reported budget"
-    if len(set(row[3:] for row in races[-3:])) != 1:
-        return f"texture cache did not plateau: {races[-3:]}"
+    window = races[-3:]
+    accounted = all(len(row) >= CACHE_ACCOUNTED_FIELDS for row in window)
+    # Churn first: a cache evicting and reloading at its cap can land on the
+    # same totals twice in a row, and that is not a plateau.
+    if accounted and (window[-1][11] != window[0][11] or
+                      window[-1][12] != window[0][12]):
+        return ("texture cache reloaded or evicted across warmed "
+                f"generations (reloads {window[0][11]}->{window[-1][11]}, "
+                f"evictions {window[0][12]}->{window[-1][12]}): {window}")
+    if len(set(row[3:7] for row in window)) == 1:
+        return None
+    if not accounted:
+        return f"texture cache did not plateau: {window}"
+    for before, after in zip(window, window[1:]):
+        pixels = after[3] - before[3]
+        table = after[5] - before[5]
+        entries = after[6] - before[6]
+        first_bytes = after[10] - before[10]
+        if pixels != first_bytes:
+            return ("texture cache grew beyond first use: decoded pixels moved "
+                    f"by {pixels} bytes but first-time residents account for "
+                    f"{first_bytes}: {window}")
+        if entries < 0 or table < 0 or (table > 0 and entries == 0):
+            return ("texture-cache lookup table changed without new entries: "
+                    f"table {before[5]}->{after[5]}, entries "
+                    f"{before[6]}->{after[6]}: {window}")
     return None
+
+
+def cache_first_use_note(rows: list[tuple[int, ...]]) -> str:
+    """How much of the warmed window's change was first use, for the log."""
+    window = [row for row in rows if row[:3] == (5, 0, 100)][-3:]
+    if len(window) < 3 or any(len(row) < CACHE_ACCOUNTED_FIELDS
+                              for row in window):
+        return ""
+    identities = window[-1][9] - window[0][9]
+    if identities == 0 and window[-1][6] == window[0][6]:
+        return ""
+    return (f"; late first use in the warmed window: {identities} "
+            f"identit{'y' if identities == 1 else 'ies'} "
+            f"({window[-1][10] - window[0][10]} bytes) and "
+            f"{window[-1][6] - window[0][6]} new lookup entries")
 
 
 def plateau_error(rows: list[tuple[int, ...]]) -> str | None:
@@ -347,8 +415,7 @@ def run_backend(
         if "[PTRREG]" not in output:
             return failure("no terminal pointer-registry census was emitted", output)
         rows = [tuple(map(int, match.groups())) for match in RESOURCE_RE.finditer(output)]
-        cache_rows = [tuple(map(int, match.groups()))
-                      for match in CACHE_RE.finditer(output)]
+        cache_rows = [cache_row(match) for match in CACHE_RE.finditer(output)]
         cache_races = [row for row in cache_rows if row[:3] == (5, 0, 100)]
         error = cache_plateau_error(cache_rows)
         if error is not None:
@@ -409,6 +476,7 @@ def run_backend(
             f"registry={registry_warmed[3]}/{registry_warmed[4]} "
             "live/high; "
             f"packPixels={cache_races[-1][3]} table={cache_races[-1][5]} bytes"
+            f"{cache_first_use_note(cache_rows)}"
         )
         if cleanup_on_success:
             shutil.rmtree(run_root)
@@ -487,6 +555,26 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    # The texture-cache oracle: first use passes, growth beyond it does not.
+    # Rows: level, players, cutscene, pixels, limit, table, entries, inflight,
+    # pending, firstResident, firstResidentBytes, reloads, evictions.
+    settled = (5, 0, 100, 1000, 4096, 320, 4, 0, 0, 4, 1000, 0, 0)
+    late_first_use = (5, 0, 100, 1100, 4096, 320, 5, 0, 0, 5, 1100, 0, 0)
+    if cache_plateau_error([settled] * 3 + [late_first_use]) is not None:
+        print("check_resource_plateau: FAIL — a texture first drawn in a late "
+              "race was reported as cache growth", file=sys.stderr)
+        return 1
+    for label, grown in (
+            ("pixel growth without a first use",
+             (5, 0, 100, 1100, 4096, 320, 4, 0, 0, 4, 1000, 0, 0)),
+            ("a reload in the warmed window",
+             (5, 0, 100, 1100, 4096, 320, 4, 0, 0, 4, 1000, 1, 1)),
+            ("a table that grew without entries",
+             (5, 0, 100, 1000, 4096, 640, 4, 0, 0, 4, 1000, 0, 0))):
+        if cache_plateau_error([settled] * 3 + [grown]) is None:
+            print(f"check_resource_plateau: FAIL — cache positive control "
+                  f"passed: {label}", file=sys.stderr)
+            return 1
     registry_synthetic = [
         (5, 0, 100, 10, 20, 0, 0, 3),
         (5, 0, 100, 11, 21, 0, 0, 3),

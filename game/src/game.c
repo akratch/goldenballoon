@@ -1066,11 +1066,21 @@ void level_load(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle vehicl
     if (mdkr_resource_trace_enabled()) {
         MdkrModTextureMemoryStats textureStats;
         mdkr_mod_texture_memory_stats(&textureStats);
+        /* The fields after `entries` let a plateau check tell a texture
+         * drawn for the FIRST time (bounded by the game's own texture set)
+         * from the cache growing by re-decoding what it already had, and see
+         * work still in flight at the boundary (issue #66). */
         mdkr_trace("texture_cache_state: level=%d players=%d cutscene=%d "
-                   "pixels=%zu limit=%zu table=%zu entries=%zu",
+                   "pixels=%zu limit=%zu table=%zu entries=%zu "
+                   "inflight=%zu pending=%zu firstResident=%zu "
+                   "firstResidentBytes=%zu reloads=%zu evictions=%zu",
                    (int)levelId, (int)numberOfPlayers, (int)cutsceneId,
                    textureStats.pixel_bytes, textureStats.pixel_limit,
-                   textureStats.table_bytes, textureStats.entries);
+                   textureStats.table_bytes, textureStats.entries,
+                   textureStats.inflight_bytes, textureStats.pending,
+                   textureStats.first_resident,
+                   textureStats.first_resident_bytes, textureStats.reloads,
+                   textureStats.evictions);
         MdkrMemoryPoolStats memoryStats;
         u32 audioUsed;
         u32 audioCapacity;
