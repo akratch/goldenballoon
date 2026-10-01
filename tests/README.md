@@ -5436,6 +5436,16 @@ silver-coin jingles from issue #30. Full release/Ares measurements and the
 visible-timer explanation are in
 [`docs/BLUEY2_PARITY.md`](../docs/BLUEY2_PARITY.md).
 
+The Enhanced arm records audio too, for issue #66 (instruments cut off or
+missing at the Enhanced tick rate). Enhanced applies two game ticks per
+synthesis frame, and music, jingles and SFX share one synth update pool. The
+arm adds `MDKR_AUDIO_VOICE_TRACE_JSONL` and `MDKR_AUDIO_SERVICE_TRACE=1`. Every
+music/jingle `note_on` must reach the synthesiser as a `music` start, no voice
+may be stolen or rejected, and the `[AUDIO-PARAMS]` line must show no refused
+update and a peak of at most half the pool (measured 90 of 384; it was 90 of
+96). Two in-process controls, one dropped start and this run's demand against
+the N64's 96 entries, must be rejected.
+
 ## First boss campaign progression — `tests/check_first_boss_progression.py`
 
 ```bash
@@ -6039,6 +6049,12 @@ The primary arm records 6685 race-level rows, 62600 world units through the
 natural finish, and max driving step 20.4; 3022 rows / 35551 units prove the kart
 is alive after returning to the hub. The scene sampler spans the race, win
 transition, lobby, and hub.
+
+The loss arm also traces the music (issue #66). This route runs at the Enhanced
+tick rate and is where the stock 96-entry synth update pool ran dry: it dropped
+5 of 8648 music note starts and refused 378 updates. Every traced `note_on` must
+now reach the synthesiser as a start, and `[AUDIO-PARAMS]` must show no refused
+update and a peak of at most half the pool (measured 148 of 384).
 
 **Steering comes from a test hook, not from the script.** Hand-timed stick input
 cannot hit a hub door — 18 open-loop routes failed, and `MDKR_AUTOPILOT=1` laps
