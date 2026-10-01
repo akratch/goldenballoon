@@ -28,14 +28,18 @@ size_t mdkr_stbi_allocation_limit(void);
  * exceed), the converted output, and the concatenated IDAT bytes (bounded by
  * the file, doubled the same way), plus a margin for palettes and row
  * buffers. channels is what stbi_info() reports; is16 what
- * stbi_is_16_bit_from_memory() reports. Zero when the header is unusable. */
+ * stbi_is_16_bit_from_memory() reports. Zero when the header is unusable,
+ * including a side above 2^24. */
 static inline size_t mdkr_stbi_png_allocation_bound(int width, int height,
                                                     int channels, int is16,
                                                     int req_comp,
                                                     size_t file_size) {
     uint64_t depth, row, scanlines, output, idat, bound;
-    if (width <= 0 || height <= 0 || channels <= 0 || channels > 4 ||
-        req_comp < 0 || req_comp > 4) {
+    /* Sides past 2^24 keep every product below in 64 bits and are far past
+     * any caller's own per-side cap; refusing them here keeps the helper
+     * safe on its own. */
+    if (width <= 0 || height <= 0 || width > (1 << 24) || height > (1 << 24) ||
+        channels <= 0 || channels > 4 || req_comp < 0 || req_comp > 4) {
         return 0u;
     }
     depth = is16 ? 2u : 1u;

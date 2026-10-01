@@ -48,6 +48,30 @@ static void test_decoder_allocation_admission(void) {
     free(pixels);
 }
 
+static void test_decode_bound(void) {
+    const size_t kib = 64u * 1024u;
+    /* 4096x4096 8-bit RGBA: twice the scanlines dominate. */
+    expect(mdkr_stbi_png_allocation_bound(4096, 4096, 4, 0, 4, 1000u) ==
+               (size_t)2u * (1u + 4096u * 4u) * 4096u + kib,
+           "bound is twice the inflated scanlines plus the margin");
+    /* A 16-bit file doubles the depth. */
+    expect(mdkr_stbi_png_allocation_bound(8, 8, 4, 1, 4, 100u) ==
+               (size_t)2u * (1u + 8u * 4u * 2u) * 8u + kib,
+           "16-bit scanlines are twice as wide");
+    /* A large file dominates through its doubled IDAT buffer. */
+    expect(mdkr_stbi_png_allocation_bound(8, 8, 4, 0, 4, 1000000u) == 2000000u + kib,
+           "the IDAT buffer bounds a small picture in a large file");
+    expect(mdkr_stbi_png_allocation_bound(0, 8, 4, 0, 4, 10u) == 0u &&
+               mdkr_stbi_png_allocation_bound(8, 8, 5, 0, 4, 10u) == 0u &&
+               mdkr_stbi_png_allocation_bound(8, 8, 4, 0, 5, 10u) == 0u,
+           "unusable headers have no bound");
+    expect(mdkr_stbi_png_allocation_bound((1 << 24) + 1, 1, 4, 0, 4, 10u) == 0u &&
+               mdkr_stbi_png_allocation_bound(1, (1 << 24) + 1, 4, 0, 4, 10u) == 0u,
+           "sides above 2^24 have no bound");
+    expect(mdkr_stbi_png_allocation_bound(1 << 24, 1, 4, 0, 4, 10u) != 0u,
+           "a side of exactly 2^24 is still bounded");
+}
+
 static void test_layout_without_allocating_pixels(void) {
     MdkrPngWriteLayout layout;
     int low = 1, high = INT_MAX;
@@ -121,6 +145,7 @@ static void test_small_roundtrip(int components) {
 
 int main(void) {
     test_decoder_allocation_admission();
+    test_decode_bound();
     test_layout_without_allocating_pixels();
     test_small_roundtrip(3);
     test_small_roundtrip(4);
