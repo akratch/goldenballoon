@@ -429,6 +429,11 @@ int platform_modern_character_visibility_diagnostics(
  * never pays for a digest. */
 void platform_content_packs_init(void);
 void platform_content_packs_shutdown(void);
+/* Replacement models decode only where they can draw, so the engine calls this
+ * once its renderer exists (the scan above runs earlier and, in the launcher,
+ * with no game renderer at all). Says once when a pack supplies models the
+ * active backend cannot draw. */
+void platform_content_packs_models_init(void);
 /* Flip the texture override layer for a live before/after comparison. Deliberately
  * does NOT write Content.PacksEnabled back: a momentary A/B is not a settings
  * change, and persisting each keystroke would rewrite the config file mid-race.

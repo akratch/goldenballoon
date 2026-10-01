@@ -523,7 +523,7 @@ static bool wgpu_shadow_prewarm_receivers(void);
 
 /* WEB-052: modern-mesh (scene decor) uniform ring. One persistent uniform buffer
  * holding a ring of 256-byte-aligned slots (the WebGPU minUniformBufferOffset-
- * Alignment guarantee); each decor draw writes its 96-byte uniform into a FRESH
+ * Alignment guarantee); each decor draw writes its 128-byte uniform into a FRESH
  * slot and binds it with a dynamic offset, so the per-mesh bind group is cached
  * (in WgpuModernEntry) and reused across frames instead of allocating a UBO + a
  * bind group per draw. The ring is reset per frame (s_modern_ubo_used = 0 in
@@ -9601,7 +9601,7 @@ static bool wgpu_read_framebuffer_rgb(int x, int y, int width, int height, uint8
  * ---------------------------------------------------------------------- */
 static const char *kModernWGSL =
     "struct DVin { @location(0) pos : vec3<f32>, @location(1) nrm : vec3<f32>, @location(2) uv : vec2<f32>, @location(3) col : vec4<f32> };\n"
-    "struct DU { mvp : mat4x4<f32>, fog : vec4<f32>, fogMul : f32, fogOffset : f32, fogOn : f32, farClamp : f32, tint : vec4<f32> };\n"
+    "struct DU { mvp : mat4x4<f32>, fog : vec4<f32>, fogMul : f32, fogOffset : f32, fogOn : f32, farClamp : f32, tint : vec4<f32>, env : vec4<f32> };\n"
     "@group(0) @binding(0) var<uniform> u : DU;\n"
     "@group(0) @binding(1) var dtex : texture_2d<f32>;\n"
     "@group(0) @binding(2) var dsmp : sampler;\n"
@@ -9624,16 +9624,23 @@ static const char *kModernWGSL =
     "fn decorShade(o : DOut, t : vec4<f32>) -> vec4<f32> {\n"
     "  var c = t.rgb * o.col.rgb * u.tint.rgb;\n"
     "  c = mix(c, vec3<f32>(0.88, 0.91, 0.96), o.col.a);\n"   /* snow cover in vertex alpha */
+    /* The billboard's second combiner cycle (G_CC_BLEND_ENV_ALPHA2) lerps
+     * toward the level light colour by its intensity; env.a is 0 when the
+     * replaced material has no such cycle. */
+    "  c = mix(c, u.env.rgb, u.env.a);\n"
     "  c = mix(c, u.fog.rgb, o.fogA);\n"
     "  return vec4<f32>(c, t.a * u.tint.a);\n}\n"
     "@fragment fn fs_opaque(in : DOut) -> @location(0) vec4<f32> {\n"
     "  let c = decorShade(in, textureSample(dtex, dsmp, in.uv));\n"
     "  return c;\n}\n"
+    /* Cutout: texel alpha only decides coverage. A kept texel carries the
+     * material's fade alone, so an edge texel never blends while it writes
+     * depth (which would halo against anything drawn behind it later). */
     "@fragment fn fs_cutout(in : DOut) -> @location(0) vec4<f32> {\n"
     "  let t = textureSample(dtex, dsmp, in.uv);\n"
     "  if (t.a < 0.45) { discard; }\n"
     "  let c = decorShade(in, t);\n"
-    "  return c;\n}\n";
+    "  return vec4<f32>(c.rgb, u.tint.a);\n}\n";
 
 static WGPUShaderModule    s_modern_mod = NULL;
 static WGPUBindGroupLayout s_modern_bgl = NULL;
@@ -9644,6 +9651,8 @@ static WGPUSampler         s_modern_sampler = NULL;
 struct WgpuModernEntry {
     uint32_t mesh_id;
     uint32_t texture_id;
+    uint32_t geometry_id;
+    uint32_t vtx_count;
     int tex_w, tex_h;
     WGPUBuffer vbuf, ibuf;
     WGPUTexture tex;
@@ -9658,19 +9667,35 @@ struct WgpuModernEntry {
 };
 static struct WgpuModernEntry s_modern_cache[64];
 static int s_modern_count = 0;
+/* The modern-mesh path only draws optional replacement models. A failed
+ * allocation switches it off for this device (authoring falls back to the
+ * original sprites) instead of failing the renderer; a device rebuild or a
+ * pack rescan clears the latch. */
+static bool s_modern_unavailable = false;
+
+static void wgpu_modern_fail(const char *what) {
+    if (!s_modern_unavailable) {
+        fprintf(stderr, "[webgpu] modern meshes unavailable (%s); replacement "
+                "models fall back to sprites\n", what);
+    }
+    s_modern_unavailable = true;
+}
 /* Logical payload bytes retained by this cache, not driver allocation sizes.
- * Shared atlas payload is counted once; geometry is distinct per mesh. */
+ * Shared atlas and shared geometry payloads are counted once. */
 static uint64_t s_modern_texture_uploads, s_modern_texture_reuses;
 static uint64_t s_modern_texture_payload, s_modern_geometry_payload;
+static uint64_t s_modern_geometry_reuses;
 
 static void wgpu_modern_cache_clear(void) {
     if (s_modern_count != 0) {
         fprintf(stderr, "[WGPU-MODELS] textureUploads=%llu textureReuses=%llu "
-                "textureUploadBytes=%llu geometryBytes=%llu entries=%d\n",
+                "textureUploadBytes=%llu geometryBytes=%llu geometryReuses=%llu "
+                "entries=%d\n",
                 (unsigned long long)s_modern_texture_uploads,
                 (unsigned long long)s_modern_texture_reuses,
                 (unsigned long long)s_modern_texture_payload,
-                (unsigned long long)s_modern_geometry_payload, s_modern_count);
+                (unsigned long long)s_modern_geometry_payload,
+                (unsigned long long)s_modern_geometry_reuses, s_modern_count);
     }
     for (int i = 0; i < s_modern_count; ++i) {
         struct WgpuModernEntry *e = &s_modern_cache[i];
@@ -9684,6 +9709,14 @@ static void wgpu_modern_cache_clear(void) {
     s_modern_count = 0;
     s_modern_texture_uploads = s_modern_texture_reuses = 0;
     s_modern_texture_payload = s_modern_geometry_payload = 0;
+    s_modern_geometry_reuses = 0;
+}
+
+/* Pack rescan: retire every cached mesh before its CPU storage is freed, and
+ * let the next pack generation try the optional path again. */
+static void wgpu_modern_cache_retire(void) {
+    wgpu_modern_cache_clear();
+    s_modern_unavailable = false;
 }
 
 static WGPURenderPipeline wgpu_modern_pipe(int cutout) {
@@ -9707,7 +9740,7 @@ static WGPURenderPipeline wgpu_modern_pipe(int cutout) {
 
         WGPUBindGroupLayoutEntry e[3] = {0};
         e[0].binding = 0; e[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        e[0].buffer.type = WGPUBufferBindingType_Uniform; e[0].buffer.minBindingSize = 112;
+        e[0].buffer.type = WGPUBufferBindingType_Uniform; e[0].buffer.minBindingSize = 128;
         e[0].buffer.hasDynamicOffset = true;   /* WEB-052: ring slot via dynamic offset */
         e[1].binding = 1; e[1].visibility = WGPUShaderStage_Fragment;
         e[1].texture.sampleType = WGPUTextureSampleType_Float; e[1].texture.viewDimension = WGPUTextureViewDimension_2D;
@@ -9733,10 +9766,7 @@ init_fail:
         if (new_layout != NULL) wgpuPipelineLayoutRelease(new_layout);
         if (new_bgl != NULL) wgpuBindGroupLayoutRelease(new_bgl);
         if (new_mod != NULL) wgpuShaderModuleRelease(new_mod);
-        fprintf(stderr, "[webgpu] transactional modern-pipeline setup failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not allocate its modern-mesh pipeline. "
-            "Reload the page to continue from the last persisted save.");
+        wgpu_modern_fail("pipeline setup");
         return NULL;
 init_done:
         ;
@@ -9794,10 +9824,7 @@ init_done:
     s_modern_pipe[key] = WGPU_FAULT_CREATE(
         MODERN_PIPELINE, wgpuDeviceCreateRenderPipeline(s_device, &pd));
     if (s_modern_pipe[key] == NULL) {
-        fprintf(stderr, "[webgpu] modern render-pipeline creation failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not compile its modern-mesh pipeline. "
-            "Reload the page to continue from the last persisted save.");
+        wgpu_modern_fail("render pipeline");
     }
     return s_modern_pipe[key];
 }
@@ -9818,33 +9845,49 @@ static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh)
         mesh->tex_w <= 0 || mesh->tex_h <= 0 ||
         (uint32_t)mesh->tex_w > s_max_tex_dim ||
         (uint32_t)mesh->tex_h > s_max_tex_dim) {
-        fprintf(stderr, "[webgpu] invalid modern-mesh resource dimensions\n");
-        wgpu_runtime_fatal(
-            "A modern mesh exceeds the graphics backend's resource limits. "
-            "Reload the page to continue from the last persisted save.");
+        wgpu_modern_fail("resource dimensions exceed the device limits");
         return NULL;
     }
     uint32_t vbytes = (uint32_t)vbytes64;
     uint32_t ibytes = (uint32_t)ibytes64;
-    WGPUBufferDescriptor vd = {0};
-    vd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst; vd.size = vbytes;
-    WGPUBuffer vb = WGPU_FAULT_CREATE(
-        MODERN_VERTEX_BUFFER, wgpuDeviceCreateBuffer(s_device, &vd));
-    WGPUBufferDescriptor id = {0};
-    id.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst; id.size = ibytes;
-    WGPUBuffer ib = WGPU_FAULT_CREATE(
-        MODERN_INDEX_BUFFER, wgpuDeviceCreateBuffer(s_device, &id));
-    if (vb == NULL || ib == NULL) {
-        if (vb) wgpuBufferRelease(vb);
-        if (ib) wgpuBufferRelease(ib);
-        fprintf(stderr, "[webgpu] modern-mesh buffer allocation failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not allocate a modern mesh. Reload "
-            "the page to continue from the last persisted save.");
-        return NULL;
+    WGPUBuffer vb = NULL;
+    WGPUBuffer ib = NULL;
+    if (mesh->geometry_id != 0) {
+        /* Several sprites draw one parsed mesh (five balloon colours, both
+         * canopy sizes): share its buffers, one reference per entry. */
+        for (int i = 0; i < s_modern_count; ++i) {
+            const struct WgpuModernEntry *shared = &s_modern_cache[i];
+            if (shared->geometry_id == mesh->geometry_id &&
+                shared->vtx_count == mesh->vtx_count &&
+                shared->idx_count == mesh->idx_count) {
+                vb = shared->vbuf;
+                ib = shared->ibuf;
+                wgpuBufferAddRef(vb);
+                wgpuBufferAddRef(ib);
+                ++s_modern_geometry_reuses;
+                break;
+            }
+        }
     }
-    wgpuQueueWriteBuffer(s_queue, vb, 0, mesh->vtx, vbytes);
-    wgpuQueueWriteBuffer(s_queue, ib, 0, mesh->idx, ibytes);
+    if (vb == NULL) {
+        WGPUBufferDescriptor vd = {0};
+        vd.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst; vd.size = vbytes;
+        vb = WGPU_FAULT_CREATE(
+            MODERN_VERTEX_BUFFER, wgpuDeviceCreateBuffer(s_device, &vd));
+        WGPUBufferDescriptor id = {0};
+        id.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst; id.size = ibytes;
+        ib = WGPU_FAULT_CREATE(
+            MODERN_INDEX_BUFFER, wgpuDeviceCreateBuffer(s_device, &id));
+        if (vb == NULL || ib == NULL) {
+            if (vb) wgpuBufferRelease(vb);
+            if (ib) wgpuBufferRelease(ib);
+            wgpu_modern_fail("geometry buffers");
+            return NULL;
+        }
+        wgpuQueueWriteBuffer(s_queue, vb, 0, mesh->vtx, vbytes);
+        wgpuQueueWriteBuffer(s_queue, ib, 0, mesh->idx, ibytes);
+        s_modern_geometry_payload += vbytes64 + ibytes64;
+    }
 
     WGPUTexture tex = NULL;
     WGPUTextureView view = NULL;
@@ -9875,10 +9918,7 @@ static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh)
         if (tex == NULL) {
             wgpuBufferRelease(vb);
             wgpuBufferRelease(ib);
-            fprintf(stderr, "[webgpu] modern-mesh texture allocation failed\n");
-            wgpu_runtime_fatal(
-                "The graphics backend could not allocate a modern-mesh texture. "
-                "Reload the page to continue from the last persisted save.");
+            wgpu_modern_fail("atlas texture");
             return NULL;
         }
         WGPUTexelCopyTextureInfo dst = {0};
@@ -9894,19 +9934,17 @@ static struct WgpuModernEntry *wgpu_modern_resources(struct GfxModernMesh *mesh)
             wgpuTextureRelease(tex);
             wgpuBufferRelease(vb);
             wgpuBufferRelease(ib);
-            fprintf(stderr, "[webgpu] modern-mesh texture-view allocation failed\n");
-            wgpu_runtime_fatal(
-                "The graphics backend could not allocate a modern-mesh texture "
-                "view. Reload the page to continue from the last persisted save.");
+            wgpu_modern_fail("atlas texture view");
             return NULL;
         }
         ++s_modern_texture_uploads;
         s_modern_texture_payload += (uint64_t)mesh->tex_w * mesh->tex_h * 4u;
     }
-    s_modern_geometry_payload += vbytes64 + ibytes64;
     struct WgpuModernEntry *e = &s_modern_cache[s_modern_count++];
     e->mesh_id = mesh->mesh_id;
     e->texture_id = mesh->texture_id;
+    e->geometry_id = mesh->geometry_id;
+    e->vtx_count = mesh->vtx_count;
     e->tex_w = mesh->tex_w; e->tex_h = mesh->tex_h;
     e->vbuf = vb; e->ibuf = ib; e->tex = tex;
     e->view = view;
@@ -9934,10 +9972,7 @@ static bool wgpu_modern_ubo_reserve(int need_slots) {
     WGPUBuffer nb = WGPU_FAULT_CREATE(
         MODERN_UNIFORM, wgpuDeviceCreateBuffer(s_device, &bd));
     if (nb == NULL) {
-        fprintf(stderr, "[webgpu] modern uniform-ring allocation failed\n");
-        wgpu_runtime_fatal(
-            "The graphics backend could not allocate its modern-mesh uniform "
-            "ring. Reload the page to continue from the last persisted save.");
+        wgpu_modern_fail("uniform ring");
         return false;
     }
     /* Release the app-side handle to the old buffer: any bind group/encoder from
@@ -9951,19 +9986,25 @@ static bool wgpu_modern_ubo_reserve(int need_slots) {
     return true;
 }
 
-static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4][4],
+static bool wgpu_modern_mesh_available(void) {
+    return !s_modern_unavailable;
+}
+
+static bool wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4][4],
                                   const float fog_color[3], float fog_mul,
-                                  float fog_offset, int fog_enabled, const float tint[4]) {
+                                  float fog_offset, int fog_enabled,
+                                  const struct GfxModernMeshMaterial *material) {
     if (!s_ready || !s_frame_open || s_pass == NULL || mesh == NULL ||
+        material == NULL || s_modern_unavailable ||
         mesh->vtx == NULL || mesh->idx == NULL || mesh->tex_rgba == NULL ||
         mesh->tex_w <= 0 || mesh->tex_h <= 0) {
-        return;
+        return false;
     }
     int cutout = mesh->cutout ? 1 : 0;
     WGPURenderPipeline pipe = wgpu_modern_pipe(cutout);
-    if (pipe == NULL) return;
+    if (pipe == NULL) return false;
     struct WgpuModernEntry *res = wgpu_modern_resources(mesh);
-    if (res == NULL) return;
+    if (res == NULL) return false;
 
     if (s_modern_sampler == NULL) {
         WGPUSamplerDescriptor sd = {0};
@@ -9974,18 +10015,15 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
         s_modern_sampler = WGPU_FAULT_CREATE(
             MODERN_SAMPLER, wgpuDeviceCreateSampler(s_device, &sd));
         if (s_modern_sampler == NULL) {
-            fprintf(stderr, "[webgpu] modern-mesh sampler creation failed\n");
-            wgpu_runtime_fatal(
-                "The graphics backend could not allocate its modern-mesh "
-                "sampler. Reload the page to continue from the last persisted "
-                "save.");
-            return;
+            wgpu_modern_fail("sampler");
+            return false;
         }
     }
 
-    /* Uniform (112 bytes): row-major MP memcpy'd into the mat4x4 (columns == MP
-     * rows, so u.mvp * v == the CPU row-vector T&L), fog params. */
-    float u[28];
+    /* Uniform (128 bytes): row-major MP memcpy'd into the mat4x4 (columns == MP
+     * rows, so u.mvp * v == the CPU row-vector T&L), fog params, then the
+     * replaced material's prim tint and env blend. */
+    float u[32];
     memset(u, 0, sizeof(u));
     memcpy(u, mvp, 16 * sizeof(float));
     u[16] = fog_color[0]; u[17] = fog_color[1]; u[18] = fog_color[2]; u[19] = 0.0f;
@@ -9993,13 +10031,16 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
     u[21] = fog_offset;
     u[22] = fog_enabled ? 1.0f : 0.0f;
     u[23] = s_unclipped_depth_supported ? 0.0f : 1.0f;
-    for (int i = 0; i < 4; ++i) u[24 + i] = tint != NULL ? tint[i] : 1.0f;
+    for (int i = 0; i < 4; ++i) {
+        u[24 + i] = material->tint[i];
+        u[28 + i] = material->env[i];
+    }
 
     /* WEB-052: claim a FRESH ring slot (never a slot already written this frame),
      * write the uniform there, and bind it via a dynamic offset — instead of
      * allocating a one-off UBO + bind group per draw. */
     if (!wgpu_modern_ubo_reserve(s_modern_ubo_used + 1)) {
-        return;
+        return false;
     }
     int slot = s_modern_ubo_used++;
     uint32_t dyn_off = (uint32_t)slot * WGPU_MODERN_UBO_ALIGN;
@@ -10022,11 +10063,8 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
             wgpuDeviceCreateBindGroup(s_device, &bgd));
         res->bg_gen = s_modern_ubo_gen;
         if (res->bg == NULL) {
-            fprintf(stderr, "[webgpu] modern-mesh bind-group creation failed\n");
-            wgpu_runtime_fatal(
-                "The graphics backend could not bind a modern mesh. Reload the "
-                "page to continue from the last persisted save.");
-            return;
+            wgpu_modern_fail("bind group");
+            return false;
         }
     }
 
@@ -10046,6 +10084,7 @@ static void wgpu_draw_modern_mesh(struct GfxModernMesh *mesh, const float mvp[4]
     wgpuRenderPassEncoderDrawIndexed(s_pass, res->idx_count, 1, 0, 0, 0);
     /* res->bg is owned by the mesh cache; the ring UBO persists — nothing to
      * release here (the encoder retains referenced resources until submit). */
+    return true;
 }
 
 /* ------------------------------------------------------------------------
@@ -13421,6 +13460,7 @@ static void wgpu_release_device_objects(void) {
     s_modern_sampler = NULL;
     memset(s_modern_cache, 0, sizeof(s_modern_cache));
     s_modern_count = 0;
+    s_modern_unavailable = false;
     s_skinned_mod = NULL;
     s_skinned_bgl = NULL;
     s_skinned_pl = NULL;
@@ -13912,9 +13952,10 @@ struct GfxRenderingAPI gfx_webgpu_api = {
     .end_frame = wgpu_end_frame,
     .finish_render = wgpu_finish_render,
     .draw_modern_mesh = wgpu_draw_modern_mesh,
+    .modern_mesh_available = wgpu_modern_mesh_available,
     .draw_modern_skinned = wgpu_draw_modern_skinned,
     .release_modern_asset = wgpu_release_modern_asset,
-    .clear_modern_mesh_cache = wgpu_modern_cache_clear,
+    .clear_modern_mesh_cache = wgpu_modern_cache_retire,
     .upload_texture_mipped = wgpu_upload_texture_mipped,
     .shutdown = wgpu_shutdown,
     .get_status = wgpu_get_status,

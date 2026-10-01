@@ -124,11 +124,15 @@ enum { DKR_PRESENTATION_PARTICLE_KIND_POINT = 4 };
 #define SCALE_4_8(v_) ((v_) * 0x11)
 #define SCALE_3_8(v_) ((v_) * 0x24)
 
+#include "gfx_modern_material.h"
+
 static GfxFontRegistry dkr_font_registry;
 static struct GfxRenderingAPI *gfx_rapi;
 
 int gfx_sprite_models_supported(void) {
-    return gfx_rapi != NULL && gfx_rapi->draw_modern_mesh != NULL;
+    return gfx_rapi != NULL && gfx_rapi->draw_modern_mesh != NULL &&
+           (gfx_rapi->modern_mesh_available == NULL ||
+            gfx_rapi->modern_mesh_available());
 }
 
 void gfx_clear_modern_mesh_cache(void) {
@@ -4045,13 +4049,19 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
 
 static void dkr_draw_sprite_model(uint32_t sprite) {
     struct GfxModernMesh *mesh;
-    float fog[3], tint[4], mvp[4][4];
+    struct GfxModernMeshMaterial material = {{0}};
+    float fog[3], mvp[4][4];
+    bool depth_write;
     int far;
     if (!gfx_sprite_models_supported() || rsp.active_slot < 0 || rsp.active_slot >= 3) return;
     far = fabsf(rsp.mtx[rsp.active_slot][3][3]) > (sprite == 156 ? 650.0f : 1800.0f);
     mesh = mdkr_sprite_models_mesh(sprite, far);
     if (!mesh) return;
-    if (!dkr_setup_draw_state(false)) return;
+    /* For its depth, blend, viewport and scissor state only. The mesh samples
+     * its own atlas, and the model path never loads the sprite's frame into
+     * TMEM, so a failed tile bind (whatever an earlier draw left there) must
+     * not leave the object drawn by neither the model nor the sprite. */
+    (void)dkr_setup_draw_state(false);
     gfx_flush();
     memcpy(mvp, rsp.mtx[rsp.active_slot], sizeof(mvp));
     /* Adventure Two's negative viewport scale applies to GPU meshes just as
@@ -4066,12 +4076,32 @@ static void dkr_draw_sprite_model(uint32_t sprite) {
         }
     }
     fog[0] = rdp.fog_color.r / 255.0f; fog[1] = rdp.fog_color.g / 255.0f; fog[2] = rdp.fog_color.b / 255.0f;
-    tint[0] = rdp.prim_color.r / 255.0f; tint[1] = rdp.prim_color.g / 255.0f;
-    tint[2] = rdp.prim_color.b / 255.0f; tint[3] = rdp.prim_color.a / 255.0f;
+    /* The model inherits the replaced billboard's material: prim modulates
+     * and fades, and a second cycle that blends toward ENV by ENV_ALPHA
+     * (G_CC_BLEND_ENV_ALPHA2, the level light tint for shaded objects)
+     * applies the same lerp. */
+    {
+        const uint32_t rgb2 = (uint32_t)((rdp.combine_mode >> 28) & 0xffffu);
+        const uint8_t prim[4] = {rdp.prim_color.r, rdp.prim_color.g, rdp.prim_color.b, rdp.prim_color.a};
+        const uint8_t env[4] = {rdp.env_color.r, rdp.env_color.g, rdp.env_color.b, rdp.env_color.a};
+        gfx_modern_material_resolve(rgb2 & 0xfu, (rgb2 >> 4) & 0xfu, (rgb2 >> 8) & 0x1fu,
+                                    (rgb2 >> 13) & 7u,
+                                    (rdp.other_mode_h & (3u << G_MDSFT_CYCLETYPE)) == G_CYC_2CYCLE,
+                                    prim, env, &material);
+    }
+    /* The same test dkr_setup_draw_state hands the backend's depth state. */
+    depth_write = (rsp.geometry_mode & G_ZBUFFER) != 0 && (rdp.other_mode_l & Z_CMP) != 0 &&
+                  (rdp.other_mode_l & Z_UPD) == Z_UPD;
     dkr_begin_primitive(false);
-    gfx_rapi->draw_modern_mesh(mesh, mvp, fog,
-        (float)rsp.fog_mul, (float)rsp.fog_offset, (rdp.other_mode_l >> 30) == G_BL_CLR_FOG, tint);
-    mdkr_sprite_models_note_draw(sprite, far);
+    if (!gfx_rapi->draw_modern_mesh(mesh, mvp, fog,
+            (float)rsp.fog_mul, (float)rsp.fog_offset, (rdp.other_mode_l >> 30) == G_BL_CLR_FOG,
+            &material)) {
+        return;
+    }
+    mdkr_sprite_models_note_draw(sprite, far,
+        (material.tint[3] < 1.0f ? MDKR_SPRITE_MODEL_DRAW_FADING : 0u) |
+        (depth_write ? MDKR_SPRITE_MODEL_DRAW_DEPTH_WRITE : 0u) |
+        (material.env[3] > 0.0f ? MDKR_SPRITE_MODEL_DRAW_ENV_TINT : 0u));
 }
 
 static void dkr_draw_modern_character(uint32_t token) {

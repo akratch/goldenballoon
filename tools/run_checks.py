@@ -968,8 +968,9 @@ CHECKS = (
           "slider retry/exit across four unlock layouts; the Taj theme may load and "
           "stay resident only on Character Select"),
     Check("sprite_models_gpu", "check_sprite_models_gpu.py", "native",
-          "synthetic replacement model draws and eleven one-shot/persistent "
-          "GPU allocation failure recovery paths"),
+          "every replacement-model family draws with the billboard's material, "
+          "replays at 120 Hz, and falls back to sprites on eleven one-shot and "
+          "persistent GPU allocation failures"),
     Check("bonus_portrait_pack", "check_bonus_portrait_pack.py", "native",
           "a pack redraws the generated Taj/Wizpig/Terry cards at their "
           "published digests on GL and on the shipped WebGPU default, the "

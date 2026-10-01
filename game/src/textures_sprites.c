@@ -1231,6 +1231,25 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
                        numberOfGfxCommands(dRenderSettingsBlinkingLights[0]));
 }
 
+#ifdef NATIVE_PORT
+/**
+ * The material flags a sprite billboard loads (render_sprite_billboard).
+ * RENDER_ANTI_ALIASING shares RENDER_VEHICLE_PART's bit, so the part bit is
+ * cleared, and semi-transparent sprites always take anti-aliasing, which with
+ * Z compare selects the interpenetrating translucent mode that does not write
+ * depth. A replacement model reproduces the billboard's material by loading
+ * exactly this.
+ */
+s32 material_sprite_billboard_flags(const Sprite *sprite, s32 flags) {
+    flags &= ~RENDER_VEHICLE_PART;
+    if (flags & RENDER_SEMI_TRANSPARENT) {
+        flags |= RENDER_ANTI_ALIASING;
+    }
+    return sprite->drawFlags | (flags & (RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT |
+                                         RENDER_Z_COMPARE | RENDER_ANTI_ALIASING));
+}
+#endif
+
 /**
  * Set whether to use an opaque render mode for sprites.
  */

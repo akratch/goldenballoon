@@ -8,19 +8,46 @@ pack loading, renderer integration, visual parity or GPU resource lifetime.
 
 The adjacent `sprite_models` CTest generates synthetic directory and ZIP packs
 to check loader atlas sharing, priority isolation, incomplete/malformed family
-fallback, toggles, and repeated reload/shutdown. It does not exercise GPU cache
-retirement or constitute real-pack visual acceptance.
+fallback, toggles, and repeated reload/shutdown. Its `families` case loads
+every family and requires each distinct `.dkrmesh` file to be parsed once (the
+five balloon colours, both collectibles and both canopy sizes share a mesh),
+and requires a backend with no model path (the launcher, OpenGL) to decode
+nothing. Shutdown must retire retained display lists and then the GPU mesh
+cache while the storage they name is still alive. Its `bomb` case is a 64x64
+atlas whose IDAT inflates to 384 MiB: it must be refused with peak resident
+growth under 48 MiB, which only the per-decode allocation bound in
+`lib/stb/stb_image_alloc.h` provides (`mod_texture_store` carries the same
+case for pack textures, against its allocation probe).
+
+`sprite_model_material` links the production `textures_sprites.c` and decodes
+the draw table entry `material_load_simple` selects for the billboard flags
+both the billboard and the model path load: a fading sprite (and so its model)
+must not write depth, a fogged sprite's second combiner cycle must hand the
+model the level light colour, and a control proves the old unadjusted flags
+selected a depth-writing entry. `sprite_model_replay` links the production
+`camera.c` replay: a banana recipe between two snapshots replays at the
+interpolated position and shortest-arc spin across the 255/0 seam, and the
+tick-agreement check runs once per recipe, agreeing or suppressed.
 
 `python3 tests/check_sprite_models_gpu.py --build build-rel --rom /path/to/ROM`
-creates a disposable synthetic palm pack and requires actual model draws. It
-also executes eleven one-shot GPU allocation failures (one native recovery)
-and eleven persistent failures (bounded clean exit), followed by a healthy run.
-Both modes also run with replacements disabled and compare complete 3,400-tick
-simulation-hash streams. `--smoke-only` runs just the healthy and disabled pair.
-The healthy synthetic run also requires one shared atlas upload, reuse by the
-remaining mesh entries, and exact logical geometry payload bytes. These are
-cache payload counters, not physical VRAM measurements. Visual placement,
-presentation replay equivalence and real replacement artwork need separate checks.
+creates a disposable pack with every model family (one synthetic triangle per
+mesh, 1x1 atlases) and races a track that carries all of them, 3,400 ticks per
+arm, each arm with its own save, video and preference directory. The healthy
+arm requires draws from every family, canopy poses attached to their trunks,
+the banana's spin through at least eight phases, fading model draws with no
+depth writes, and shared GPU textures and geometry with exact logical payload
+bytes (cache counters, not VRAM). A 120 Hz interpolating arm requires the
+replay branch to run (how many poses headless synthetic pacing replays depends
+on host timing: about 5,900 in this arm, a few dozen in the same run without
+frame dumps; the replayed pose itself is `sprite_model_replay`'s to check). A 60%-alpha atlas must render the same late frames as the opaque
+one (cutout texels decide coverage only). Eleven one-shot and eleven
+persistent modern-mesh allocation failures must each switch the model path off
+once, never reinitialize the device or exit, and render the same late frames
+as the arm with models disabled (whose frames must differ from the healthy
+arm's). Every arm compares its simulation-hash stream with the healthy one;
+`--smoke-only` runs just the healthy and disabled arms. Sanitizer and fatal
+markers fail any arm. Real replacement artwork and the banana's spin
+direction against the retail sprite still need a pack to check.
 
 Follow the maintainer's current local validation authorization in `AGENTS.md`.
 The maintainer authorized this workstation for behavioral validation on

@@ -22,8 +22,11 @@ additional format, path API or decoder pin is enabled by this maintenance.
 | `platform/modern_character_render.c` | Compiled texture range and PNG header; at most 4096 pixels per axis |
 | `platform/modern_character_identity.c` | Compiled portrait range and PNG header; at most 1024 pixels per axis |
 | `platform/app/character_portrait_import.cpp` | Bounded owned source bytes and structural PNG validation; 16–4096 px, non-interlaced 8-bit RGB/RGBA |
+| `platform/sprite_models.c` | Owned file bytes of at most 16 MiB; PNG header; at most 4096 px a side, 64 MiB decoded per atlas and 256 MiB in total |
 
-All four callers request RGBA and have compile-time conversion-size guards.
+All five callers request RGBA. The first four have compile-time
+conversion-size guards; `sprite_models.c` computes the decoded size in 64 bits
+and checks it against its per-atlas and total caps before decoding.
 Every one also sets a per-thread decode bound from the header it admitted (see
 below) around its single decode call.
 These are integration bounds, not a claim that every decoder operation is
@@ -51,9 +54,9 @@ megabytes could otherwise demand gigabytes for an admitted 64x64 picture.
 can legitimately need (twice the inflated scanlines, for the doubling
 estimate interlaced images exceed; the converted output; twice the file for
 the concatenated IDAT bytes; plus 64 KiB), and every pack/character caller
-sets it around its decode. The `mod_texture_store` CTest decodes a fixture
-that inflates far past its header and requires the refusal to stay within
-that bound.
+sets it around its decode. `mod_texture_store` and `sprite_models` CTests
+decode a fixture that inflates far past its header and require the refusal
+to stay within that bound.
 
 This addresses the documented allocation condition at our boundary. It does
 not prove the full applicability or closure of

@@ -10,6 +10,22 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 ## [Unreleased]
 
+### Added
+
+- Content packs can replace the camera-facing sprites of the palms, the beach,
+  blueberry and rubber trees, the weapon and collectible balloons and the
+  banana with 3D models (`models/<family>/*.dkrmesh` plus a PNG atlas; layout
+  in [Content packs](docs/MODDING.md#replacement-3d-models-for-sprites)). Models
+  draw on the WebGPU renderer only; OpenGL keeps the sprites and logs how many
+  sprite models it is not drawing, and nothing is decoded where models cannot
+  draw (the launcher, OpenGL). A model takes the replaced sprite's material: it
+  fades without writing depth where the sprite did, takes the level light tint
+  where the sprite did, and its cutout texels never blend while writing depth.
+  `F2` toggles models for comparison (it was `F8`, which opens the Performance
+  developer tool). A modern-mesh allocation failure switches models off for the
+  session and draws the sprites instead of ending the game. Sprites that share
+  a mesh file share one parsed copy and one GPU buffer.
+
 ### Changed
 
 - Spaceport Alpha's pulsing floor ring (track model 18, texture 211, a 16x32
@@ -29,8 +45,8 @@ save formats). Everything below 1.0.0 predates that commitment.
   yellow fragment of a neighbouring texture there, and this build shows the
   ring's blue panel. `pulse_material` decodes the production display list for
   every admitted shape.
-- Every PNG decode of pack and custom-character data now runs under a
-  per-thread allocation bound derived from the header it admitted.
+- Every PNG decode of pack, model-atlas and custom-character data now runs
+  under a per-thread allocation bound derived from the header it admitted.
   stb_image's zlib stage grows its buffer until the IDAT stream ends, so a few
   megabytes of crafted data could demand gigabytes for a small picture; such a
   file is now refused within its header's budget.

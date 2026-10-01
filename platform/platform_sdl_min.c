@@ -2265,6 +2265,21 @@ void platform_content_packs_init(void) {
     }
 }
 
+void platform_content_packs_models_init(void) {
+    unsigned sprites;
+    if (gfx_sprite_models_supported()) {
+        mdkr_sprite_models_init(&s_contentPacks);
+        return;
+    }
+    sprites = mdkr_sprite_models_present(&s_contentPacks);
+    if (sprites > 0) {
+        fprintf(stderr,
+                "[MODELS] %u sprite replacement model%s found; this renderer has "
+                "no model path, so the original sprites are drawn\n",
+                sprites, sprites == 1 ? "" : "s");
+    }
+}
+
 const MdkrModRegistry *platform_content_packs_registry(void) {
     /* The launcher draws Settings before anything calls init. Scanning here is
      * the same scan, at the same path, reading the same two config keys -- and
@@ -3715,9 +3730,11 @@ static void input_dispatch_events(uint64_t target_tick) {
                     if (!e.key.repeat && e.key.keysym.sym == SDLK_TAB) {
                         platform_content_packs_toggle();
                     }
-                    /* F8 compares replacement geometry without toggling pack
-                     * textures; the same overlay capture/repeat rules apply. */
-                    if (!e.key.repeat && e.key.keysym.sym == SDLK_F8) {
+                    /* F2 compares replacement geometry with the original
+                     * sprites without toggling pack textures; the same
+                     * overlay capture/repeat rules apply. F8 belongs to the
+                     * Performance developer tool. */
+                    if (!e.key.repeat && e.key.keysym.sym == SDLK_F2) {
                         mdkr_sprite_models_toggle();
                     }
                     /*

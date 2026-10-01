@@ -182,16 +182,10 @@ def function_body(source: str, name: str) -> str:
 
 
 class WebGpuCachedBindOwnershipTests(unittest.TestCase):
-    def test_pack_resource_retirement_invalidates_retained_commands_first(self) -> None:
-        source = (ROOT / "platform/platform_sdl_min.c").read_text()
-        for name in ("platform_content_packs_init", "platform_content_packs_shutdown"):
-            with self.subTest(function=name):
-                body = code_only(function_body(source, name))
-                calls = ("gfx_dkr_replay_invalidate();",
-                         "gfx_clear_modern_mesh_cache();",
-                         "mdkr_sprite_models_shutdown();")
-                positions = [body.index(call) for call in calls]
-                self.assertEqual(positions, sorted(positions))
+    # Retiring retained commands and the GPU mesh cache before model storage is
+    # freed is a behaviour of mdkr_sprite_models_shutdown itself, witnessed by
+    # the sprite_models CTest (tests/test_sprite_models.c) rather than by the
+    # order of calls in any one caller.
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -284,13 +278,13 @@ class WebGpuCachedBindOwnershipTests(unittest.TestCase):
         self.assertNotIn("wgpuRenderPipelineRelease(", body)
 
     def test_static_mesh_retirement_does_not_retire_character_resources(self) -> None:
-        body = function_body(self.source, "wgpu_modern_cache_clear")
-        self.assertIn("wgpu_release_cached_bind_group(e->bg)", body)
-        self.assertIn("wgpuTextureViewRelease(e->view)", body)
-        self.assertIn("wgpuTextureRelease(e->tex)", body)
-        self.assertNotIn("s_skinned", body)
-        self.assertNotIn("wgpu_release_modern_asset", body)
-        self.assertRegex(body, r"s_modern_count\s*=\s*0")
+        # Only the negative claim is pinned here: the static-mesh cache clear
+        # never reaches the skinned-character cache. Which helpers release the
+        # static entries is the raw-release census's business above, and the
+        # sprite_models_gpu gate exercises the clear on every run.
+        body = code_only(function_body(self.source, "wgpu_modern_cache_clear"))
+        self.assertNotRegex(body, r"\bs_skinned_\w*")
+        self.assertNotRegex(body, r"\bwgpu_release_modern_asset\s*\(")
 
     def test_device_teardown_resets_pass_tracking_before_raw_releases(self) -> None:
         body = function_body(self.source, "wgpu_release_device_objects")

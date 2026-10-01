@@ -601,7 +601,9 @@ bool mdkr_camera_replay_object_world(
         !target.interpolated) {
         return false;
     }
-    if (mdkr_camera_replay_tick_agreement(owner)) {
+    /* Evaluated once: each evaluation is counted by the presentation census. */
+    const bool tickAgreed = mdkr_camera_replay_tick_agreement(owner);
+    if (tickAgreed) {
         memset(&transform, 0, sizeof(transform));
         transform.x_position =
             target.position[0] +
@@ -647,13 +649,14 @@ bool mdkr_camera_replay_object_world(
         pose.rotation[1] = transform.rotation.x_rotation;
         pose.rotation[2] = transform.rotation.z_rotation;
         pose.sprite = owner->sprite_model_id;
-        pose.phase = mdkr_camera_replay_tick_agreement(owner)
+        pose.phase = tickAgreed
             ? owner->sprite_model_phase + target.sprite_phase - authored.sprite_phase
             : target.sprite_phase;
         pose.attached = owner->sprite_model_attached;
         memcpy(pose.attachment, owner->sprite_model_attachment, sizeof(pose.attachment));
         if (!mdkr_sprite_model_matrix(&pose, rootLocal)) return false;
         mtxf_mul(&rootLocal, (MtxF *)&owner->parent_world, (MtxF *)outWorld);
+        mdkr_sprite_models_note_pose(pose.sprite, pose.phase, pose.attached, 1);
         return true;
     }
     mtxf_from_transform(&rootLocal, &transform);
@@ -3198,6 +3201,11 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
         frameID = ((frameID & 0xFF) * sprite->numberOfFrames) >> 8;
     }
 
+#ifdef NATIVE_PORT
+    // Load material and set render flags including fog, transparency, z-compare, and anti-aliasing.
+    // The replacement-model path loads the same material through the same helper.
+    material_load_simple(dList, material_sprite_billboard_flags(sprite, flags));
+#else
     // The RENDER_ANTI_ALIASING flag shares the same value as RENDER_VEHICLE_PART,
     // so we must clear RENDER_VEHICLE_PART from flags to avoid conflicts.
     // Anti-aliasing is automatically enabled for semi-transparent sprites.
@@ -3209,6 +3217,7 @@ s32 render_sprite_billboard(Gfx **dList, Mtx **mtx, Vertex **vtx, Object *obj, S
     // Load material and set render flags including fog, transparency, z-compare, and anti-aliasing
     material_load_simple(dList, sprite->drawFlags | (flags & (RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT |
                                                               RENDER_Z_COMPARE | RENDER_ANTI_ALIASING)));
+#endif
 
     if (!(flags & RENDER_Z_UPDATE)) {
         gDPSetPrimColor((*dList)++, 0, 0, 255, 255, 255, 255);
@@ -3430,6 +3439,7 @@ s32 render_sprite_model(Gfx **dList, Mtx **mtx, Object *obj, Sprite *sprite, s32
     (void)presentation_snapshot_identity_ensure_generation(obj, &generation);
     sprite_model_attachment(obj, generation, &pose);
     if (!mdkr_sprite_model_matrix(&pose, local)) return FALSE;
+    mdkr_sprite_models_note_pose(pose.sprite, pose.phase, pose.attached, 0);
     mtxf_mul(&local, gModelMatrixF[gModelMatrixStackPos], &world);
     mtxf_mul(&world, &gViewProjMatrixF, &mvp);
     mtxf_to_mtx(&mvp, *mtx);
@@ -3439,8 +3449,9 @@ s32 render_sprite_model(Gfx **dList, Mtx **mtx, Object *obj, Sprite *sprite, s32
     owner.sprite_model_attached = pose.attached;
     memcpy(owner.sprite_model_attachment, pose.attachment, sizeof(pose.attachment));
     mdkr_shadow_register_matrix(*mtx, &world, GFX_SHADOW_MOBILITY_DYNAMIC, GFX_SHADOW_SITE_CAM_PUSH, owned ? &owner : NULL);
-    material_load_simple(dList, sprite->drawFlags | (flags & (RENDER_FOG_ACTIVE | RENDER_SEMI_TRANSPARENT |
-                         RENDER_Z_COMPARE | RENDER_ANTI_ALIASING)));
+    /* The billboard's own material: a fading model blends without writing
+     * depth exactly where the billboard did. */
+    material_load_simple(dList, material_sprite_billboard_flags(sprite, flags));
     gDkrDisableBillboard((*dList)++);
     gSPMatrixDKRTagged((*dList)++, OS_K0_TO_PHYSICAL((*mtx)++), G_MTX_DKR_INDEX_1, G_MTX_DKR_SPACE_WORLD);
     gDkrDrawSpriteModel((*dList)++, id);

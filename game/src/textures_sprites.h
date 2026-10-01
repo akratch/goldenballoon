@@ -154,6 +154,9 @@ void material_set(Gfx **dList, TextureHeader *texhead, s32 flags, s32 texOffset)
 void sprite_free(Sprite *sprite);
 void tex_free(TextureHeader *tex);
 void material_load_simple(Gfx **dList, s32 flags);
+#ifdef NATIVE_PORT
+s32 material_sprite_billboard_flags(const Sprite *sprite, s32 flags);
+#endif
 
 // There might be a file boundary here.
 void tex_animate_texture(TextureHeader *texture, u32 *triangleBatchInfoFlags, s32 *arg2, s32 updateRate);

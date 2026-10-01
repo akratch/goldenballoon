@@ -269,6 +269,56 @@ the game's music drives timing and events that gameplay reads, so the sequence
 is muted rather than skipped, and a pack cannot change how the game behaves by
 replacing a track.
 
+## Replacement 3D models for sprites
+
+Some scenery and pickups are flat sprites that always face the camera: the
+palms (trunk and two canopy sizes), the beach, blueberry and rubber trees, the
+five weapon-balloon colours, the two collectible balloons and the banana. A
+pack can draw any of them as a 3D model instead. This needs the **WebGPU**
+renderer, the default. The OpenGL renderer has no model path: it keeps drawing
+the original sprites, and the startup log says how many sprite models it is not
+drawing.
+
+```
+mods/
+  island-trees/
+    pack.ini
+    models/
+      palm/
+        near.dkrmesh            ; trunk, close up
+        far.dkrmesh             ; trunk, at a distance
+        canopy-near.dkrmesh     ; both canopy sizes share these
+        canopy-far.dkrmesh
+        50414c4d33440001.png    ; the atlas every palm mesh samples
+```
+
+| Folder | Mesh files | Atlas PNG(s) |
+|---|---|---|
+| `palm` | `near`, `far`, `canopy-near`, `canopy-far` | `50414c4d33440001` |
+| `beach-tree` | `near`, `far` | `4245414348330001` |
+| `blueberry` | `near`, `far` | `424c554542330001` |
+| `rubber-tree` | `near`, `far` | `5255424252330001` |
+| `balloons` | `near`, `far` (the five weapon colours), `collectible-near`, `collectible-far` | `42414c4c33440093` to `...0097` (one per colour), `42414c4c3344009a`, `42414c4c3344009b` |
+| `banana` | `near`, `far` | `42414e414e413301` |
+
+- **Each sprite's files come from one pack.** Its two meshes and its atlas are
+  read from the highest-priority pack that has its `near` mesh (`canopy-near`,
+  `collectible-near` for those sprites). If one of them is missing there or
+  does not load, that sprite keeps its original look; files are never mixed
+  across packs.
+- Meshes are `.dkrmesh` files (`DKRPM001`), at most 4 MiB each. Atlases are PNG,
+  at most 16 MiB on disk and 4096 px a side, with at most 64 MiB decoded per
+  atlas and 256 MiB in total. Texels with alpha below 0.45 are cut out; every
+  other texel is drawn solid.
+- A model takes on the material of the sprite it replaces: it fades in and out
+  where the sprite would, and takes the level's light tint where the sprite
+  would.
+- **`F2`** switches the models off and back on while you play, keeping replaced
+  textures, so you can compare against the original sprites. Like `Tab`, which
+  turns models off together with textures, it changes no setting.
+- If the graphics device cannot create what the models need, the game logs it
+  once and draws the original sprites for the rest of the session.
+
 ## Turning packs on and off
 
 - **`Tab`** switches replaced **textures** off and back on while you play, so

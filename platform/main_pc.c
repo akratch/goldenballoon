@@ -520,6 +520,9 @@ int main(int argc, char **argv) {
     }
     MDKR_TRACE("gfx_init(%s) done; dimensions %dx%d",
                mdkr_render_backend_name(), renderer_width, renderer_height);
+    /* The pack scan above ran before any renderer existed; replacement models
+     * decode now, and only on a backend that can draw them. */
+    platform_content_packs_models_init();
     {
         char characterDirectory[4096];
         if (mdkr_user_characters_directory(

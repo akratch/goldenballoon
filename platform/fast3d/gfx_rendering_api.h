@@ -58,6 +58,8 @@ struct GfxModernMesh {
     uint32_t mesh_id;      /* loader-assigned, monotonic, never reused --
                               the backend caches GPU resources by this id
                               (struct addresses recycle across level loads) */
+    uint32_t geometry_id;  /* immutable shared vertex/index identity; zero
+                              keeps geometry private to this mesh_id */
     const float *vtx;      /* vtx_count * 9 floats (36-byte stride) */
     uint32_t vtx_count;
     const uint32_t *idx;
@@ -66,6 +68,14 @@ struct GfxModernMesh {
     int tex_w, tex_h;
     int cutout;            /* alpha-cutout (discard), drawn two-sided */
     void *backend_handle;
+};
+
+/* The replaced sprite's material state for a modern mesh draw: tint is the
+ * prim colour (rgb modulate, alpha fade); env is the colour the billboard's
+ * second combiner cycle lerps toward by env[3] (zero when it has none). */
+struct GfxModernMeshMaterial {
+    float tint[4];
+    float env[4];
 };
 
 /* Generic high-fidelity character resources. These are immutable after
@@ -241,9 +251,14 @@ struct GfxRenderingAPI {
      * read_framebuffer_rgb): draw a modern mesh at the current DL position.
      * mvp = the interpreter's current MP matrix (row-vector convention);
      * fog_* mirror the N64 per-vertex fog curve (see gfx_pc.c fog math). */
-    void (*draw_modern_mesh)(struct GfxModernMesh *mesh, const float mvp[4][4],
+    bool (*draw_modern_mesh)(struct GfxModernMesh *mesh, const float mvp[4][4],
                              const float fog_color[3], float fog_mul,
-                             float fog_offset, int fog_enabled, const float tint[4]);
+                             float fog_offset, int fog_enabled,
+                             const struct GfxModernMeshMaterial *material);
+    /* OPTIONAL: false once the backend switched its optional modern-mesh
+     * path off after an allocation failure; authoring then keeps the
+     * original sprite. NULL means always available when draw_modern_mesh is. */
+    bool (*modern_mesh_available)(void);
     void (*draw_modern_skinned)(const struct GfxModernSkinnedDraw *draw,
                                 const float mvp[4][4],
                                 const float fog_color[3], float fog_mul,
