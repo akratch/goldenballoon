@@ -221,6 +221,7 @@ GPU_SERIAL_NAMES = frozenset({
     "custom_character_workshop_preview",
     "bonus_results_portraits",
     "wizpig_race_voice",
+    "bonus_racer_horn",
     "taj_selection_music",
     "sprite_models_gpu",
     "bonus_portrait_pack",
@@ -948,6 +949,10 @@ CHECKS = (
     Check("wizpig_race_voice", "check_wizpig_race_voice.py", "native",
           "playable Wizpig positive/negative race cues use his own authored "
           "voice IDs, with consecutive-repeat suppression"),
+    Check("bonus_racer_horn", "check_bonus_racer_horn.py", "native",
+          "the horn dispatches the racer's own clip: retail horn or cheat voice, "
+          "Wizpig's laugh, Terry's kart horn and Taj's call, with and without "
+          "the horn cheat"),
     Check("taj_selection_music", "check_taj_selection_music.py", "native",
           "Taj music confirmation, reselection, title exit, custom return, multiplayer "
           "ownership, Game/File Select round trip, Adventure Party back-out and muted "

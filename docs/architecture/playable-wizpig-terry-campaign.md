@@ -164,7 +164,13 @@ and recovery, and cannot fall through into Taj's immunity, dash, or turn
 retention.
 
 Terry has no authored voice bank. Race voice requests are suppressed for Terry
-instead of borrowing Krunch grunts or Smokey dialogue. Kart and hover engines,
+instead of borrowing Krunch grunts or Smokey dialogue. His horn stays the donor
+kart's horn: retail horns are vehicle tones (several racers share one horn
+wave at another pitch), and retail's two spare horn IDs carry no sound. The
+horn cheat swaps a horn for the racer's voice, so for Terry, whose voice is
+mute, it keeps the horn rather than silencing it. Wizpig honks with his
+shortest laugh and Taj with his magic call, with or without the cheat
+(`tests/check_bonus_racer_horn.py`). Kart and hover engines,
 items, impacts, ambience, and UI cues remain normal. In plane mode only, the
 continuous donor engine and idle handles are stopped at the audio-player seam;
 physics still updates the donor's sound state and no global sound asset is

@@ -8534,15 +8534,41 @@ void handle_racer_items(Object *obj, Object_Racer *racer, UNUSED s32 updateRate)
  */
 void play_char_horn_sound(Object *obj, Object_Racer *racer) {
 #ifdef NATIVE_PORT
-    if (taj_physics_is_taj(racer)) {
+    s32 identity = mod_racer_physics_identity(racer);
+    s32 sound = -1;
+
+    /* Bonus racers honk as themselves, never with their stat donor's horn,
+     * and the horn cheat leaves that choice alone: it swaps a horn for the
+     * racer's voice, which Taj's and Wizpig's calls already are. */
+    if (identity == MOD_RACER_TAJ) {
         /* Keep the authored vehicle loop for useful speed feedback, but give
          * the carpet a magic call instead of leaking Diddy's donor horn. */
         MDKR_TRACE("taj_horn: player=%d sound=%d",
                    racer->playerIndex, SOUND_VOICE_TAJ_ALAKAZAM);
-        racer_play_sound(obj, SOUND_VOICE_TAJ_ALAKAZAM);
-        return;
+        sound = SOUND_VOICE_TAJ_ALAKAZAM;
+    } else if (identity == MOD_RACER_WIZPIG) {
+        /* His shortest laugh (0.28 s, also his picker confirmation), not
+         * Krunch's horn; retail horns run 0.07-0.21 s. */
+        sound = SOUND_VOICE_WIZPIG_LAUGH_SHORT2;
+    } else if (identity == MOD_RACER_TERRY) {
+        /* No authored Terry clip exists: he has no voice bank, and retail's
+         * two spare horn IDs carry no sound. He keeps the kart's horn, a
+         * vehicle tone that several retail racers share at another pitch.
+         * His voice path is mute, so the cheat must not take the horn away. */
+        sound = racer->characterId + SOUND_HORN_CHARACTER;
+    } else if (!(get_filtered_cheats() & CHEAT_HORN_CHEAT)) {
+        sound = racer->characterId + SOUND_HORN_CHARACTER;
     }
-#endif
+    /* Every press, whichever path serves it; -1 is the horn cheat's
+     * character-voice path. */
+    MDKR_TRACE("racer_horn: player=%d identity=%d sound=%d",
+               racer->playerIndex, identity, sound);
+    if (sound >= 0) {
+        racer_play_sound(obj, sound);
+    } else {
+        play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, 8, 130);
+    }
+#else
     if (get_filtered_cheats() & CHEAT_HORN_CHEAT) {
         // Play character voice instead of horn.
         play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, 8, 130);
@@ -8550,6 +8576,7 @@ void play_char_horn_sound(Object *obj, Object_Racer *racer) {
         // Play character's horn sound
         racer_play_sound(obj, racer->characterId + SOUND_HORN_CHARACTER);
     }
+#endif
 }
 
 // Used for magnet and homing rockets to get the distance to the nearest racer.

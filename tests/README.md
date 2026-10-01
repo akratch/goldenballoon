@@ -7114,6 +7114,29 @@ run uses a 240-second process timeout. Logs and saves stay in a temporary
 evidence directory (printed on completion), or `--evidence-dir`; do not include
 private ROM-derived evidence in source/release archives.
 
+## Bonus racer horn — `tests/check_bonus_racer_horn.py`
+
+A player-one Tracks race on Ancient Lake (`nav_to_time_trial_race.txt`, Time
+Trial off) presses Z three times once the race is live. Every press emits
+`racer_horn: player=0 identity=<id> sound=<id>` (`sound=-1` is the horn cheat's
+character-voice path). Seven arms, pinned to retail sound IDs: retail Diddy
+honks his own horn or, with the horn cheat, speaks; Wizpig plays his shortest
+laugh (`0xB3`) with or without the cheat; Terry keeps his donor kart's horn
+(`0x156`) with or without the cheat, because no authored Terry clip exists and
+his voice path is mute; Taj makes his magic call (`0x236`) under the cheat.
+The cheat is seeded through the persisted `magic_codes_state.ini` the Magic
+Codes menu writes, and each arm checks the `magic_codes_restore` witness. The
+oracle self-tests against a donor horn, a wrong identity and a lost cheat.
+This proves dispatch identity, not perceived sound.
+
+```bash
+python3 tests/check_bonus_racer_horn.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Registered as `bonus_racer_horn` in `tools/run_checks.py`; `--arm <name>`
+runs one arm. Each 3,400-frame run uses a 240-second process timeout.
+
 ## Bonus results portraits — `tests/check_bonus_results_portraits.py`
 
 This real-ROM gate completes a time-trial post-race flow once as Wizpig and
