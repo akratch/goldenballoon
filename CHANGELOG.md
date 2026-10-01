@@ -29,25 +29,26 @@ save formats). Everything below 1.0.0 predates that commitment.
 ### Changed
 
 - Spaceport Alpha's pulsing floor ring (track model 18, texture 211, a 16x32
-  RGBA16 image) is drawn from its own pixels only. Retail loads two 2048-byte
-  images from every pulsing texture, which only the 64x32 and 32x64 layouts
-  hold. For this 1 KiB texture the N64 sampled its own pixels as a
-  32-texel-wide tile over half of the ring, and read past the allocation (its
-  display list, then the next texture) for the rest of the ring and the whole
-  second image; 1.7.0 issued the same out-of-bounds reads against native
-  memory. Native uploads keep the retail commands for the two full layouts and,
-  for any smaller texture, sample the N64's byte wherever it lies inside the
-  texture and wrap every other address back into it. Checked against an RDRAM
-  dump from the ares oracle: wherever the console sampled the ring's own bytes
-  (half of the ring, in the pulse's first image) this build samples the same
-  texels; everywhere else, including all of the pulse's second image, the
-  console sampled unrelated memory and this build samples the ring's own
-  pixels. The ring's far edge, the only part on screen during a normal race
-  (a sliver at the bottom of the dive shaft), is in that second half: the
-  console and 1.7.0 show a cream and yellow fragment of a neighbouring
-  texture there, and this build shows the ring's blue panel.
-  `pulse_material` decodes the production display list for every admitted
-  shape.
+  RGBA16 image) is drawn as the console draws it, without reading past any
+  texture. Retail loads two 2048-byte images from every pulsing texture, which
+  only the 64x32 and 32x64 layouts hold; for this 1 KiB texture the console
+  samples its own pixels as a 32-texel-wide tile, then its load commands, a
+  few bytes left over from loading, and texture 880 (32x64 RGBA16), which the
+  console always loads right after it. 1.7.0 read past the texture into native
+  memory. RDRAM snapshots from the ares oracle (US 1.1 and PAL 1.1, three
+  routes into the race) show the same bytes at the same offsets every time, so
+  this build finds both textures in the texture cache by asset ID, checks
+  their shapes and content CRCs, copies their own texels into a 4096-byte
+  image laid out as the console holds that memory (with a 160-byte zero fill
+  where the console has its load commands and leftovers), and runs the
+  unchanged retail commands against it. The ring pulses again, the second
+  image matches the console texel for texel, and the first matches it
+  everywhere except that fill band, a narrow strip that is briefly on screen
+  at the edge of the dive shaft. Any other texture smaller than 4 KiB, and
+  this ring when texture 880 is missing or fails its checks, samples the
+  console's bytes wherever they lie inside the texture and wraps every other
+  address back into it. `pulse_material` decodes the production display list
+  for every admitted shape and for the ring with and without its neighbour.
 - Every PNG decode of pack, model-atlas and custom-character data now runs
   under a per-thread allocation bound derived from the header it admitted.
   stb_image's zlib stage grows its buffer until the IDAT stream ends, so a few

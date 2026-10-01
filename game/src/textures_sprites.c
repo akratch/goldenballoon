@@ -1154,6 +1154,104 @@ void material_set(Gfx **dList, TextureHeader *texhead, s32 flags, s32 texOffset)
     }
 }
 
+#ifdef NATIVE_PORT
+/*
+ * Spaceport Alpha's pulsing floor ring (track model 18) uses 3D texture 211, a
+ * 16x32 RGBA16 image of 1024 texel bytes, but the retail commands load two
+ * 2048-byte images from it. RDRAM snapshots from the ares oracle (US 1.1 and
+ * PAL 1.1, three different routes into the race: docs/ORACLE.md) all show the
+ * same bytes after it: its own 56-byte Gfx list, 72 bytes left over from the
+ * load, then texture 880 (32x64 RGBA16), whose texels begin 1184 bytes after
+ * the ring's. The console draws the ring from that memory.
+ *
+ * This retail asset alone gets a 4096-byte image laid out as the console saw
+ * it, built by IDENTITY rather than by address: the two textures are found in
+ * the texture cache by asset ID and checked by shape and content CRC, and only
+ * their own texels are copied. The 160 bytes in between, whose console
+ * contents depend on addresses and on the load's leftovers, are a zero fill.
+ * The unchanged retail commands then run against the copy. Any other texture,
+ * or this one without its verified neighbour, uses the wrapped plan below.
+ */
+#define MDKR_PULSE_RING_ID ((s32)(ASSET_MASK_TEX3D | 211))
+#define MDKR_PULSE_RING_NEIGHBOUR_ID ((s32)(ASSET_MASK_TEX3D | 880))
+#define MDKR_PULSE_RING_CRC 0x52FCDA79u
+#define MDKR_PULSE_RING_NEIGHBOUR_CRC 0xF5DF41BFu
+#define MDKR_PULSE_RING_TEXEL_BYTES 1024u
+#define MDKR_PULSE_RING_NEIGHBOUR_TEXEL_BYTES 4096u
+#define MDKR_PULSE_RING_NEIGHBOUR_OFFSET 1184u
+#define MDKR_PULSE_RING_IMAGE_BYTES 4096u
+
+static u16 sPulseRingImage[MDKR_PULSE_RING_IMAGE_BYTES / sizeof(u16)];
+static const TextureHeader *sPulseRingSource;
+static const TextureHeader *sPulseRingNeighbourSource;
+static s32 sPulseRingImageValid;
+
+static u32 pulse_ring_crc32(const u8 *bytes, size_t length) {
+    u32 crc = 0xFFFFFFFFu;
+    size_t i;
+    s32 bit;
+    for (i = 0; i < length; i++) {
+        crc ^= bytes[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static s32 pulse_ring_shape(const TextureHeader *texture, u32 width, u32 height, u32 texelBytes) {
+    return texture != NULL && texture->width == width && texture->height == height &&
+           TEX_FORMAT(texture->format) == TEX_FORMAT_RGBA16 &&
+           (u32)(u16)texture->textureSize == texelBytes + sizeof(TextureHeader) &&
+           (texture->numOfTextures >> 8) == 1;
+}
+
+/* The console's view of the ring's memory, or NULL when `ring` is not the
+ * verified retail ring with its verified neighbour loaded. */
+static const u16 *pulse_ring_console_image(const TextureHeader *ring) {
+    const TextureHeader *neighbour = NULL;
+    s32 ringListed = FALSE;
+    s32 i;
+    if (!pulse_ring_shape(ring, 16, 32, MDKR_PULSE_RING_TEXEL_BYTES) || gTextureCache == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < gNumberOfLoadedTextures; i++) {
+        const s32 id = gTextureCache[ASSETCACHE_ID(i)];
+        if (id == MDKR_PULSE_RING_ID &&
+            (u32)gTextureCache[ASSETCACHE_PTR(i)] == (u32)DKR_TOK(ring)) {
+            ringListed = TRUE;
+        } else if (id == MDKR_PULSE_RING_NEIGHBOUR_ID) {
+            neighbour = DKR_PTR(TextureHeader, gTextureCache[ASSETCACHE_PTR(i)]);
+        }
+    }
+    if (!ringListed ||
+        !pulse_ring_shape(neighbour, 32, 64, MDKR_PULSE_RING_NEIGHBOUR_TEXEL_BYTES)) {
+        return NULL;
+    }
+    if (ring != sPulseRingSource || neighbour != sPulseRingNeighbourSource) {
+        const u8 *ringTexels = (const u8 *)(ring + 1);
+        const u8 *neighbourTexels = (const u8 *)(neighbour + 1);
+        u8 *image = (u8 *)sPulseRingImage;
+        sPulseRingSource = ring;
+        sPulseRingNeighbourSource = neighbour;
+        sPulseRingImageValid =
+            pulse_ring_crc32(ringTexels, MDKR_PULSE_RING_TEXEL_BYTES) == MDKR_PULSE_RING_CRC &&
+            pulse_ring_crc32(neighbourTexels, MDKR_PULSE_RING_NEIGHBOUR_TEXEL_BYTES) ==
+                MDKR_PULSE_RING_NEIGHBOUR_CRC;
+        if (sPulseRingImageValid) {
+            /* This TU takes the SDK's libc declarations, not <string.h>. */
+            u32 at;
+            for (at = 0; at < MDKR_PULSE_RING_IMAGE_BYTES; at++) {
+                image[at] = at < MDKR_PULSE_RING_TEXEL_BYTES ? ringTexels[at]
+                          : at < MDKR_PULSE_RING_NEIGHBOUR_OFFSET ? 0
+                          : neighbourTexels[at - MDKR_PULSE_RING_NEIGHBOUR_OFFSET];
+            }
+        }
+    }
+    return sPulseRingImageValid ? sPulseRingImage : NULL;
+}
+#endif
+
 /**
  * Loads the texture and render settings for the blinking lights seen in Spaceport Alpha.
  */
@@ -1175,6 +1273,23 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
      * for smaller textures, samples the byte the N64 sampled wherever it lay
      * inside the texture, wrapping every other address back into it. */
     MdkrPulseUpload upload;
+    const u16 *consoleImage = pulse_ring_console_image(texture_list);
+    if (consoleImage != NULL) {
+        /* The retail commands, against the console's view of this memory. */
+        if (mdkr_trace_level() >= 2) {
+            static s32 traced;
+            if (!traced) {
+                traced = TRUE;
+                mdkr_trace("pulse_material: width=16 height=32 format=%u console_neighbour=880 "
+                           "image_bytes=%u", texture_list->format, MDKR_PULSE_RING_IMAGE_BYTES);
+            }
+        }
+        gDPLoadMultiBlock((*dList)++, OS_K0_TO_PHYSICAL(consoleImage), 256, 1, G_IM_FMT_RGBA,
+                          G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
+        gDPLoadTextureBlock((*dList)++, OS_K0_TO_PHYSICAL(consoleImage + 0x400), G_IM_FMT_RGBA,
+                            G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
+        goto loaded;
+    }
     if (!mdkr_texture_pulse_upload(texture_list->width, texture_list->height,
             TEX_FORMAT(texture_list->format), &upload)) {
         material_set(dList, texture_list, flags & ~RENDER_PULSING_LIGHTS, 0);
@@ -1200,6 +1315,7 @@ void material_set_blinking_lights(Gfx **dList, TextureHeader *texture_list, u32 
     gDPLoadTextureBlock((*dList)++, OS_K0_TO_PHYSICAL(tblock),
         G_IM_FMT_RGBA, G_IM_SIZ_16b, upload.texel0.width, upload.texel0.height,
         0, 0, upload.texel0.clampT ? G_TX_CLAMP : G_TX_WRAP, upload.texel0.maskS, upload.texel0.maskT, 0, 0);
+loaded:
 #else
     tblock = mblock + 0x400;
     if (texture_list->width == 64) {

@@ -2906,7 +2906,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform/audio_event_queue.c)
         # Pulsing-light uploads decoded from the display list the production
         # material_set_blinking_lights emits: legacy layouts byte-identical,
-        # every load inside the texture, every sample the N64's byte (wrapped).
+        # every load inside the texture, every sample the N64's byte (wrapped),
+        # and the verified Spaceport ring drawing the console's neighbour image.
         mdkr_add_engine_unit_test(mdkr_pulse_material_test pulse_material
             ${CMAKE_SOURCE_DIR}/tests/test_pulse_material.c
             ${CMAKE_SOURCE_DIR}/game/src/textures_sprites.c

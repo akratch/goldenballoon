@@ -468,7 +468,15 @@ other admitted shape (Spaceport Alpha's 16x32 floor ring is the retail case) eac
 load must stay inside the texture, and every texel coordinate of both tiles must
 sample the byte the N64 samples, with addresses past the texture wrapped back
 into it. A positive control runs retail's 16x32 commands through the same model
-and must see them overrun the texture.
+and must see them overrun the texture. The retail ring itself (3D texture 211)
+with its console neighbour (texture 880) loaded and verified must instead run
+the unchanged retail commands against one owned 4096-byte image, and every
+texel of both tiles must equal the console's memory layout (ring texels, a
+160-byte zero fill, then texture 880's texels, as the ares RDRAM snapshots in
+`docs/ORACLE.md` show). The fixtures forge both content CRCs over synthetic
+texels; six controls (neighbour absent, either CRC wrong, the ring listed under
+another asset ID or another texture listed as the ring, a neighbour of another
+shape) must fall back to the wrapped plan.
 
 `oracle_rdram_routes` is the ROM-free check of the RDRAM snapshot lane: the
 three Spaceport ring routes validate and declare their capture and forced

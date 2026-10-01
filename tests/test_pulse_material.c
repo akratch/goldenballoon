@@ -14,6 +14,13 @@
  * texture). The native contract: never read outside the texture, and sample
  * exactly the byte the N64 samples wherever the N64 sampled the texture
  * itself; an address past the texture wraps back into it.
+ *
+ * The one exception is that retail ring itself (3D texture 211) when its
+ * console neighbour, texture 880, is loaded and both pass their shape and
+ * content checks: the unchanged retail commands then run against an owned
+ * 4096-byte copy laid out as console RDRAM holds it (ring texels, a 160-byte
+ * zero fill, then texture 880's texels). The fixtures forge those CRCs over
+ * synthetic texels; no ROM bytes are involved.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -32,6 +39,10 @@
 static unsigned char *sArena;
 static size_t sArenaSize;
 static int failures;
+/* Host pointers that are not in the arena (the owned console image, the draw
+ * tables) become OTHER_TOKEN + index so a load from them can still be read. */
+static const unsigned char *sHostPointers[64];
+static unsigned sHostPointerCount;
 
 #define EXPECT(cond, ...)                                                  \
     do {                                                                   \
@@ -49,7 +60,15 @@ u32 dkr_k0_to_physical(const void *x) {
     if (sArena != NULL && p >= sArena && p <= sArena + sArenaSize) {
         return ARENA_TOKEN + (u32)(p - sArena);
     }
-    return OTHER_TOKEN;
+    for (unsigned i = 0; i < sHostPointerCount; ++i) {
+        if (sHostPointers[i] == p) return OTHER_TOKEN + i;
+    }
+    if (sHostPointerCount < 64) sHostPointers[sHostPointerCount] = p;
+    return OTHER_TOKEN + sHostPointerCount++;
+}
+/* Texture-cache tokens are the low 32 bits of arena pointers. */
+void *dkr_lo32_to_ptr(u32 lo32) {
+    return lo32 ? (void *)(((uintptr_t)sArena & ~(uintptr_t)0xFFFFFFFFu) | lo32) : NULL;
 }
 void dkr_dl_register_host_ptr(const void *x) { (void)x; }
 int mdkr_trace_level(void) { return 0; }
@@ -61,10 +80,13 @@ typedef struct TileState {
 
 typedef struct TmemModel {
     long long word_source[512]; /* arena byte offset of each loaded 64-bit word */
+    const unsigned char *word_host[512]; /* the same word as a host address */
     TileState tile[8];
     unsigned timg;
     unsigned loads;
     long long load_begin[8], load_end[8];
+    bool load_in_arena[8];
+    const unsigned char *load_host[8];
 } TmemModel;
 
 static void model_run(TmemModel *m, const Gfx *begin, const Gfx *end) {
@@ -92,23 +114,30 @@ static void model_run(TmemModel *m, const Gfx *begin, const Gfx *end) {
             const TileState *load = &m->tile[(w1 >> 24) & 7];
             const unsigned texels = ((w1 >> 12) & 0xFFF) + 1;
             const unsigned bytes = texels * 2; /* every load here is 16-bit */
-            const long long source = (long long)m->timg - ARENA_TOKEN;
-            EXPECT(m->timg >= ARENA_TOKEN && m->timg < OTHER_TOKEN, "load from a non-texture address");
+            const bool in_arena = m->timg >= ARENA_TOKEN && m->timg < OTHER_TOKEN;
+            const long long source = in_arena ? (long long)m->timg - ARENA_TOKEN : -1000000;
+            const unsigned char *host = in_arena ? sArena + source
+                : (m->timg - OTHER_TOKEN < sHostPointerCount ? sHostPointers[m->timg - OTHER_TOKEN] : NULL);
             if (m->loads < 8) {
                 m->load_begin[m->loads] = source;
                 m->load_end[m->loads] = source + bytes;
+                m->load_in_arena[m->loads] = in_arena;
+                m->load_host[m->loads] = host;
             }
             ++m->loads;
             for (unsigned b = 0; b < bytes; b += 8) {
                 const unsigned word = load->tmem + b / 8;
-                if (word < 512) m->word_source[word] = source + b;
+                if (word < 512) {
+                    m->word_source[word] = source + b;
+                    m->word_host[word] = host ? host + b : NULL;
+                }
             }
         }
     }
 }
 
-/* Source arena offset sampled by render tile `tile` at texel (s, t). */
-static long long model_sample(const TmemModel *m, unsigned tile, unsigned s, unsigned t) {
+/* TMEM byte address render tile `tile` samples at texel (s, t). */
+static unsigned model_tmem_byte(const TmemModel *m, unsigned tile, unsigned s, unsigned t) {
     const TileState *ts = &m->tile[tile];
     const unsigned width = (ts->lrs >> 2) + 1, height = (ts->lrt >> 2) + 1;
     /* RDP rule: a mask wraps; with no mask only the clamp bit holds a
@@ -117,9 +146,21 @@ static long long model_sample(const TmemModel *m, unsigned tile, unsigned s, uns
     else if ((ts->cms & G_TX_CLAMP) && s >= width) s = width - 1;
     if (ts->maskt) t &= (1u << ts->maskt) - 1;
     else if ((ts->cmt & G_TX_CLAMP) && t >= height) t = height - 1;
-    const unsigned byte = ts->tmem * 8 + t * ts->line * 8 + s * 2;
+    return ts->tmem * 8 + t * ts->line * 8 + s * 2;
+}
+
+/* Source arena offset sampled by render tile `tile` at texel (s, t). */
+static long long model_sample(const TmemModel *m, unsigned tile, unsigned s, unsigned t) {
+    const unsigned byte = model_tmem_byte(m, tile, s, t);
     if (byte / 8 >= 512 || m->word_source[byte / 8] < 0) return -1;
     return m->word_source[byte / 8] + byte % 8;
+}
+
+/* The host address of the texel render tile `tile` samples at (s, t). */
+static const unsigned char *model_sample_host(const TmemModel *m, unsigned tile, unsigned s, unsigned t) {
+    const unsigned byte = model_tmem_byte(m, tile, s, t);
+    if (byte / 8 >= 512 || m->word_host[byte / 8] == NULL) return NULL;
+    return m->word_host[byte / 8] + byte % 8;
 }
 
 static unsigned char *make_texture(unsigned width, unsigned height, unsigned frames, size_t *texels) {
@@ -160,6 +201,7 @@ static void check_policy(unsigned width, unsigned height, unsigned frame) {
     model_run(&m, dl, dl + count);
     EXPECT(m.loads == 2, "%ux%u: %u texture loads, expected two images", width, height, m.loads);
     for (unsigned i = 0; i < m.loads && i < 8; ++i) {
+        EXPECT(m.load_in_arena[i], "%ux%u: load %u is not from the texture", width, height, i);
         EXPECT(m.load_begin[i] >= (long long)base && m.load_end[i] <= (long long)(base + texels),
                "%ux%u frame %u: load %u reads [%lld,%lld) outside texels [%zu,%zu)", width, height, frame,
                i, m.load_begin[i], m.load_end[i], base, base + texels);
@@ -225,8 +267,170 @@ static void check_model_control(void) {
     EXPECT(model_sample(&m, 0, 0, 0) == 32 + 2048, "control: retail TEXEL0 starts past the texture");
 }
 
+/* ---- Spaceport Alpha's retail ring and its console neighbour ------------ */
+
+extern s32 *gTextureCache;
+extern s32 gNumberOfLoadedTextures;
+
+#define RING_ID (0x8000 | 211)
+#define NEIGHBOUR_ID (0x8000 | 880)
+#define RING_CRC 0x52FCDA79u
+#define NEIGHBOUR_CRC 0xF5DF41BFu
+#define NEIGHBOUR_OFFSET 1184u /* console: ring texels + Gfx list + leftover + header */
+
+static uint32_t crc32_bytes(const unsigned char *bytes, size_t length) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= bytes[i];
+        for (int bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+/* Choose the last four bytes so the CRC-32 of all `length` bytes is `target`.
+ * Reflected CRC-32 over four bytes is an invertible map of (state ^ bytes). */
+static void forge_crc(unsigned char *bytes, size_t length, uint32_t target) {
+    uint32_t state = 0xFFFFFFFFu, want = target ^ 0xFFFFFFFFu;
+    for (size_t i = 0; i + 4 < length; ++i) {
+        state ^= bytes[i];
+        for (int bit = 0; bit < 8; ++bit) state = (state >> 1) ^ (0xEDB88320u & (0u - (state & 1u)));
+    }
+    for (int round = 0; round < 32; ++round) {
+        want = (want & 0x80000000u) ? ((want ^ 0xEDB88320u) << 1) | 1u : want << 1;
+    }
+    const uint32_t tail = want ^ state;
+    for (int i = 0; i < 4; ++i) bytes[length - 4 + i] = (unsigned char)(tail >> (8 * i));
+}
+
+typedef struct RingFixture {
+    unsigned char *ring, *neighbour;
+    s32 cache[4];
+} RingFixture;
+
+/* Fixtures are never freed until the end, so no two share an address: the
+ * production image is keyed by the two texture pointers it was built from. */
+static unsigned char *sRetired[16];
+static unsigned sRetiredCount;
+
+/* Both textures in one arena allocation, listed in the texture cache. */
+static RingFixture make_ring_fixture(unsigned neighbourWidth) {
+    RingFixture f;
+    const size_t ringStride = 32 + 1024, neighbourStride = 32 + 4096;
+    if (sArena != NULL && sRetiredCount < 16) sRetired[sRetiredCount++] = sArena;
+    else free(sArena);
+    sArenaSize = ringStride + neighbourStride;
+    sArena = calloc(1, sArenaSize);
+    if (!sArena) { perror("calloc"); exit(2); }
+    f.ring = sArena;
+    f.neighbour = sArena + ringStride;
+    TextureHeader *ring = (TextureHeader *)f.ring, *neighbour = (TextureHeader *)f.neighbour;
+    ring->width = 16; ring->height = 32; ring->format = 0x11;
+    ring->numOfTextures = 1 << 8; ring->textureSize = (s16)ringStride;
+    neighbour->width = (u8)neighbourWidth; neighbour->height = (u8)(2048 / neighbourWidth); neighbour->format = 0x11;
+    neighbour->numOfTextures = 1 << 8; neighbour->textureSize = (s16)neighbourStride;
+    for (size_t i = 0; i < 1024; ++i) f.ring[32 + i] = (unsigned char)(i * 7 + 3);
+    for (size_t i = 0; i < 4096; ++i) f.neighbour[32 + i] = (unsigned char)(i * 13 + 101);
+    forge_crc(f.ring + 32, 1024, RING_CRC);
+    forge_crc(f.neighbour + 32, 4096, NEIGHBOUR_CRC);
+    f.cache[0] = RING_ID;
+    f.cache[1] = (s32)(u32)(uintptr_t)f.ring;
+    f.cache[2] = NEIGHBOUR_ID;
+    f.cache[3] = (s32)(u32)(uintptr_t)f.neighbour;
+    return f;
+}
+
+/* Which plan a fixture's draw took: 1 = the console image, 0 = the wrapped
+ * plan inside the ring, -1 = anything else. */
+static int ring_plan(RingFixture *f, Gfx *dl, size_t *count, TmemModel *m) {
+    gTextureCache = f->cache;
+    gNumberOfLoadedTextures = 2;
+    sHostPointerCount = 0;
+    *count = emit(f->ring, RENDER_Z_COMPARE | RENDER_FOG_ACTIVE | RENDER_PULSING_LIGHTS, 0, dl, 64);
+    model_run(m, dl, dl + *count);
+    gTextureCache = NULL;
+    gNumberOfLoadedTextures = 0;
+    if (m->loads != 2) return -1;
+    if (m->load_in_arena[0] && m->load_in_arena[1] && m->load_begin[0] >= 32 &&
+        m->load_end[0] <= 32 + 1024 && m->load_begin[1] >= 32 && m->load_end[1] <= 32 + 1024) return 0;
+    if (!m->load_in_arena[0] && !m->load_in_arena[1] && m->load_host[0] && m->load_host[1] &&
+        m->load_host[1] == m->load_host[0] + 2048 && m->load_end[0] - m->load_begin[0] == 2048 &&
+        m->load_end[1] - m->load_begin[1] == 2048) return 1;
+    return -1;
+}
+
+static void check_console_neighbour(void) {
+    Gfx dl[64];
+    TmemModel m;
+    size_t count;
+    RingFixture f = make_ring_fixture(32);
+    EXPECT(crc32_bytes(f.ring + 32, 1024) == RING_CRC &&
+           crc32_bytes(f.neighbour + 32, 4096) == NEIGHBOUR_CRC, "fixture CRCs forged");
+
+    EXPECT(ring_plan(&f, dl, &count, &m) == 1,
+           "the verified ring with its verified neighbour draws from one owned 4096-byte image");
+    /* The console's view of that memory: ring texels, zero fill, neighbour. */
+    unsigned char console[4096];
+    memcpy(console, f.ring + 32, 1024);
+    memset(console + 1024, 0, NEIGHBOUR_OFFSET - 1024);
+    memcpy(console + NEIGHBOUR_OFFSET, f.neighbour + 32, 4096 - NEIGHBOUR_OFFSET);
+    unsigned mismatches = 0, neighbourSamples = 0;
+    for (unsigned tile = 0; tile < 2; ++tile) {
+        for (unsigned t = 0; t < 64; ++t) {
+            for (unsigned s = 0; s < 64; ++s) {
+                const size_t retail = (tile == 1 ? 0u : 2048u) + ((t % 32) * 32 + (s % 32)) * 2u;
+                const unsigned char *sampled = model_sample_host(&m, tile, s, t);
+                if (retail >= NEIGHBOUR_OFFSET) ++neighbourSamples;
+                if (sampled == NULL || memcmp(sampled, console + retail, 2) != 0) {
+                    if (mismatches++ < 4) {
+                        fprintf(stderr, "  console image tile %u (%u,%u): retail byte %zu not reproduced\n",
+                                tile, s, t, retail);
+                    }
+                }
+            }
+        }
+    }
+    EXPECT(mismatches == 0, "%u texel samples differ from the console's memory layout", mismatches);
+    EXPECT(neighbourSamples > 0, "the neighbour's texels are sampled");
+    /* The commands are retail's, word for word apart from the two addresses. */
+    {
+        Gfx retail[32];
+        Gfx *r = retail;
+        memset(retail, 0, sizeof(retail));
+        gDPLoadMultiBlock(r++, 0, 256, 1, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
+        gDPLoadTextureBlock(r++, 0, G_IM_FMT_RGBA, G_IM_SIZ_16b, 32, 32, 0, 0, 0, 5, 5, 0, 0);
+        unsigned differing = 0;
+        for (Gfx *g = retail, *e = dl; g < r; ++g, ++e) {
+            if ((g->words.w0 >> 24) == (unsigned)G_SETTIMG) continue;
+            differing += g->words.w0 != e->words.w0 || g->words.w1 != e->words.w1;
+        }
+        EXPECT(differing == 0, "%u retail texture commands differ for the ring", differing);
+    }
+
+    /* Controls: every broken identity falls back to the wrapped plan. */
+    f = make_ring_fixture(32);
+    f.cache[2] = -1;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "no neighbour loaded: wrapped plan");
+    f = make_ring_fixture(32);
+    f.neighbour[32 + 2000] ^= 1;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "neighbour content changed: wrapped plan");
+    f = make_ring_fixture(32);
+    f.ring[32 + 10] ^= 1;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "ring content changed: wrapped plan");
+    f = make_ring_fixture(32);
+    f.cache[0] = 0x8000 | 212;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "ring listed under another asset: wrapped plan");
+    f = make_ring_fixture(64);
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "neighbour of another shape: wrapped plan");
+    f = make_ring_fixture(32);
+    f.cache[1] = (s32)(u32)(uintptr_t)f.neighbour;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0, "another texture listed as the ring: wrapped plan");
+}
+
 int main(void) {
     check_model_control();
+    check_console_neighbour();
+    for (unsigned i = 0; i < sRetiredCount; ++i) free(sRetired[i]);
+    sArena = NULL;
     /* Both retail 4096-byte layouts, byte-for-byte and by behaviour. */
     check_legacy_bytes(64, 32);
     check_legacy_bytes(32, 64);
@@ -246,6 +450,6 @@ int main(void) {
         return 1;
     }
     puts("pulse_material: legacy layouts byte-identical; every shape samples the N64 byte, wrapped into "
-         "the texture");
+         "the texture; the verified Spaceport ring samples the console's neighbour image");
     return 0;
 }

@@ -35,13 +35,17 @@ both model paths, including package-local versus immutable retail resolution.
 Correction (2026-10-01): native pulsing uploads are bounded, not fully
 retail-compatible. Retail loads two 2048-byte images from every pulsing texture,
 so only the 64x32 and 32x64 layouts keep the retail commands (byte-for-byte).
-Smaller textures, of which Spaceport Alpha's 16x32 floor ring is the only retail
-case, sample the byte the N64 samples wherever it lies inside the texture and
-wrap every other address back into it; the N64 read unrelated memory there, so
-that part of the ring deliberately differs from the console (see the CHANGELOG).
-A custom pulsing texture therefore pulses between two distinct images only in
-those two full layouts. The `pulse_material` CTest decodes the production
-commands for every admitted shape; GL/WebGPU Spaceport sanitizer smokes pass.
+Spaceport Alpha's 16x32 floor ring, the only smaller retail case, is drawn from
+an owned image of the memory the console reads (its texels, a zero fill, then
+texture 880, found by asset ID and checked by shape and CRC; see the
+CHANGELOG and docs/ORACLE.md). Every other smaller texture, custom ones
+included, samples the byte the N64 samples wherever it lies inside the texture
+and wraps every other address back into it. A custom pulsing texture therefore
+pulses between two distinct images only in those two full layouts. The
+`pulse_material` CTest decodes the production commands for every admitted
+shape; GL/WebGPU Spaceport sanitizer smokes pass. 1.9 item: the custom-track
+importer should warn when a pulsing texture is smaller than 4 KiB, since it
+cannot pulse between two images.
 Active-wave
 strip command limits and ordinary draw-batch limits are also admitted. These
 are not a complete material/renderer semantic proof or visual acceptance.
