@@ -646,6 +646,39 @@ SHAPE_TRIAGE = {
         "once, before the first byte. Overflow of that sum needs two strings "
         "summing past SIZE_MAX; both come from a bounded MDKR_MOD_PATH_MAX "
         "buffer or a readdir entry.",
+    # -- 1.8 pack-texture work: four writes through a caller's buffer, each
+    #    read with every call site. None is a defect; the reasons differ.
+    ("bare-pointer", "platform/mod_source.c", "path_join:out"):
+        "BOUNDED BY PARAMETER, byte-identical body to mod_registry.c's "
+        "path_join above: `base_length + 1 + leaf_length + 1 > out_size` "
+        "returns 0 before the first write. Back since 8e123446 (the "
+        "MDKR_PACK_BY_PATH pathname arm Windows compiles; the sweep sees both "
+        "arms of the non-decidable #if). All three callers pass sizeof of a "
+        "local char[MDKR_MOD_PATH_MAX]: directory_open_file's full and "
+        "directory, directory_enumerate's here.",
+    ("bare-pointer", "platform/mod_registry.c", "digest_name_fold:folded"):
+        "BOUNDED BY LITERAL: the function returns 0 unless strlen(rel) == "
+        "MDKR_MOD_DIGEST_NAME_CHARS (45), then writes folded[0..44] and the "
+        "NUL at folded[45]. Both non-NULL callers (name_index_add, "
+        "name_slots_for, through name_key) pass a local "
+        "char folded[MDKR_MOD_DIGEST_NAME_CHARS + 1]; is_digest_texture_name "
+        "passes NULL, which skips every write.",
+    ("bare-pointer", "platform/mod_texture_store.c", "slot_candidates:out"):
+        "BOUNDED BY PARAMETER: the loop condition `pack >= 0 && count < max` "
+        "is tested before every out[count] write and count has one increment, "
+        "after the write, so count <= max. The loop also runs at most "
+        "MDKR_MOD_MAX_PACKS (64) times. All four callers (slot_begin) pass "
+        "candidates[k], a TexCandidate[MDKR_MOD_MAX_PACKS] row, with max = "
+        "MDKR_MOD_MAX_PACKS.",
+    ("bare-pointer", "platform/custom_track_model.c", "add_region:regions"):
+        "BOUNDED BY LITERAL, PRE-CHECKED: `*count >= 645` returns 0 before "
+        "the single regions[(*count)++] write, so the highest index written "
+        "is 644. The sole caller, mdkr_track_model_validate_regions, passes a "
+        "local ModelRegion regions[645]; the greatest demand is 5 root "
+        "regions + 5 per segment with segments <= 128 (validate_spans, which "
+        "runs first through validate_visibility/validate_indices), i.e. "
+        "exactly 645. WATCH: the 645 is written twice (array and guard); "
+        "changing one without the other is the edit that breaks this.",
     ("bare-pointer", "platform/gpu_diagnostics.c", "copy_field:destination"):
         "BOUNDED BY PARAMETER: the copy loop's own condition is "
         "`index + 1u < size`, so index stops at size-2 and the unconditional "
@@ -745,6 +778,16 @@ SHAPE_TRIAGE.update({
         "SECTION DISPATCH: same bounded five-section loops as the MODELS case. "
         "The map-only validation and diagnostics do not alter i. The inner "
         "entry loop is independently bounded by the measured table word count.",
+    ("equality-cap", "game/src/asset_loading.c", "asset_custom_track_env_selftest:i==MDKR_CUSTOM_TRACK_HEADERS"):
+        "SECTION DISPATCH: same function and loop as the MODELS case. The "
+        "four increments the enumerator counts are the `++i` of four separate "
+        "`for (unsigned i = 0; i < MDKR_CUSTOM_TRACK_SECTION_COUNT; ++i)` "
+        "loops, each declaring its own i; the header branch iterates `entry` "
+        "and `field`, never i. Its five i-indexed writes (physicalSizes, "
+        "tables, ends, payloads, inputs) all target [SECTION_COUNT] locals.",
+    ("equality-cap", "game/src/asset_loading.c", "asset_custom_track_env_selftest:i==MDKR_CUSTOM_TRACK_TEXTURES"):
+        "SECTION DISPATCH: same loop and reasoning as the HEADERS case. The "
+        "texture branch iterates `entry` against words[i] and changes no i.",
 })
 
 SHAPE_INFO_REVIEW = {
@@ -1113,7 +1156,36 @@ SHAPE_INFO_MAX = {
     # index over its own domain constant or already past its guard; 1614 was
     # the only one whose guard stood behind it.
     # Measured with tools/sweep_bug_shapes.py, not summed.
-    "shift-count": 546,
+    #
+    # 546 -> 560, RE-MEASURED 2026-10-01 on release/1.8-integration (2683fbdf).
+    # Diffed against 2d015340 (where 546 was measured) by (file, key, text),
+    # not by line: exactly 14 new, none removed. (v1.7.0 itself measured 547:
+    # rice_crc.c's `(long)width << siz` -- count fenced to 0..3, but the
+    # result could overflow Windows' 32-bit long -- which ead14d37 replaced
+    # with a uint64_t table multiply, so it is gone and not counted here.)
+    # Every one was read; none can shift by a negative count or by >= the
+    # width of its promoted left operand:
+    #   * mod_registry.c (5) and mod_texture_store.c (5), the pack name index:
+    #     `UINT64_C(1) << index/pack` over pack indices. reg->count is written
+    #     only by mdkr_mod_registry_init's `reg->count++`, which is refused at
+    #     `reg->count >= MDKR_MOD_MAX_PACKS` (64), so every loop
+    #     (`index < reg->count`, `index < s_registry->count && index <
+    #     MDKR_MOD_MAX_PACKS`, `pack = MDKR_MOD_MAX_PACKS - 1 .. 0`) yields
+    #     0..63 on a uint64_t. name_index_add's `bit` initialiser has no guard
+    #     to run ahead of: its sole caller passes scan.pack, that same 0..63
+    #     init-loop index. registry_live_packs is
+    #     `count >= 64 ? ~0 : (UINT64_C(1) << count) - 1u` and both callers
+    #     return first when count <= 0, so the shift sees 1..63.
+    #   * custom_track_model_payload.c mdkr_track_model_repack -- `decoded >>
+    #     (8 * i)`, i < 4, into a size_t (32 bits on wasm32): counts 0..24.
+    #   * gfx_pc_dkr.c dkr_draw_sprite_model -- `3u << G_MDSFT_CYCLETYPE`, the
+    #     compile-time 20 (PR/gbi.h); var-count only because it is a macro.
+    #   * sprite_models.c mdkr_sprite_models_note_pose -- `1u << (bucket &
+    #     31u)`: count 0..31 on an unsigned, and the word index bucket >> 5
+    #     with bucket = ... & 255u is 0..7 inside uint32_t phases[8].
+    #   * save_inventory_selftest.c save_compat_fixture -- `1 << v` in
+    #     `for (v = 0; v < 3; ++v)`: an int shifted by 0..2.
+    "shift-count": 560,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
