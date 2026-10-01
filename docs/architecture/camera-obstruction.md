@@ -47,7 +47,7 @@ tick to the ordinary boom path, never to the fan-shot retargeter.
   (`mdkr_camera_release_hold_step()`, §7.3.2): a clear corridor keeps it held
   until it has been clear for the 9-tick hold, so a false-clear run at a facet
   seam cannot start its return. A served hold whose clear corridor still grazes
-  geometry within 4.5 units waits up to 12 more clear ticks (the grazing
+  geometry within 4.5 units waits up to 16 more clear ticks (the grazing
   extension, which the boom shares, §7.3.2).
 - **Return.** Once released the view returns in the authored boom's moving
   basis, so a spectator's shoulder does not swap sides: the eye closes at most
@@ -85,9 +85,9 @@ engaged across that gap instead of releasing at tick 2125.
 
 Costs, from the census at Enhanced (lake / hub / 3P):
 
-- Release-held ticks rose from 44 / 3 / 41 to 183 / 59 / 94: the served hold
+- Release-held ticks rose from 44 / 3 / 41 to 213 / 59 / 98: the served hold
   accounts for 76 / 59 / 78 (held shots now spend the 9-tick hold they used to
-  skip) and the grazing extension for 107 / 0 / 16, in 8 / 0 / 1 deferred
+  skip) and the grazing extension for 137 / 0 / 20, in 8 / 0 / 1 deferred
   releases plus one extension each on the lake and 3P that ran into the next
   contact, the case it exists for.
 - Published cuts: down on the lake (103 to 98), up on the hub (68 to 90) and
@@ -1471,7 +1471,7 @@ distributions above. It found two things. Neither was a safety regression —
    clear tick. It carries a grazing extension, distance hysteresis on top of
    the hold's time hysteresis: when the served hold's clear corridor still
    comes within 4.5 units of geometry (the exact lens, its skin grown by that
-   margin, swept over the same corridor), release waits up to 12 more clear
+   margin, swept over the same corridor), release waits up to 16 more clear
    ticks, and releases at once when the corridor clears the margin. The
    census counts its ticks, the releases it deferred, and the extensions that
    ran into a new contact.
@@ -1483,11 +1483,12 @@ distributions above. It found two things. Neither was a safety regression —
    headroom. Margins of 5, 6 and 8 change no re-engagement outcome on any route
    but start extending on the hub tour's ordinary corridor driving, which
    grazes at 4.5 to 5 units (its held ticks at Original go from 185 to 389).
-   The bound follows the hold's own rule, the smallest value covering every
-   measured case plus one tick: the 19-tick gap needs 11 ticks beyond the
-   9-tick hold. A 16-tick bound was measured too and costs 30 more extension
-   ticks on the lake for no change in outcome. The bound keeps a camera riding
-   along a wall without touching it from staying corrected.
+   The 19-tick gap needs 11 ticks beyond the 9-tick hold; the 16-tick bound
+   leaves 5 ticks of headroom for a slower pass along the same wall. Against a
+   12-tick bound it costs 30 more extension ticks on the lake and 4 on the 3P
+   route at Enhanced, 16 on the lake at Original and none on the hub, and
+   changes no re-engagement or release outcome. The bound keeps a camera
+   riding along a wall without touching it from staying corrected.
 
    `SAFETY_ONLY` takes the extension like `FULL`: forcing the follow families
    to `SAFETY_ONLY` reproduces the tick-2136 re-engagement without it and none

@@ -759,8 +759,8 @@ bound lifted (every holding view past the leash turns back at the full held
 return rate); and, on the 3P route with
 `MDKR_TEST_CAMERA_SOFT_STATIC`, the held path's deference to the soft-occluder
 decline. Every arm also audits the real trace with the chain-evidence parser
-and checks each natural held release against the release hold and its grazing
-extension.
+and checks each natural held release against the release hold and the
+grazing extension bound the binary's census reports.
 Its ROM-free reporting CTest feeds each verifier positive and negative
 evidence. `check_camera_chain_evidence.py LOG` audits held-chain continuity
 and reported framing/return/bound invariants in a private trace; it is not an

@@ -76,9 +76,12 @@
  * 4.5 carries 1.75 units of headroom. The hub tour's ordinary corridor
  * driving grazes at 4.5 to 5 units, so 5, 6 and 8 start extending there --
  * doubling its held ticks at Original cadence -- without changing a single
- * re-engagement outcome on any route. The bound follows the hold's own rule
- * (the smallest value covering every measured case, plus one tick): the
- * 19-tick gap needs 11 ticks past the 9-tick hold.
+ * re-engagement outcome on any route. The bound is 16 clear ticks past the
+ * 9-tick hold: the 19-tick gap needs 11 of them, and 16 leaves 5 ticks of
+ * headroom for a slower pass along the same wall. Measured against a 12-tick
+ * bound it adds 30 extension ticks on Ancient Lake and 4 on the 3P route at
+ * Enhanced, 16 on Ancient Lake at Original, none on the hub tour, and changes
+ * no re-engagement or release outcome on any route.
  *
  * Every profile that retracts takes it, SAFETY_ONLY included: forcing the
  * follow families to SAFETY_ONLY reproduces the same tick-2136 re-engagement
@@ -86,7 +89,7 @@
  * and returns before the corridor sweep this reads.
  */
 #define MDKR_CAMERA_OBSTRUCTION_GRAZING_MARGIN 4.5f
-#define MDKR_CAMERA_OBSTRUCTION_GRAZING_EXTENSION_TICKS 12U
+#define MDKR_CAMERA_OBSTRUCTION_GRAZING_EXTENSION_TICKS 16U
 /*
  * Held-shot bounds. A held shot keeps the last validated view and translates
  * it with the subject while the authored boom is blocked; nothing about the

@@ -3,12 +3,14 @@
 import unittest
 
 from check_camera_held_shot_faults import (BOUND_ARMS, LEASH_ARM, LEASH_FULL_STEP,
-                                           NEAR_CONTACT_EXTENSION_TICKS,
-                                           RELEASE_HOLD_TICKS, epochs,
+                                           RELEASE_HOLD_TICKS, common, epochs,
                                            release_hold_invariant, probes,
                                            verify)
 
 SLOT = 0
+# What a binary's census reports as the grazing extension's bound; the gate
+# reads it from there rather than holding its own copy.
+EXTENSION_BOUND = 16
 CENSUS = ("camera_motion summary slot_ticks=100 ticks=100 cut_ticks=0 "
           "cut={adjacent=0 unadjacent=0} "
           "profiles={full=100 safety_only=0 depenetrate_only=0} "
@@ -16,7 +18,7 @@ CENSUS = ("camera_motion summary slot_ticks=100 ticks=100 cut_ticks=0 "
           "emergency_entry=0 discontinuity=0 degenerate=0} "
           "release_hold={held_ticks=0 spans=0 window=%d extension_ticks=0 "
           "extension_releases=0 extension_contacts=0 extension_margin=4.50 "
-          "extension_bound=12} "
+          "extension_bound=%d} "
           "chatter={oscillation_cycles=0 oscillation_cycles_excused=0 "
           "correction_reengagements=%d} "
           "shoulder={flips=0 continuous_surface=0 new_surface=0 basis_crossings=0} "
@@ -72,9 +74,11 @@ def published(tick, active=1, dwell=0.0167, divergence=1.0):
 
 
 def census(reengagements=0, max_dwell=100.0, max_divergence=1.0, exits=0,
-           bounds=(2000.0, 60.0), leash=45.0, leash_ticks=0, unflagged=0):
-    return CENSUS % (RELEASE_HOLD_TICKS, reengagements, max_dwell, max_divergence,
-                     exits, unflagged, leash_ticks, bounds[0], bounds[1], leash)
+           bounds=(2000.0, 60.0), leash=45.0, leash_ticks=0, unflagged=0,
+           extension_bound=EXTENSION_BOUND):
+    return CENSUS % (RELEASE_HOLD_TICKS, extension_bound, reengagements, max_dwell,
+                     max_divergence, exits, unflagged, leash_ticks, bounds[0], bounds[1],
+                     leash)
 
 
 def trace(armed, ticks, reengagements=0, extra=(), census_row=None):
@@ -264,20 +268,50 @@ class HeldShotEvidence(unittest.TestCase):
                 rows.append(probe(tick, 1, index, recovering=int(index == clear_run),
                                   contact=0, near=near))
             return probes("\n".join(rows))
-        hold, bound = RELEASE_HOLD_TICKS, RELEASE_HOLD_TICKS + NEAR_CONTACT_EXTENSION_TICKS
-        self.assertEqual(release_hold_invariant(episode(hold)), 1)
+        hold, bound = RELEASE_HOLD_TICKS, RELEASE_HOLD_TICKS + EXTENSION_BOUND
+        self.assertEqual(release_hold_invariant(episode(hold), EXTENSION_BOUND), 1)
         # Grazing from the served hold on: waits, released by clearing the margin...
         rows = episode(hold + 3, near_from=hold)
         rows[(1 + hold + 3, SLOT)]["near"] = 0
-        self.assertEqual(release_hold_invariant(rows), 1)
+        self.assertEqual(release_hold_invariant(rows, EXTENSION_BOUND), 1)
         # ...or by the bound.
-        self.assertEqual(release_hold_invariant(episode(bound, near_from=hold)), 1)
+        self.assertEqual(release_hold_invariant(episode(bound, near_from=hold),
+                                                EXTENSION_BOUND), 1)
         for rows, reason in ((episode(hold - 1), "outside"),
                              (episode(hold + 1), "not grazing"),
                              (episode(bound + 1, near_from=hold), "outside"),
                              (episode(hold, near_from=hold), "while grazing")):
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
-                release_hold_invariant(rows)
+                release_hold_invariant(rows, EXTENSION_BOUND)
+        # The bound is the binary's: the same release is early under a longer
+        # one and late under a shorter one.
+        with self.assertRaisesRegex(ValueError, "while grazing"):
+            release_hold_invariant(episode(bound, near_from=hold), EXTENSION_BOUND + 1)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            release_hold_invariant(episode(bound, near_from=hold), EXTENSION_BOUND - 1)
+
+    def test_extension_bound_comes_from_the_census(self):
+        good = projection()
+        self.assertIn(f" extension_bound={EXTENSION_BOUND}}}", good)
+        verify(good, "projection")
+        with self.assertRaisesRegex(ValueError, "extension_bound"):
+            verify(good.replace(f" extension_bound={EXTENSION_BOUND}", ""), "projection")
+        # A served hold that grazes all the way to the bound: the census's
+        # bound, not one the gate keeps, decides whether that release is right.
+        ticks = holding(10, 1)
+        release = 10 + RELEASE_HOLD_TICKS + EXTENSION_BOUND
+        for tick in range(11, release + 1):
+            ticks.append((tick, [probe(tick, 1, tick - 10, contact=0,
+                                       near=int(tick - 10 >= RELEASE_HOLD_TICKS),
+                                       recovering=int(tick == release)),
+                                 published(tick)]))
+        grazing = trace(None, ticks)
+        common(grazing)
+        for bound, reason in ((EXTENSION_BOUND - 1, "outside"),
+                              (EXTENSION_BOUND + 1, "while grazing")):
+            with self.subTest(bound=bound), self.assertRaisesRegex(ValueError, reason):
+                common(grazing.replace(f"extension_bound={EXTENSION_BOUND}",
+                                       f"extension_bound={bound}"))
 
     def test_bound_arms(self):
         for kind in BOUND_ARMS:

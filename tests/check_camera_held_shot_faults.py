@@ -44,7 +44,9 @@ reported the bound it ran with.
 
 Every arm also requires safe publication on every tick, well-formed chain
 evidence, and the release-hold invariant on the route's own held episodes:
-recovery starts on exactly the release-hold-th consecutive clear tick.
+recovery starts on exactly the release-hold-th consecutive clear tick, or,
+while the corridor still grazes, no later than the grazing extension's bound
+the census reports.
 Uses the motion runner's isolated private save/config directories.
 """
 import argparse
@@ -57,10 +59,6 @@ import check_camera_motion_quality as motion
 # Mirrors MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS; verified against the
 # census's own release_hold window on every run so the two cannot drift.
 RELEASE_HOLD_TICKS = 9
-# The grazing extension's bound: a served hold may wait this many more clear ticks,
-# and only while the corridor still grazes geometry (near=1). It is the
-# MOTION-01 chatter window, which the runtime pins with a static assertion.
-NEAR_CONTACT_EXTENSION_TICKS = motion.OSCILLATION_TICKS
 ARMS = {
     "projection": "projection",
     "query": "query",
@@ -187,21 +185,28 @@ def common(output):
         if "projection_mismatches=0 " not in row:
             raise ValueError("projection mismatch")
     census = [row for row in output.splitlines() if motion.MOTION_SUMMARY in row]
-    if not census or motion.parse_summary(census[-1])["release_hold_window"] != RELEASE_HOLD_TICKS:
+    if not census:
+        raise ValueError("no MOTION-01 census")
+    try:
+        census = motion.parse_summary(census[-1])
+    except RuntimeError as error:
+        raise ValueError(f"incomplete MOTION-01 census: {error}") from None
+    if census["release_hold_window"] != RELEASE_HOLD_TICKS:
         raise ValueError("census release-hold window disagrees with this gate")
     chain_evidence.audit(output.splitlines())
     for epoch in epochs(output):
-        release_hold_invariant(probes(epoch))
+        release_hold_invariant(probes(epoch), census["release_extension_bound"])
     return summaries
 
 
-def release_hold_invariant(rows):
+def release_hold_invariant(rows, extension_bound):
     """Held recovery starts exactly where the release hysteresis allows.
 
     That is the hold-th consecutive clear tick, unless the grazing extension read
     the corridor as still grazing (near=1) on that tick and every one after it,
     in which case it is the first clear tick that is not grazing, and never
-    later than hold + extension bound. Returns the number of releases checked.
+    later than hold + `extension_bound` (the bound the binary reports in its
+    census). Returns the number of releases checked.
     """
     starts = 0
     for (tick, slot), row in sorted(rows.items()):
@@ -218,7 +223,7 @@ def release_hold_invariant(rows):
                 break
             held += 1
         run = held + 1  # the releasing tick is the run's last clear tick
-        latest = RELEASE_HOLD_TICKS + NEAR_CONTACT_EXTENSION_TICKS
+        latest = RELEASE_HOLD_TICKS + extension_bound
         if not RELEASE_HOLD_TICKS <= run <= latest:
             raise ValueError(f"held recovery at tick {tick} released after a "
                              f"{run}-tick clear run, outside "
