@@ -470,6 +470,12 @@ sample the byte the N64 samples, with addresses past the texture wrapped back
 into it. A positive control runs retail's 16x32 commands through the same model
 and must see them overrun the texture.
 
+`oracle_rdram_routes` is the ROM-free check of the RDRAM snapshot lane: the
+three Spaceport ring routes validate and declare their capture and forced
+race, malformed `forced_track_occurrence`/`rdram_capture` values are refused,
+and `run_oracle.sh` refuses `--rdram-dump` on another route, an rdram route
+without it, a malformed spec and a reused ares run.
+
 The CI contract also pins Windows portable-settings read-back to a literal,
 whole-line match against the fresh process's read log. Its controls cover the
 old bracket-as-regex mistake, a weakened partial-line match, and accidentally

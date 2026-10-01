@@ -35,6 +35,7 @@ SKIP_ARES=0
 NATIVE_ARM=""
 VEHICLE_RNG_TRACE=""
 AUDIO_DUMP=""
+RDRAM_DUMP=""
 
 usage() {
     cat <<'USAGE'
@@ -55,6 +56,10 @@ Options:
   --audio-dump PATH   capture the ROM's own AI DMA stream as raw LE s16 stereo
                       on an audio-enabled route; validates the local-only capture
                       and skips state scoring
+  --rdram-dump FRAME[,FRAME...]:PREFIX
+                      write all 8 MiB of RDRAM to PREFIX_<frame>.bin at each
+                      listed presented ares frame (rdram_capture routes);
+                      validates every file and the forced load when declared
   -h, --help         show this help
 
 Captures are ROM-derived and local-only. Do not commit them.
@@ -81,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --skip-ares) SKIP_ARES=1; shift ;;
         --vehicle-rng-trace) need_value "$1" "$#"; VEHICLE_RNG_TRACE="$2"; shift 2 ;;
         --audio-dump) need_value "$1" "$#"; AUDIO_DUMP="$2"; shift 2 ;;
+        --rdram-dump) need_value "$1" "$#"; RDRAM_DUMP="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "Unknown arg: $1" >&2; usage >&2; exit 2 ;;
         *) if [[ -z "$ROUTE" ]]; then ROUTE="$1"; else echo "Unexpected: $1" >&2; exit 2; fi; shift ;;
@@ -119,13 +125,28 @@ ARES_DUMP_EVERY="$(field ares_dump_every)"
 ARES_DUMP_START="$(field ares_dump_start)"
 COMPARE_FRAMES="$(field compare_frames)"
 STATE_TRACE="$(field state_trace)"
-if [[ "$COMPARE_FRAMES" -eq 0 && "$STATE_TRACE" -eq 0 && -z "$AUDIO_DUMP" ]]; then
+RDRAM_CAPTURE="$(field rdram_capture)"
+if [[ -n "$RDRAM_DUMP" ]]; then
+    [[ "$RDRAM_CAPTURE" -eq 1 ]] || {
+        echo "FAIL: --rdram-dump requires an rdram_capture route" >&2; exit 2; }
+    [[ "$RDRAM_DUMP" =~ ^[0-9]+(,[0-9]+)*:.+$ ]] || {
+        echo "FAIL: --rdram-dump expects FRAME[,FRAME...]:PREFIX" >&2; exit 2; }
+    [[ "$SKIP_ARES" -eq 0 ]] || {
+        echo "FAIL: --rdram-dump cannot reuse an old ares run" >&2; exit 2; }
+fi
+if [[ "$RDRAM_CAPTURE" -eq 1 && -z "$RDRAM_DUMP" ]]; then
+    echo "FAIL: rdram-only route requires --rdram-dump" >&2
+    exit 2
+fi
+if [[ "$COMPARE_FRAMES" -eq 0 && "$STATE_TRACE" -eq 0 && -z "$AUDIO_DUMP" &&
+      "$RDRAM_CAPTURE" -eq 0 ]]; then
     echo "FAIL: audio-only route requires --audio-dump" >&2
     exit 2
 fi
 STATE_REQUIRE_FINISH="$(field state_require_finish)"
 FORCED_TRACK="$(field forced_track)"
 FORCED_TRACK_SOURCE="$(field forced_track_source)"
+FORCED_TRACK_OCCURRENCE="$(field forced_track_occurrence)"
 STATE_RACER_INDEX="$(field state_racer_index)"
 STATE_MIN_COMMON_CLOCKS="$(field state_min_common_clocks)"
 STATE_MIN_LAP="$(field state_min_lap)"
@@ -402,7 +423,12 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
     if [[ -n "$AUDIO_DUMP" ]]; then
         ARES_ENV+=(MDKR64_ARES_AUDIO_DUMP="$AUDIO_DUMP")
     fi
-    if [[ "$FORCED_TRACK" -ge 0 ]]; then
+    if [[ -n "$RDRAM_DUMP" ]]; then
+        ARES_ENV+=(MDKR64_ARES_RDRAM_DUMP="$RDRAM_DUMP")
+    fi
+    if [[ "$FORCED_TRACK" -ge 0 && "$FORCED_TRACK_OCCURRENCE" -gt 0 ]]; then
+        ARES_ENV+=(MDKR64_ARES_FORCE_TRACK="$FORCED_TRACK_SOURCE:$FORCED_TRACK:$FORCED_TRACK_OCCURRENCE")
+    elif [[ "$FORCED_TRACK" -ge 0 ]]; then
         ARES_ENV+=(MDKR64_ARES_FORCE_TRACK="$FORCED_TRACK_SOURCE:$FORCED_TRACK")
     fi
     env "${ARES_ENV[@]}" "$ARES_BIN" --kiosk \
@@ -434,6 +460,28 @@ if [[ "$SKIP_ARES" -eq 0 ]]; then
     if [[ -n "$AUDIO_DUMP" && ( "$ARES_TIMED_OUT" -ne 0 || "$ARES_EXIT" -ne 0 ) ]]; then
         echo "FAIL: ares audio capture did not complete (exit=$ARES_EXIT timeout=$ARES_TIMED_OUT)" >&2
         exit 1
+    fi
+    if [[ -n "$RDRAM_DUMP" ]]; then
+        # Every requested snapshot must exist whole and be reported written,
+        # and a declared forced load must have happened, or the capture is not
+        # the route's race.
+        [[ "$ARES_TIMED_OUT" -eq 0 && "$ARES_EXIT" -eq 0 ]] || {
+            echo "FAIL: ares rdram capture did not complete (exit=$ARES_EXIT timeout=$ARES_TIMED_OUT)" >&2
+            exit 1; }
+        if [[ "$FORCED_TRACK" -ge 0 ]] && ! grep -q \
+                "forced retail race load $FORCED_TRACK_SOURCE -> $FORCED_TRACK" "$ROUTE_DIR/ares.log"; then
+            echo "FAIL: ares never made the declared forced load" >&2; exit 1
+        fi
+        RDRAM_PREFIX="${RDRAM_DUMP#*:}"
+        IFS=',' read -r -a RDRAM_FRAMES <<<"${RDRAM_DUMP%%:*}"
+        for frame in "${RDRAM_FRAMES[@]}"; do
+            snapshot="${RDRAM_PREFIX}_${frame}.bin"
+            if [[ "$(wc -c <"$snapshot" 2>/dev/null | tr -d ' ')" != "8388608" ]] ||
+                    ! grep -q "rdram dump frame=$frame bytes=8388608 written" "$ROUTE_DIR/ares.log"; then
+                echo "FAIL: missing or incomplete rdram snapshot $snapshot" >&2; exit 1
+            fi
+            echo "   rdram snapshot: $snapshot"
+        done
     fi
     if [[ "$COMPARE_FRAMES" -eq 1 ]]; then
         echo "   ares dumped $(find "$ARES_DIR" -maxdepth 1 -type f -name 'frame_*.ppm' | wc -l | tr -d ' ') frame(s) in ~${SECS}s"

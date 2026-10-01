@@ -123,7 +123,8 @@ The ares hooks read these env vars (set for you by `run_oracle.sh`):
 | `MDKR64_ARES_STATE_TRACE` | write the local-only US 1.1 numeric state CSV |
 | `MDKR64_ARES_AUDIO_DUMP` | write the ROM's own audio-interface PCM (raw LE s16 stereo) |
 | `MDKR64_ARES_VEHICLE_RNG_TRACE` | write the local-only US 1.1 retail car-audio RNG call witness |
-| `MDKR64_ARES_FORCE_TRACK` | `source:target` level ids; rewrite the one-player `level_load` argument so a route can reach a track the menus cannot script into (`bluey2_state_oracle` sets `5:52`) |
+| `MDKR64_ARES_FORCE_TRACK` | `source:target[:N]` level ids; rewrite the one-player `level_load` argument so a route can reach a track the menus cannot script into (`bluey2_state_oracle` sets `5:52`). With `N`, only the Nth matching load is rewritten (route key `forced_track_occurrence`), so a route can race the source track first. `level_load` has the same address in US 1.1 and PAL 1.1 |
+| `MDKR64_ARES_RDRAM_DUMP` | `FRAME[,FRAME...]:PREFIX`; write all 8 MiB of RDRAM to `PREFIX_<frame>.bin` at each listed presented frame, through the cache-coherent CPU debug path (see the RDRAM snapshot lane below) |
 | `MDKR64_ARES_POKE_RACER_POS` | `start:end:x:y:z[:trophyWorld]` — hold the human racer's object position for a presented-frame window (issue #55 exit-latch lane) |
 | `MDKR64_ARES_MENU_RESULT_TRACE` | write the local-only US 1.1 per-return `menu_loop` value witness (issue #55 uninitialized-return lane) |
 
@@ -189,6 +190,59 @@ one-byte negative controls; it is not a relaxed threshold.
 
 Button masks are the standard N64 SI layout (A=0x8000 … C-Right=0x0001),
 identical to the native port's masks, so an injected value lands verbatim.
+
+### The RDRAM snapshot lane
+
+`MDKR64_ARES_RDRAM_DUMP` writes the console's whole RDRAM at chosen presented
+frames, so memory a draw sampled can be read offline. It answers questions no
+frame capture can, such as which bytes a texture load fetched past the end of
+its texture. Run it through the runner on a route that declares
+`"rdram_capture": true`:
+
+```bash
+tools/run_oracle.sh spaceport_pulse_ring --skip-native \
+  --rom baserom.us.v80.z64 --rdram-dump 3800:/tmp/mdkr64-rdram/us_tracks
+```
+
+The runner refuses `--rdram-dump` on any other route, and an rdram route
+without it. It requires the run to complete, each `PREFIX_<frame>.bin` to be
+exactly 8 MiB and reported written, and a declared forced load to have
+happened. Snapshots are ROM-derived and local-only: keep them out of the
+repository and out of artifacts.
+
+**Spaceport Alpha's pulsing floor ring (2026-10-01).** Three routes reach the
+race, each with `forced_track` 15:
+
+- `spaceport_pulse_ring`: the Tracks race of Ancient Lake, retargeted.
+- `spaceport_pulse_ring_tt`: the same with Time Trial on.
+- `spaceport_pulse_ring_second_race`: Ancient Lake is raced first, quit
+  through PAUSE -> SELECT TRACK, and selected again; only that second load is
+  retargeted (`forced_track_occurrence` 2).
+
+Five snapshots were taken: US 1.1 on all three routes, and PAL 1.1 (Europe
+Rev 1) on the first and third. All five show the same layout after texture
+211's 1024 texel bytes:
+
+| bytes after the ring's texels | contents | the same in all five snapshots |
+|---|---|---|
+| 0-55 | the ring's own Gfx load list | yes, except its texel address (US `0x002d1390`, PAL `0x002dc820`) |
+| 56-127 | 72 bytes left over from loading | yes |
+| 128-159 | texture 880's header (32x64 RGBA16, 4128 bytes) | yes, except its command-list pointer |
+| 160-4255 | texture 880's texels (CRC-32 `f5df41bf`) | yes |
+
+Retail loads two 2048-byte images from the ring's texel base, so the console
+draws the ring from bytes 0-4095 of that memory. The native renderer reproduces
+it from an owned 4096-byte image: the ring's texels, a 160-byte zero fill, then
+texture 880's first 2912 texel bytes. Both textures are found in the texture
+cache by asset ID and checked by shape and content CRC (`pulse_material`
+covers the checks and their failures). Against every snapshot, over the ring's
+UV area, the second image matches the console texel for texel and the first
+matches it on 95.8% of the area. The 4.2% that differs is the fill band, where
+the console's address-dependent command words and load leftovers are not
+reproduced. That band is visible as a narrow strip at the edge of the dive
+shaft for about three frames per lap.
+The wrapped plan of every other smaller texture (`mdkr_texture_pulse_upload`)
+matched the console on 51.2% of the first image and none of the second.
 
 ### The track-exit poke and menu-result lanes (issue #55)
 

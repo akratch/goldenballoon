@@ -72,8 +72,9 @@ ARM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 ROUTE_KEYS = frozenset({
     "schema", "name", "description",
     "compare_frames", "state_trace", "state_require_finish", "audio_capture",
+    "rdram_capture",
     "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
-    "forced_track", "forced_track_source",
+    "forced_track", "forced_track_source", "forced_track_occurrence",
     "state_racer_index", "state_min_common_clocks",
     "state_min_lap", "state_min_checkpoint",
     "state_max_position_p95", "state_max_position_error",
@@ -295,10 +296,12 @@ def route_field(route: dict[str, Any], field: str) -> Any:
         "description": route.get("description", ""),
         "compare_frames": int(bool(route.get("compare_frames", True))),
         "audio_capture": int(bool(route.get("audio_capture", False))),
+        "rdram_capture": int(bool(route.get("rdram_capture", False))),
         "state_trace": int(bool(route.get("state_trace", False))),
         "state_require_finish": int(bool(route.get("state_require_finish", False))),
         "forced_track": int(route.get("forced_track", -1)),
         "forced_track_source": int(route.get("forced_track_source", 5)),
+        "forced_track_occurrence": int(route.get("forced_track_occurrence", 0)),
         "state_racer_index": int(route.get("state_racer_index", 0)),
         "state_min_common_clocks": int(route.get("state_min_common_clocks", 1000)),
         "state_min_lap": int(route.get("state_min_lap", 1)),
@@ -372,7 +375,7 @@ def validate_route(route: dict[str, Any]) -> None:
             errors.append(f"{runner}.frames must be a positive integer")
     for field in (
         "compare_frames", "state_trace", "state_require_finish",
-        "audio_capture",
+        "audio_capture", "rdram_capture",
         "state_allow_legacy_pace_probe", "native_allow_nonzero_exit",
     ):
         if field in route and not isinstance(route[field], bool):
@@ -395,7 +398,8 @@ def validate_route(route: dict[str, Any]) -> None:
     if route.get("native_cadence") not in ("original", "enhanced"):
         errors.append("native_cadence must be explicit: original or enhanced")
     for field in (
-        "forced_track", "forced_track_source", "state_racer_index",
+        "forced_track", "forced_track_source", "forced_track_occurrence",
+        "state_racer_index",
         "state_min_common_clocks", "state_min_lap", "state_min_checkpoint",
     ):
         if field in route and not is_integer(route[field]):
@@ -410,6 +414,11 @@ def validate_route(route: dict[str, Any]) -> None:
         errors.append("forced_track must be -1 or a non-negative level id")
     if is_integer(forced_track_source) and forced_track_source < 0:
         errors.append("forced_track_source must be a non-negative level id")
+    occurrence = route.get("forced_track_occurrence", 0)
+    if is_integer(occurrence) and occurrence < 0:
+        errors.append("forced_track_occurrence must be 0 (every load) or a 1-based count")
+    if "forced_track_occurrence" in route and forced_track == -1:
+        errors.append("forced_track_occurrence requires forced_track")
     if is_integer(racer_index) and racer_index < 0:
         errors.append("state_racer_index must be non-negative")
     if is_integer(common_clocks) and common_clocks < 1:
@@ -599,8 +608,10 @@ def validate_route(route: dict[str, Any]) -> None:
     ):
         errors.append("state_require_finish requires state_trace")
     if (not route.get("compare_frames", True) and not route.get("state_trace", False)
-            and not route.get("audio_capture", False)):
-        errors.append("route must enable compare_frames, state_trace, or audio_capture")
+            and not route.get("audio_capture", False)
+            and not route.get("rdram_capture", False)):
+        errors.append(
+            "route must enable compare_frames, state_trace, audio_capture, or rdram_capture")
     sync = route.get("sync", {})
     if not isinstance(sync, dict) or not is_integer(sync.get("native_frame")) \
             or not is_integer(sync.get("ares_frame")):

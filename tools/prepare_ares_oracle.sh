@@ -217,6 +217,16 @@ struct MdkrOracleState {
   float pokeY = 0.0f;
   float pokeZ = 0.0f;
   int pokeTrophyWorld = -1;
+  /*
+   * RDRAM snapshot lane. At each listed presented frame the whole 8 MiB of
+   * RDRAM is written to PREFIX_<frame>.bin through the CPU debug path, which is
+   * coherent with dirty D-cache lines, so the texture memory a draw sampled
+   * can be inspected offline (the Spaceport Alpha pulsing-ring parity work,
+   * docs/ORACLE.md). ROM-derived and local-only, like every capture here.
+   */
+  char rdramPrefix[1024] = {0};
+  u64 rdramFrames[16] = {0};
+  u32 rdramFrameCount = 0;
   u64 dumpEvery = 0;
   u64 dumpStart = 0;
   u64 marks[512] = {0};
@@ -436,6 +446,29 @@ struct MdkrOracleState {
           fprintf(stderr,
             "mdkr64 oracle: ignored malformed MDKR64_ARES_POKE_RACER_POS=%s\n", poke);
         }
+      }
+    }
+    if(const char* rd = getenv("MDKR64_ARES_RDRAM_DUMP")) {
+      /* FRAME[,FRAME...]:PREFIX */
+      const char* colon = strchr(rd, ':');
+      if(colon && colon[1]) {
+        snprintf(rdramPrefix, sizeof(rdramPrefix), "%s", colon + 1);
+        const char* cursor = rd;
+        while(cursor < colon && rdramFrameCount < 16) {
+          char* end = nullptr;
+          auto v = strtoull(cursor, &end, 10);
+          if(end == cursor) break;
+          rdramFrames[rdramFrameCount++] = v;
+          cursor = (*end == ',') ? end + 1 : end;
+        }
+      }
+      if(rdramFrameCount == 0) {
+        rdramPrefix[0] = 0;
+        fprintf(stderr,
+          "mdkr64 oracle: ignored malformed MDKR64_ARES_RDRAM_DUMP=%s\n", rd);
+      } else {
+        fprintf(stderr, "mdkr64 oracle: rdram dump armed frames=%u prefix=%s\n",
+          rdramFrameCount, rdramPrefix);
       }
     }
     fprintf(stderr,
@@ -675,11 +708,39 @@ struct MdkrOracleState {
     }
   }
 
+  auto rdramTick() -> void {
+    for(u32 i = 0; i < rdramFrameCount; i++) {
+      if(rdramFrames[i] != videoFrame) continue;
+      char path[1100];
+      snprintf(path, sizeof(path), "%s_%llu.bin", rdramPrefix,
+        (unsigned long long)videoFrame);
+      FILE* out = fopen(path, "wb");
+      if(!out) {
+        fprintf(stderr, "mdkr64 oracle: cannot open rdram dump %s\n", path);
+        continue;
+      }
+      static u8 image[0x00800000];
+      for(u32 offset = 0; offset < sizeof(image); offset += 4) {
+        u32 word = readDebugWord(0x80000000u + offset);
+        image[offset + 0] = (u8)(word >> 24);
+        image[offset + 1] = (u8)(word >> 16);
+        image[offset + 2] = (u8)(word >> 8);
+        image[offset + 3] = (u8)word;
+      }
+      bool ok = fwrite(image, 1, sizeof(image), out) == sizeof(image);
+      ok = fclose(out) == 0 && ok;
+      fprintf(stderr, "mdkr64 oracle: rdram dump frame=%llu bytes=%u %s %s\n",
+        (unsigned long long)videoFrame, (u32)sizeof(image), ok ? "written" : "FAILED", path);
+      fflush(stderr);
+    }
+  }
+
   // Called from screen.cpp on each present with the visible framebuffer.
   auto presentedDump(const u32* pixels, u32 pitch, u32 width, u32 height) -> void {
     configure();
     writeState();
     pokeTick();
+    rdramTick();
     if(pixels && pitch && width && height) {
       if(shouldDump()) writePpm(pixels, pitch, width, height);
     }
@@ -843,11 +904,17 @@ if "mdkr64OracleMaybeForceTrack" not in text:
   static bool configured = false;
   static s32 sourceTrack = -1;
   static s32 targetTrack = -1;
+  /* Optional third field: rewrite only the Nth matching load (1-based), so a
+   * route can race the source track normally first. 0 rewrites every one. */
+  static s32 occurrence = 0;
+  static s32 matches = 0;
   if(!configured) {
     configured = true;
     if(const char* value = getenv("MDKR64_ARES_FORCE_TRACK")) {
-      if(sscanf(value, "%d:%d", &sourceTrack, &targetTrack) != 2) {
+      int fields = sscanf(value, "%d:%d:%d", &sourceTrack, &targetTrack, &occurrence);
+      if(fields < 2 || occurrence < 0) {
         sourceTrack = targetTrack = -1;
+        occurrence = 0;
         fprintf(stderr,
           "mdkr64 oracle: ignored malformed MDKR64_ARES_FORCE_TRACK=%s\n",
           value);
@@ -855,15 +922,22 @@ if "mdkr64OracleMaybeForceTrack" not in text:
     }
   }
   /*
-   * US 1.1 level_load entry. The route selects Ancient Lake normally, then this
+   * US 1.1 level_load entry (PAL 1.1 shares the address,
+   * docs/ref/symbols/symbol_addrs.pal.v80.txt). The route selects Ancient Lake normally, then this
    * rewrites only a one-player gameplay call (a1 == 0). Menu backgrounds and
    * track previews use negative player counts and remain byte-for-byte retail.
    */
   if(targetTrack >= 0 && (u32)cpu.ipu.pc == 0x8006b490
       && cpu.ipu.r[4].s32 == sourceTrack && cpu.ipu.r[5].s32 == 0) {
-    fprintf(stderr, "mdkr64 oracle: forced retail race load %d -> %d\n",
-      sourceTrack, targetTrack);
-    cpu.ipu.r[4].u64 = (s64)targetTrack;
+    matches++;
+    if(occurrence == 0 || matches == occurrence) {
+      fprintf(stderr, "mdkr64 oracle: forced retail race load %d -> %d\n",
+        sourceTrack, targetTrack);
+      cpu.ipu.r[4].u64 = (s64)targetTrack;
+    } else {
+      fprintf(stderr, "mdkr64 oracle: retail race load %d left as is (match %d of %d)\n",
+        sourceTrack, matches, occurrence);
+    }
   }
 }
 
