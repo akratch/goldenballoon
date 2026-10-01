@@ -48,6 +48,15 @@ typedef struct MdkrModEntry {
      * running game computes. Its index is built after the entries are sorted,
      * so this flag is how the second pass knows which roots to walk. */
     int  is_rice;
+    /* 1 once every name this pack serves is in the registry's name index
+     * (see mdkr_mod_registry_name_packs). 0 when the walk could not finish --
+     * out of memory, or a root that would not reopen -- in which case the
+     * index answers "maybe" for this pack rather than a confident "no". */
+    int  names_indexed;
+    /* Names of the form textures/<32 characters>.png: the files a digest
+     * lookup can match. Zero lets the texture store skip that probe for this
+     * pack entirely, which for a Rice pack is every probe it would make. */
+    int  digest_textures;
 } MdkrModEntry;
 
 /* One texture in a Rice/GLideN64 high-resolution pack.
@@ -71,6 +80,15 @@ typedef struct MdkrModRiceTexture {
     char    *alpha;           /* NULL when the pack supplies no _a */
 } MdkrModRiceTexture;
 
+/* One indexed name: where its text sits in the pool, its hash, and which
+ * packs (bit i = entries[i]) serve it. Private to mod_registry.c; declared
+ * here only because the registry is a plain value its owners embed. */
+typedef struct MdkrModNameSlot {
+    uint64_t packs;   /* 0 marks an empty slot */
+    uint32_t hash;
+    uint32_t offset;  /* into name_pool */
+} MdkrModNameSlot;
+
 typedef struct MdkrModRegistry {
     MdkrModEntry entries[MDKR_MOD_MAX_PACKS];
     int          count;
@@ -82,6 +100,17 @@ typedef struct MdkrModRegistry {
     MdkrModRiceTexture *rice;
     int                 rice_count;
     int                 rice_capacity;
+    /* Every file name every pack serves, built at scan and owned here: an
+     * open-addressed table over one string pool. Empty with no packs. */
+    MdkrModNameSlot *names;
+    size_t           name_capacity;   /* a power of two, or 0 */
+    size_t           name_count;
+    char            *name_pool;
+    size_t           name_pool_size;
+    size_t           name_pool_capacity;
+    /* Packs whose walk did not finish (names_indexed == 0). Every name
+     * query reports them as possible holders rather than guessing no. */
+    uint64_t         names_unindexed;
 } MdkrModRegistry;
 
 /* Scans `mods_dir`. Returns 0 on success including "directory absent".
@@ -137,6 +166,25 @@ int  mdkr_mod_registry_pack_rice_count(const MdkrModRegistry *reg, int index);
 const MdkrModEntry *mdkr_mod_registry_entry(const MdkrModRegistry *reg, int i);
 int  mdkr_mod_registry_skipped(const MdkrModRegistry *reg);
 const char *mdkr_mod_registry_skip_reason(const MdkrModRegistry *reg, int i);
+
+/* Which packs serve `relative_path`, from the index built at scan: bit i set
+ * means entries[i] holds that file, or could not be fully indexed and so
+ * might. Enabled or not -- the caller applies its own policy. No file I/O and
+ * no allocation; 0 for a name no pack serves, for a name the validator
+ * refuses, and for a shut-down registry.
+ *
+ * Matching is exact and case-sensitive on every platform, the same rule the
+ * zip arm of mod_source has always applied. The index is the scan's answer:
+ * a file added or removed afterwards is seen at the next rescan, the same
+ * point at which a new pack is. */
+uint64_t mdkr_mod_registry_name_packs(const MdkrModRegistry *reg,
+                                      const char *relative_path);
+
+/* The index of the highest-priority ENABLED pack the index says serves
+ * `relative_path`, or -1. The same choice open_file() makes, without opening
+ * anything. */
+int mdkr_mod_registry_find_file(const MdkrModRegistry *reg,
+                                const char *relative_path);
 
 /* An open pack and the name to read out of it. `source` is owned by the caller
  * and must be released with mdkr_mod_registry_close_file(); `relative` is the

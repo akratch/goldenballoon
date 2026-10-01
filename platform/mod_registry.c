@@ -153,6 +153,150 @@ static MdkrModSource *open_pack_root(const char *root, const char *name,
     return source;
 }
 
+/* ------------------------------------------------------------ name index */
+
+/* Every name every pack serves, indexed once at scan (issue #66).
+ *
+ * The texture store asks whether an enabled pack holds textures/<digest>.png
+ * for every new texture the game draws, and almost every answer is no. Asking
+ * the pack itself opened it -- for a zip, a parse of its whole central
+ * directory, about 1.5 ms for a 2,120-entry pack -- once per question, inside
+ * the frame. The answer only changes when the packs on disk change, which is
+ * exactly when the registry is rescanned, so it is computed here once and
+ * answered from memory afterwards.
+ *
+ * One open-addressed table over one string pool, keyed by the exact name.
+ * Each slot carries a bit per pack rather than one slot per (name, pack), so
+ * a name several packs override costs one entry and one probe. */
+
+#define MDKR_MOD_NAME_TABLE_MIN 1024u
+#define MDKR_MOD_NAME_POOL_MIN  ((size_t)64u * 1024u)
+
+static uint32_t name_hash(const char *name) {
+    uint32_t hash = 2166136261u;   /* FNV-1a */
+    while (*name != '\0') {
+        hash ^= (uint32_t)(unsigned char)*name++;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+/* textures/<32 characters>.png, the only shape a digest lookup builds. */
+static int is_digest_texture_name(const char *rel) {
+    size_t index;
+    if (strlen(rel) != 9u + 32u + 4u) return 0;
+    if (memcmp(rel, "textures/", 9) != 0) return 0;
+    if (memcmp(rel + 41, ".png", 4) != 0) return 0;
+    for (index = 9; index < 41; index++) {
+        if (rel[index] == '/') return 0;
+    }
+    return 1;
+}
+
+static const MdkrModNameSlot *name_slot_find(const MdkrModRegistry *reg,
+                                             const char *name,
+                                             uint32_t hash) {
+    size_t mask;
+    size_t index;
+    size_t probe;
+
+    if (reg->name_capacity == 0) return NULL;
+    mask = reg->name_capacity - 1u;
+    index = (size_t)hash & mask;
+    for (probe = 0; probe < reg->name_capacity; probe++) {
+        const MdkrModNameSlot *slot = &reg->names[index];
+        if (slot->packs == 0) return NULL;
+        if (slot->hash == hash &&
+            strcmp(reg->name_pool + slot->offset, name) == 0) {
+            return slot;
+        }
+        index = (index + 1u) & mask;
+    }
+    return NULL;
+}
+
+static int name_table_grow(MdkrModRegistry *reg, size_t capacity) {
+    MdkrModNameSlot *slots =
+        (MdkrModNameSlot *)calloc(capacity, sizeof *slots);
+    size_t index;
+
+    if (slots == NULL) return 0;
+    for (index = 0; index < reg->name_capacity; index++) {
+        const MdkrModNameSlot *old = &reg->names[index];
+        size_t place;
+        if (old->packs == 0) continue;
+        place = (size_t)old->hash & (capacity - 1u);
+        while (slots[place].packs != 0) place = (place + 1u) & (capacity - 1u);
+        slots[place] = *old;
+    }
+    free(reg->names);
+    reg->names = slots;
+    reg->name_capacity = capacity;
+    return 1;
+}
+
+/* Records that pack `pack` serves `name`. 0 when memory ran out, which the
+ * caller turns into "this pack's index is incomplete", never into a wrong
+ * "absent". */
+static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
+    const uint32_t hash = name_hash(name);
+    const uint64_t bit = UINT64_C(1) << pack;
+    const size_t length = strlen(name) + 1u;
+    size_t mask;
+    size_t index;
+
+    if (reg->name_capacity == 0 ||
+        (reg->name_count + 1u) * 10u >= reg->name_capacity * 7u) {
+        size_t capacity = reg->name_capacity == 0 ? MDKR_MOD_NAME_TABLE_MIN
+                                                  : reg->name_capacity * 2u;
+        if (!name_table_grow(reg, capacity)) return 0;
+    }
+    mask = reg->name_capacity - 1u;
+    index = (size_t)hash & mask;
+    while (reg->names[index].packs != 0) {
+        MdkrModNameSlot *slot = &reg->names[index];
+        if (slot->hash == hash &&
+            strcmp(reg->name_pool + slot->offset, name) == 0) {
+            slot->packs |= bit;
+            return 1;
+        }
+        index = (index + 1u) & mask;
+    }
+
+    if (reg->name_pool_size + length > (size_t)UINT32_MAX) return 0;
+    if (reg->name_pool_size + length > reg->name_pool_capacity) {
+        size_t capacity = reg->name_pool_capacity == 0
+                              ? MDKR_MOD_NAME_POOL_MIN
+                              : reg->name_pool_capacity;
+        char *grown;
+        while (capacity < reg->name_pool_size + length) capacity *= 2u;
+        grown = (char *)realloc(reg->name_pool, capacity);
+        if (grown == NULL) return 0;
+        reg->name_pool = grown;
+        reg->name_pool_capacity = capacity;
+    }
+    memcpy(reg->name_pool + reg->name_pool_size, name, length);
+    reg->names[index].packs = bit;
+    reg->names[index].hash = hash;
+    reg->names[index].offset = (uint32_t)reg->name_pool_size;
+    reg->name_pool_size += length;
+    reg->name_count++;
+    return 1;
+}
+
+static void name_index_release(MdkrModRegistry *reg) {
+    if (reg == NULL) return;
+    free(reg->names);
+    free(reg->name_pool);
+    reg->names = NULL;
+    reg->name_capacity = 0;
+    reg->name_count = 0;
+    reg->name_pool = NULL;
+    reg->name_pool_size = 0;
+    reg->name_pool_capacity = 0;
+    reg->names_unindexed = 0;
+}
+
 /* --------------------------------------------------------------- skipping */
 
 /* Never drops a rejection. Once the table is full the final slot is rewritten
@@ -412,6 +556,36 @@ static int rice_visit(const char *rel, void *user) {
     return 0;
 }
 
+/* The post-sort walk of one pack: every name into the name index, and for a
+ * Rice pack every texture-shaped name into the Rice index as well. One walk
+ * feeds both, so a Rice pack is enumerated once at scan rather than twice. */
+typedef struct PackScan {
+    MdkrModRegistry *reg;
+    int      pack;
+    int      rice;
+    int      failed;
+    RiceScan rice_scan;
+} PackScan;
+
+static int pack_index_visit(const char *rel, void *user) {
+    PackScan *scan = (PackScan *)user;
+
+    if (!name_index_add(scan->reg, rel, scan->pack)) {
+        scan->failed = 1;
+        return 1;
+    }
+    if (is_digest_texture_name(rel)) {
+        scan->reg->entries[scan->pack].digest_textures++;
+    }
+    if (scan->rice && rice_visit(rel, &scan->rice_scan) != 0) {
+        /* Out of memory for the Rice index: stop, keep what we have, and
+         * say this pack's names are not all known. */
+        scan->failed = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static void registry_add_skip(MdkrModRegistry *reg, const char *name,
                               const char *reason) {
     if (reg->skipped >= MDKR_MOD_MAX_PACKS) {
@@ -586,32 +760,47 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
 
     registry_sort(reg);
 
-    /* Index the Rice packs LAST, because registry_sort() has just permuted
-     * entries[] by priority and the index stores entry indices. Capturing them
-     * during the scan recorded pre-sort positions, so a Rice pack could end up
-     * consulting a DIFFERENT pack's enabled flag -- silently, and dependent on
-     * whatever order readdir happened to return.
+    /* Index LAST, because registry_sort() has just permuted entries[] by
+     * priority and both indexes store entry indices. Capturing them during the
+     * scan recorded pre-sort positions, so a Rice pack could end up consulting
+     * a DIFFERENT pack's enabled flag -- silently, and dependent on whatever
+     * order readdir happened to return.
      *
      * Ascending priority order also gives the format's own precedence for free:
      * a later pack's entry for the same identity is appended after an earlier
      * one, and the lookup takes the last enabled match, which is the same "the
      * last pack that owns the file wins" rule mdkr_mod_registry_open_file
-     * applies to every other asset. */
+     * applies to every other asset.
+     *
+     * Every pack is walked, not only Rice ones: the name index is what lets a
+     * digest lookup answer without opening anything. The root is reopened with
+     * the kind the scan already established -- open_pack_root() decides "is
+     * this a zip" from the NAME, which for a manifest pack is its pack.ini
+     * name, not its file name. */
     {
         int index;
         for (index = 0; index < reg->count; ++index) {
-            RiceScan scan;
+            PackScan scan;
             MdkrModSource *source_for_index;
-            int zip = reg->entries[index].is_zip;
-            if (!reg->entries[index].is_rice) continue;
             memset(&scan, 0, sizeof scan);
             scan.reg = reg;
             scan.pack = index;
-            source_for_index = open_pack_root(reg->entries[index].root,
-                                              reg->entries[index].manifest.name,
-                                              &zip);
-            if (source_for_index == NULL) continue;
-            mdkr_mod_source_enumerate(source_for_index, rice_visit, &scan);
+            scan.rice = reg->entries[index].is_rice;
+            scan.rice_scan.reg = reg;
+            scan.rice_scan.pack = index;
+            source_for_index = mdkr_mod_source_open(reg->entries[index].root,
+                                                    reg->entries[index].is_zip);
+            if (source_for_index == NULL) {
+                reg->names_unindexed |= UINT64_C(1) << index;
+                continue;
+            }
+            if (mdkr_mod_source_enumerate(source_for_index, pack_index_visit,
+                                          &scan) == 0 &&
+                !scan.failed) {
+                reg->entries[index].names_indexed = 1;
+            } else {
+                reg->names_unindexed |= UINT64_C(1) << index;
+            }
             mdkr_mod_source_close(source_for_index);
         }
     }
@@ -619,13 +808,14 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
 }
 
 void mdkr_mod_registry_shutdown(MdkrModRegistry *reg) {
-    /* Nothing is allocated, so this only exists to make a shut-down registry
-     * unusable rather than stale — a resolve after shutdown finds no packs
-     * instead of pointing at directories nobody rescanned. */
+    /* Frees the two indexes, and makes a shut-down registry unusable rather
+     * than stale — a resolve after shutdown finds no packs instead of pointing
+     * at directories nobody rescanned. */
     if (reg == NULL) return;
     /* BEFORE the memset. Zeroing first leaves the loop below reading a count of
      * zero and a NULL array, so every path string leaks in silence. */
     rice_index_release(reg);
+    name_index_release(reg);
     memset(reg, 0, sizeof(*reg));
 }
 
@@ -787,4 +977,34 @@ int mdkr_mod_registry_resolve(const MdkrModRegistry *reg,
         return 1;
     }
     return 0;
+}
+
+uint64_t mdkr_mod_registry_name_packs(const MdkrModRegistry *reg,
+                                      const char *relative_path) {
+    const MdkrModNameSlot *slot;
+    uint64_t live;
+
+    if (reg == NULL || reg->count <= 0) return 0;
+    /* The same validator every pack read passes, so a name the packs could
+     * never serve is never reported as served. */
+    if (!mdkr_mod_source_path_is_safe(relative_path)) return 0;
+    live = reg->count >= 64 ? ~UINT64_C(0)
+                            : (UINT64_C(1) << reg->count) - 1u;
+    slot = name_slot_find(reg, relative_path, name_hash(relative_path));
+    return ((slot != NULL ? slot->packs : 0) | reg->names_unindexed) & live;
+}
+
+int mdkr_mod_registry_find_file(const MdkrModRegistry *reg,
+                                const char *relative_path) {
+    const uint64_t packs = mdkr_mod_registry_name_packs(reg, relative_path);
+    int index;
+
+    if (packs == 0) return -1;
+    /* Backwards, as open_file(): the last enabled holder wins. */
+    for (index = reg->count - 1; index >= 0; index--) {
+        if ((packs & (UINT64_C(1) << index)) == 0) continue;
+        if (!reg->entries[index].manifest.enabled) continue;
+        return index;
+    }
+    return -1;
 }

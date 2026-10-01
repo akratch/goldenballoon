@@ -9,8 +9,10 @@
  * previous run aborted.
  */
 #include "mod_registry.h"
+#include "miniz.h"
 
 #include <dirent.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -407,6 +409,113 @@ static void test_disabled_pack_never_wins(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
+/* Writes a two-entry archive at `root/name`: pack.ini and one texture. */
+static void write_zip_pack(const char *root, const char *name,
+                           const char *manifest, const char *texture) {
+    char full[1024];
+    mz_zip_archive zip;
+
+    path2(full, sizeof full, root, name);
+    make_parent_directories(full);
+    memset(&zip, 0, sizeof zip);
+    if (!mz_zip_writer_init_file(&zip, full, 0) ||
+        !mz_zip_writer_add_mem(&zip, "pack.ini", manifest, strlen(manifest),
+                               MZ_BEST_SPEED) ||
+        !mz_zip_writer_add_mem(&zip, texture, "Z", 1, MZ_BEST_SPEED) ||
+        !mz_zip_writer_finalize_archive(&zip)) {
+        mz_zip_writer_end(&zip);
+        fatal("cannot write scratch archive", full);
+    }
+    mz_zip_writer_end(&zip);
+}
+
+/* 10. Every name a pack serves is indexed at scan (issue #66).
+ *
+ * The texture store asks "does an enabled pack hold textures/<digest>.png?"
+ * for every new texture the game draws, and most answers are no. Asking the
+ * pack itself cost one archive open -- a full central-directory parse -- per
+ * question. The index answers from memory, so the property under test is that
+ * the answer is the SCAN's: a file deleted after the scan is still reported,
+ * which a lookup that touched the disk could not do. Priority, the enabled
+ * bit and the name validator apply exactly as they do to open_file(). */
+static void test_names_are_indexed_at_scan(const char *scratch) {
+    static const char digest_name[] =
+        "textures/0123456789abcdef0123456789abcdef.png";
+    static const char zipped_name[] =
+        "textures/fedcba9876543210fedcba9876543210.png";
+    char mods[1024];
+    char gone[1024];
+    MdkrModRegistry reg;
+    int low = -1, high = -1, off = -1, zipped = -1;
+    int index;
+
+    path2(mods, sizeof mods, scratch, "indexed");
+    write_pack_file(mods, "low", "pack.ini", "[pack]\nname=Low\npriority=10\n");
+    write_pack_file(mods, "high", "pack.ini", "[pack]\nname=High\npriority=20\n");
+    write_pack_file(mods, "off", "pack.ini",
+                    "[pack]\nname=Off\npriority=90\nenabled=0\n");
+    write_pack_file(mods, "low", digest_name, "L");
+    write_pack_file(mods, "high", digest_name, "H");
+    write_pack_file(mods, "off", digest_name, "O");
+    write_pack_file(mods, "off", "textures/only_off.png", "O");
+    write_pack_file(mods, "low", "textures/only_low.png", "L");
+    /* Not digest-named: nested one level too deep, and the wrong length. */
+    write_pack_file(mods, "low",
+                    "textures/nested/0123456789abcdef0123456789abcdef.png", "L");
+    write_pack_file(mods, "high", "textures/0123.png", "H");
+    write_pack_file(mods, "high", "music/track.ogg", "H");
+    write_zip_pack(mods, "zipped.zip", "[pack]\nname=Zipped\npriority=30\n",
+                   zipped_name);
+
+    expect(mdkr_mod_registry_init(&reg, mods) == 0, "indexed fixture initialises");
+    for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
+        const char *name = reg.entries[index].manifest.name;
+        if (strcmp(name, "Low") == 0) low = index;
+        else if (strcmp(name, "High") == 0) high = index;
+        else if (strcmp(name, "Off") == 0) off = index;
+        else if (strcmp(name, "Zipped") == 0) zipped = index;
+    }
+    if (low < 0 || high < 0 || off < 0 || zipped < 0) {
+        expect(0, "all four indexed packs are discovered");
+        mdkr_mod_registry_shutdown(&reg);
+        return;
+    }
+    expect(reg.entries[low].names_indexed && reg.entries[high].names_indexed &&
+           reg.entries[off].names_indexed && reg.entries[zipped].names_indexed,
+           "every pack's names are indexed at scan, folder and zip alike");
+    expect(mdkr_mod_registry_name_packs(&reg, digest_name) ==
+               ((UINT64_C(1) << low) | (UINT64_C(1) << high) |
+                (UINT64_C(1) << off)),
+           "the index names every pack holding a file, enabled or not");
+    expect(mdkr_mod_registry_find_file(&reg, digest_name) == high,
+           "the highest-priority enabled holder wins, as in open_file()");
+    expect(mdkr_mod_registry_find_file(&reg, zipped_name) == zipped,
+           "a name inside a zip is found without opening the zip");
+    expect(mdkr_mod_registry_find_file(&reg, "textures/only_off.png") == -1,
+           "a disabled pack contributes no names");
+    expect(mdkr_mod_registry_find_file(&reg, "textures/absent.png") == -1 &&
+           mdkr_mod_registry_name_packs(&reg, "textures/absent.png") == 0,
+           "a name no pack holds is absent");
+    expect(mdkr_mod_registry_find_file(&reg, "../low/textures/only_low.png") == -1 &&
+           mdkr_mod_registry_find_file(&reg, "TEXTURES/only_low.png") == -1,
+           "the one name validator applies, and matching is case-sensitive");
+    expect(reg.entries[low].digest_textures == 1 &&
+           reg.entries[high].digest_textures == 1 &&
+           reg.entries[zipped].digest_textures == 1,
+           "only textures/<32 characters>.png counts as a digest-named texture");
+
+    /* The answer is the scan's, not the filesystem's. */
+    path3(gone, sizeof gone, mods, "low", "textures/only_low.png");
+    expect(remove(gone) == 0, "the fixture file can be deleted after the scan");
+    expect(mdkr_mod_registry_find_file(&reg, "textures/only_low.png") == low,
+           "and the index still answers from the scan, with no file I/O");
+
+    mdkr_mod_registry_shutdown(&reg);
+    expect(mdkr_mod_registry_find_file(&reg, digest_name) == -1 &&
+           mdkr_mod_registry_name_packs(&reg, digest_name) == 0,
+           "a shut-down registry indexes nothing");
+}
+
 int main(int argc, char **argv) {
     const char *scratch = argc > 1 ? argv[1] : "mod_registry_scratch";
 
@@ -422,6 +531,7 @@ int main(int argc, char **argv) {
     test_pack_overflow_is_recorded(scratch);
     test_overflowing_skip_list_names_what_it_explains(scratch);
     test_disabled_pack_never_wins(scratch);
+    test_names_are_indexed_at_scan(scratch);
 
     remove_tree(scratch);
 
