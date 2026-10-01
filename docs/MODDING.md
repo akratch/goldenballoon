@@ -276,7 +276,7 @@ replacing a track.
   where the music should be, so music follows the setting below and not this
   key.
 - **Settings → `Content.PacksEnabled`** is the durable switch, and it takes
-  effect straight away — textures change on the next frame, no relaunch. If you
+  effect straight away — textures change within a few frames, no relaunch. If you
   had pressed `Tab` to look at the original, changing this setting ends that
   comparison and shows you what the setting says; press `Tab` again if you want
   it back.
@@ -286,8 +286,8 @@ replacing a track.
   onwards. Cutting a track off mid-play would leave silence rather than the
   game's own music.
 
-  Adding or removing a pack in the `mods` folder still needs a relaunch — that
-  is the folder being read, not this switch.
+  Adding or removing a pack in the `mods` folder, or a file inside one, still
+  needs a relaunch — that is the folder being read, not this switch.
 - **`Content.PackDisabled`** is a comma-separated list of pack names to leave
   uninstalled. Matching ignores case and surrounding spaces.
 
@@ -336,8 +336,12 @@ the time you quit.
 
 ## Limits
 
-- Decoded pack textures are capped at **512 MiB** in total; past that the
-  least recently used are dropped and re-decoded on demand.
+- Replacement textures load in the background. The first time something
+  appears, it can show the original texture for a few frames while its
+  replacement is read and decoded; scene changes no longer pause for it.
+- Decoded pack textures are capped at **512 MiB** in total, textures still
+  being decoded included; past that the least recently used are dropped and
+  re-decoded on demand.
 - PNG only, and only what stb_image's PNG decoder accepts. A file that will not
   decode is reported once, with the decoder's own reason, and then treated as
   absent.
