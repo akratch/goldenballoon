@@ -81,6 +81,44 @@ class CachePlateauTests(unittest.TestCase):
             self.assertIsNotNone(
                 cache_plateau_error([self.ACCOUNTED] * 3 + [grown]), grown)
 
+    def steady(self, **per_race):
+        """Four race samples, each adding `per_race` to the settled row."""
+        rows = []
+        for race in range(4):
+            changes = {name: value * race for name, value in per_race.items()}
+            base = dict(zip(("pixels", "table", "entries", "first",
+                             "first_bytes"), (1000, 320, 4, 4, 1000)))
+            rows.append(self.accounted(**{
+                name: base[name] + changes.get(name, 0) for name in base}))
+        return rows
+
+    def test_recurring_first_use_is_growth(self):
+        # Store slots are never released, so an identity that is new in EVERY
+        # race is the unbounded growth this gate exists for, even when each
+        # step is exactly accounted as first use.
+        for label, rows in (
+                ("new entries every race", self.steady(entries=5)),
+                ("first-use pixels every race",
+                 self.steady(pixels=100, entries=1, first=1, first_bytes=100)),
+                ("table doubling with its entries",
+                 [self.accounted(table=320 * 2 ** race, entries=4 + 300 * race)
+                  for race in range(4)])):
+            self.assertIsNotNone(cache_plateau_error(rows), label)
+
+    def test_a_burst_of_first_use_is_bounded(self):
+        burst = self.accounted(entries=4 + 50)
+        self.assertIsNotNone(cache_plateau_error([self.ACCOUNTED] * 3 + [burst]))
+
+    def test_the_t12a_late_texture_still_passes(self):
+        # One 138,240-byte texture first drawn inside the window, then flat:
+        # the shape T12a's flake actually had.
+        budget = 1 << 30
+        settled = self.accounted(limit=budget)
+        late = self.accounted(limit=budget, pixels=1000 + 138240, entries=6,
+                              first=5, first_bytes=1000 + 138240)
+        self.assertIsNone(cache_plateau_error([settled] * 2 + [late] * 2))
+        self.assertIsNone(cache_plateau_error([settled] * 3 + [late]))
+
     def test_accounted_rows_still_respect_the_budget(self):
         over = self.accounted(pixels=5000, first_bytes=5000, first=9)
         self.assertIsNotNone(cache_plateau_error([self.ACCOUNTED] * 3 + [over]))

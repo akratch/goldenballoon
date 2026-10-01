@@ -68,6 +68,12 @@ CACHE_RE = re.compile(
 # when the census carries them, inflight, pending, firstResident,
 # firstResidentBytes, reloads, evictions.
 CACHE_ACCOUNTED_FIELDS = 13
+# New lookup entries the final window may add by first use. Every one of 24
+# runs of this route (both renderers, the 1.8 pack) adds exactly 4 entries --
+# 2 resident identities -- from the second race to the third, the largest late
+# first use seen; T12a's flake was a single texture. Twice the largest seen.
+# Slots are never released, so this bounds the table, not a tolerance on it.
+CACHE_LATE_ENTRIES_MAX = 8
 
 
 def cache_row(match: re.Match) -> tuple[int, ...]:
@@ -111,11 +117,16 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
     route (the T12a flake: one 138,240-byte texture first drawn inside the final
     window). That is bounded by the game's own texture set and is not growth. Growth is the cache holding more than its
     first uses explain: re-decoding what it already had, evicting and
-    reloading, or pixel/table accounting that moves on its own. So, within the
-    warmed window, every pixel byte the cache gains must be the bytes of an
-    identity resident for the first time, nothing may be reloaded or evicted,
-    and the lookup table may grow only with new entries. A census without
-    those counters (an older build) gets the strict comparison.
+    reloading, or pixel/table accounting that moves on its own -- and first use
+    that never stops. Store slots are never released, so an identity that is
+    new in EVERY race is unbounded growth however exactly it is accounted. So,
+    within the warmed window: every pixel byte the cache gains must be the
+    bytes of an identity resident for the first time; nothing may be reloaded
+    or evicted; the lookup table may grow only with new entries; at most one
+    of the window's two steps may change at all (first use that recurs race
+    after race is growth); and that one step may add at most
+    CACHE_LATE_ENTRIES_MAX entries. A census without those counters (an older
+    build) gets the strict comparison.
     """
     races = [row for row in rows if row[:3] == (5, 0, 100)]
     if len(races) < 4:
@@ -148,6 +159,17 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
             return ("texture-cache lookup table changed without new entries: "
                     f"table {before[5]}->{after[5]}, entries "
                     f"{before[6]}->{after[6]}: {window}")
+    steps_changed = sum(1 for before, after in zip(window, window[1:])
+                        if before[3:7] != after[3:7] or
+                        before[9:11] != after[9:11])
+    if steps_changed > 1:
+        return ("texture cache grew in both warmed steps: first use that "
+                f"recurs race after race is growth, not warm-up: {window}")
+    new_entries = window[-1][6] - window[0][6]
+    if new_entries > CACHE_LATE_ENTRIES_MAX:
+        return (f"texture cache added {new_entries} lookup entries in one "
+                f"warmed step, more than the {CACHE_LATE_ENTRIES_MAX} a late "
+                f"first use accounts for: {window}")
     return None
 
 
@@ -564,16 +586,38 @@ def main() -> int:
         print("check_resource_plateau: FAIL — a texture first drawn in a late "
               "race was reported as cache growth", file=sys.stderr)
         return 1
+    if cache_plateau_error([settled] * 2 + [late_first_use] * 2) is not None:
+        print("check_resource_plateau: FAIL — a texture first drawn in a late "
+              "race and then settled was reported as cache growth",
+              file=sys.stderr)
+        return 1
     for label, grown in (
             ("pixel growth without a first use",
              (5, 0, 100, 1100, 4096, 320, 4, 0, 0, 4, 1000, 0, 0)),
             ("a reload in the warmed window",
              (5, 0, 100, 1100, 4096, 320, 4, 0, 0, 4, 1000, 1, 1)),
             ("a table that grew without entries",
-             (5, 0, 100, 1000, 4096, 640, 4, 0, 0, 4, 1000, 0, 0))):
+             (5, 0, 100, 1000, 4096, 640, 4, 0, 0, 4, 1000, 0, 0)),
+            ("a burst of new entries in one race",
+             (5, 0, 100, 1000, 4096, 320, 54, 0, 0, 4, 1000, 0, 0))):
         if cache_plateau_error([settled] * 3 + [grown]) is None:
             print(f"check_resource_plateau: FAIL — cache positive control "
                   f"passed: {label}", file=sys.stderr)
+            return 1
+    # Steady growth, accounted exactly as first use every race, must fail.
+    for label, rows in (
+            ("new entries every race",
+             [(5, 0, 100, 1000, 4096, 320, 4 + 5 * race, 0, 0, 4, 1000, 0, 0)
+              for race in range(4)]),
+            ("first-use pixels every race",
+             [(5, 0, 100, 1000 + 100 * race, 4096, 320, 4 + race, 0, 0,
+               4 + race, 1000 + 100 * race, 0, 0) for race in range(4)]),
+            ("a table doubling with its entries",
+             [(5, 0, 100, 1000, 4096, 320 * 2 ** race, 4 + 300 * race, 0, 0, 4,
+               1000, 0, 0) for race in range(4)])):
+        if cache_plateau_error(rows) is None:
+            print(f"check_resource_plateau: FAIL — steady-growth positive "
+                  f"control passed: {label}", file=sys.stderr)
             return 1
     registry_synthetic = [
         (5, 0, 100, 10, 20, 0, 0, 3),
