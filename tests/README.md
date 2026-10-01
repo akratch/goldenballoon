@@ -8218,6 +8218,7 @@ off-screen flattened child prevented directional navigation to local play.
 ```bash
 MDKR_AUDIO=0 python3 tests/check_keyboard_dead_ends.py --build build-rel \
   --rom baserom.us.v80.z64
+python3 tests/check_keyboard_dead_ends.py --build build-rel --launcher-only
 ```
 
 Dear ImGui keeps keyboard focus as the id of the focused control. When the
@@ -8242,6 +8243,16 @@ and closing the list. Every arm also checks that its earlier steps reached
 the screen it names, so a layout change fails by name rather than testing
 something else. Before the fix all eight ended with `focus=stale cursor=1`
 and nothing spoken.
+
+The two launcher arms walk Settings and About by Tab only
+(`MDKR_APP_SMOKE_A11Y_ESCAPE=<tabs>` with token `mdkr64-a11y-escape-v1`
+queues an Escape in place of one Tab and prints the frame ImGui receives it).
+Tab after that Escape must announce at least three controls, the first of
+them one the walk had not passed yet. Replacing `AppNavigation_configure` in
+`app_host.cpp` with the old two flag lines fails both arms: "started over"
+while the end-of-frame recovery is present, "stopped" without it. CTest runs
+them as `app_keyboard_dead_ends` (gpu); `tools/run_checks.py` runs every arm
+with the ROM.
 
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 

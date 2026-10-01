@@ -321,7 +321,8 @@ The supported behavior is explicit:
 - keyboard navigation and activation are enabled throughout the launcher;
 - an Escape or controller B that nothing else claims keeps the focused
   control, so Tab carries on from it. Dear ImGui's default forgets the control
-  and leaves forward Tab with nowhere to go for the rest of the session;
+  but keeps the highlight, and forward Tab then does nothing until another
+  navigation key or a click moves focus;
 - when a screen stops drawing the control that has keyboard focus while its
   window stays open (the overlay's confirmation closed by Escape, B or
   Cancel, its Settings list closed with focus inside it), both frame ends

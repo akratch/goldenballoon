@@ -479,7 +479,8 @@ CHECKS = (
     Check("keyboard_dead_ends", "check_keyboard_dead_ends.py", "native",
           "backing out of the in-game menu's confirmation and Settings list by "
           "Escape, controller B or Cancel, or pressing its Settings button, "
-          "leaves Tab on a control that speaks"),
+          "leaves Tab on a control that speaks; an unclaimed launcher Escape "
+          "lets Tab carry on"),
     Check("future_fun_land", "check_future_fun_land.py", "native",
           "a full trophy set plus the Wizpig 1 bit opens the lighthouse, and "
           "one trophy short does not"),

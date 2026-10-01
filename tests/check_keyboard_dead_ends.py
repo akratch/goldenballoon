@@ -27,6 +27,12 @@ highlight showing, and the shell's voice to announce it. Every arm also checks
 that its earlier steps reached the screen they claim to, so a layout change
 fails here by name instead of quietly testing something else.
 
+The launcher arms walk the Settings and About panels by Tab, press an Escape
+that nothing on those panels claims, and keep tabbing. Tab must carry on from
+the control that had focus: neither stop nor start over at the first stop.
+Reverting AppNavigation_configure's Escape setting fails them either way, with
+or without the end-of-frame focus recovery.
+
 Audio safety: every run sets MDKR_AUDIO=0 and is bounded by a frame or tick
 budget. Speech is traced as text; nothing is routed to a device.
 """
@@ -41,8 +47,11 @@ import subprocess
 import sys
 import tempfile
 
-from check_a11y_shell import GateFailure, run, session
+from check_a11y_shell import GateFailure, run, session, utterances
 from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+
+INPUT_TOKEN = "mdkr64-app-ui-input-v1"
+ESCAPE_TOKEN = "mdkr64-a11y-escape-v1"
 
 # The menu opens on an Escape at this authoritative tick; the script then runs
 # in rendered frames and closes it. The budget leaves ample room after that.
@@ -54,6 +63,8 @@ SETTLED_RE = re.compile(
     r"^\[overlay-nav\] settled step=(\d+) focus=(\w+) cursor=([01]) "
     r"open=([01]) confirm=([01]) settings=([01]) input=(\w+)$")
 SPEAK_LINE_RE = re.compile(r"^\[SPEAK\] cat=(\S+) pri=\S+ text=(.*)$")
+ESCAPE_REACHED_RE = re.compile(
+    r"^\[app-a11y-walk\] escape reached imgui frame=\d+$", re.MULTILINE)
 
 
 @dataclass
@@ -213,10 +224,70 @@ def check_overlay_arm(arm: OverlayArm, output: str) -> str:
     return probe.focus[0].split(".")[0]
 
 
+@dataclass(frozen=True)
+class LauncherArm:
+    panel: str
+    tabs_before_escape: int
+    frames: int
+
+
+# Few enough Tabs that the Escape lands before the walk has visited every stop
+# once, so "carried on" and "started over" announce different controls.
+LAUNCHER_ARMS = (
+    LauncherArm("About", 5, 40),
+    LauncherArm("Settings", 12, 60),
+)
+
+
+def walk_launcher(executable: Path, root: Path, arm: LauncherArm,
+                  timeout: int) -> str:
+    _home, env = session(root, f"launcher-{arm.panel}")
+    env.update({
+        "MDKR_APP_PANEL": arm.panel,
+        "MDKR_APP_SMOKE_FRAMES": str(arm.frames),
+        "MDKR_APP_SMOKE_A11Y_WALK": "1",
+        "MDKR_APP_SMOKE_INPUT": "keyboard",
+        "MDKR_APP_SMOKE_INPUT_TOKEN": INPUT_TOKEN,
+        "MDKR_APP_SMOKE_A11Y_ESCAPE": str(arm.tabs_before_escape),
+        "MDKR_APP_SMOKE_A11Y_ESCAPE_TOKEN": ESCAPE_TOKEN,
+    })
+    return run(executable, env, f"{arm.panel} Escape walk", timeout)
+
+
+def check_launcher_arm(arm: LauncherArm, output: str) -> str:
+    reached = ESCAPE_REACHED_RE.search(output)
+    if reached is None:
+        raise GateFailure(
+            f"{arm.panel}: the walk never reported its Escape reaching the "
+            f"launcher\n{output[-3000:]}")
+    before = [text for category, _p, text in utterances(output[:reached.start()])
+              if category == "focus"]
+    after = [text for category, _p, text in utterances(output[reached.end():])
+             if category == "focus"]
+    if not before:
+        raise GateFailure(
+            f"{arm.panel}: nothing had focus when the Escape arrived, so the "
+            "arm proves nothing")
+    if len(set(after)) < 3:
+        raise GateFailure(
+            f"{arm.panel}: Tab stopped moving after an Escape nothing claimed: "
+            f"{len(set(after))} controls announced after it (last before it: "
+            f"{before[-1][:60]!r})")
+    if after[0] in before:
+        raise GateFailure(
+            f"{arm.panel}: the first Tab after Escape announced "
+            f"{after[0][:60]!r}, a control the walk had already passed. Tab "
+            f"started over instead of carrying on from {before[-1][:60]!r}")
+    return (f"{arm.panel}: {before[-1].split('.')[0]} -> Escape -> "
+            f"{after[0].split('.')[0]}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64", type=Path)
+    parser.add_argument("--launcher-only", action="store_true",
+                        help="run only the ROM-free launcher arms")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
 
@@ -224,22 +295,33 @@ def main() -> int:
     if not executable.is_file():
         parser.error(f"missing executable: {executable}")
     rom = args.rom.expanduser()
-    if not rom.is_file():
-        parser.error(f"missing ROM: {rom}")
+    if not args.launcher_only and not rom.is_file():
+        parser.error(f"missing ROM: {rom} (or pass --launcher-only)")
 
     results: list[str] = []
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="mdkr64_dead_ends_") as temporary:
         root = Path(temporary)
-        for index, arm in enumerate(OVERLAY_ARMS):
+        arms: list[tuple[str, object]] = [
+            ("launcher", arm) for arm in LAUNCHER_ARMS]
+        if not args.launcher_only:
+            arms += [("overlay", arm) for arm in OVERLAY_ARMS]
+        for index, (kind, arm) in enumerate(arms):
             try:
-                landed = check_overlay_arm(arm, walk_overlay(
-                    executable, root, rom, arm, index, args.timeout))
-                results.append(f"{arm.name}: Tab -> {landed}")
+                if kind == "launcher":
+                    assert isinstance(arm, LauncherArm)
+                    results.append(check_launcher_arm(
+                        arm, walk_launcher(executable, root, arm,
+                                           args.timeout)))
+                else:
+                    assert isinstance(arm, OverlayArm)
+                    landed = check_overlay_arm(arm, walk_overlay(
+                        executable, root, rom, arm, index, args.timeout))
+                    results.append(f"{arm.name}: Tab -> {landed}")
             except GateFailure as failure:
                 failures.append(str(failure))
             except subprocess.TimeoutExpired as expired:
-                failures.append(f"{arm.name} timed out: {expired}")
+                failures.append(f"{kind} arm timed out: {expired}")
 
     for line in results:
         print(f"  ok  {line}")

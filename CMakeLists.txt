@@ -2475,6 +2475,19 @@ if(NOT EMSCRIPTEN)
                     LABELS gpu
                     TIMEOUT 180)
 
+                # The ROM-free half of the keyboard dead-end gate: an Escape
+                # nothing claims, mid-walk on Settings and About, must leave
+                # Tab carrying on from the focused control. The in-game menu
+                # arms need a ROM and run from tools/run_checks.py.
+                add_test(NAME app_keyboard_dead_ends
+                    COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_SOURCE_DIR}/tests/check_keyboard_dead_ends.py
+                        --build $<TARGET_FILE:${MDKR_TARGET}> --launcher-only)
+                set_tests_properties(app_keyboard_dead_ends PROPERTIES
+                    LABELS gpu
+                    PASS_REGULAR_EXPRESSION "PASS keyboard dead ends: 2 arms"
+                    TIMEOUT 120)
+
                 add_test(NAME app_character_draft_transfer
                     COMMAND ${Python3_EXECUTABLE}
                         ${CMAKE_SOURCE_DIR}/tests/check_character_draft_transfer_ui.py
