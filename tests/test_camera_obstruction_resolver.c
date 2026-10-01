@@ -610,29 +610,29 @@ static void test_release_hold_step_contract(void) {
                 mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 0U) &&
                 !latched && run == 0U);
 
-    /* Release band: a served hold waits while the corridor still grazes. */
+    /* Grazing extension: a served hold waits while the corridor still grazes. */
     latched = 0U;
     run = 0U;
     (void)mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 3U);
     for (tick = 1; tick < 4 + 3; tick++) {
-        expect_true("band: grazing keeps a served hold engaged",
+        expect_true("grazing: a served hold stays engaged",
                     !mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
                     latched && run == (uint32_t)tick);
     }
-    expect_true("band: the bound releases even while grazing",
+    expect_true("grazing: the bound releases even while grazing",
                 mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
                 !latched && run == 0U);
     latched = 0U;
     run = 0U;
     (void)mdkr_camera_release_hold_step(&latched, &run, 1, 0, 0.1f, 4U, 3U);
     for (tick = 1; tick < 4; tick++) {
-        expect_true("band: grazing cannot shorten the hold",
+        expect_true("grazing: it cannot shorten the hold",
                     !mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 3U));
     }
-    expect_true("band: grazing at the served hold waits",
+    expect_true("grazing: at the served hold it waits",
                 !mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 3U) &&
                 latched && run == 4U);
-    expect_true("band: leaving the band releases on that tick",
+    expect_true("grazing: clearing the margin releases on that tick",
                 mdkr_camera_release_hold_step(&latched, &run, 0, 0, 0.1f, 4U, 3U) &&
                 !latched && run == 0U);
     latched = 0U;
@@ -641,12 +641,12 @@ static void test_release_hold_step_contract(void) {
     for (tick = 1; tick < 4; tick++) {
         (void)mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 0U);
     }
-    expect_true("band: a zero bound is the band-free hold",
+    expect_true("grazing: a zero bound is the plain hold",
                 mdkr_camera_release_hold_step(&latched, &run, 0, 1, 0.1f, 4U, 0U));
 }
 
 /* The resolver spends its hold through the shared step, so the two agree on
- * every tick of a mixed contact/clear sequence, including the band. */
+ * every tick of a mixed contact/clear sequence, including grazing ticks. */
 static void test_resolver_hold_is_the_shared_step(void) {
     const MdkrCameraVec3 vertices[] = {
         { 5.0f, -10.0f, -10.0f }, { 5.0f, 10.0f, -10.0f }, { 5.0f, 0.0f, 10.0f },

@@ -32,44 +32,66 @@ are distinguished explicitly.
 
 ## 1. Product decision
 
-### 2026-09-27 normal-path validation update
+### Held-shot recovery (1.8)
 
-The integrated held-shot Modern candidate passes full motion routes (including
-high-rate reporting), Release lifecycle, four-player performance/authority,
-sanitizer projection/query fault injection and fresh-state policy isolation.
-Unset still matches Observe. Sanitizer lifecycle also passes all three scenarios; physical
-platform/route acceptance and the complete release gates remain separate.
-The earlier ordinary-Modern motion failure is resolved on the tested routes,
-not waived. See the integration record for terminal results and test scope.
+Full Modern treatment (the `FULL` profile, §7.3.1) answers a corridor contact
+with a held shot instead of an immediate retraction: the slot keeps its last
+validated view and translates it rigidly with the subject. Observe stays the
+unset/default policy, and the `SAFETY_ONLY` and `DEPENETRATE_ONLY` profiles keep
+their publication policy. Every held tick must prove its own pose, endpoint,
+presentation transition, boom from the anchor, target visibility, query
+completeness and on-screen framing; a failed proof ends the shot and hands the
+tick to the ordinary boom path, never to the fan-shot retargeter.
 
-### 2026-09-27 production integration candidate — qualification running
+- **Release.** The held shot spends the boom's release hysteresis
+  (`mdkr_camera_release_hold_step()`, §7.3.2): a clear corridor keeps it held
+  until it has been clear for the 9-tick hold, so a false-clear run at a facet
+  seam cannot start its return. A served hold whose clear corridor still grazes
+  geometry within 4 units waits up to the 12-tick chatter window longer (the
+  grazing extension, which the boom shares).
+- **Return.** Once released the view returns in the authored boom's moving
+  basis, so a spectator's shoulder does not swap sides: the eye closes at most
+  25% of its remaining error per 1/30 s of authored time (speed- and
+  step-capped as the boom is), the orientation at most 90 degrees per second.
+  A contact during the return re-holds the shot.
+- **Bounds.** A held view may stay frozen (holding, not returning) for at most
+  2 s, and the published view may turn at most 60 degrees from the authored
+  view in any phase. Past either, the slot takes the ordinary ladder and does
+  not seed another held shot until that correction has released. A seed whose
+  view is already past the bound (an alternate or emergency composition) is
+  refused.
+- **Soft occluders.** A corridor blocker that the boom would not retract for
+  (§5.7.1, VIS-01 interim rule) does not seed or continue a held shot either,
+  provided the authored pose proves clear.
+- **Census.** MOTION-01 counts held recovery, like the boom's, as the clear
+  phase: a held shot that lets go and is caught again inside the chatter
+  window is a re-engagement. Shoulder history lives only through the blocked
+  phase.
 
-Following maintainer acceptance, full Modern treatment now enables held-shot
-recovery without MDKR_TEST_CAMERA_HELD_SHOT. Observe remains the unset/default
-policy; safety-only treatment and diagnostic non-publication remain unchanged.
-This supersedes the earlier trial-only implementation descriptions below, not
-their historical evidence. Normal-path motion and sanitizer fault gates have
-been started; do not call the candidate qualified until their terminal results
-and the remaining lifecycle/cost/default-isolation checks are recorded.
+Measured on the three MOTION-01 routes: the hard invariants (re-engagement,
+continuous-surface shoulder flips, emergency dwell, held-shot bounds) hold at
+Enhanced cadence, which the gate drives, and also at Original cadence with and
+without `Camera.Comfort`. Ancient Lake's tick-2136 re-engagement, which 1.7.0
+Modern also fails, is closed by the grazing extension: the boom leaves one canyon
+facet, stays within 2-4 units of the wall for 19 ticks and meets the next, and
+the correction now stays engaged across that gap instead of releasing at tick
+2125. Its cost is release-held ticks: 183, 59 and 93 on the lake, hub and 3P
+routes (44, 3 and 41 before held shots shared the hold). Held views seeded from
+the authored view stay frozen for at most 1.1 s and turn up to 36 degrees at
+Enhanced and 59 at Original (the hold's ticks last twice as long there); with
+`Camera.Comfort` at Original the 3P route turns three of them past 60 degrees,
+where the bound hands them to the ordinary path.
 
-### 2026-09-27 maintainer review: held-shot transition trial
+The held-shot look was accepted on a visual comparison against ordinary
+Modern. That covers the look; it does not establish comfort across all routes,
+input devices or platforms, and keeps no bearing on the default policy. Keep
+ROM-derived comparisons out of release artifacts.
 
-The maintainer reviewed the private normal-left/held-shot-right comparison and
-responded: "Yes the new version looks great." This accepts the reviewed trial's
-visual result and clears the outstanding human-review request for that clip.
-It does not establish comfort across all routes, input devices or platforms,
-nor change the configured/default camera policy. The held-shot implementation
-still needs a reviewed production integration decision and qualification of
-that exact path; removing its test-only selector is not itself validation.
-Keep the ROM-derived comparison private and out of release artifacts.
+### Rotating-transition clearance (1.8)
 
-### 2026-09-27 integration update: rotating-transition clearance
-
-The 1.8 integration tree refines a rotating transition's enclosing-sphere HIT
-with a bounded lens envelope. This is active in the normal Modern validator;
-it is not a default-policy change. Unset configuration still selects Observe.
-The separately named held-camera chain remains an explicitly enabled,
-unpublished diagnostic and must not be confused with this clearance change.
+Modern refines a rotating transition's enclosing-sphere HIT with a bounded lens
+envelope. This is active in the normal Modern validator; it is not a
+default-policy change.
 
 The envelope enumerates the Cartesian set of renderer integer yaw, composed
 pitch and roll states. Axes beyond the renderer's quarter-turn snap threshold
@@ -88,14 +110,17 @@ and discontinuous dynamic obstacles remain earlier cut conditions. The
 refinement reuses the authoritative static/dynamic sources, not a visual-only
 mesh approximation, and does not move the selected endpoint or game camera.
 
-Release evidence: Ancient Lake published cuts fall from 410 to 149; clearance,
-default isolation, and four-player cost gates pass. Both lens math variants
-also pass varied-pose containment and the real long-arc negative control under
-Release and sanitizers. These are not complete release acceptance: the
-tick-2136 reengagement gate remains failing, broader lifecycle/sanitizer runtime
-qualification is in progress, and no held-camera selection policy is promoted.
-Current results and private-log locations are tracked in
-the private 1.8 integration record.
+When it landed, the refinement cut Ancient Lake's published cuts from 410 to
+149 with clearance, default isolation and four-player cost unchanged. Both lens
+math variants pass varied-pose containment and the real long-arc negative
+control under Release and sanitizers.
+
+### Superseded notes
+
+The 2026-09-23 revalidation in §10.1, the trial-era held-camera chain
+descriptions, and every statement that the tick-2136 re-engagement is open or
+that held shots bypass the release hysteresis describe earlier candidates;
+the two sections above are current.
 
 The native port will treat camera obstruction as a correctness boundary, not a
 visual preset:
@@ -1312,9 +1337,9 @@ implementation:
 - with desired pose and blocker set held constant, resolved boom expansion is
   monotonic and reaches at least 95% of the clear desired boom within 750 ms for a
   correction up to 250 world units and 1.25 seconds for a larger correction;
-- expansion advances no more than 20 world units or 25% of remaining error per
-  authored tick, whichever is smaller, unless a mode transition marks a
-  discontinuity;
+- expansion advances no more than 20 world units per authored tick or 25% of
+  remaining error per 1/30 s of authored time, whichever is smaller, unless a
+  mode transition marks a discontinuity;
 - no clear/blocked/clear or left/right/left correction cycle occurs inside 12
   authored ticks unless the intermediate pose became geometrically invalid;
 - triangle/facet changes within one hard object or continuous track surface do not
@@ -1341,8 +1366,15 @@ still apply, and zero-time validation never advances recovery. This is numerical
 precision handling, not an enlarged collision tolerance. ROM-free tests cover
 small/250/400-unit recovery at 20/30/50/60 Hz, signed large world coordinates,
 95% timing, exact eventual settling, invalid fractions and paused recovery.
-Retraction, release hysteresis and the hard re-engagement gate are unchanged.
 This implementation alone does not establish motion-quality acceptance.
+
+The fraction is a rate, not a per-call cap: 25% per 1/30 s of authored time
+(the Original NTSC step), applied per step as 1 - 0.75^(dt / (1/30 s)) by
+`mdkr_camera_recovery_fraction_for_step()`, which the boom resolver and the
+held shot share. Original cadence keeps exactly 0.25 per step; Enhanced and PAL
+return in the same time Original does, where a per-call cap had made Enhanced
+recovery twice as fast in wall-clock time. A ROM-free test drives the resolver
+for the same authored time at 25, 30, 50 and 60 Hz.
 
 #### 7.3.1 Per-family correction profiles
 
@@ -1411,6 +1443,18 @@ distributions above. It found two things. Neither was a safety regression —
    dropped it again, a 236 wu single-tick step. The 0.70 clause still holds an
    already-active alternate shot across a hold, which is that shot's own
    hysteresis.
+
+   The hold is one step function, `mdkr_camera_release_hold_step()`, spent by
+   the boom and by the held shot (§1), so neither path can release on a first
+   clear tick. It carries a grazing extension: when the served hold's clear
+   corridor still comes within 4 units of geometry (the exact lens, its skin
+   grown by that margin, swept over the same corridor), release waits up to the
+   12-tick chatter window longer, and releases at once when the corridor clears
+   the margin. The value is measured: Ancient Lake's tick-2136 re-engagement
+   is a 19-tick gap in which the boom stays within 2-4 units of a canyon wall
+   between two of its facets, and 4 units is the smallest probed margin that
+   reads it as grazing. The bound keeps a camera riding along a wall without
+   touching it from staying corrected.
 
 2. **Published-cut density — measured at rate, no threshold set.** Modern marks
    17–132 presentation cuts per 1000 resolved slot ticks depending on route,
@@ -1800,8 +1844,9 @@ owner rejected has to become a case the gate can fail on — and a device
 acceptance pass has to be a named row in the ladder rather than a step after
 it. A rerun of the same numbers is not new evidence for the same decision.
 
-**2026-09-23 candidate revalidation:** the Ancient Lake route currently fails
-the hard re-engagement gate at tick 2136 (release 2125, contact 212→317).
+**2026-09-23 candidate revalidation (superseded by §1, Held-shot recovery):**
+the Ancient Lake route then failed the hard re-engagement gate at tick 2136
+(release 2125, contact 212→317).
 Historical green/default-on evidence below does not qualify this candidate.
 Per-tick tracing also showed that the transition's published cuts excluded its
 movement from smooth derivatives. The census now reports `cut_pos_step` and

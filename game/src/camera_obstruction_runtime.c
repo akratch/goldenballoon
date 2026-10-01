@@ -57,7 +57,7 @@
  */
 #define MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS 9U
 /*
- * Release band (resolver: release_near_contact_extension_ticks). A served hold
+ * Grazing extension (resolver: release_near_contact_extension_ticks). A served hold
  * releases at once when the clear corridor also clears every surface by
  * MDKR_CAMERA_OBSTRUCTION_RELEASE_MARGIN; while it is clear but still grazing
  * within that margin, the hold may wait up to the chatter window longer.
@@ -2998,7 +2998,7 @@ static int camera_obstruction_select_alternate_shot(
 #define MDKR_CAMERA_MOTION_OSCILLATION_TICKS 12U
 _Static_assert(MDKR_CAMERA_OBSTRUCTION_RELEASE_NEAR_CONTACT_EXTENSION_TICKS ==
                    MDKR_CAMERA_MOTION_OSCILLATION_TICKS,
-               "the release band's bound is the chatter window it protects");
+               "the grazing extension's bound is the chatter window it protects");
 /*
  * Two surfaces whose contact normals agree this closely are treated as one
  * continuous surface. Static track blockers carry a per-triangle stable ID (see
@@ -3488,7 +3488,7 @@ static s16 camera_obstruction_probe_return_angle(s16 from, s16 to, float dt) {
  * One tick of the held shot: hold the last validated view (contact, or a clear
  * corridor still serving the release hold) or, once released, return it to the
  * authored pose. `contact` is this tick's corridor result, `near_contact` its
- * release-band reading, and `recovering` the release decision
+ * grazing reading, and `recovering` the release decision
  * mdkr_camera_release_hold_step() made from them;
  * `latched`/`clear_run` are the stepped hysteresis state, committed to the
  * resolver only if this tick publishes, so a failed proof hands the ordinary
@@ -3986,7 +3986,7 @@ static void camera_obstruction_resolve_slot(
             use_exact, &boom_anchor);
         return;
     }
-    /* Release band: measured only on a tick whose served hold could release. */
+    /* Grazing extension: measured only on a tick whose served hold could release. */
     if (use_exact && status == MDKR_CAMERA_SWEEP_CLEAR &&
         observe->resolver.retraction_latched &&
         observe->resolver.clear_run_ticks + 1U >= config.release_hold_ticks) {

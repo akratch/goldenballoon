@@ -53,7 +53,7 @@ import check_camera_motion_quality as motion
 # Mirrors MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS; verified against the
 # census's own release_hold window on every run so the two cannot drift.
 RELEASE_HOLD_TICKS = 9
-# The release band's bound: a served hold may wait this many more clear ticks,
+# The grazing extension's bound: a served hold may wait this many more clear ticks,
 # and only while the corridor still grazes geometry (near=1). It is the
 # MOTION-01 chatter window, which the runtime pins with a static assertion.
 NEAR_CONTACT_EXTENSION_TICKS = motion.OSCILLATION_TICKS
@@ -189,10 +189,10 @@ def common(output):
 def release_hold_invariant(rows):
     """Held recovery starts exactly where the release hysteresis allows.
 
-    That is the hold-th consecutive clear tick, unless the release band read
+    That is the hold-th consecutive clear tick, unless the grazing extension read
     the corridor as still grazing (near=1) on that tick and every one after it,
     in which case it is the first clear tick that is not grazing, and never
-    later than hold + band bound. Returns the number of releases checked.
+    later than hold + extension bound. Returns the number of releases checked.
     """
     starts = 0
     for (tick, slot), row in sorted(rows.items()):
@@ -220,7 +220,7 @@ def release_hold_invariant(rows):
                                  f"served hold that was not grazing")
         if row["near"] and run != latest:
             raise ValueError(f"held recovery at tick {tick} released while grazing "
-                             f"before the band's bound")
+                             f"before the extension's bound")
         starts += 1
     for (tick, slot), row in rows.items():
         if row["valid"] and row["recovering"] and row["contact"]:

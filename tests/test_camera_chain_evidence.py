@@ -35,7 +35,7 @@ class ChainEvidence(unittest.TestCase):
         self.assertEqual(audit([seed, row(2, 1, 1) + " rejection=none contact=0 near=1" + held])["accepted"], 2)
         with self.assertRaisesRegex(ValueError, "recovery claimed on a contact tick"):
             audit([seed, row(2, 1, 1, recovering=1) + " rejection=none contact=1 near=0" + held])
-        with self.assertRaisesRegex(ValueError, "release band read on a contact tick"):
+        with self.assertRaisesRegex(ValueError, "grazing read on a contact tick"):
             audit([row() + " rejection=none contact=1 near=1" + held])
         for bad in (" rejection=none contact=2 near=0" + held, " rejection=none contact=1" + held,
                     " rejection=none contact=0 near=2" + held, " rejection=none contact=1 near=0"):

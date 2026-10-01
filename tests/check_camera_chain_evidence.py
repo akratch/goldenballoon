@@ -42,7 +42,7 @@ def audit(lines, required_returns=()):
         if contact == "1" and recovering:
             raise ValueError(f"line {number}: recovery claimed on a contact tick")
         if contact == "1" and match[13] == "1":
-            raise ValueError(f"line {number}: release band read on a contact tick")
+            raise ValueError(f"line {number}: grazing read on a contact tick")
         if contact is not None:
             dwell, divergence = float(match[14]), float(match[15])
             if not (math.isfinite(dwell) and dwell >= 0):

@@ -597,8 +597,8 @@ point before release: the eye and clear-tick counter stay held, positive-time
 resume serves exactly one tick, and contact still retracts immediately at zero
 time. The zero-duration hold remains the no-hysteresis control. The hold is one
 shared step, `mdkr_camera_release_hold_step()`, also spent by the runtime's held
-shot; the suite pins its contract tick by tick, including the release band (a
-served hold that is still grazing waits up to its bound), and requires the
+shot; the suite pins its contract tick by tick, including the grazing extension
+(a served hold whose corridor is still grazing waits up to its bound), and requires the
 resolver to agree with it on every tick of a mixed contact/clear/grazing/paused
 sequence. `mdkr_camera_recovery_fraction_for_step()` is checked for exactness
 at the reference step, composition of half steps, and the same remaining error

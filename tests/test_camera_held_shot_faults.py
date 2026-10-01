@@ -245,7 +245,7 @@ class HeldShotEvidence(unittest.TestCase):
             return probes("\n".join(rows))
         hold, bound = RELEASE_HOLD_TICKS, RELEASE_HOLD_TICKS + NEAR_CONTACT_EXTENSION_TICKS
         self.assertEqual(release_hold_invariant(episode(hold)), 1)
-        # Grazing from the served hold on: waits, released by leaving the band...
+        # Grazing from the served hold on: waits, released by clearing the margin...
         rows = episode(hold + 3, near_from=hold)
         rows[(1 + hold + 3, SLOT)]["near"] = 0
         self.assertEqual(release_hold_invariant(rows), 1)
