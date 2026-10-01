@@ -949,9 +949,10 @@ CHECKS = (
           "playable Wizpig positive/negative race cues use his own authored "
           "voice IDs, with consecutive-repeat suppression"),
     Check("taj_selection_music", "check_taj_selection_music.py", "native",
-          "Taj music confirmation, reselection, title exit, custom return and multiplayer "
-          "ownership across four unlock layouts with loaded-sequence and "
-          "nonzero MIDI dispatch checks"),
+          "Taj music confirmation, reselection, title exit, custom return, multiplayer "
+          "ownership, Game/File Select round trip, Adventure Party back-out and muted "
+          "slider retry/exit across four unlock layouts; the Taj theme may load and "
+          "stay resident only on Character Select"),
     Check("sprite_models_gpu", "check_sprite_models_gpu.py", "native",
           "synthetic replacement model draws and eleven one-shot/persistent "
           "GPU allocation failure recovery paths"),

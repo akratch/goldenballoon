@@ -81,6 +81,9 @@ s32 sound_overlay_pause_active(void);
 void music_change_off(void);
 void music_change_on(void);
 void music_play(u8 seqID);
+#ifdef NATIVE_PORT
+void music_play_while_muted(u8 seqID);
+#endif
 void music_voicelimit_set(u8 voiceLimit);
 void music_voicelimit_set_from_level_header(u8 voiceLimit);
 void music_voicelimit_change_off(void);

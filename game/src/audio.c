@@ -661,6 +661,8 @@ void music_change_on(void) {
     gBlockMusicChange = FALSE;
 }
 
+static void music_play_queue(u8 seqID);
+
 /**
  * Queue a new music sequence to play if not blocked.
  * Stops any playing existing music beforehand.
@@ -668,20 +670,39 @@ void music_change_on(void) {
  */
 void music_play(u8 seqID) {
     if (gBlockMusicChange == FALSE && gMusicSliderVolume != 0) {
-#ifdef NATIVE_PORT
-        GAMEPLAY_EVENT_TRACE(
-            GAMEPLAY_EVENT_MUSIC, seqID, 0, 0, 0);
-#endif
-        gCurrentSequenceID = seqID;
-        gMusicBaseVolume = 127;
-        if (gCanPlayMusic) {
-            music_sequence_start(gCurrentSequenceID, gMusicPlayer);
-        }
-        gMusicTempo = alCSPGetTempo(gMusicPlayer);
-        audioPrevCount = osGetCount();
-        gMusicPlaying = TRUE;
-        gDynamicMusicChannelMask = MUSIC_CHAN_MASK_NONE;
+        music_play_queue(seqID);
     }
+}
+
+#ifdef NATIVE_PORT
+/**
+ * music_play() without its zero-slider refusal. At zero the retail call
+ * declines and the previous tune stays resident, inaudible, until the slider
+ * is raised. A port-only menu tune (Taj's Character Select theme) hands the
+ * retail tune back with this when its menu closes, so raising the slider in
+ * the next menu cannot resurface it. The change block still applies.
+ */
+void music_play_while_muted(u8 seqID) {
+    if (gBlockMusicChange == FALSE) {
+        music_play_queue(seqID);
+    }
+}
+#endif
+
+static void music_play_queue(u8 seqID) {
+#ifdef NATIVE_PORT
+    GAMEPLAY_EVENT_TRACE(
+        GAMEPLAY_EVENT_MUSIC, seqID, 0, 0, 0);
+#endif
+    gCurrentSequenceID = seqID;
+    gMusicBaseVolume = 127;
+    if (gCanPlayMusic) {
+        music_sequence_start(gCurrentSequenceID, gMusicPlayer);
+    }
+    gMusicTempo = alCSPGetTempo(gMusicPlayer);
+    audioPrevCount = osGetCount();
+    gMusicPlaying = TRUE;
+    gDynamicMusicChannelMask = MUSIC_CHAN_MASK_NONE;
 }
 
 /**

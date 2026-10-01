@@ -1309,15 +1309,21 @@ static s32 sCharselectMusicActive[MAXCONTROLLERS];
 static s32 sCharselectMusicIndex[MAXCONTROLLERS];
 static s32 sCharselectMusicCustom[MAXCONTROLLERS];
 
-static void charselect_music_sequence_set(s32 sequence) {
+static void charselect_music_sequence_set(s32 sequence, s32 closing) {
     s32 i;
     if (sequence == sCharselectMusicSequence) return;
     /* music_play declines requests while the player's slider is zero. Keep
      * the applied sequence unchanged so observing this cursor after unmute
-     * retries the handoff instead of treating a rejected request as loaded. */
-    if (music_volume_config() == 0) return;
+     * retries the handoff instead of treating a rejected request as loaded.
+     * Closing the menu cannot wait for that retry, so the retail tune is
+     * queued even while muted: the Taj theme never outlives the menu. */
+    if (!closing && music_volume_config() == 0) return;
     music_change_on();
-    music_play(sequence);
+    if (closing) {
+        music_play_while_muted(sequence);
+    } else {
+        music_play(sequence);
+    }
     music_channel_reset_all();
     gMenuSelectedCharacter.channelIndex = -1;
     D_801263B8.channelIndex = -1;
@@ -1339,6 +1345,10 @@ static void charselect_music_sequence_set(s32 sequence) {
 static s32 charselect_music_observe(void) {
     s32 i;
     s32 owner = sCharselectMusicOwner;
+    /* Game Select and File Select run the same retail channel fader. The Taj
+     * theme belongs to Character Select alone; elsewhere the fader keeps the
+     * retail tune exactly as it left Character Select. */
+    if (gCurrentMenuId != MENU_CHARACTER_SELECT) return FALSE;
     for (i = 0; i < MAXCONTROLLERS; i++) {
         if (gActivePlayersArray[i] &&
             ((!sCharselectMusicObserved && owner < 0) ||
@@ -1366,7 +1376,7 @@ static s32 charselect_music_observe(void) {
     charselect_music_sequence_set(
         owner >= 0 && sCustomCharacterSelection[owner] < 0 &&
                 charselect_index_is_taj(gPlayersCharacterArray[owner])
-            ? SEQUENCE_UNK27 : SEQUENCE_CHOOSE_YOUR_RACER);
+            ? SEQUENCE_UNK27 : SEQUENCE_CHOOSE_YOUR_RACER, FALSE);
     return sCharselectMusicSequence == SEQUENCE_UNK27;
 }
 
@@ -10978,12 +10988,16 @@ void charselect_move(s32 playerID, s8 *direction, s32 bounds, u16 menuPickSoundI
  */
 void charselect_free(void) {
 #ifdef NATIVE_PORT
+    /* Every exit hands the retail tune back, muted or not, and forgets the
+     * music owner; the next visit observes its cursors afresh. */
     if (sCharselectMusicSequence != SEQUENCE_CHOOSE_YOUR_RACER) {
-        charselect_music_sequence_set(SEQUENCE_CHOOSE_YOUR_RACER);
+        charselect_music_sequence_set(SEQUENCE_CHOOSE_YOUR_RACER, TRUE);
         /* Exit callers own the next menu's music policy (the title exit has
          * already unblocked music; Adventure re-blocks it after this call). */
         music_change_on();
     }
+    sCharselectMusicOwner = -1;
+    sCharselectMusicObserved = FALSE;
     taj_visual_select_end();
 #endif
     menu_assetgroup_free(gCharSelectObjectIndices);

@@ -8908,16 +8908,30 @@ Separate selection-music check: `python3 tests/check_taj_selection_music.py
 27 followed by 26 and nonzero-volume MIDI notes in both intervals. Empty,
 missing-load and zero-volume evidence must fail. This muted native GPU check
 does not establish audible quality or complete authored instrumentation.
-By default all six scenarios run with fresh isolated preferences: confirmation,
+By default ten scenarios run with fresh isolated preferences: confirmation,
 reselection (27→26→27→26), title exit (27→7), and multiplayer join/leave
 (27→26→27→26, with exact controller ownership checks), and custom selection
 (27→26, with a generated package and an actual Diddy-donor selection witness),
 plus custom-to-Taj return (27→26→27→26, requiring custom identity cleanup).
+`game-select` confirms Taj, dismisses Caution, enters File Select and backs
+out twice to Character Select (27→26→27→26 over the route 3→28→19→6→19→3);
+`party-backout` (base layout only) has player two own the music on Taj,
+confirms an Adventure Party into Game Select and backs out to player one's
+retail pick (27→26→27→26). `muted` drives the real music slider through
+`MDKR_TEST_SETTINGS_TOGGLE`: hovering onto Taj and later off him while the
+slider is at zero loads nothing, and raising it performs the deferred switch
+in each direction. `muted-exit` confirms Taj after muting and requires the
+retail tune to be queued before the slider is raised in Game Select.
+Every arm also reads the ordered menu/sequence timeline: sequence 27 may load
+only while Character Select is the live menu, must never stay resident through
+any other menu, and may never reject a note on a disabled channel; synthetic
+leaks must be rejected by the same oracle.
 The custom fixture uses the existing test-only synthetic GLB validator, not a
 change to the shipped importer. Select one with
-`--scenario confirm|reselect|title|multiplayer|custom|custom-return`. Each loaded interval must
-emit nonzero-volume MIDI notes. These scenarios run across all four retail
-unlock layouts (base, Drumstick, T.T., complete), for twenty-four independent arms.
+`--scenario confirm|reselect|title|multiplayer|custom|custom-return|game-select|party-backout|muted|muted-exit`.
+Each loaded interval must emit nonzero-volume MIDI notes. These scenarios run
+across all four retail unlock layouts (base, Drumstick, T.T., complete), except
+`party-backout`, for thirty-seven independent arms.
 Use `--layout base|drumstick|tt|complete` to restrict a diagnostic run.
 Complete authored instrumentation and audible quality remain separate acceptance work.
 
