@@ -159,7 +159,9 @@ that is a different problem from one that never loaded.
 Texture files live in `textures/` and are named by a **content digest** — 32
 lowercase hex characters — with a `.png` extension. The digest identifies the
 picture, so a pack works regardless of where the game happens to load that
-texture from.
+texture from. Upper and lower case both work, in the folder name, the digest
+and the extension, in a folder pack or a zip. A file under `textures/` with any
+other name is never used, and the log says so when the game starts.
 
 Your PNG does **not** have to match the original's size. A 64×64 replacement for
 a 16×16 original works; the game addresses the same logical tile either way.
@@ -336,9 +338,15 @@ the time you quit.
 
 ## Limits
 
-- Replacement textures load in the background. The first time something
-  appears, it can show the original texture for a few frames while its
-  replacement is read and decoded; scene changes no longer pause for it.
+- Replacement textures are read and decoded in the background, so scene
+  changes no longer pause for them. A replacement that has not been decoded
+  yet — the first time it is needed, or after it was dropped to stay under the
+  cap below — shows the original texture for a few frames until it is ready.
+  Replacements already decoded appear straight away after a level loads or
+  packs are switched back on; at other times a burst of them can take a frame
+  or two to all appear.
+- Enabled zip packs are kept open while the game runs. On Windows a zip pack
+  cannot be deleted or replaced until you close the game.
 - Decoded pack textures are capped at **512 MiB** in total, textures still
   being decoded included; past that the least recently used are dropped and
   re-decoded on demand.
