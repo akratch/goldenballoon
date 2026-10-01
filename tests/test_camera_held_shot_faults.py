@@ -153,16 +153,20 @@ def query(consumed=True, rejected=True, marked=True):
 
 
 def bound_arm(kind="dwell_bound", republished=False, published_past=False,
-              ordinary_ok=True, exits=1, lowered=True):
-    """A held shot refused by a lowered bound, then the ordinary path."""
+              ordinary_ok=True, exits=1, lowered=True, seed=False):
+    """A held shot (or, with `seed`, a held seed) refused by a lowered bound,
+    then the ordinary path."""
     dwell_bound, divergence_bound = BOUND_ARMS[kind]
     reason = "dwell" if kind == "dwell_bound" else "divergence"
     ticks = holding(10, 3)
     refused = 13
     status = "1" if ordinary_ok else "1 valid=0"
-    ticks.append((refused, [probe(refused, 1, 3, valid=0, rejection=reason),
+    ticks.append((refused, [probe(refused, 0 if seed else 1, 0 if seed else 3,
+                                  valid=0, rejection=reason),
                             detail(refused, status=status)]))
-    ticks.append((14, [detail(14, status=2)] + ([published(14)] if republished else [])))
+    reseed = [probe(14, 0, 0), published(14)] if seed else \
+        ([published(14)] if republished else [])
+    ticks.append((14, [detail(14, status=2)] + reseed))
     ticks.append((15, [detail(15, status=0, extra="").replace("corrected=1", "corrected=0")]))
     ticks.append((16, [probe(16, 0, 0), published(16)]))
     if published_past:
@@ -266,6 +270,8 @@ class HeldShotEvidence(unittest.TestCase):
                         (bound_arm(kind, ordinary_ok=False), "ordinary path")):
                     with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
                         verify(output, kind)
+                # A refused seed published nothing, so the next tick may seed.
+                self.assertEqual(verify(bound_arm(kind, seed=True), kind), 1)
         other = "divergence_bound"
         with self.assertRaisesRegex(ValueError, "refused by its divergence bound"):
             verify(bound_arm("dwell_bound").replace("dwell_bound_ms=200.0 divergence_bound_deg=180.000",

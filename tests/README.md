@@ -748,7 +748,8 @@ eye must not move relative to its pivot, nor its orientation); one injected
 contact inside a released held recovery (the census must count the
 re-engagement and the motion gate must fail); lowered dwell and divergence
 bounds through `MDKR_TEST_CAMERA_HELD_BOUNDS` (clean handover to the ordinary
-path, no re-seed before it releases); and, on the 3P route with
+path; after a published held shot is bounded, no re-seed until that correction
+releases); and, on the 3P route with
 `MDKR_TEST_CAMERA_SOFT_STATIC`, the held path's deference to the soft-occluder
 decline. Every arm also audits the real trace with the chain-evidence parser
 and checks each natural held release against the release hold and its band.

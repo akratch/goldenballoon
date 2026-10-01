@@ -259,6 +259,12 @@ def verify_bound(output, kind):
             if row["valid"] or row["rejection"] != reason:
                 continue
             exits += 1
+            if not row["continued"]:
+                # A refused seed published nothing; later seeds are judged
+                # against the bound again, so only the handover is checked.
+                if active.get((tick, slot)) is not None:
+                    raise ValueError(f"tick {tick} published the held seed its bound refused")
+                continue
             if active.get((tick, slot)) is not None:
                 raise ValueError(f"tick {tick} published the held shot its bound refused")
             detail = details(epoch, "camera_obstruction_observe detail", tick, slot)

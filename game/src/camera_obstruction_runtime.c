@@ -416,9 +416,10 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t alternate_active;
     /* The rendered held-shot trial is not an ordinary retargeted fan shot. */
     uint8_t held_shot_active;
-    /* A held shot ended on its dwell or divergence bound. Until the ordinary
-     * correction that took over has fully released, no new held shot may
-     * seed: re-seeding from the ordinary pose would restart the bound. */
+    /* A published held shot ended on its dwell or divergence bound. Until the
+     * ordinary correction that took over has fully released, no new held shot
+     * may seed: re-seeding from the ordinary pose would restart the bound and
+     * turn one handover into a periodic one. */
     uint8_t held_bound_tripped;
     /* This tick's held proof was refused by a bound (telemetry only). */
     uint8_t held_bound_exit;
@@ -3676,7 +3677,11 @@ static int camera_obstruction_probe_held_chain(
         (unsigned long long)tick, physical_slot, continued, previous_length, valid, target_x, target_y,
         recovering, valid ? camera_obstruction_distance(pose.rendered_eye, desired) : NAN, returned,
         valid ? "none" : rejection, contact != 0, near_contact != 0, dwell, divergence);
-    if (!valid && observe->held_bound_exit && publish) {
+    /* Only a published shot that a bound ended latches the slot. A refused
+     * seed (a view that was already too far turned, typically an alternate or
+     * emergency composition) published nothing to re-seed, and every later
+     * seed is judged against the bounds again. */
+    if (!valid && observe->held_bound_exit && publish && continued) {
         observe->held_bound_tripped = TRUE;
     }
     if (!valid || !publish) return FALSE;
