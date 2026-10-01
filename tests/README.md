@@ -711,11 +711,12 @@ The remaining registered camera runtime gates are deliberately orthogonal:
   3P T.T. spectate routes under Modern, and on the 3P route again at the
   default Original cadence with `Camera.Comfort` reduced, where held views
   turn furthest. Chatter, shoulder-flip, emergency-dwell
-  and held-shot-bound invariants gate hard, and every held shot a bound ends
-  must hand over on a published cut; the analog distributions print as the
-  labelled baseline for threshold-setting, with the release hold's held ticks
-  split out for its grazing extension (extension ticks, deferred releases,
-  extensions carried into a contact). Recovery, held or ordinary, is
+  and held-shot-bound invariants gate hard, every held shot a bound ends
+  must hand over on a published cut, and every view the divergence leash
+  turned must measure less divergent after the turn than before it; the analog
+  distributions print as the labelled baseline for threshold-setting, with the
+  release hold's held ticks split out for its grazing extension (extension
+  ticks, deferred releases, extensions carried into a contact). Recovery, held or ordinary, is
   the clear phase of the census, so a correction that lets go and returns
   inside the 12-tick window is a re-engagement on every path. Every published
   cut whose previous tick had a valid pose must appear in the cut-step samples,
@@ -755,16 +756,17 @@ re-engagement and the motion gate must fail); lowered dwell and divergence
 bounds through `MDKR_TEST_CAMERA_HELD_BOUNDS` (clean handover to the ordinary
 path, published as a cut; after a published held shot is bounded, no re-seed
 until that correction releases); a 2-degree divergence leash with the hard
-bound lifted (every holding view past the leash turns back at the full held
-return rate); and, on the 3P route with
-`MDKR_TEST_CAMERA_SOFT_STATIC`, the held path's deference to the soft-occluder
+bound lifted (every leashed view measures less divergent after its turn than
+before it, a view a full step past the leash plans the full held return
+rate, and the census counts no unreduced leashed view); and, on the 3P
+route with `MDKR_TEST_CAMERA_SOFT_STATIC`, the held path's deference to the soft-occluder
 decline. Every arm also audits the real trace with the chain-evidence parser
 and checks each natural held release against the release hold and the
 grazing extension bound the binary's census reports.
 Its ROM-free reporting CTest feeds each verifier positive and negative
 evidence. `check_camera_chain_evidence.py LOG` audits held-chain continuity
-and reported framing/return/bound invariants in a private trace; it is not an
-independent geometry proof. Its parser and negative controls run through
+and reported framing/return/bound/leash invariants in a private trace; it is
+not an independent geometry proof. Its parser and negative controls run through
 CTest, as does the actual interpolation long-arc containment control. Keep
 trace/capture files outside public source and release archives.
 

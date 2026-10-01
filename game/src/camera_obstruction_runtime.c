@@ -449,8 +449,11 @@ typedef struct MdkrCameraObstructionObserveSlot {
     uint8_t held_bound_exit;
     /* ...and the refused shot had been published: a bound handover. */
     uint8_t held_bound_handover;
-    /* This tick's published held view was turned by the leash. */
+    /* This tick's published held view was turned by the leash, and its
+     * divergence from the authored view before and after that turn. */
     uint8_t held_leashed;
+    float held_leash_from;
+    float held_leash_to;
     uint8_t elevated_emergency;
     /* Soft-occluder mitigation census for this tick: a small dynamic blocker
      * failed both correction gates, and whether its correction was actually
@@ -1609,6 +1612,8 @@ static void camera_obstruction_snapshot_authored_slots(void) {
         observe->held_bound_exit = FALSE;
         observe->held_bound_handover = FALSE;
         observe->held_leashed = FALSE;
+        observe->held_leash_from = 0.0f;
+        observe->held_leash_to = 0.0f;
         observe->resolved_stationary_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_status = MDKR_CAMERA_SWEEP_INVALID;
         observe->exact_shadow_outcome = MDKR_CAMERA_OBSTRUCTION_TWO_PHASE_INVALID;
@@ -3176,8 +3181,14 @@ typedef struct MdkrCameraMotionCensus {
      * not published as a cut. */
     uint64_t held_bound_handovers;
     uint64_t held_bound_handovers_unflagged;
-    /* Published held ticks the divergence leash turned. */
+    /* Published held ticks the divergence leash turned; those whose measured
+     * divergence the turn did not reduce; the widest divergence before and
+     * after the turn; and the smallest reduction a turn achieved. */
     uint64_t held_leash_ticks;
+    uint64_t held_leash_unreduced;
+    double max_leash_from_degrees;
+    double max_leash_to_degrees;
+    double min_leash_reduction_degrees;
 } MdkrCameraMotionCensus;
 
 static int sCameraMotionEnabled = -1;
@@ -3605,6 +3616,7 @@ static int camera_obstruction_probe_held_chain(
     MdkrCameraFinalPose pose;
     float max_dwell, max_divergence, soft_divergence;
     float leash_degrees = 0.0f;
+    float leash_from = NAN;
     /* Dwell is how long the view has been frozen: consecutive holding time
      * (contact or release hold). A released recovery resets it. */
     const float dwell = recovering ? 0.0f :
@@ -3696,6 +3708,7 @@ static int camera_obstruction_probe_held_chain(
                     (s16)(u16)((u16)observe->authored.trans.rotation.x_rotation +
                         (u16)observe->authored.pitch), cap);
                 probe.authored.pitch = 0;
+                leash_from = divergence;
                 leash_degrees = floorf(cap) * (360.0f / 65536.0f);
                 valid = camera_obstruction_build_final_pose(&probe, eye, FALSE, &pose);
                 divergence = valid ? camera_obstruction_view_divergence_degrees(
@@ -3775,11 +3788,11 @@ static int camera_obstruction_probe_held_chain(
                 (u16)((u16)observe->authored.trans.rotation.x_rotation + (u16)observe->authored.pitch);
         if (returned) chain->valid = FALSE;
     }
-    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s contact=%d near=%d dwell=%.4f divergence=%.3f leash=%.3f\n",
+    if (camera_obstruction_trace_level() >= 2) fprintf(stderr, "camera_held_chain_probe tick=%llu slot=%d continued=%d prior_length=%u valid=%d target=(%.5f,%.5f) recovering=%d remaining=%.5f returned=%d rejection=%s contact=%d near=%d dwell=%.4f divergence=%.3f leash=%.3f leash_from=%.3f\n",
         (unsigned long long)tick, physical_slot, continued, previous_length, valid, target_x, target_y,
         recovering, valid ? camera_obstruction_distance(pose.rendered_eye, desired) : NAN, returned,
         valid ? "none" : rejection, contact != 0, near_contact != 0, dwell, divergence,
-        leash_degrees);
+        leash_degrees, leash_from);
     /* Only a published shot that a bound ended latches the slot. A refused
      * seed (a view that was already too far turned, typically an alternate or
      * emergency composition) published nothing to re-seed, and every later
@@ -3822,6 +3835,8 @@ static int camera_obstruction_probe_held_chain(
     observe->alternate_active = !returned;
     observe->held_shot_active = !returned;
     observe->held_leashed = (uint8_t)(leash_degrees > 0.0f);
+    observe->held_leash_from = observe->held_leashed ? leash_from : 0.0f;
+    observe->held_leash_to = observe->held_leashed ? divergence : 0.0f;
     observe->was_obstructed = !returned;
     if (!returned) observe->correction_applied = TRUE;
     observe->previous_pivot = observe->intent.pivot;
@@ -4886,7 +4901,26 @@ static void camera_obstruction_motion_sample(
         sCameraMotion.held_bound_exits++;
     }
     if (observe->held_shot_active && observe->held_leashed) {
+        /* The leash's work, measured: the published view's divergence before
+         * and after its turn, not the turn it planned. */
+        const double from = observe->held_leash_from;
+        const double to = observe->held_leash_to;
+        const double reduction = from - to;
         sCameraMotion.held_leash_ticks++;
+        if (!(isfinite(reduction) && reduction > 0.0)) {
+            sCameraMotion.held_leash_unreduced++;
+        }
+        if (isfinite(from) && from > sCameraMotion.max_leash_from_degrees) {
+            sCameraMotion.max_leash_from_degrees = from;
+        }
+        if (isfinite(to) && to > sCameraMotion.max_leash_to_degrees) {
+            sCameraMotion.max_leash_to_degrees = to;
+        }
+        if (sCameraMotion.held_leash_ticks == 1U ||
+            !(reduction >= sCameraMotion.min_leash_reduction_degrees)) {
+            sCameraMotion.min_leash_reduction_degrees =
+                isfinite(reduction) ? reduction : 0.0;
+        }
     }
     if (observe->held_bound_handover) {
         sCameraMotion.held_bound_handovers++;
@@ -5803,7 +5837,9 @@ void camera_obstruction_motion_summary(void) {
             "emergency={max_dwell=%llu} "
             "held={episodes=%llu max_dwell_ms=%.1f max_divergence_deg=%.3f "
             "bound_exits=%llu handovers=%llu unflagged_handovers=%llu "
-            "leash_ticks=%llu dwell_bound_ms=%.1f divergence_bound_deg=%.3f "
+            "leash_ticks=%llu leash_unreduced=%llu leash_from_max_deg=%.3f "
+            "leash_to_max_deg=%.3f leash_min_reduction_deg=%.3f "
+            "dwell_bound_ms=%.1f divergence_bound_deg=%.3f "
             "leash_bound_deg=%.3f max_episode_ms=%.1f} "
             "discontinuity_per_1000_ticks=%.4f\n",
             (unsigned long long)sCameraMotion.sampled_slot_ticks,
@@ -5850,6 +5886,10 @@ void camera_obstruction_motion_summary(void) {
             (unsigned long long)sCameraMotion.held_bound_handovers,
             (unsigned long long)sCameraMotion.held_bound_handovers_unflagged,
             (unsigned long long)sCameraMotion.held_leash_ticks,
+            (unsigned long long)sCameraMotion.held_leash_unreduced,
+            sCameraMotion.max_leash_from_degrees,
+            sCameraMotion.max_leash_to_degrees,
+            sCameraMotion.min_leash_reduction_degrees,
             (double)held_dwell_bound * 1000.0,
             (double)held_divergence_bound,
             (double)held_leash_bound,

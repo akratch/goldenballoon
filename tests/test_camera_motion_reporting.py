@@ -151,6 +151,27 @@ class MotionReportingTests(unittest.TestCase):
         self.assertIn("route: missing or invalid cut_pos_step census",
                       motion.cut_census_failures("route", summary, stats))
 
+    def test_held_bound_failures_measure_the_leash(self):
+        def summary(**overrides):
+            values = {"held_dwell_bound_ms": 2000.0, "held_divergence_bound_deg": 60.0,
+                      "held_leash_bound_deg": 45.0, "max_held_dwell_ms": 1100.0,
+                      "max_held_divergence_deg": 45.02, "held_bound_handovers": 0,
+                      "held_bound_handovers_unflagged": 0, "held_leash_ticks": 24,
+                      "held_leash_unreduced": 0}
+            values.update(overrides)
+            return values
+        self.assertEqual(motion.held_bound_failures("route", summary()), [])
+        for overrides, reason in (
+                # A leash that plans its turn and never applies it.
+                (dict(held_leash_unreduced=24), "24 of 24 leashed held views did not turn"),
+                (dict(held_bound_handovers=1, held_bound_handovers_unflagged=1),
+                 "not published as a cut"),
+                (dict(max_held_divergence_deg=60.5), "turned 60.50 degrees"),
+                (dict(held_leash_bound_deg=60.0), "not the shipped")):
+            with self.subTest(reason=reason):
+                failures = motion.held_bound_failures("route", summary(**overrides))
+                self.assertTrue(any(reason in failure for failure in failures), failures)
+
     def test_only_exact_event_rows_are_retained(self):
         event = "camera_motion reengagement tick=42 viewport=0 gap=11"
         output = ("camera_motion summary slot_ticks=100\n"

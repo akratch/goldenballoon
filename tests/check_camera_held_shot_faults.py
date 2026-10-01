@@ -32,9 +32,12 @@ shot re-seeded before that correction released, that the census
 measured every published held tick inside the bound, and that the binary
 reported the bound it ran with.
 
-  leash             a 2-degree leash (hard bound lifted): every holding view
-                    past it must be turning back at the full held return
-                    rate, and the census must count the leashed ticks
+  leash             a 2-degree leash (hard bound lifted): every leashed view
+                    must measurably turn back toward the authored view (its
+                    divergence after the turn below its divergence before),
+                    a view a full step or more past the leash must plan the
+                    full held return rate, and the census must count the
+                    leashed ticks and find none unreduced
   soft_decline      drives the 3P route with MDKR_TEST_CAMERA_SOFT_STATIC, so
                     static blockers qualify for the soft-occluder decline: a
                     held shot may not freeze the view for a blocker the boom
@@ -87,7 +90,8 @@ ARMED = re.compile(r"camera_held_fault armed kind=(\w+) tick=(\d+) slot=(\d+) "
 PROBE = re.compile(r"camera_held_chain_probe tick=(\d+) slot=(\d+) continued=([01]) "
                    r"prior_length=(\d+) valid=([01]) .* recovering=([01]) "
                    r"remaining=(\S+) returned=([01]) rejection=(\w+) contact=([01]) "
-                   r"near=([01]) dwell=(\S+) divergence=(\S+) leash=(\S+)$")
+                   r"near=([01]) dwell=(\S+) divergence=(\S+) leash=(\S+) "
+                   r"leash_from=(\S+)$")
 PUBLISHED = re.compile(r"camera_held_shot_published tick=(\d+) slot=(\d+) "
                        r"frame=\d+ active=([01]) dwell=(\S+) divergence=(\S+)$")
 VEC = r"\(([^,]+),([^,]+),([^)]+)\)"
@@ -141,7 +145,8 @@ def probes(output):
                            recovering=int(match[6]), returned=int(match[8]),
                            rejection=match[9], contact=int(match[10]),
                            near=int(match[11]), dwell=float(match[12]),
-                           divergence=float(match[13]), leash=float(match[14]))
+                           divergence=float(match[13]), leash=float(match[14]),
+                           leash_from=float(match[15]))
     return parsed
 
 
@@ -338,7 +343,14 @@ def verify_soft(output):
 
 
 def verify_leash(output):
-    """Past the leash a holding view turns back at the full held return rate."""
+    """Past the leash a holding view measurably turns back toward the authored view.
+
+    Measured, not planned: common() runs the chain audit, which fails any
+    accepted leashed tick whose divergence after the turn is not below its
+    divergence before it, so a leash that plans a turn and never applies it
+    fails there; the census must agree (no unreduced leashed view). A view a
+    full step or more past the leash must also plan the full held return rate.
+    """
     common(output)
     _dwell, _divergence, leash_bound = LEASH_ARM
     census = motion.parse_summary(
@@ -349,16 +361,20 @@ def verify_leash(output):
         raise ValueError("the leash never turned a held view")
     if census["held_bound_handovers_unflagged"]:
         raise ValueError("a bound handover was not published as a cut")
+    if census["held_leash_unreduced"]:
+        raise ValueError(f"the census found {census['held_leash_unreduced']} of "
+                         f"{census['held_leash_ticks']} leashed held views not turned back")
     leashed = 0
     for epoch in epochs(output):
         for (tick, slot), row in sorted(probes(epoch).items()):
-            if not row["valid"] or row["recovering"]:
+            if not row["valid"] or row["recovering"] or row["leash"] <= 0:
                 continue
-            leashed += row["leash"] > 0
-            if row["divergence"] > leash_bound + 1.0 and \
+            leashed += 1
+            before = row["leash_from"]
+            if before >= leash_bound + LEASH_FULL_STEP + 0.01 and \
                     row["leash"] < LEASH_FULL_STEP - 1e-3:
-                raise ValueError(f"tick {tick}: a held view {row['divergence']:.2f} degrees "
-                                 f"out turned back only {row['leash']:.3f} (full rate "
+                raise ValueError(f"tick {tick}: a held view {before:.2f} degrees out "
+                                 f"planned only {row['leash']:.3f} (full rate "
                                  f"{LEASH_FULL_STEP:.3f})")
     if leashed == 0:
         raise ValueError("no held proof records a leash turn")

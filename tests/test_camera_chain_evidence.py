@@ -44,10 +44,20 @@ class ChainEvidence(unittest.TestCase):
 
     def test_leash_field(self):
         held = " rejection=none contact=1 near=0 dwell=0.0167 divergence=46.000"
-        self.assertEqual(audit([row() + held + " leash=1.500"])["accepted"], 1)
+        self.assertEqual(audit([row() + held + " leash=1.500 leash_from=47.500"])["accepted"], 1)
+        self.assertEqual(audit([row() + held + " leash=0.000 leash_from=nan"])["accepted"], 1)
         self.assertEqual(audit([row() + held])["accepted"], 1)
+        # A refused leashed view is not judged on its turn.
+        self.assertEqual(audit([row(valid=0) + held.replace("=none", "=endpoint") +
+                                " leash=1.500 leash_from=46.000"])["rejected"], 1)
         with self.assertRaisesRegex(ValueError, "invalid leash turn"):
-            audit([row() + held + " leash=30.000"])
+            audit([row() + held + " leash=30.000 leash_from=76.000"])
+        # Planned but not applied, or with no measurement of the view before it.
+        for after in (" leash=1.500 leash_from=46.000", " leash=1.500 leash_from=45.000",
+                      " leash=1.500 leash_from=nan", " leash=1.500"):
+            with self.subTest(after=after), \
+                    self.assertRaisesRegex(ValueError, "leash did not reduce the divergence"):
+                audit([row() + held + after])
         with self.assertRaisesRegex(ValueError, "leash turned a recovering view"):
             audit([row(), row(2, 1, 1, recovering=1) +
                    " rejection=none contact=0 near=0 dwell=0.0000 divergence=46.000 leash=1.500"])

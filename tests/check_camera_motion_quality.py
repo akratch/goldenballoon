@@ -280,6 +280,10 @@ def parse_summary(row: str) -> dict[str, float]:
         "held_bound_handovers": block_scalar(row, "held", "handovers"),
         "held_bound_handovers_unflagged": block_scalar(row, "held", "unflagged_handovers"),
         "held_leash_ticks": block_scalar(row, "held", "leash_ticks"),
+        "held_leash_unreduced": block_scalar(row, "held", "leash_unreduced"),
+        "held_leash_from_max_deg": block_real(row, "held", "leash_from_max_deg"),
+        "held_leash_to_max_deg": block_real(row, "held", "leash_to_max_deg"),
+        "held_leash_min_reduction_deg": block_real(row, "held", "leash_min_reduction_deg"),
         "held_leash_bound_deg": block_real(row, "held", "leash_bound_deg"),
         "held_dwell_bound_ms": block_real(row, "held", "dwell_bound_ms"),
         "held_divergence_bound_deg": block_real(row, "held", "divergence_bound_deg"),
@@ -469,6 +473,13 @@ def held_bound_failures(name: str, summary: dict) -> list[str]:
             f"{name}: {summary['held_bound_handovers_unflagged']} of "
             f"{summary['held_bound_handovers']} held-shot bound handovers were "
             "not published as a cut")
+    # The leash is measured, not trusted: every leashed view must be less
+    # divergent after its turn than before it.
+    if summary["held_leash_unreduced"] > 0:
+        failures.append(
+            f"{name}: {summary['held_leash_unreduced']} of "
+            f"{summary['held_leash_ticks']} leashed held views did not turn back "
+            "toward the authored view")
     return failures
 
 
@@ -551,6 +562,10 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
           f"handovers={summary['held_bound_handovers']} "
           f"(unflagged {summary['held_bound_handovers_unflagged']}) "
           f"leashed={summary['held_leash_ticks']} "
+          f"(unreduced {summary['held_leash_unreduced']}, "
+          f"before<={summary['held_leash_from_max_deg']:.2f}deg "
+          f"after<={summary['held_leash_to_max_deg']:.2f}deg "
+          f"min_turn_back={summary['held_leash_min_reduction_deg']:.3f}deg) "
           f"-- bounds {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg, "
           f"leash {HELD_LEASH_DEGREES}deg; "
           f"longest episode incl. recovery {summary['max_held_episode_ms']:.1f}ms (reported)")
