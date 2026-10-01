@@ -34,11 +34,15 @@
  * has to act on. stb_image_write has no equivalent switch.
  *
  * The first-party decoder allocator rejects empty requests and preserves
- * ownership on refused resize. It imposes no new positive-size cap; the
- * caller's admission bounds remain responsible for image budgets. This does
- * not modify the pinned headers or the writer's allocation policy.
+ * ownership on refused resize. Positive sizes are refused only above the
+ * calling thread's decode bound (mdkr_stbi_set_allocation_limit), which
+ * callers derive from the PNG header before decoding a file from a pack;
+ * without one the caller's admission bounds remain responsible for image
+ * budgets. This does not modify the pinned headers or the writer's
+ * allocation policy.
  */
 #include "stb_image_alloc.h"
+MDKR_STBI_ALLOCATION_LIMIT_STORAGE
 #define STBI_MALLOC(sz)        mdkr_stbi_malloc((size_t)(sz))
 #define STBI_REALLOC(p, newsz) mdkr_stbi_realloc((p), (size_t)(newsz))
 #define STBI_FREE(p)           free(p)

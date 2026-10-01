@@ -29,6 +29,11 @@ save formats). Everything below 1.0.0 predates that commitment.
   yellow fragment of a neighbouring texture there, and this build shows the
   ring's blue panel. `pulse_material` decodes the production display list for
   every admitted shape.
+- Every PNG decode of pack and custom-character data now runs under a
+  per-thread allocation bound derived from the header it admitted.
+  stb_image's zlib stage grows its buffer until the IDAT stream ends, so a few
+  megabytes of crafted data could demand gigabytes for a small picture; such a
+  file is now refused within its header's budget.
 
 ## [1.7.0] — 2026-09-11
 

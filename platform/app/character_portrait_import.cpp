@@ -7,6 +7,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "stb_image_alloc.h"
 
 #include <algorithm>
 #include <array>
@@ -280,9 +281,16 @@ bool loadPng(const std::string &path, Image &output, std::string &error) {
     int width = 0;
     int height = 0;
     int components = 0;
-    unsigned char *decoded = stbi_load_from_memory(
-        encoded.data(), static_cast<int>(encoded.size()),
-        &width, &height, &components, 4);
+    /* Bound every decoder allocation by what the validated header needs. */
+    const size_t decodeBound = mdkr_stbi_png_allocation_bound(
+        static_cast<int>(info.width), static_cast<int>(info.height),
+        info.colourType == 6u ? 4 : 3, 0, 4, encoded.size());
+    const size_t previousBound = mdkr_stbi_set_allocation_limit(decodeBound);
+    unsigned char *decoded = decodeBound != 0u
+        ? stbi_load_from_memory(encoded.data(), static_cast<int>(encoded.size()),
+                                &width, &height, &components, 4)
+        : nullptr;
+    (void)mdkr_stbi_set_allocation_limit(previousBound);
     if (decoded == nullptr || width != static_cast<int>(info.width) ||
         height != static_cast<int>(info.height)) {
         if (decoded != nullptr) stbi_image_free(decoded);

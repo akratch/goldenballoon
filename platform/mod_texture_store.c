@@ -105,6 +105,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "stb_image_alloc.h"
 
 /* stb_image_write, same arrangement: instantiated once, in the same TU as the
  * decoder, and taken here as declarations only. STBI_WRITE_NO_STDIO removes
@@ -836,8 +837,24 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
         free(file_bytes);
         return NULL;
     }
-    pixels = stbi_load_from_memory(file_bytes, (int)file_size, &width, &height,
-                                   &channels, 4);
+    /* The header bounds the decode as well as the result: the zlib stage
+     * otherwise grows its buffer until the IDAT stream ends, so a few
+     * megabytes of crafted data could claim gigabytes on the way to a
+     * picture the header already admitted. The bound is per thread, set
+     * around this one decode. */
+    {
+        const size_t decode_bound = mdkr_stbi_png_allocation_bound(
+            declared_width, declared_height, declared_channels,
+            stbi_is_16_bit_from_memory(file_bytes, (int)file_size), 4,
+            file_size);
+        const size_t previous_bound =
+            mdkr_stbi_set_allocation_limit(decode_bound);
+        pixels = decode_bound != 0u
+                     ? stbi_load_from_memory(file_bytes, (int)file_size,
+                                             &width, &height, &channels, 4)
+                     : NULL;
+        (void)mdkr_stbi_set_allocation_limit(previous_bound);
+    }
     free(file_bytes);
     /* Header inspection plus the decode. A file refused from its header alone
      * above cost microseconds and is left to the request's whole time. */

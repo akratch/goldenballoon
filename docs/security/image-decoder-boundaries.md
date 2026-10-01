@@ -24,6 +24,8 @@ additional format, path API or decoder pin is enabled by this maintenance.
 | `platform/app/character_portrait_import.cpp` | Bounded owned source bytes and structural PNG validation; 16–4096 px, non-interlaced 8-bit RGB/RGBA |
 
 All four callers request RGBA and have compile-time conversion-size guards.
+Every one also sets a per-thread decode bound from the header it admitted (see
+below) around its single decode call.
 These are integration bounds, not a claim that every decoder operation is
 safe. The later mandatory texture-header admission tests remain unexecuted on
 the latest candidate. Header inspection and decoding must consume the same
@@ -33,12 +35,25 @@ owned bytes; post-decode checks cannot replace pre-decode admission.
 
 The cited upstream integration fix for the older general-loader advisory adds
 an empty-allocation check. The candidate applies that defensive policy through
-first-party `stb_image_alloc.h`, without editing vendored headers. Nonzero
-requests continue to use the system allocator; this adds no positive-size cap.
-A refused resize preserves the original allocation for ordinary failure
-cleanup, including when the requested size is zero.
+first-party `stb_image_alloc.h`, without editing vendored headers. A refused
+resize preserves the original allocation for ordinary failure cleanup,
+including when the requested size is zero.
 [Upstream fix](https://github.com/saitoha/libsixel/commit/d6e34fc),
 [upstream security release](https://github.com/saitoha/libsixel/releases/tag/v1.8.7).
+
+Positive requests use the system allocator unless the calling thread set a
+decode bound (`mdkr_stbi_set_allocation_limit`, stored by the translation
+unit that instantiates stb_image). Header admission alone bounds what a
+decode returns, not what it allocates on the way: the zlib stage grows its
+buffer by doubling until the IDAT stream ends, so a crafted stream of a few
+megabytes could otherwise demand gigabytes for an admitted 64x64 picture.
+`mdkr_stbi_png_allocation_bound` derives the largest single allocation a header
+can legitimately need (twice the inflated scanlines, for the doubling
+estimate interlaced images exceed; the converted output; twice the file for
+the concatenated IDAT bytes; plus 64 KiB), and every pack/character caller
+sets it around its decode. The `mod_texture_store` CTest decodes a fixture
+that inflates far past its header and requires the refusal to stay within
+that bound.
 
 This addresses the documented allocation condition at our boundary. It does
 not prove the full applicability or closure of

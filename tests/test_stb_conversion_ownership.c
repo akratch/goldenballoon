@@ -7,6 +7,9 @@
 
 #include "stb_image_alloc.h"
 
+/* This fixture instantiates stb_image itself, so it owns the decode bound. */
+MDKR_STBI_ALLOCATION_LIMIT_STORAGE
+
 static size_t allocation_attempts;
 static size_t refused_attempt;
 static size_t live_allocations;

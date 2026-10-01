@@ -7,6 +7,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "stb_image_alloc.h"
 
 #define MODERN_PORTRAIT_SOURCE_MIN 16
 #define MODERN_PORTRAIT_SOURCE_MAX 1024
@@ -119,8 +120,19 @@ int mdkr_modern_identity_init(const MdkrModernCharacterAsset *asset,
     }
     inspected_width = width;
     inspected_height = height;
-    decoded = stbi_load_from_memory(encoded, (int)identity.portrait_size,
-                                    &width, &height, &components, 4);
+    {
+        /* Bound every decoder allocation by what this header can need. */
+        const size_t bound = mdkr_stbi_png_allocation_bound(
+            width, height, components,
+            stbi_is_16_bit_from_memory(encoded, (int)identity.portrait_size), 4,
+            identity.portrait_size);
+        const size_t previous = mdkr_stbi_set_allocation_limit(bound);
+        decoded = bound != 0u
+                      ? stbi_load_from_memory(encoded, (int)identity.portrait_size,
+                                              &width, &height, &components, 4)
+                      : NULL;
+        (void)mdkr_stbi_set_allocation_limit(previous);
+    }
     if (decoded == NULL) {
         set_error(error, error_size,
                   "compiled portrait PNG could not be decoded");

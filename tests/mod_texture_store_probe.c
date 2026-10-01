@@ -26,6 +26,10 @@
 #include "mod_texture_store_probe.h"
 #include "stb_image_alloc.h"
 
+/* The production decode bound lives with the stb instantiation; this file is
+ * the instantiation here. */
+MDKR_STBI_ALLOCATION_LIMIT_STORAGE
+
 #include <stdlib.h>
 
 static size_t s_largest_request;

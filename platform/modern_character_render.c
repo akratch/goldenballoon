@@ -12,6 +12,7 @@
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
 #include "stb_image.h"
+#include "stb_image_alloc.h"
 
 #define MODERN_TEXTURE_DIMENSION_MAX 4096
 #define MODERN_DECODED_TEXTURE_BYTES_MAX (512u * 1024u * 1024u)
@@ -512,9 +513,21 @@ int mdkr_modern_render_asset_init(MdkrModernRenderAsset *render,
                       "character PNG failed bounded header inspection");
             return 0;
         }
-        rgba = stbi_load_from_memory(texture_data->data + source.data_offset,
-                                    (int)source.data_size, &width, &height,
-                                    &components, 4);
+        {
+            /* Bound every decoder allocation by what this header can need. */
+            const size_t bound = mdkr_stbi_png_allocation_bound(
+                width, height, components,
+                stbi_is_16_bit_from_memory(texture_data->data + source.data_offset,
+                                           (int)source.data_size),
+                4, source.data_size);
+            const size_t previous = mdkr_stbi_set_allocation_limit(bound);
+            rgba = bound != 0u
+                       ? stbi_load_from_memory(texture_data->data + source.data_offset,
+                                               (int)source.data_size, &width, &height,
+                                               &components, 4)
+                       : NULL;
+            (void)mdkr_stbi_set_allocation_limit(previous);
+        }
         if (rgba == NULL || width <= 0 || height <= 0 ||
             width > MODERN_TEXTURE_DIMENSION_MAX || height > MODERN_TEXTURE_DIMENSION_MAX) {
             stbi_image_free(rgba);

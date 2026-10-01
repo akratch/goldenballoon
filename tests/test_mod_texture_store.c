@@ -89,6 +89,7 @@
 #define DIGEST_FLIGHT2 "c6666666666666666666666666666666"
 #define DIGEST_FLIGHT3 "c7777777777777777777777777777777"
 #define DIGEST_WTIMED  "f9999999999999999999999999999999"
+#define DIGEST_BOMB    "d1111111111111111111111111111111"
 /* Asked for in lowercase, as the renderer always does; stored by their packs
  * as Textures/<UPPER>.PNG (folder) and TEXTURES/<UPPER>.Png (zip). */
 #define DIGEST_CASE_FOLDER "ab00000000000000000000000000cdef"
@@ -344,6 +345,76 @@ static void write_giant_declared_png(const char *root, const char *pack,
     write_pack_bytes(root, pack, relative, png.bytes, png.length);
 }
 
+/* An 8x8 RGBA header whose IDAT is a real zlib stream inflating to 64 MiB of
+ * zeros: the header admits it, so only a bound on the decoder's own
+ * allocations keeps the reject from costing that memory first. Deflated by
+ * miniz in pieces, so the fixture itself never holds the expanded bytes. */
+static void write_inflation_bomb_png(const char *root, const char *pack,
+                                     const char *digest) {
+    static unsigned char zeros[1u << 20];
+    unsigned char *covered, *file;
+    const size_t capacity = 1u << 20;
+    size_t idat_length, cursor;
+    uint32_t crc;
+    mz_stream stream;
+    PngBuffer header;
+    char relative[128];
+    int piece;
+
+    /* "IDAT" followed by the stream, so the CRC covers both in place. */
+    covered = (unsigned char *)malloc(4u + capacity);
+    if (covered == NULL) fatal("bomb fixture allocation", digest);
+    memcpy(covered, "IDAT", 4);
+    memset(&stream, 0, sizeof stream);
+    if (mz_deflateInit(&stream, MZ_BEST_COMPRESSION) != MZ_OK) fatal("deflate init", digest);
+    stream.next_out = covered + 4;
+    stream.avail_out = (unsigned int)capacity;
+    for (piece = 0; piece < 64; ++piece) {
+        stream.next_in = zeros;
+        stream.avail_in = sizeof zeros;
+        while (stream.avail_in != 0) {
+            if (mz_deflate(&stream, MZ_NO_FLUSH) != MZ_OK || stream.avail_out == 0) {
+                fatal("deflate bomb fixture", digest);
+            }
+        }
+    }
+    if (mz_deflate(&stream, MZ_FINISH) != MZ_STREAM_END) fatal("deflate finish", digest);
+    idat_length = (size_t)stream.total_out;
+    mz_deflateEnd(&stream);
+
+    /* Signature and IHDR through the ordinary helpers, then the large IDAT
+     * and IEND appended by hand: the helpers' buffers are sized for the
+     * few-hundred-byte fixtures. */
+    png_begin(&header);
+    png_put_ihdr(&header, 8u, 8u, 6);
+    file = (unsigned char *)malloc(header.length + 12u + idat_length + 12u);
+    if (file == NULL) fatal("bomb fixture allocation", digest);
+    memcpy(file, header.bytes, header.length);
+    cursor = header.length;
+    file[cursor++] = (unsigned char)(idat_length >> 24);
+    file[cursor++] = (unsigned char)(idat_length >> 16);
+    file[cursor++] = (unsigned char)(idat_length >> 8);
+    file[cursor++] = (unsigned char)idat_length;
+    memcpy(file + cursor, covered, 4u + idat_length);
+    cursor += 4u + idat_length;
+    crc = crc32_of(covered, 4u + idat_length);
+    file[cursor++] = (unsigned char)(crc >> 24);
+    file[cursor++] = (unsigned char)(crc >> 16);
+    file[cursor++] = (unsigned char)(crc >> 8);
+    file[cursor++] = (unsigned char)crc;
+    memcpy(file + cursor, "\0\0\0\0IEND", 8u);
+    cursor += 8u;
+    crc = crc32_of((const unsigned char *)"IEND", 4u);
+    file[cursor++] = (unsigned char)(crc >> 24);
+    file[cursor++] = (unsigned char)(crc >> 16);
+    file[cursor++] = (unsigned char)(crc >> 8);
+    file[cursor++] = (unsigned char)crc;
+    snprintf(relative, sizeof relative, "textures/%s.png", digest);
+    write_pack_bytes(root, pack, relative, file, cursor);
+    free(file);
+    free(covered);
+}
+
 /* Pixel generators for the fixtures below. */
 typedef void (*PixelFn)(int x, int y, unsigned char out[4], unsigned char param);
 
@@ -570,6 +641,24 @@ static void test_a_side_no_backend_can_upload_is_refused(void) {
            "and it is refused from the header, before the decode");
     expect(texture.rgba == NULL && texture.width == 0 && texture.height == 0,
            "and the caller is handed nothing to read");
+}
+
+/* 1c. Admitted by its header, refused by its contents, and bounded on the way.
+ * stb's zlib stage grows its buffer by doubling until the stream ends, so
+ * before the per-decode bound this 8x8 picture asked for 64 MiB and more. */
+static void test_an_inflation_bomb_is_bounded_by_its_header(void) {
+    MdkrModTexture texture;
+    int            found;
+
+    mdkr_texture_probe_reset(PROBE_REFUSE_ABOVE);
+    found = lookup_settled(DIGEST_BOMB, &texture);
+
+    expect(found == 0, "a texture whose IDAT inflates past its header is refused");
+    expect(mdkr_texture_probe_decode_calls() == 1,
+           "its header admits it, so the decoder is entered");
+    expect(mdkr_texture_probe_largest_request() < HEADER_PARSE_CEILING,
+           "and no decoder allocation exceeds what an 8x8 header can need");
+    expect(texture.rgba == NULL, "and the caller is handed nothing to read");
 }
 
 /* 2. The gate must not cost a legitimate pack its textures. */
@@ -1466,7 +1555,8 @@ int main(int argc, char **argv) {
         strlen(DIGEST_STALE2) != 32 || strlen(DIGEST_FLIGHT0) != 32 ||
         strlen(DIGEST_FLIGHT1) != 32 || strlen(DIGEST_FLIGHT2) != 32 ||
         strlen(DIGEST_FLIGHT3) != 32 || strlen(DIGEST_WTIMED) != 32 ||
-        strlen(DIGEST_CASE_FOLDER) != 32 || strlen(DIGEST_CASE_ZIP) != 32) {
+        strlen(DIGEST_CASE_FOLDER) != 32 || strlen(DIGEST_CASE_ZIP) != 32 ||
+        strlen(DIGEST_BOMB) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -1480,6 +1570,7 @@ int main(int argc, char **argv) {
      * the per-side one. This is the shape the byte cap alone admitted. */
     write_giant_declared_png(mods, "probe", DIGEST_WIDE, 8192u, 2048u);
     write_small_rgba_png(mods, "probe", DIGEST_SOUND, 0x40u);
+    write_inflation_bomb_png(mods, "probe", DIGEST_BOMB);
     write_small_rgba_png(mods, "probe", MDKR_MOD_TAJ_PORTRAIT_LEGACY_DIGEST, 0x40u);
     write_small_rgba_png(mods, "probe", DIGEST_UNTIMED, 0x50u);
     write_small_rgba_png(mods, "probe", DIGEST_TIMED, 0x60u);
@@ -1536,6 +1627,7 @@ int main(int argc, char **argv) {
     }
 
     test_declared_size_is_refused_before_the_decode();
+    test_an_inflation_bomb_is_bounded_by_its_header();
     test_a_side_no_backend_can_upload_is_refused();
     test_a_texture_that_fits_still_loads();
     test_an_unreadable_header_is_refused_before_decode();
