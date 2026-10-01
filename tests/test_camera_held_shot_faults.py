@@ -2,7 +2,8 @@
 """ROM-free evidence rules for check_camera_held_shot_faults.py; never launches the game."""
 import unittest
 
-from check_camera_held_shot_faults import (NEAR_CONTACT_EXTENSION_TICKS,
+from check_camera_held_shot_faults import (BOUND_ARMS,
+                                           NEAR_CONTACT_EXTENSION_TICKS,
                                            RELEASE_HOLD_TICKS, epochs,
                                            release_hold_invariant, probes,
                                            verify)
@@ -17,17 +18,21 @@ CENSUS = ("camera_motion summary slot_ticks=100 ticks=100 cut_ticks=0 "
           "correction_reengagements=%d} "
           "shoulder={flips=0 continuous_surface=0 new_surface=0 basis_crossings=0} "
           "churn={blocker_changes=0 same_surface=0 new_surface=0} "
-          "emergency={max_dwell=0} discontinuity_per_1000_ticks=0.0000")
+          "emergency={max_dwell=0} "
+          "held={episodes=1 max_dwell_ms=%.1f max_divergence_deg=%.3f bound_exits=%d "
+          "dwell_bound_ms=%.1f divergence_bound_deg=%.3f max_episode_ms=100.0} "
+          "discontinuity_per_1000_ticks=0.0000")
 STATS = ("camera_motion stat name=cut_pos_step unit=wu/cut samples=0 min=0.0 mean=0.0 p95=0.0 max=0.0\n"
          "camera_motion stat name=cut_ang_step unit=deg/cut samples=0 min=0.0 mean=0.0 p95=0.0 max=0.0")
 
 
 def probe(tick, continued, length, recovering=0, contact=1, near=0, valid=1,
-          rejection="none"):
+          rejection="none", dwell=0.0167, divergence=1.0):
     return (f"camera_held_chain_probe tick={tick} slot={SLOT} continued={continued} "
             f"prior_length={length} valid={valid} target=(0.10000,-0.20000) "
             f"recovering={recovering} remaining={'2.00000' if valid else 'nan'} "
-            f"returned=0 rejection={rejection} contact={contact} near={near}")
+            f"returned=0 rejection={rejection} contact={contact} near={near} "
+            f"dwell={dwell:.4f} divergence={divergence:.3f}")
 
 
 def summary(tick, degraded=0, hidden=0, penetrated=0):
@@ -56,13 +61,20 @@ def motion_detail(tick, state="blocked=1 retracted=1 recovering=0 held=0",
             f"forward=({forward}) state={{{state} alternate=1 emergency=0}}")
 
 
-def published(tick, active=1):
-    return f"camera_held_shot_published tick={tick} slot={SLOT} frame={tick + 70} active={active}"
+def published(tick, active=1, dwell=0.0167, divergence=1.0):
+    return (f"camera_held_shot_published tick={tick} slot={SLOT} frame={tick + 70} "
+            f"active={active} dwell={dwell:.4f} divergence={divergence:.3f}")
 
 
-def trace(armed, ticks, reengagements=0, extra=()):
+def census(reengagements=0, max_dwell=100.0, max_divergence=1.0, exits=0,
+           bounds=(2000.0, 45.0)):
+    return CENSUS % (RELEASE_HOLD_TICKS, reengagements, max_dwell, max_divergence,
+                     exits, bounds[0], bounds[1])
+
+
+def trace(armed, ticks, reengagements=0, extra=(), census_row=None):
     """The armed row prints at the start of its own tick, as the runtime does."""
-    fault = int(armed.split(" tick=")[1].split()[0])
+    fault = int(armed.split(" tick=")[1].split()[0]) if armed else None
     rows = []
     for tick, lines in ticks:
         if tick == fault:
@@ -70,7 +82,7 @@ def trace(armed, ticks, reengagements=0, extra=()):
         rows.extend(lines)
         rows.append(summary(tick))
     rows.extend(extra)
-    rows.append(CENSUS % (RELEASE_HOLD_TICKS, reengagements))
+    rows.append(census_row or census(reengagements))
     rows.append(STATS)
     return "\n".join(rows)
 
@@ -137,6 +149,28 @@ def query(consumed=True, rejected=True, marked=True):
     if marked:
         text = text.replace(summary(fault), summary(fault, degraded=1))
     return text
+
+
+def bound_arm(kind="dwell_bound", republished=False, published_past=False,
+              ordinary_ok=True, exits=1, lowered=True):
+    """A held shot refused by a lowered bound, then the ordinary path."""
+    dwell_bound, divergence_bound = BOUND_ARMS[kind]
+    reason = "dwell" if kind == "dwell_bound" else "divergence"
+    ticks = holding(10, 3)
+    refused = 13
+    status = "1" if ordinary_ok else "1 valid=0"
+    ticks.append((refused, [probe(refused, 1, 3, valid=0, rejection=reason),
+                            detail(refused, status=status)]))
+    ticks.append((14, [detail(14, status=2)] + ([published(14)] if republished else [])))
+    ticks.append((15, [detail(15, status=0, extra="").replace("corrected=1", "corrected=0")]))
+    ticks.append((16, [probe(16, 0, 0), published(16)]))
+    if published_past:
+        ticks[0] = (10, [probe(10, 0, 0), published(10, dwell=dwell_bound + 1.0,
+                                                    divergence=divergence_bound + 1.0),
+                         detail(10), motion_detail(10)])
+    bounds = (dwell_bound * 1000.0, divergence_bound) if lowered else (2000.0, 45.0)
+    return trace(None, ticks, census_row=census(exits=exits, bounds=bounds,
+                                                  max_dwell=50.0, max_divergence=1.0))
 
 
 class HeldShotEvidence(unittest.TestCase):
@@ -206,6 +240,24 @@ class HeldShotEvidence(unittest.TestCase):
                              (episode(hold, near_from=hold), "while grazing")):
             with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
                 release_hold_invariant(rows)
+
+    def test_bound_arms(self):
+        for kind in BOUND_ARMS:
+            with self.subTest(kind=kind):
+                self.assertEqual(verify(bound_arm(kind), kind), 1)
+                for output, reason in (
+                        (bound_arm(kind, lowered=False), "lowered bound"),
+                        (bound_arm(kind, exits=0), "reached the lowered"),
+                        (bound_arm(kind, republished=True), "re-seeded"),
+                        (bound_arm(kind, published_past=True), "past its bound"),
+                        (bound_arm(kind, ordinary_ok=False), "ordinary path")):
+                    with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                        verify(output, kind)
+        other = "divergence_bound"
+        with self.assertRaisesRegex(ValueError, "refused by its divergence bound"):
+            verify(bound_arm("dwell_bound").replace("dwell_bound_ms=200.0 divergence_bound_deg=180.000",
+                                                    "dwell_bound_ms=3600000.0 divergence_bound_deg=2.000"),
+                   other)
 
     def test_epochs_split_on_tick_restart(self):
         text = "\n".join((summary(5), summary(6), summary(1), summary(2)))

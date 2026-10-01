@@ -30,15 +30,27 @@ class ChainEvidence(unittest.TestCase):
             audit([row()], [99])
 
     def test_contact_fields(self):
-        seed = row() + " rejection=none contact=1 near=0"
-        self.assertEqual(audit([seed, row(2, 1, 1) + " rejection=none contact=0 near=1"])["accepted"], 2)
+        held = " dwell=0.0167 divergence=3.000"
+        seed = row() + " rejection=none contact=1 near=0" + held
+        self.assertEqual(audit([seed, row(2, 1, 1) + " rejection=none contact=0 near=1" + held])["accepted"], 2)
         with self.assertRaisesRegex(ValueError, "recovery claimed on a contact tick"):
-            audit([seed, row(2, 1, 1, recovering=1) + " rejection=none contact=1 near=0"])
+            audit([seed, row(2, 1, 1, recovering=1) + " rejection=none contact=1 near=0" + held])
         with self.assertRaisesRegex(ValueError, "release band read on a contact tick"):
-            audit([row() + " rejection=none contact=1 near=1"])
-        for bad in (" rejection=none contact=2 near=0", " rejection=none contact=1",
-                    " rejection=none contact=0 near=2"):
+            audit([row() + " rejection=none contact=1 near=1" + held])
+        for bad in (" rejection=none contact=2 near=0" + held, " rejection=none contact=1" + held,
+                    " rejection=none contact=0 near=2" + held, " rejection=none contact=1 near=0"):
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "malformed"):
+                audit([row() + bad])
+
+    def test_bound_fields(self):
+        refused = row(valid=0) + " rejection=dwell contact=1 near=0 dwell=2.0167 divergence=nan"
+        self.assertEqual(audit([refused])["rejections"], {"dwell": 1})
+        self.assertEqual(audit([row(valid=0) + " rejection=divergence contact=1 near=0 "
+                                "dwell=0.0167 divergence=50.000"])["rejections"], {"divergence": 1})
+        for bad in (" rejection=none contact=1 near=0 dwell=-1 divergence=3.0",
+                    " rejection=none contact=1 near=0 dwell=0.1 divergence=nan",
+                    " rejection=none contact=1 near=0 dwell=0.1 divergence=181"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
                 audit([row() + bad])
 
     def test_rejection_classification(self):

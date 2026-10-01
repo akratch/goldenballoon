@@ -19,6 +19,18 @@ tick that an unrelated timing or tuning change would move:
                  fail -- the positive control that held recovery is censused
                  as clear, not as part of the blocked span
 
+Two more arms lower the held-shot bounds through MDKR_TEST_CAMERA_HELD_BOUNDS,
+because the route's natural held shots stay inside the shipped ones:
+
+  dwell_bound       a held shot ends once it has held for the bound
+  divergence_bound  a held view may not turn further from the authored view
+                    than the bound
+
+and both require that the ordinary boom path took the tick a bound refused,
+that no held shot re-seeded before that correction released, that the census
+measured every published held tick inside the bound, and that the binary
+reported the bound it ran with.
+
 Every arm also requires safe publication on every tick, well-formed chain
 evidence, and the release-hold invariant on the route's own held episodes:
 recovery starts on exactly the release-hold-th consecutive clear tick.
@@ -44,6 +56,12 @@ ARMS = {
     "false_clear": f"false_clear:{RELEASE_HOLD_TICKS - 1}",
     "false_contact": "false_contact",
 }
+# Bound arms: (dwell seconds, divergence degrees). Each lowers one bound well
+# under what the route's held shots reach and lifts the other out of the way.
+BOUND_ARMS = {
+    "dwell_bound": (0.2, 180.0),
+    "divergence_bound": (3600.0, 2.0),
+}
 # Rigid translation is exact up to float rounding at track coordinates.
 RIGID_TOLERANCE = 0.01
 
@@ -52,9 +70,9 @@ ARMED = re.compile(r"camera_held_fault armed kind=(\w+) tick=(\d+) slot=(\d+) "
 PROBE = re.compile(r"camera_held_chain_probe tick=(\d+) slot=(\d+) continued=([01]) "
                    r"prior_length=(\d+) valid=([01]) .* recovering=([01]) "
                    r"remaining=(\S+) returned=([01]) rejection=(\w+) contact=([01]) "
-                   r"near=([01])$")
+                   r"near=([01]) dwell=(\S+) divergence=(\S+)$")
 PUBLISHED = re.compile(r"camera_held_shot_published tick=(\d+) slot=(\d+) "
-                       r"frame=\d+ active=([01])$")
+                       r"frame=\d+ active=([01]) dwell=(\S+) divergence=(\S+)$")
 VEC = r"\(([^,]+),([^,]+),([^)]+)\)"
 TICK = re.compile(r"^camera_\w+(?: \w+(?:=\S+)?)*? tick=(\d+)\b")
 
@@ -105,17 +123,21 @@ def probes(output):
         parsed[key] = dict(continued=int(match[3]), valid=int(match[5]),
                            recovering=int(match[6]), returned=int(match[8]),
                            rejection=match[9], contact=int(match[10]),
-                           near=int(match[11]))
+                           near=int(match[11]), dwell=float(match[12]),
+                           divergence=float(match[13]))
     return parsed
 
 
-def published(output):
+def published(output, measures=None):
+    """{(tick, slot): active}; `measures` collects (dwell, divergence) too."""
     active = {}
     for row in _rows(output, "camera_held_shot_published "):
         match = PUBLISHED.fullmatch(row)
         if match is None:
             raise ValueError(f"malformed held publication: {row}")
         active[(int(match[1]), int(match[2]))] = int(match[3])
+        if measures is not None and match[3] == "1":
+            measures[(int(match[1]), int(match[2]))] = (float(match[4]), float(match[5]))
     return active
 
 
@@ -196,7 +218,64 @@ def release_hold_invariant(rows):
     return starts
 
 
+def verify_bound(output, kind):
+    """A lowered held-shot bound ends held shots and hands over cleanly."""
+    if kind not in BOUND_ARMS:
+        raise ValueError("unknown bound arm")
+    common(output)
+    dwell_bound, divergence_bound = BOUND_ARMS[kind]
+    reason = "dwell" if kind == "dwell_bound" else "divergence"
+    census = motion.parse_summary(
+        [row for row in output.splitlines() if motion.MOTION_SUMMARY in row][-1])
+    if abs(census["held_dwell_bound_ms"] - dwell_bound * 1000.0) > 0.05 or \
+            abs(census["held_divergence_bound_deg"] - divergence_bound) > 0.0005:
+        raise ValueError("the runtime did not run with the lowered bound")
+    if census["max_held_dwell_ms"] > (dwell_bound + 1.0 / 60.0) * 1000.0 or \
+            census["max_held_divergence_deg"] > divergence_bound + 0.01:
+        raise ValueError("the census measured a published held shot past its bound: "
+                         f"{census['max_held_dwell_ms']:.1f}ms "
+                         f"{census['max_held_divergence_deg']:.2f}deg")
+    if census["held_bound_exits"] < 1:
+        raise ValueError(f"no held shot reached the lowered {reason} bound")
+    exits = 0
+    for epoch in epochs(output):
+        rows = probes(epoch)
+        measures = {}
+        active = published(epoch, measures)
+        for (tick, slot), (dwell, divergence) in measures.items():
+            if dwell > dwell_bound + 1e-4 or divergence > divergence_bound + 1e-3:
+                raise ValueError(f"tick {tick} published a held shot past its bound")
+        for (tick, slot), row in sorted(rows.items()):
+            if row["valid"] or row["rejection"] != reason:
+                continue
+            exits += 1
+            if active.get((tick, slot)) is not None:
+                raise ValueError(f"tick {tick} published the held shot its bound refused")
+            detail = details(epoch, "camera_obstruction_observe detail", tick, slot)
+            if not re.search(r"resolve=\{status=[0-3] valid=1 ", detail) or \
+                    not re.search(r" clearance=0 ", detail):
+                raise ValueError(f"the ordinary path did not safely take tick {tick}")
+            # No held shot until the ordinary correction has released.
+            later = tick + 1
+            while True:
+                if active.get((later, slot)) is not None:
+                    raise ValueError(f"a held shot re-seeded at {later} before the "
+                                     f"correction that replaced it released")
+                try:
+                    row_later = details(epoch, "camera_obstruction_observe detail", later, slot)
+                except ValueError:
+                    break
+                if re.search(r"resolve=\{status=0 valid=1 corrected=0 ", row_later):
+                    break
+                later += 1
+    if exits == 0:
+        raise ValueError(f"no held proof was refused by its {reason} bound")
+    return exits
+
+
 def verify(output, kind):
+    if kind in BOUND_ARMS:
+        return verify_bound(output, kind)
     if kind not in ARMS:
         raise ValueError("unknown fault")
     everything = common(output)
@@ -285,19 +364,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=motion.DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--only", choices=tuple(ARMS))
+    parser.add_argument("--only", choices=tuple(ARMS) + tuple(BOUND_ARMS))
     args = parser.parse_args()
     binary = Path(motion.resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
     if not binary.is_file() or not rom.is_file():
         parser.error("missing binary or ROM")
-    for kind in (args.only,) if args.only else ARMS:
-        output = motion.run_route(motion.ROUTES[0], binary, rom, None, present_env={
-            "MDKR_CAMERA_TRACE": "2",
-            "MDKR_TEST_CAMERA_HELD_FAULT": ARMS[kind]})
+    for kind in (args.only,) if args.only else (*ARMS, *BOUND_ARMS):
+        output = motion.run_route(motion.ROUTES[0], binary, rom, None,
+                                  present_env=arm_env(kind))
         verify(output, kind)
-        print(f"PASS held-shot {kind}: fault located, observed and safely published", flush=True)
+        print(f"PASS held-shot {kind}: located, observed and safely published", flush=True)
     return 0
+
+
+def arm_env(kind):
+    env = {"MDKR_CAMERA_TRACE": "2"}
+    if kind in BOUND_ARMS:
+        dwell, divergence = BOUND_ARMS[kind]
+        env["MDKR_TEST_CAMERA_HELD_BOUNDS"] = f"{dwell}:{divergence}"
+    else:
+        env["MDKR_TEST_CAMERA_HELD_FAULT"] = ARMS[kind]
+    return env
 
 
 if __name__ == "__main__":

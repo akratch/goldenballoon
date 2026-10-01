@@ -63,23 +63,58 @@ class MotionReportingTests(unittest.TestCase):
     def test_held_correction_exemption_requires_matching_safe_publication(self):
         detail = ("camera_obstruction_observe detail tick=1 physical_slot=0 "
                   "resolve={status=2 valid=1 corrected=1 alternate=1 clearance=0 source_degraded=0}")
-        published = "camera_held_shot_published tick=1 slot=0 frame=7 active=1"
-        self.assertEqual(runtime.nonheld_corrections(detail), 1)
-        self.assertEqual(runtime.nonheld_corrections(published + "\n" + detail), 0)
-        self.assertEqual(runtime.nonheld_corrections("\n".join((
-            published, detail, detail.replace("tick=1", "tick=2"), published, detail))), 1)
-        self.assertEqual(runtime.nonheld_corrections(published.replace("active=1", "active=0") + "\n" + detail), 1)
+        published = "camera_held_shot_published tick=1 slot=0 frame=7 active=1 dwell=0.5000 divergence=12.000"
+        self.assertEqual(runtime.held_exemption(detail).nonheld, 1)
+        self.assertEqual(runtime.held_exemption(published + "\n" + detail),
+                         runtime.HeldExemption(nonheld=0, publications=1, episodes=1))
+        self.assertEqual(runtime.held_exemption("\n".join((
+            published, detail, detail.replace("tick=1", "tick=2"), published, detail))).nonheld, 1)
+        self.assertEqual(runtime.held_exemption(
+            published.replace("active=1", "active=0") + "\n" + detail).nonheld, 1)
         for trace in (published, detail + "\n" + detail,
                       detail + "\n" + published + "\n" + published,
                       detail + "\n" + published.replace("slot=0", "slot=1"),
-                      detail + "\n" + published.replace("active=1", "active=2")):
+                      detail + "\n" + published.replace("active=1", "active=2"),
+                      detail + "\n" + published.replace(" dwell=0.5000 divergence=12.000", "")):
             with self.subTest(trace=trace), self.assertRaises(RuntimeError):
-                runtime.nonheld_corrections(trace)
+                runtime.held_exemption(trace)
         for old, new in (("status=2", "status=0"), ("valid=1", "valid=0"),
                          ("corrected=1", "corrected=0"), ("alternate=1", "alternate=0"),
                          ("clearance=0", "clearance=1"), ("source_degraded=0", "source_degraded=1")):
             with self.subTest(field=old), self.assertRaises(RuntimeError):
-                runtime.nonheld_corrections(detail.replace(old, new) + "\n" + published)
+                runtime.held_exemption(detail.replace(old, new) + "\n" + published)
+
+    def test_held_exemption_is_bounded(self):
+        detail = ("camera_obstruction_observe detail tick={t} physical_slot=0 "
+                  "resolve={{status=2 valid=1 corrected=1 alternate=1 clearance=0 source_degraded=0}}")
+        published = ("camera_held_shot_published tick={t} slot=0 frame=7 active=1 "
+                     "dwell={d} divergence={v}")
+        def trace(*pairs):
+            return "\n".join(f"{published.format(t=t, d=d, v=v)}\n{detail.format(t=t)}"
+                             for t, d, v in pairs)
+        bound_dwell = motion.MAX_HELD_DWELL_SECONDS
+        bound_divergence = motion.MAX_HELD_DIVERGENCE_DEGREES
+        # Two episodes (ticks 1-2 and 4) inside the bounds.
+        self.assertEqual(runtime.held_exemption(trace((1, 0.1, 1.0), (2, bound_dwell, bound_divergence),
+                                                      (4, 0.1, 1.0))),
+                         runtime.HeldExemption(nonheld=0, publications=3, episodes=2))
+        for pair, reason in (((1, bound_dwell + 0.1, 1.0), "dwell"),
+                             ((1, 0.1, bound_divergence + 1.0), "divergence")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(RuntimeError, "bounds"):
+                runtime.held_exemption(trace(pair))
+
+    def test_comfort_guard_bounds_held_inflation(self):
+        modern = runtime.HeldExemption(nonheld=100, publications=50, episodes=5)
+        self.assertEqual(runtime.comfort_inflation_failures(
+            runtime.HeldExemption(nonheld=200, publications=150, episodes=10), modern), [])
+        for comfort, reason in (
+                (runtime.HeldExemption(nonheld=201, publications=50, episodes=5), "non-held"),
+                (runtime.HeldExemption(nonheld=100, publications=50, episodes=11), "held shots"),
+                (runtime.HeldExemption(nonheld=100, publications=151, episodes=5), "held ticks")):
+            with self.subTest(reason=reason):
+                failures = runtime.comfort_inflation_failures(comfort, modern)
+                self.assertEqual(len(failures), 1)
+                self.assertIn(reason, failures[0])
 
     def test_performance_trial_does_not_change_observe_control(self):
         for enabled in (False, True):

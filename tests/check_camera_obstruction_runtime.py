@@ -26,10 +26,14 @@ import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
                            resolve_binary)
+from check_camera_motion_quality import (HELD_DWELL_SLACK_SECONDS,
+                                         MAX_HELD_DIVERGENCE_DEGREES,
+                                         MAX_HELD_DWELL_SECONDS)
 
 
 SCRIPT = Path(__file__).resolve().parent / "input_scripts/race_drive_long.txt"
@@ -117,11 +121,29 @@ def block_field(row: str, block: str, name: str) -> int:
     return int(match.group(1))
 
 
-def nonheld_corrections(output: str) -> int:
-    """Exclude only proven active held publications, not generic recovery.
+HELD_PUBLICATION = re.compile(
+    r"camera_held_shot_published tick=(\d+) slot=(\d+) frame=\d+ active=([01]) "
+    r"dwell=(\d+(?:\.\d+)?) divergence=(\d+(?:\.\d+)?)")
 
-    Reduced comfort intentionally prolongs held recovery. Missing publications
-    earn no exemption; duplicate/orphan/unsafe publication evidence is invalid.
+
+@dataclass(frozen=True)
+class HeldExemption:
+    """Corrections split into the ordinary ones and proven held publications."""
+
+    nonheld: int
+    publications: int
+    episodes: int
+
+
+def held_exemption(output: str) -> HeldExemption:
+    """Exempt only proven active held publications, each inside its bounds.
+
+    Reduced comfort intentionally prolongs held recovery, so its held
+    publications are not ordinary obstruction corrections. The exemption is
+    bounded: every exempted publication must match a safe corrected detail and
+    report dwell and divergence inside the runtime's held-shot bounds.
+    Missing publications earn no exemption; duplicate/orphan/unsafe or
+    out-of-bounds publication evidence is invalid.
     """
     details = {}
     active = set()
@@ -139,10 +161,13 @@ def nonheld_corrections(output: str) -> int:
                 raise RuntimeError("duplicate camera detail identity")
             details[key] = row
         elif row.startswith("camera_held_shot_published "):
-            match = re.fullmatch(r"camera_held_shot_published tick=(\d+) slot=(\d+) frame=\d+ active=([01])", row)
+            match = HELD_PUBLICATION.fullmatch(row)
             if match is None:
                 raise RuntimeError("malformed held publication")
             if match[3] == "1":
+                if float(match[4]) > MAX_HELD_DWELL_SECONDS + HELD_DWELL_SLACK_SECONDS or \
+                        float(match[5]) > MAX_HELD_DIVERGENCE_DEGREES + 0.01:
+                    raise RuntimeError("held publication outside its dwell/divergence bounds")
                 key = (epoch, int(match[1]), int(match[2]))
                 if key in active:
                     raise RuntimeError("duplicate active held publication")
@@ -156,7 +181,39 @@ def nonheld_corrections(output: str) -> int:
                  ("clearance", 0), ("source_degraded", 0))) or \
                 block_field(row, "resolve", "status") not in (1, 2):
             raise RuntimeError("held publication lacks matching safe correction")
-    return sum(field(row, "corrected") for row in details.values()) - len(active)
+    episodes = sum((epoch, tick - 1, slot) not in active for epoch, tick, slot in active)
+    return HeldExemption(
+        nonheld=sum(field(row, "corrected") for row in details.values()) - len(active),
+        publications=len(active), episodes=episodes)
+
+
+def comfort_inflation_failures(comfort: HeldExemption, modern: HeldExemption) -> list[str]:
+    """Comfort may lengthen held recovery; it may not create corrections.
+
+    Ordinary corrections keep the original 2x bound. Held shots start where the
+    geometry blocks the authored boom, which comfort does not change, so their
+    episode count keeps the same 2x bound. Their length is the only thing
+    comfort may stretch: recovery at 0.4x speed and fraction takes at most
+    1/0.4 = 2.5x (speed-limited) or ln(0.75)/ln(0.9) = 2.73x (fraction-limited)
+    as many ticks, so held publications are bounded at 3x.
+    """
+    failures = []
+    if comfort.nonheld > 2 * modern.nonheld:
+        failures.append(
+            f"comfort arm reported {comfort.nonheld} non-held corrections "
+            f"against the authored-motion arm's {modern.nonheld}; the "
+            "comfort offset is being counted as an obstruction correction")
+    if comfort.episodes > 2 * modern.episodes:
+        failures.append(
+            f"comfort arm started {comfort.episodes} held shots against the "
+            f"authored-motion arm's {modern.episodes}; comfort moved the desired "
+            "eye into geometry")
+    if comfort.publications > 3 * modern.publications:
+        failures.append(
+            f"comfort arm published {comfort.publications} held ticks against the "
+            f"authored-motion arm's {modern.publications}; held recovery outran the "
+            "reduced recovery rate's bound")
+    return failures
 
 
 def inspect(policy: str, output: str) -> dict[str, int]:
@@ -288,16 +345,12 @@ def main() -> int:
     # correction reports a permanently retracted camera on a wall-free route --
     # it is a 35x inflation of this counter, and this bound is what catches it.
     # Active held-shot recovery legitimately lasts longer with reduced comfort.
-    # Match actual publications before exempting those ticks; keep the original
-    # inflation guard on all other corrections.
-    ordinary_comfort = nonheld_corrections(outputs["comfort"])
-    ordinary_modern = nonheld_corrections(outputs["modern"])
-    if ordinary_comfort > 2 * ordinary_modern:
-        failures.append(
-            f"comfort arm reported {ordinary_comfort} non-held corrections "
-            f"against the authored-motion arm's {ordinary_modern}; the "
-            "comfort offset is being counted as an obstruction correction"
-        )
+    # Match actual, in-bounds publications before exempting those ticks, bound
+    # how many there may be, and keep the original guard on everything else.
+    comfort_held = held_exemption(outputs["comfort"])
+    modern_held = held_exemption(outputs["modern"])
+    print(f"  held exemption: modern={modern_held} comfort={comfort_held}")
+    failures.extend(comfort_inflation_failures(comfort_held, modern_held))
     if results["legacy"]["penetrated"] == 0:
         failures.append("legacy positive control did not reproduce a lens overlap")
     if results["center-ray"]["penetrated"] == 0:

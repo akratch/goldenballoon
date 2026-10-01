@@ -70,6 +70,17 @@ OSCILLATION_TICKS = 12
 # which is why the measured distribution is also reported below.
 MAX_EMERGENCY_DWELL_TICKS = 300
 
+# Held-shot bounds (MDKR_CAMERA_HELD_MAX_DWELL_SECONDS and
+# MDKR_CAMERA_HELD_MAX_DIVERGENCE_DEGREES). The runtime ends a held shot at
+# either one and hands the slot to the ordinary boom path, so these are the
+# product's own limits, not quality thresholds: a published held shot past
+# either is a broken bound. The census reports the bounds the binary ran with
+# and they must equal these, so neither side can drift alone.
+MAX_HELD_DWELL_SECONDS = 2.0
+MAX_HELD_DIVERGENCE_DEGREES = 45.0
+# One authored tick of float accumulation slack on the measured dwell.
+HELD_DWELL_SLACK_SECONDS = 1.0 / 60.0
+
 
 @dataclass(frozen=True)
 class Route:
@@ -168,6 +179,15 @@ def block_scalar(row: str, block: str, name: str) -> int:
     return int(match.group(1))
 
 
+def block_real(row: str, block: str, name: str) -> float:
+    match = re.search(
+        rf"\b{re.escape(block)}=\{{[^}}]*\b{re.escape(name)}=(-?\d+(?:\.\d+)?)", row
+    )
+    if match is None:
+        raise RuntimeError(f"missing {block}.{name} in motion row: {row[:300]}")
+    return float(match.group(1))
+
+
 def real(row: str, name: str) -> float:
     match = re.search(rf"\b{re.escape(name)}=(-?\d+(?:\.\d+)?)", row)
     if match is None:
@@ -227,6 +247,13 @@ def parse_summary(row: str) -> dict[str, float]:
         "blocker_changes_same_surface": block_scalar(row, "churn", "same_surface"),
         "blocker_changes_new_surface": block_scalar(row, "churn", "new_surface"),
         "max_emergency_dwell": block_scalar(row, "emergency", "max_dwell"),
+        "held_episodes": block_scalar(row, "held", "episodes"),
+        "max_held_dwell_ms": block_real(row, "held", "max_dwell_ms"),
+        "max_held_divergence_deg": block_real(row, "held", "max_divergence_deg"),
+        "held_bound_exits": block_scalar(row, "held", "bound_exits"),
+        "held_dwell_bound_ms": block_real(row, "held", "dwell_bound_ms"),
+        "held_divergence_bound_deg": block_real(row, "held", "divergence_bound_deg"),
+        "max_held_episode_ms": block_real(row, "held", "max_episode_ms"),
         "discontinuity_per_1000_ticks": real(row, "discontinuity_per_1000_ticks"),
     }
 
@@ -356,7 +383,31 @@ def inspect(route: Route, output: str) -> tuple[dict, dict, list[str]]:
             f"{summary['max_emergency_dwell']} authored ticks "
             f"(> {MAX_EMERGENCY_DWELL_TICKS})")
 
+    # (a.4) held shots inside their own bounds, measured on what was
+    # published. The binary must also report the shipped bounds.
+    failures.extend(held_bound_failures(route.name, summary))
+
     return summary, stats, failures
+
+
+def held_bound_failures(name: str, summary: dict) -> list[str]:
+    failures = []
+    if abs(summary["held_dwell_bound_ms"] - MAX_HELD_DWELL_SECONDS * 1000.0) > 0.05 or \
+            abs(summary["held_divergence_bound_deg"] - MAX_HELD_DIVERGENCE_DEGREES) > 0.0005:
+        failures.append(
+            f"{name}: runtime held-shot bounds "
+            f"{summary['held_dwell_bound_ms']}ms/{summary['held_divergence_bound_deg']}deg "
+            f"are not the shipped {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg")
+    if summary["max_held_dwell_ms"] > (MAX_HELD_DWELL_SECONDS + HELD_DWELL_SLACK_SECONDS) * 1000.0:
+        failures.append(
+            f"{name}: a held shot held for {summary['max_held_dwell_ms']:.1f} ms "
+            f"(> {MAX_HELD_DWELL_SECONDS * 1000.0:.0f})")
+    if summary["max_held_divergence_deg"] > MAX_HELD_DIVERGENCE_DEGREES + 0.01:
+        failures.append(
+            f"{name}: a published held view turned "
+            f"{summary['max_held_divergence_deg']:.2f} degrees from the authored view "
+            f"(> {MAX_HELD_DIVERGENCE_DEGREES})")
+    return failures
 
 
 def reengagement_evidence(output: str) -> list[str]:
@@ -423,6 +474,12 @@ def report_baseline(name: str, summary: dict, stats: dict) -> None:
           f"-- ADVISORY, section 7.3's literal wording; a one-off short "
           f"obstruction counts here too")
     print(f"    max emergency dwell      {summary['max_emergency_dwell']} ticks")
+    print(f"    held shots (HARD bounds) episodes={summary['held_episodes']} "
+          f"max_dwell={summary['max_held_dwell_ms']:.1f}ms "
+          f"max_divergence={summary['max_held_divergence_deg']:.2f}deg "
+          f"bound_exits={summary['held_bound_exits']} "
+          f"-- bounds {MAX_HELD_DWELL_SECONDS}s/{MAX_HELD_DIVERGENCE_DEGREES}deg; "
+          f"longest episode incl. recovery {summary['max_held_episode_ms']:.1f}ms (reported)")
     print(f"  [{name}] BASELINE distributions -- reported, NOT asserted; "
           "section 7.3's signed review sets thresholds from these")
     print(f"    {'metric':<20}{'unit':<12}{'n':>8}{'min':>12}{'mean':>12}"

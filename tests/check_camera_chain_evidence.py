@@ -15,8 +15,9 @@ ROW = re.compile(
     r"camera_held_chain_probe tick=(\d+) slot=(\d+) continued=([01]) "
     r"prior_length=(\d+) valid=([01]) target=\(([^,]+),([^\)]+)\) "
     r"recovering=([01]) remaining=(\S+) returned=([01])"
-    r"(?: rejection=(history|pose|endpoint|transition|boom|visibility|degraded|framing|none))?"
-    r"(?: contact=([01]) near=([01]))?$")
+    r"(?: rejection=(history|dwell|pose|divergence|endpoint|transition|boom|visibility|"
+    r"degraded|framing|none))?"
+    r"(?: contact=([01]) near=([01]) dwell=(\S+) divergence=(\S+))?$")
 
 
 def audit(lines, required_returns=()):
@@ -42,6 +43,12 @@ def audit(lines, required_returns=()):
             raise ValueError(f"line {number}: recovery claimed on a contact tick")
         if contact == "1" and match[13] == "1":
             raise ValueError(f"line {number}: release band read on a contact tick")
+        if contact is not None:
+            dwell, divergence = float(match[14]), float(match[15])
+            if not (math.isfinite(dwell) and dwell >= 0):
+                raise ValueError(f"line {number}: invalid held dwell")
+            if valid and not (math.isfinite(divergence) and 0 <= divergence <= 180):
+                raise ValueError(f"line {number}: accepted an unmeasured view divergence")
         previous = history.get(slot)
         if continued and previous != (tick - 1, length):
             raise ValueError(f"line {number}: continuation lacks matching accepted history")
