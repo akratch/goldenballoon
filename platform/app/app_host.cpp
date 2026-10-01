@@ -2,6 +2,7 @@
 #include "app_host.h"
 #include "a11y_speech.h"
 #include "app_activation.h"
+#include "app_navigation.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
@@ -225,8 +226,7 @@ bool AppHost::initGL(const char *title, int width, int height) {
     imguiContextReady_ = true;
     ImGuiIO &io        = ImGui::GetIO();
     io.IniFilename     = nullptr; // don't litter imgui.ini in the cwd (persist later)
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    AppNavigation_configure(io);
     AppTheme::setup(framebufferScale());
     if (!ImGui_ImplSDL2_InitForOpenGL(window_, gl_)) {
         std::fprintf(stderr, "[app] ImGui_ImplSDL2_InitForOpenGL failed\n");
@@ -303,8 +303,7 @@ bool AppHost::initWebGpu(const char *title, int width, int height) {
     imguiContextReady_ = true;
     ImGuiIO &io        = ImGui::GetIO();
     io.IniFilename     = nullptr;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    AppNavigation_configure(io);
     AppTheme::setup(framebufferScale()); // build fonts BEFORE gfx_webgpu_imgui_init
     if (!ImGui_ImplSDL2_InitForOther(window_)) {
         std::fprintf(stderr, "[app] ImGui_ImplSDL2_InitForOther failed\n");

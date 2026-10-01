@@ -391,6 +391,15 @@ and compiles, but its new assertions have not run. Real launcher fonts/themes,
 OS clipboard/input, controller entry and packaged 200% layouts still require
 the acceptance guide's native-online journey.
 
+`app_navigation` builds a launcher-shaped frame (root window, flattened header
+and content regions, a flattened status card) on ImGui's CPU-only core, set up
+by the same `AppNavigation_configure` both AppHost backends call. It Tabs to a
+control in the card, the header and the content, presses Escape, and requires
+the next Tab to land on the following control and traversal to wrap. It first
+proves the fixture reproduces the trap with Dear ImGui's default Escape
+handling, which forgets the focused control but leaves forward Tab with
+nothing to move past.
+
 The Windows validation build includes every registered unit target, not just
 the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
 the SDL-stubbed `app_window` unit owns its console entry point and does not link

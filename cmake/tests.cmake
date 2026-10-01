@@ -779,6 +779,20 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_online_join_code_input_test PRIVATE
         IMGUI_DISABLE_WIN32_FUNCTIONS IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)
     add_test(NAME online_join_code_input COMMAND mdkr_online_join_code_input_test)
+    # The launcher's navigation setup on a launcher-shaped frame, ImGui's CPU
+    # core only: Escape must never leave forward Tab with nowhere to go.
+    add_executable(mdkr_app_navigation_test
+        ${CMAKE_SOURCE_DIR}/tests/test_app_navigation.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_tables.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_widgets.cpp)
+    target_include_directories(mdkr_app_navigation_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
+    target_compile_features(mdkr_app_navigation_test PRIVATE cxx_std_17)
+    target_compile_definitions(mdkr_app_navigation_test PRIVATE
+        IMGUI_DISABLE_WIN32_FUNCTIONS IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS)
+    add_test(NAME app_navigation COMMAND mdkr_app_navigation_test)
     add_executable(mdkr_online_room_takeover_policy_test
         ${CMAKE_SOURCE_DIR}/tests/test_online_room_takeover_policy.cpp
         # The actual adapter interface header includes its inline fake seam.

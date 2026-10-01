@@ -319,6 +319,9 @@ platform qualification.
 The supported behavior is explicit:
 
 - keyboard navigation and activation are enabled throughout the launcher;
+- an Escape or controller B that nothing else claims keeps the focused
+  control, so Tab carries on from it. Dear ImGui's default forgets the control
+  and leaves forward Tab with nowhere to go for the rest of the session;
 - the in-game F1 overlay uses Escape and controller B symmetrically: close an
   ImGui popup first, dismiss confirmation, leave Settings, then close overlay;
 - UI scale is persisted from 0.75x through 2.00x and scales fonts, controls,
