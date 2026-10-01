@@ -173,6 +173,18 @@ def bound_arm(kind="dwell_bound", republished=False, published_past=False,
                                                   max_dwell=50.0, max_divergence=1.0))
 
 
+def soft_arm(held_too=False, declined=True, deferrals=1):
+    ticks = holding(10, 2)
+    for tick in range(12, 12 + deferrals):
+        soft = "soft_blocker={seen=1 declined=%d extent=1.000} " % int(declined)
+        lines = [f"camera_held_soft_decline tick={tick} slot={SLOT} blocker=317 extent=1.000",
+                 detail(tick, status=0).replace(" clearance=0 ", f" clearance=0 {soft}")]
+        if held_too:
+            lines.append(published(tick))
+        ticks.append((tick, lines))
+    return trace(None, ticks)
+
+
 class HeldShotEvidence(unittest.TestCase):
     def test_positive(self):
         verify(false_clear(), "false_clear")
@@ -258,6 +270,14 @@ class HeldShotEvidence(unittest.TestCase):
             verify(bound_arm("dwell_bound").replace("dwell_bound_ms=200.0 divergence_bound_deg=180.000",
                                                     "dwell_bound_ms=3600000.0 divergence_bound_deg=2.000"),
                    other)
+
+    def test_soft_decline_arm(self):
+        self.assertEqual(verify(soft_arm(deferrals=3), "soft_decline"), 3)
+        for output, reason in ((soft_arm(deferrals=0), "never deferred"),
+                               (soft_arm(held_too=True), "held the view"),
+                               (soft_arm(declined=False), "did not decline")):
+            with self.subTest(reason=reason), self.assertRaisesRegex(ValueError, reason):
+                verify(output, "soft_decline")
 
     def test_epochs_split_on_tick_restart(self):
         text = "\n".join((summary(5), summary(6), summary(1), summary(2)))

@@ -31,6 +31,13 @@ that no held shot re-seeded before that correction released, that the census
 measured every published held tick inside the bound, and that the binary
 reported the bound it ran with.
 
+  soft_decline      drives the 3P route with MDKR_TEST_CAMERA_SOFT_STATIC, so
+                    static blockers qualify for the soft-occluder decline: a
+                    held shot may not freeze the view for a blocker the boom
+                    would not retract for. Every tick the held path deferred
+                    must publish no held shot and must be declined by the
+                    ordinary path. (No shipped content reaches this branch.)
+
 Every arm also requires safe publication on every tick, well-formed chain
 evidence, and the release-hold invariant on the route's own held episodes:
 recovery starts on exactly the release-hold-th consecutive clear tick.
@@ -62,6 +69,9 @@ BOUND_ARMS = {
     "dwell_bound": (0.2, 180.0),
     "divergence_bound": (3600.0, 2.0),
 }
+# The 3P route is where held shots meet blockers the decline would release.
+SOFT_ROUTE = "3p-tt-spectate"
+SOFT_STATIC_EXTENT = "1"
 # Rigid translation is exact up to float rounding at track coordinates.
 RIGID_TOLERANCE = 0.01
 
@@ -273,7 +283,40 @@ def verify_bound(output, kind):
     return exits
 
 
+def verify_soft(output):
+    """The held path defers to the soft-occluder decline the boom applies."""
+    summaries = [row for row in output.splitlines()
+                 if "camera_obstruction_observe summary" in row]
+    if not summaries:
+        raise ValueError("no publication evidence")
+    for row in summaries:
+        if not re.search(r"resolved=\{corrected=\d+ penetrated=0 invalid=0 degraded=0\}", row):
+            raise ValueError("unsafe publication summary")
+    chain_evidence.audit(output.splitlines())
+    deferred = 0
+    for epoch in epochs(output):
+        rows = probes(epoch)
+        active = published(epoch)
+        for row in _rows(epoch, "camera_held_soft_decline "):
+            match = re.fullmatch(r"camera_held_soft_decline tick=(\d+) slot=(\d+) "
+                                 r"blocker=(\d+) extent=(\S+)", row)
+            if match is None:
+                raise ValueError(f"malformed soft-decline row: {row}")
+            tick, slot = int(match[1]), int(match[2])
+            if (tick, slot) in active or (tick, slot) in rows:
+                raise ValueError(f"tick {tick} held the view for a declined blocker")
+            detail = details(epoch, "camera_obstruction_observe detail", tick, slot)
+            if "soft_blocker={seen=1 declined=1 " not in detail:
+                raise ValueError(f"tick {tick} deferred but the boom did not decline")
+            deferred += 1
+    if deferred == 0:
+        raise ValueError("the held path never deferred to the soft-occluder decline")
+    return deferred
+
+
 def verify(output, kind):
+    if kind == "soft_decline":
+        return verify_soft(output)
     if kind in BOUND_ARMS:
         return verify_bound(output, kind)
     if kind not in ARMS:
@@ -364,23 +407,30 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default=motion.DEFAULT_BUILD_DIR)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
-    parser.add_argument("--only", choices=tuple(ARMS) + tuple(BOUND_ARMS))
+    parser.add_argument("--only", choices=(*ARMS, *BOUND_ARMS, "soft_decline"))
     args = parser.parse_args()
     binary = Path(motion.resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
     if not binary.is_file() or not rom.is_file():
         parser.error("missing binary or ROM")
-    for kind in (args.only,) if args.only else (*ARMS, *BOUND_ARMS):
-        output = motion.run_route(motion.ROUTES[0], binary, rom, None,
+    for kind in (args.only,) if args.only else (*ARMS, *BOUND_ARMS, "soft_decline"):
+        output = motion.run_route(arm_route(kind), binary, rom, None,
                                   present_env=arm_env(kind))
         verify(output, kind)
         print(f"PASS held-shot {kind}: located, observed and safely published", flush=True)
     return 0
 
 
+def arm_route(kind):
+    name = SOFT_ROUTE if kind == "soft_decline" else motion.ROUTES[0].name
+    return next(route for route in motion.ROUTES if route.name == name)
+
+
 def arm_env(kind):
     env = {"MDKR_CAMERA_TRACE": "2"}
-    if kind in BOUND_ARMS:
+    if kind == "soft_decline":
+        env["MDKR_TEST_CAMERA_SOFT_STATIC"] = SOFT_STATIC_EXTENT
+    elif kind in BOUND_ARMS:
         dwell, divergence = BOUND_ARMS[kind]
         env["MDKR_TEST_CAMERA_HELD_BOUNDS"] = f"{dwell}:{divergence}"
     else:

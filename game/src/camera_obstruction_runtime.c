@@ -892,6 +892,38 @@ static float camera_obstruction_soft_max_half_extent(void) {
 }
 
 /*
+ * Static-blocker soft seam. MDKR_TEST_CAMERA_SOFT_STATIC=<units> gives every
+ * static track blocker that synthetic half-extent for the soft-occluder
+ * decision only. No shipped content puts a small dynamic prop across a follow
+ * camera's boom, so without it neither the ordinary decline nor the held
+ * shot's deference to it would ever run on a pinned route. Read once and
+ * cached; absent, unparsable or non-positive is inert.
+ */
+static float sCameraSoftStaticExtent;
+static int sCameraSoftStaticParsed;
+
+static float camera_obstruction_soft_static_extent(void) {
+    if (!sCameraSoftStaticParsed) {
+        const char *value = getenv("MDKR_TEST_CAMERA_SOFT_STATIC");
+        sCameraSoftStaticParsed = 1;
+        sCameraSoftStaticExtent = 0.0f;
+        if (value != NULL && value[0] != '\0') {
+            char *end = NULL;
+            const double parsed = strtod(value, &end);
+            if (end != NULL && *end == '\0' && isfinite(parsed) &&
+                parsed > 0.0 && parsed <= (double)FLT_MAX) {
+                sCameraSoftStaticExtent = (float)parsed;
+            } else {
+                fprintf(stderr,
+                        "camera_obstruction: ignoring unparsable "
+                        "MDKR_TEST_CAMERA_SOFT_STATIC=%s\n", value);
+            }
+        }
+    }
+    return sCameraSoftStaticExtent;
+}
+
+/*
  * MOTION-01 measurement seam. MDKR_CAMERA_PROFILE_FORCE=car:safety_only,loop:full
  * overrides the shipped per-family profile table so a pinned route can be driven
  * under a different profile and compared. `all` sets every family at once.
@@ -3213,9 +3245,13 @@ static MdkrCameraObstructionTreatment camera_obstruction_family_treatment(
  * publishes against the complete occluder set, so a small blocker that really
  * does overlap the authored lens keeps its correction.
  */
-static int camera_obstruction_soft_blocker_declined(
-    const MdkrCameraObstructionResolverResult *result,
+/* The decision itself, for a blocker measured on any path: its identity and
+ * contact point, and the eye a retraction to it would publish. */
+static int camera_obstruction_soft_blocker_qualifies(
     MdkrCameraObstructionTreatment treatment,
+    uint32_t blocker_stable_id,
+    MdkrCameraVec3 blocker_point,
+    MdkrCameraVec3 retracted_eye,
     MdkrCameraVec3 pivot,
     MdkrCameraVec3 desired,
     float *out_extent) {
@@ -3230,15 +3266,18 @@ static int camera_obstruction_soft_blocker_declined(
     /* Race-profile follow cameras only; the bounded depenetrate-only and
      * safety-only families never trade a correction for composition. */
     if (treatment != MDKR_CAMERA_OBSTRUCTION_TREATMENT_FULL ||
-        !result->accepted || result->release_held ||
-        result->status != MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED ||
-        !result->path_was_blocked ||
-        result->blocker_stable_id < UINT32_C(0x80000000)) {
+        blocker_stable_id == 0U) {
         return FALSE;
     }
-    if (!mdkr_camera_dynamic_occlusion_instance_footprint(
-            result->blocker_stable_id, &footprint) ||
-        !isfinite(footprint.max_half_extent)) {
+    if (blocker_stable_id >= UINT32_C(0x80000000)) {
+        if (!mdkr_camera_dynamic_occlusion_instance_footprint(
+                blocker_stable_id, &footprint) ||
+            !isfinite(footprint.max_half_extent)) {
+            return FALSE;
+        }
+    } else if (camera_obstruction_soft_static_extent() > 0.0f) {
+        footprint.max_half_extent = camera_obstruction_soft_static_extent();
+    } else {
         return FALSE;
     }
     if (out_extent != NULL) {
@@ -3251,9 +3290,9 @@ static int camera_obstruction_soft_blocker_declined(
         camera_obstruction_soft_max_half_extent()) {
         return FALSE;
     }
-    contact_distance = camera_obstruction_distance(result->blocker_point, desired);
+    contact_distance = camera_obstruction_distance(blocker_point, desired);
     desired_distance = camera_obstruction_distance(pivot, desired);
-    resolved_distance = camera_obstruction_distance(pivot, result->resolved_eye);
+    resolved_distance = camera_obstruction_distance(pivot, retracted_eye);
     if (!isfinite(contact_distance) || !isfinite(desired_distance) ||
         !isfinite(resolved_distance) || desired_distance <= 0.0f) {
         return FALSE;
@@ -3265,6 +3304,25 @@ static int camera_obstruction_soft_blocker_declined(
         return FALSE;
     }
     return TRUE;
+}
+
+static int camera_obstruction_soft_blocker_declined(
+    const MdkrCameraObstructionResolverResult *result,
+    MdkrCameraObstructionTreatment treatment,
+    MdkrCameraVec3 pivot,
+    MdkrCameraVec3 desired,
+    float *out_extent) {
+    if (out_extent != NULL) {
+        *out_extent = 0.0f;
+    }
+    if (!result->accepted || result->release_held ||
+        result->status != MDKR_CAMERA_OBSTRUCTION_RESOLVER_RETRACTED ||
+        !result->path_was_blocked) {
+        return FALSE;
+    }
+    return camera_obstruction_soft_blocker_qualifies(
+        treatment, result->blocker_stable_id, result->blocker_point,
+        result->resolved_eye, pivot, desired, out_extent);
 }
 
 /*
@@ -3655,6 +3713,80 @@ static int camera_obstruction_probe_held_chain(
     return TRUE;
 }
 
+/*
+ * The held shot defers to the soft-occluder decline exactly as the ordinary
+ * boom does: a corridor contact with a blocker that would not earn a
+ * retraction (camera_obstruction_soft_blocker_qualifies) does not get to
+ * freeze the view either, provided the authored pose itself proves clear.
+ * The retraction the blocker would have cost is the corridor's own contact
+ * fraction less the resolver's clearance skin. The authored proof runs on a
+ * copy, so a refusal leaves no telemetry or degradation on the slot; the
+ * ordinary path then applies (and records) the same decline itself.
+ */
+static int camera_obstruction_held_defers_to_soft_decline(
+    const MdkrCameraObstructionObserveSlot *observe,
+    s32 physical_slot,
+    MdkrCameraObstructionTreatment treatment,
+    MdkrCameraVec3 boom_anchor,
+    MdkrCameraVec3 desired,
+    const MdkrCameraSweepHit *hit,
+    float clearance_skin) {
+    MdkrCameraObstructionObserveSlot probe;
+    MdkrCameraFinalPose authored_pose;
+    MdkrCameraSweepHit authored_hit;
+    const float boom = camera_obstruction_distance(boom_anchor, desired);
+    float fraction;
+    float extent = 0.0f;
+
+    if (hit == NULL || !isfinite(boom) || !(boom > 0.0f) ||
+        !isfinite(hit->fraction)) {
+        return FALSE;
+    }
+    fraction = hit->fraction - clearance_skin / boom;
+    if (fraction < 0.0f) {
+        fraction = 0.0f;
+    }
+    if (!camera_obstruction_soft_blocker_qualifies(
+            treatment, hit->stable_id, hit->point,
+            camera_obstruction_lerp(boom_anchor, desired, fraction),
+            observe->intent.pivot, desired, &extent)) {
+        return FALSE;
+    }
+    probe = *observe;
+    {
+        const MdkrCameraObstructionQuerySource sources[] = {
+            { camera_obstruction_track_sweep_adapter, NULL },
+            { camera_obstruction_dynamic_sweep_adapter, &probe },
+        };
+        const MdkrCameraObstructionCombinedQuery combined = {
+            sources, ARRAY_COUNT(sources), ARRAY_COUNT(sources),
+        };
+        const MdkrCameraObstructionRoundedLensQuerySource exact_sources[] = {
+            { camera_obstruction_track_rounded_sweep_adapter, NULL },
+            { camera_obstruction_dynamic_rounded_sweep_adapter, &probe },
+        };
+        const MdkrCameraObstructionRoundedLensCombinedQuery exact_combined = {
+            exact_sources, ARRAY_COUNT(exact_sources), ARRAY_COUNT(exact_sources),
+        };
+
+        if (!camera_obstruction_build_final_pose(
+                &probe, desired, FALSE, &authored_pose) ||
+            !camera_obstruction_final_pose_stationary_clear(
+                &probe, &combined, &exact_combined, &authored_pose, TRUE,
+                &authored_hit)) {
+            return FALSE;
+        }
+    }
+    if (camera_obstruction_trace_level() >= 2) {
+        fprintf(stderr,
+                "camera_held_soft_decline tick=%llu slot=%d blocker=%u "
+                "extent=%.3f\n",
+                (unsigned long long)sCameraObstructionRuntime.tick_serial,
+                physical_slot, (unsigned)hit->stable_id, extent);
+    }
+    return TRUE;
+}
+
 static void camera_obstruction_resolve_slot(
     MdkrCameraObstructionObserveSlot *observe,
     s32 physical_slot,
@@ -3855,7 +3987,11 @@ static void camera_obstruction_resolve_slot(
     if ((held_shot_enabled || camera_obstruction_reengagement_probe_enabled()) &&
         !observe->held_bound_tripped &&
         (status == MDKR_CAMERA_SWEEP_HIT || observe->held_chain_probe.valid) &&
-        observe->resolver.last_safe_valid && observe->previous_pivot_valid) {
+        observe->resolver.last_safe_valid && observe->previous_pivot_valid &&
+        !(held_shot_enabled && status == MDKR_CAMERA_SWEEP_HIT &&
+          camera_obstruction_held_defers_to_soft_decline(
+              observe, physical_slot, treatment, boom_anchor, desired, &hit,
+              config.clearance_skin))) {
         /*
          * The held shot recovers through the same release hysteresis as the
          * boom (MDKR_CAMERA_OBSTRUCTION_RELEASE_HOLD_TICKS): a clear corridor
