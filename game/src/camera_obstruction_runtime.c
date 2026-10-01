@@ -84,19 +84,22 @@
  * -- and does not seed another held shot until that correction has fully
  * released.
  *
- * MAX_DWELL bounds the time a held shot spends holding (its recovery is
- * already bounded by the return rates). MAX_DIVERGENCE bounds the angle
- * between the published view direction and the authored one, in any phase.
+ * MAX_DWELL bounds how long a held view stays frozen: consecutive holding
+ * time, contact plus release hold (a recovery is already bounded by the return
+ * rates, and resets it). MAX_DIVERGENCE bounds the angle between the published
+ * view direction and the authored one, in any phase.
  *
- * Measured on the three MOTION-01 routes with both bounds lifted: held shots
- * seeded from the authored view hold for at most 1.1 s and turn at most 32
- * degrees from it; the only shots past 45 degrees (84 to 142) were seeded
- * from an alternate or emergency composition that was already looking away,
- * which is exactly the ordinary ladder's job. Both bounds leave the measured
- * shots untouched and stop a held view well short of a side-on one.
+ * Measured on the three MOTION-01 routes at both simulation cadences, with
+ * and without Camera.Comfort, both bounds lifted: a held view stays frozen
+ * for at most 1.1 s, and held shots seeded from the authored view turn at
+ * most 44 degrees from it (Original cadence; 36 at Enhanced). The only shots
+ * past that (84 to 143 degrees) were seeded from an alternate or emergency
+ * composition that was already looking away -- the ordinary ladder's job.
+ * Both bounds leave every measured shot seeded from the authored view
+ * untouched and stop a held view well short of side-on.
  */
 #define MDKR_CAMERA_HELD_MAX_DWELL_SECONDS 2.0f
-#define MDKR_CAMERA_HELD_MAX_DIVERGENCE_DEGREES 45.0f
+#define MDKR_CAMERA_HELD_MAX_DIVERGENCE_DEGREES 60.0f
 /*
  * Soft-occluder mitigation, interim form (docs/architecture/camera-obstruction.md
  * VIS-01). Foliage, fences and small signs carry no reviewed soft/hard
@@ -349,7 +352,8 @@ typedef struct MdkrCameraHeldChainProbe {
     uint8_t contact;
     /* Consecutive accepted released (recovering) ticks, ending at `tick`. */
     uint32_t recovering_run;
-    /* Authored seconds this chain has spent holding (not recovering). */
+    /* Authored seconds the view has been held without recovering, ending at
+     * `tick`: the frozen view's age. Recovery resets it. */
     float dwell_seconds;
 } MdkrCameraHeldChainProbe;
 
@@ -3056,9 +3060,10 @@ typedef struct MdkrCameraMotionCensus {
     uint64_t correction_reengagements;
     uint64_t max_emergency_dwell;
     /*
-     * Held shots: published episodes, the longest time one spent holding (not
-     * recovering), the widest angle any published held view turned away from
-     * the authored view, and the episodes a dwell/divergence bound ended.
+     * Held shots: published episodes, the longest a published held view stayed
+     * frozen (consecutive holding, reset by recovery), the widest angle any
+     * published held view turned away from the authored view, and the episodes
+     * a dwell/divergence bound ended.
      */
     uint64_t held_episodes;
     double max_held_dwell_seconds;
@@ -3457,9 +3462,11 @@ static int camera_obstruction_probe_held_chain(
     const char *rejection = "history";
     MdkrCameraFinalPose pose;
     float max_dwell, max_divergence;
-    /* Holding time spends dwell; a released recovery does not. */
-    const float dwell = (continued ? chain->dwell_seconds : 0.0f) +
-        (!recovering && isfinite(dt) && dt > 0.0f ? dt : 0.0f);
+    /* Dwell is how long the view has been frozen: consecutive holding time
+     * (contact or release hold). A released recovery resets it. */
+    const float dwell = recovering ? 0.0f :
+        (continued && chain->recovering_run == 0U ? chain->dwell_seconds : 0.0f) +
+        (isfinite(dt) && dt > 0.0f ? dt : 0.0f);
     float divergence = NAN;
     camera_obstruction_held_bounds(&max_dwell, &max_divergence);
     if (valid && dwell > max_dwell) {
@@ -4606,6 +4613,10 @@ static void camera_obstruction_motion_sample(
             sCameraMotion.held_episodes++;
             motion->held_dwell_seconds = 0.0f;
             motion->held_episode_seconds = 0.0f;
+        }
+        if (!retracted) {
+            /* Recovering: the view is no longer frozen. */
+            motion->held_dwell_seconds = 0.0f;
         }
         if (isfinite(fixed_delta_seconds) && fixed_delta_seconds > 0.0f) {
             motion->held_episode_seconds += fixed_delta_seconds;

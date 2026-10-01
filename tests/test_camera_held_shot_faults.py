@@ -67,7 +67,7 @@ def published(tick, active=1, dwell=0.0167, divergence=1.0):
 
 
 def census(reengagements=0, max_dwell=100.0, max_divergence=1.0, exits=0,
-           bounds=(2000.0, 45.0)):
+           bounds=(2000.0, 60.0)):
     return CENSUS % (RELEASE_HOLD_TICKS, reengagements, max_dwell, max_divergence,
                      exits, bounds[0], bounds[1])
 
@@ -168,7 +168,7 @@ def bound_arm(kind="dwell_bound", republished=False, published_past=False,
         ticks[0] = (10, [probe(10, 0, 0), published(10, dwell=dwell_bound + 1.0,
                                                     divergence=divergence_bound + 1.0),
                          detail(10), motion_detail(10)])
-    bounds = (dwell_bound * 1000.0, divergence_bound) if lowered else (2000.0, 45.0)
+    bounds = (dwell_bound * 1000.0, divergence_bound) if lowered else (2000.0, 60.0)
     return trace(None, ticks, census_row=census(exits=exits, bounds=bounds,
                                                   max_dwell=50.0, max_divergence=1.0))
 

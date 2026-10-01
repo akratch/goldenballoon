@@ -77,7 +77,7 @@ MAX_EMERGENCY_DWELL_TICKS = 300
 # either is a broken bound. The census reports the bounds the binary ran with
 # and they must equal these, so neither side can drift alone.
 MAX_HELD_DWELL_SECONDS = 2.0
-MAX_HELD_DIVERGENCE_DEGREES = 45.0
+MAX_HELD_DIVERGENCE_DEGREES = 60.0
 # One authored tick of float accumulation slack on the measured dwell.
 HELD_DWELL_SLACK_SECONDS = 1.0 / 60.0
 
