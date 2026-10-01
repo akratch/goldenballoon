@@ -71,6 +71,12 @@ void *dkr_lo32_to_ptr(u32 lo32) {
     return lo32 ? (void *)(((uintptr_t)sArena & ~(uintptr_t)0xFFFFFFFFu) | lo32) : NULL;
 }
 void dkr_dl_register_host_ptr(const void *x) { (void)x; }
+/* tex_free asks whether asset refcounts are frozen for a rollback replay;
+ * this unit is never replaying. */
+bool mdkr_rollback_game_runtime_presentation_allowed(void) { return true; }
+/* tex_free's pool release: the fixtures own their memory. */
+static unsigned sPoolFrees;
+void mempool_free(void *data) { (void)data; ++sPoolFrees; }
 int mdkr_trace_level(void) { return 0; }
 void mdkr_trace(const char *fmt, ...) { (void)fmt; }
 
@@ -308,16 +314,30 @@ typedef struct RingFixture {
 } RingFixture;
 
 /* Fixtures are never freed until the end, so no two share an address: the
- * production image is keyed by the two texture pointers it was built from. */
+ * production image is keyed by the two texture pointers it was built from.
+ * Every arena a fixture allocated is freed by release_fixtures(). */
 static unsigned char *sRetired[16];
 static unsigned sRetiredCount;
+
+static void release_fixtures(void) {
+    for (unsigned i = 0; i < sRetiredCount; ++i) free(sRetired[i]);
+    sRetiredCount = 0;
+    free(sArena);
+    sArena = NULL;
+    sArenaSize = 0;
+}
 
 /* Both textures in one arena allocation, listed in the texture cache. */
 static RingFixture make_ring_fixture(unsigned neighbourWidth) {
     RingFixture f;
     const size_t ringStride = 32 + 1024, neighbourStride = 32 + 4096;
-    if (sArena != NULL && sRetiredCount < 16) sRetired[sRetiredCount++] = sArena;
-    else free(sArena);
+    if (sArena != NULL) {
+        if (sRetiredCount == 16) {
+            fprintf(stderr, "FAIL: more than 16 ring fixtures\n");
+            exit(2);
+        }
+        sRetired[sRetiredCount++] = sArena;
+    }
     sArenaSize = ringStride + neighbourStride;
     sArena = calloc(1, sArenaSize);
     if (!sArena) { perror("calloc"); exit(2); }
@@ -424,13 +444,41 @@ static void check_console_neighbour(void) {
     f = make_ring_fixture(32);
     f.cache[1] = (s32)(u32)(uintptr_t)f.neighbour;
     EXPECT(ring_plan(&f, dl, &count, &m) == 0, "another texture listed as the ring: wrapped plan");
+
+    /* The image is keyed by the two texture pointers. Freeing either texture
+     * must drop it, so whatever the pool puts at that address next is checked
+     * again: here the "same" neighbour comes back with other contents. */
+    f = make_ring_fixture(32);
+    EXPECT(ring_plan(&f, dl, &count, &m) == 1, "a fresh verified pair builds the image");
+    f.neighbour[32 + 3000] ^= 0x5A;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 1,
+           "control: unchanged pointers reuse the image without re-reading the texels");
+    gTextureCache = f.cache;
+    gNumberOfLoadedTextures = 2;
+    ((TextureHeader *)f.neighbour)->numberOfInstances = 1;
+    sPoolFrees = 0;
+    tex_free((TextureHeader *)f.neighbour);
+    EXPECT(sPoolFrees == 1 && f.cache[2] == -1, "tex_free released the neighbour");
+    f.cache[2] = NEIGHBOUR_ID; /* reloaded at the same address */
+    f.cache[3] = (s32)(u32)(uintptr_t)f.neighbour;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 0,
+           "after the neighbour is freed its address is checked again (the CRC now fails)");
+    /* A refusal is cached the same way, until the next free and reload. */
+    f.neighbour[32 + 3000] ^= 0x5A;
+    gTextureCache = f.cache;
+    gNumberOfLoadedTextures = 2;
+    ((TextureHeader *)f.neighbour)->numberOfInstances = 1;
+    tex_free((TextureHeader *)f.neighbour);
+    f.cache[2] = NEIGHBOUR_ID;
+    f.cache[3] = (s32)(u32)(uintptr_t)f.neighbour;
+    EXPECT(ring_plan(&f, dl, &count, &m) == 1, "a reloaded genuine neighbour verifies again");
+    material_pulse_ring_forget();
 }
 
 int main(void) {
     check_model_control();
     check_console_neighbour();
-    for (unsigned i = 0; i < sRetiredCount; ++i) free(sRetired[i]);
-    sArena = NULL;
+    release_fixtures();
     /* Both retail 4096-byte layouts, byte-for-byte and by behaviour. */
     check_legacy_bytes(64, 32);
     check_legacy_bytes(32, 64);

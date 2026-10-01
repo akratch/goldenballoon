@@ -478,7 +478,11 @@ texel of both tiles must equal the console's memory layout (ring texels, a
 `docs/ORACLE.md` show). The fixtures forge both content CRCs over synthetic
 texels; six controls (neighbour absent, either CRC wrong, the ring listed under
 another asset ID or another texture listed as the ring, a neighbour of another
-shape) must fall back to the wrapped plan.
+shape) must fall back to the wrapped plan. Because the image is keyed by the two
+texture pointers, freeing either texture through the production `tex_free`
+must drop it: a neighbour reloaded at the same address with other contents is
+refused, and a genuine one verifies again. Every fixture arena is freed
+(`leaks --atExit` reports none).
 
 `oracle_rdram_routes` is the ROM-free check of the RDRAM snapshot lane: the
 three Spaceport ring routes validate and declare their capture and forced

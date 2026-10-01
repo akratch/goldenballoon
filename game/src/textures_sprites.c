@@ -415,6 +415,26 @@ s32 *gTextureCache;
 
 u8 *gCiPalettes;
 s32 gNumberOfLoadedTextures;
+#ifdef NATIVE_PORT
+/* Spaceport Alpha's pulsing ring: the owned image of the console memory it is
+ * drawn from (see pulse_ring_console_image below). */
+#define MDKR_PULSE_RING_IMAGE_BYTES 4096u
+/* A LOADBLOCK source: 8-byte aligned on the N64; 16 here. */
+static _Alignas(16) u16 sPulseRingImage[MDKR_PULSE_RING_IMAGE_BYTES / sizeof(u16)];
+static const TextureHeader *sPulseRingSource;
+static const TextureHeader *sPulseRingNeighbourSource;
+static s32 sPulseRingImageValid;
+
+/* The image is keyed by the two texture pointers it was built from. Forget it
+ * whenever either texture is freed and at every texture-system start, so an
+ * address the pool hands to another texture (a later level, a later engine
+ * epoch of the persistent launcher) is checked again rather than trusted. */
+void material_pulse_ring_forget(void) {
+    sPulseRingSource = NULL;
+    sPulseRingNeighbourSource = NULL;
+    sPulseRingImageValid = FALSE;
+}
+#endif
 s32 D_80126334;
 s32 gTextureTableSize[2];
 s32 gCiPalettesSize;
@@ -504,6 +524,9 @@ void tex_init_textures(void) {
     gTextureCache = mempool_alloc_safe(8 * MAX_NUM_TEXTURES, COLOUR_TAG_MAGENTA);
     gCiPalettes = mempool_alloc_safe(MAX_TEX_PALETTE_SIZE, COLOUR_TAG_MAGENTA);
     gNumberOfLoadedTextures = 0;
+#ifdef NATIVE_PORT
+    material_pulse_ring_forget();
+#endif
     gCiPalettesSize = 0;
     gTextureAssetTable[TEX_TABLE_2D] = (s32 *) asset_table_load(ASSET_TEXTURES_2D_TABLE);
     gTextureAssetTable[TEX_TABLE_3D] = (s32 *) asset_table_load(ASSET_TEXTURES_3D_TABLE);
@@ -886,6 +909,11 @@ void tex_free(TextureHeader *tex) {
         if ((--tex->numberOfInstances) <= 0) {
             for (i = 0; i < gNumberOfLoadedTextures; i++) {
                 if ((s32) DKR_TOK(tex) == gTextureCache[ASSETCACHE_PTR(i)]) {
+#ifdef NATIVE_PORT
+                    if (tex == sPulseRingSource || tex == sPulseRingNeighbourSource) {
+                        material_pulse_ring_forget();
+                    }
+#endif
                     mempool_free(tex);
 
                     gTextureCache[ASSETCACHE_ID(i)] = -1;
@@ -1179,12 +1207,7 @@ void material_set(Gfx **dList, TextureHeader *texhead, s32 flags, s32 texOffset)
 #define MDKR_PULSE_RING_TEXEL_BYTES 1024u
 #define MDKR_PULSE_RING_NEIGHBOUR_TEXEL_BYTES 4096u
 #define MDKR_PULSE_RING_NEIGHBOUR_OFFSET 1184u
-#define MDKR_PULSE_RING_IMAGE_BYTES 4096u
 
-static u16 sPulseRingImage[MDKR_PULSE_RING_IMAGE_BYTES / sizeof(u16)];
-static const TextureHeader *sPulseRingSource;
-static const TextureHeader *sPulseRingNeighbourSource;
-static s32 sPulseRingImageValid;
 
 static u32 pulse_ring_crc32(const u8 *bytes, size_t length) {
     u32 crc = 0xFFFFFFFFu;

@@ -40,7 +40,8 @@ save formats). Everything below 1.0.0 predates that commitment.
   this build finds both textures in the texture cache by asset ID, checks
   their shapes and content CRCs, copies their own texels into a 4096-byte
   image laid out as the console holds that memory (with a 160-byte zero fill
-  where the console has its load commands and leftovers), and runs the
+  where the console has the ring's load commands, the load leftovers and
+  texture 880's 32-byte header), and runs the
   unchanged retail commands against it. The ring pulses again, the second
   image matches the console texel for texel, and the first matches it
   everywhere except that fill band, a narrow strip that is briefly on screen

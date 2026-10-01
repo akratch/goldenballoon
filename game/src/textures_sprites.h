@@ -156,6 +156,9 @@ void tex_free(TextureHeader *tex);
 void material_load_simple(Gfx **dList, s32 flags);
 #ifdef NATIVE_PORT
 s32 material_sprite_billboard_flags(const Sprite *sprite, s32 flags);
+/* Drop the Spaceport pulse ring's cached console image (tex_free and
+ * tex_init_textures call it). */
+void material_pulse_ring_forget(void);
 #endif
 
 // There might be a file boundary here.

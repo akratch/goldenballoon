@@ -45,7 +45,10 @@ pulses between two distinct images only in those two full layouts. The
 `pulse_material` CTest decodes the production commands for every admitted
 shape; GL/WebGPU Spaceport sanitizer smokes pass. 1.9 item: the custom-track
 importer should warn when a pulsing texture is smaller than 4 KiB, since it
-cannot pulse between two images.
+cannot pulse between two images. Also 1.9: the Spaceport console-image path
+(`pulse_ring_console_image`) is gated on retail asset IDs 211/880 and their
+CRCs; before custom sessions ship it must also require that no custom-track
+session is active, so a package's textures can never enter it.
 Active-wave
 strip command limits and ordinary draw-batch limits are also admitted. These
 are not a complete material/renderer semantic proof or visual acceptance.
