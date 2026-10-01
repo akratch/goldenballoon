@@ -322,8 +322,22 @@ The supported behavior is explicit:
 - an Escape or controller B that nothing else claims keeps the focused
   control, so Tab carries on from it. Dear ImGui's default forgets the control
   and leaves forward Tab with nowhere to go for the rest of the session;
+- when a screen stops drawing the control that has keyboard focus while its
+  window stays open (the overlay's confirmation closed by Escape, B or
+  Cancel, its Settings list closed with focus inside it), both frame ends
+  (`AppHost::endFrame`, the overlay's `endImGuiFrame`) run
+  `AppNavigation_recoverLostFocus()` (`platform/app/app_navigation.h`): it
+  hides the highlight and forgets the vanished control, so the next Tab,
+  arrow or D-pad press starts at the window's first control. Without it,
+  Tab keeps looking for the vanished control to move past and does
+  nothing. A button whose label changes when pressed (the
+  overlay's Settings / Hide Settings) keeps one `###` id, so focus stays on
+  it rather than needing that recovery;
 - the in-game F1 overlay uses Escape and controller B symmetrically: close an
-  ImGui popup first, dismiss confirmation, leave Settings, then close overlay;
+  ImGui popup first, dismiss confirmation, leave Settings, then close overlay.
+  Its own buttons (Resume, Settings, the Settings list as one Tab stop,
+  Restart & Apply, Return to Launcher, Quit to Desktop, and a confirmation's
+  action and Cancel) announce themselves like launcher controls;
 - UI scale is persisted from 0.75x through 2.00x and scales fonts, controls,
   spacing, and navigation from an unscaled baseline (never cumulatively). A
   held slider edits only its displayed value; release applies the new layout

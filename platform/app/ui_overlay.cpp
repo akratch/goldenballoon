@@ -23,6 +23,7 @@
 #include "user_paths.h"     // mdkr_user_paths_save_write_failed (issue #54)
 #include "app_brand.h"
 #include "app_config.h"
+#include "app_navigation.h"
 #include "app_theme.h"
 #include "app_ui_policy.h"
 #include "app_window.h"
@@ -54,6 +55,7 @@ extern "C" void  gfx_webgpu_current_overlay_size(int *w, int *h);
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -113,6 +115,13 @@ struct OverlayState {
     // authoritative tick would never advance past the frame that paused it.
     bool testA11yWalk = false;
     long testA11yRenderFrame = 0;
+    // Scripted player keystrokes and controller presses, one per step, in
+    // rendered frames for the same reason (MDKR_TEST_OVERLAY_NAV_SCRIPT).
+    std::vector<int> testNavScript;
+    size_t testNavStep = 0;
+    uint64_t testNavStepFrame = 0;
+    bool testNavStarted = false;
+    bool testNavComplete = false;
 
     uint64_t fpsLastSurfaceFrame = 0;
     uint64_t fpsLastCounter = 0;
@@ -366,6 +375,240 @@ static void onService(void) {
 
 }  // extern "C"
 
+/*
+ * Scripted player input for the open menu: MDKR_TEST_OVERLAY_NAV_SCRIPT is a
+ * comma-separated list of keys (tab, shift-tab, enter, escape, up, down, left,
+ * right) and controller presses (pad-b). Each step is one press and release,
+ * then quiet frames until focus settles, so the steps never queue behind one
+ * another. Keys enter through SDL exactly as a keyboard's do, carrying this
+ * window's id so both ImGui and the back-stack above see them. pad-b presses
+ * the B button of a virtual controller bound to ImGui the way the launcher's
+ * gamepad smoke binds its own, so ImGui reads it as a held button and the
+ * back-stack receives SDL's button event -- both halves of a real press.
+ *
+ * Every step prints a marker before its press and a "settled" line after it,
+ * on stdout beside the [SPEAK] trace, so a check can tell which announcement
+ * each step produced and where focus ended up. The menu closes when the
+ * script ends.
+ */
+enum OverlayNavKey {
+    kNavTab, kNavShiftTab, kNavEnter, kNavEscape,
+    kNavUp, kNavDown, kNavLeft, kNavRight, kNavPadB,
+};
+
+struct OverlayNavKeyName {
+    const char *name;
+    OverlayNavKey key;
+};
+
+constexpr OverlayNavKeyName kOverlayNavKeys[] = {
+    {"tab", kNavTab},     {"shift-tab", kNavShiftTab}, {"enter", kNavEnter},
+    {"escape", kNavEscape}, {"up", kNavUp},            {"down", kNavDown},
+    {"left", kNavLeft},   {"right", kNavRight},        {"pad-b", kNavPadB},
+};
+
+constexpr size_t kOverlayNavMaxSteps = 32;
+constexpr uint64_t kOverlayNavSettleFrames = 6;
+constexpr uint64_t kOverlayNavStepFrames = 8;
+
+const char *overlayNavKeyName(int key) {
+    for (const OverlayNavKeyName &entry : kOverlayNavKeys) {
+        if (entry.key == key) return entry.name;
+    }
+    return "?";
+}
+
+bool parseOverlayNavScript(const char *text, std::vector<int> *steps) {
+    steps->clear();
+    const std::string script = text != nullptr ? text : "";
+    size_t start = 0;
+    while (start <= script.size()) {
+        size_t end = script.find(',', start);
+        if (end == std::string::npos) end = script.size();
+        const std::string token = script.substr(start, end - start);
+        bool known = false;
+        for (const OverlayNavKeyName &entry : kOverlayNavKeys) {
+            if (token == entry.name) {
+                steps->push_back(entry.key);
+                known = true;
+                break;
+            }
+        }
+        if (!known || steps->size() > kOverlayNavMaxSteps) {
+            steps->clear();
+            return false;
+        }
+        start = end + 1;
+    }
+    return !steps->empty();
+}
+
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+// Process lifetime once attached: ImGui's backend keeps polling it.
+SDL_GameController *g_overlayNavPad = nullptr;
+#endif
+
+bool attachOverlayNavPad() {
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    if (g_overlayNavPad != nullptr) return true;
+    // A hidden test window never holds focus, and SDL ignores a joystick's
+    // presses while no window does unless told otherwise (as app_host.cpp
+    // does for the launcher's virtual controller).
+    SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1",
+                            SDL_HINT_OVERRIDE);
+    const int device = SDL_JoystickAttachVirtual(
+        SDL_JOYSTICK_TYPE_GAMECONTROLLER, SDL_CONTROLLER_AXIS_MAX,
+        SDL_CONTROLLER_BUTTON_MAX, 0);
+    if (device < 0 || !SDL_IsGameController(device)) return false;
+    g_overlayNavPad = SDL_GameControllerOpen(device);
+    if (g_overlayNavPad == nullptr) return false;
+    SDL_GameController *pads[] = {g_overlayNavPad};
+    ImGui_ImplSDL2_SetGamepadMode(ImGui_ImplSDL2_GamepadMode_Manual, pads, 1);
+    return true;
+#else
+    return false;
+#endif
+}
+
+void pushOverlayNavKey(SDL_Keycode sym, SDL_Scancode scancode, Uint16 mod,
+                       bool down) {
+    SDL_Event key{};
+    key.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    key.key.state = down ? SDL_PRESSED : SDL_RELEASED;
+    key.key.keysym.sym = sym;
+    key.key.keysym.scancode = scancode;
+    key.key.keysym.mod = mod;
+    key.key.timestamp = SDL_GetTicks();
+    // ImGui's SDL2 backend drops key events for windows it does not know.
+    key.key.windowID = SDL_GetWindowID(g_overlay.window);
+    (void)SDL_PushEvent(&key);
+}
+
+void applyOverlayNavStep(int step, bool down) {
+    switch (step) {
+        case kNavTab:
+            pushOverlayNavKey(SDLK_TAB, SDL_SCANCODE_TAB, KMOD_NONE, down);
+            break;
+        case kNavShiftTab:
+            pushOverlayNavKey(SDLK_TAB, SDL_SCANCODE_TAB,
+                              down ? KMOD_LSHIFT : KMOD_NONE, down);
+            break;
+        case kNavEnter:
+            pushOverlayNavKey(SDLK_RETURN, SDL_SCANCODE_RETURN, KMOD_NONE,
+                              down);
+            break;
+        case kNavEscape:
+            pushOverlayNavKey(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE, KMOD_NONE,
+                              down);
+            break;
+        case kNavUp:
+            pushOverlayNavKey(SDLK_UP, SDL_SCANCODE_UP, KMOD_NONE, down);
+            break;
+        case kNavDown:
+            pushOverlayNavKey(SDLK_DOWN, SDL_SCANCODE_DOWN, KMOD_NONE, down);
+            break;
+        case kNavLeft:
+            pushOverlayNavKey(SDLK_LEFT, SDL_SCANCODE_LEFT, KMOD_NONE, down);
+            break;
+        case kNavRight:
+            pushOverlayNavKey(SDLK_RIGHT, SDL_SCANCODE_RIGHT, KMOD_NONE,
+                              down);
+            break;
+        case kNavPadB:
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+            if (g_overlayNavPad != nullptr) {
+                (void)SDL_JoystickSetVirtualButton(
+                    SDL_GameControllerGetJoystick(g_overlayNavPad),
+                    SDL_CONTROLLER_BUTTON_B,
+                    down ? SDL_PRESSED : SDL_RELEASED);
+            }
+#endif
+            break;
+        default:
+            break;
+    }
+}
+
+void loadOverlayNavScript() {
+    const char *script = std::getenv("MDKR_TEST_OVERLAY_NAV_SCRIPT");
+    if (script == nullptr) return;
+    if (!parseOverlayNavScript(script, &g_overlay.testNavScript)) {
+        std::printf("[overlay-nav] script rejected: \"%s\"\n", script);
+        std::fflush(stdout);
+        return;
+    }
+    bool pad = false;
+    for (int step : g_overlay.testNavScript) pad = pad || step == kNavPadB;
+    if (pad && !attachOverlayNavPad()) {
+        std::printf("[overlay-nav] script rejected: no virtual controller (%s)\n",
+                    SDL_GetError());
+        std::fflush(stdout);
+        g_overlay.testNavScript.clear();
+        return;
+    }
+    std::printf("[overlay-nav] script armed steps=%zu pad=%d\n",
+                g_overlay.testNavScript.size(), pad ? 1 : 0);
+    std::fflush(stdout);
+}
+
+void overlayTestNavTick() {
+    if (g_overlay.testNavScript.empty() || g_overlay.testNavComplete) return;
+    const uint64_t frame = g_overlay.renderFrame;
+    if (!g_overlay.testNavStarted) {
+        // Wait for the menu, then give its opening focus a few frames to land.
+        if (!g_overlay.open) return;
+        g_overlay.testNavStarted = true;
+        g_overlay.testNavStepFrame = frame + kOverlayNavSettleFrames;
+        return;
+    }
+    if (frame < g_overlay.testNavStepFrame) return;
+    const uint64_t phase = frame - g_overlay.testNavStepFrame;
+    const int step = g_overlay.testNavScript[g_overlay.testNavStep];
+    // A controller button is held across two frames so ImGui's per-frame poll
+    // of the pad sees it down; a key event is queued and cannot be missed.
+    const uint64_t releasePhase = step == kNavPadB ? 3u : 1u;
+    if (phase == 0) {
+        std::printf("[overlay-nav] step=%zu key=%s\n", g_overlay.testNavStep,
+                    overlayNavKeyName(step));
+        std::fflush(stdout);
+        applyOverlayNavStep(step, true);
+    } else if (phase == releasePhase) {
+        applyOverlayNavStep(step, false);
+    } else if (phase == kOverlayNavStepFrames - 1) {
+        // Read before this frame's NewFrame: the state the previous, complete
+        // frame left behind.
+        // input= is the device ImGui's own navigation last read. It turns to
+        // "gamepad" only when ImGui saw a controller button held, so a check
+        // can tell a B press that reached ImGui from one that only reached
+        // the back-stack above.
+        const AppNavigationFocusState focus = AppNavigation_focusState();
+        const ImGuiInputSource source =
+            ImGui::GetCurrentContext()->NavInputSource;
+        std::printf(
+            "[overlay-nav] settled step=%zu focus=%s cursor=%d open=%d "
+            "confirm=%d settings=%d input=%s\n",
+            g_overlay.testNavStep,
+            focus.drawn ? "drawn" : (focus.focused ? "stale" : "none"),
+            focus.cursorVisible ? 1 : 0, g_overlay.open ? 1 : 0,
+            g_overlay.confirm != ConfirmAction::None ? 1 : 0,
+            g_overlay.showSettings ? 1 : 0,
+            source == ImGuiInputSource_Gamepad    ? "gamepad"
+            : source == ImGuiInputSource_Keyboard ? "keyboard"
+            : source == ImGuiInputSource_Mouse    ? "mouse"
+                                                  : "none");
+        std::fflush(stdout);
+        ++g_overlay.testNavStep;
+        g_overlay.testNavStepFrame += kOverlayNavStepFrames;
+        if (g_overlay.testNavStep == g_overlay.testNavScript.size()) {
+            g_overlay.testNavComplete = true;
+            std::printf("[overlay-nav] script complete steps=%zu\n",
+                        g_overlay.testNavScript.size());
+            std::fflush(stdout);
+            setOpen(false);
+        }
+    }
+}
+
 // Headless proof hook: scripts the overlay open/close at authoritative ticks so
 // a gate can render it without a human at the keyboard. Presentation count is
 // deliberately independent of simulation count: Original cadence, GPU
@@ -389,7 +632,9 @@ void overlayTestFrameTick() {
             ? std::strtol(escapeClose, nullptr, 10) : -1;
         g_overlay.testA11yWalk =
             std::getenv("MDKR_TEST_OVERLAY_A11Y_WALK") != nullptr;
+        loadOverlayNavScript();
     }
+    overlayTestNavTick();
     if (g_overlay.testOpenFrame < 0 &&
         g_overlay.testEscapeOpenFrame < 0) return;
 
@@ -560,6 +805,9 @@ void beginImGuiFrame() {
 }
 
 bool endImGuiFrame() {
+    // The same end-of-frame focus recovery the launcher runs: backing out of a
+    // confirmation or the Settings list removes the control focus was on.
+    (void)AppNavigation_recoverLostFocus();
     ImGui::Render();
 #ifdef MDKR_WEBGPU_BACKEND
     if (usingWebGpu()) {
@@ -781,7 +1029,13 @@ void drawOverlayMenu(float uiScale) {
         review ? "Closes this menu and carries on with the course review."
                : "Closes this menu and carries on with the race.");
     if (primaryActions.sameLine) ImGui::SameLine();
-    if (ImGui::Button(g_overlay.showSettings ? "Hide Settings" : "Settings",
+    // One id for both labels: Dear ImGui derives an id from the label, so a
+    // relabelled button is a different control and pressing it would leave
+    // focus on the one that just disappeared. With a fixed id, focus stays on
+    // the button the player pressed and announces its new label.
+    if (ImGui::Button(g_overlay.showSettings
+                          ? "Hide Settings###overlay-settings"
+                          : "Settings###overlay-settings",
                       primaryActions.second)) {
         if (g_overlay.showSettings) {
             Settings_cancelAudioPreview();

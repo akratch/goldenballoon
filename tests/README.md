@@ -400,6 +400,21 @@ proves the fixture reproduces the trap with Dear ImGui's default Escape
 handling, which forgets the focused control but leaves forward Tab with
 nothing to move past.
 
+Its overlay-shaped cases (Resume, a relabelling Settings button, a Settings
+list child entered with Enter, Quit to Desktop, a confirmation that replaces
+them) pin `AppNavigation_recoverLostFocus()`. Each dead end runs twice: without
+the end-of-frame recovery the fixture must reproduce the trap (the next Tab
+does not move), and with it the next Tab must land on the first control with
+the highlight showing. The ends are the confirmation closed by Escape, by
+controller B and by Enter on Cancel, the confirmation opened from Quit to
+Desktop, and the Settings list closed by Escape and B from inside it. Two
+more cases keep the recovery out of Dear ImGui's way and pin what Escape still
+does under the launcher configuration: a popup opened from the keyboard
+focuses its first item with the highlight showing and Escape closes it back
+onto its opener, and Escape in a text field drops the unfinished edit and
+keeps focus on the field. Disabling the recovery, or letting it run while a
+window's default focus is still pending, each fails a named case.
+
 The Windows validation build includes every registered unit target, not just
 the game. `ghost_bank` includes the Windows process-ID declaration explicitly;
 the SDL-stubbed `app_window` unit owns its console entry point and does not link
@@ -8197,6 +8212,36 @@ to exercise additional window sizes. The private, asset-free fixture relaxes
 ROM readiness only; it does not open a room or certify connected-room or
 ready-ROM navigation. This guards the compact-window regression where an
 off-screen flattened child prevented directional navigation to local play.
+
+### Keyboard dead ends — `tests/check_keyboard_dead_ends.py`
+
+```bash
+MDKR_AUDIO=0 python3 tests/check_keyboard_dead_ends.py --build build-rel \
+  --rom baserom.us.v80.z64
+```
+
+Dear ImGui keeps keyboard focus as the id of the focused control. When the
+shell stops drawing that control while its window stays open, a forward Tab
+looks for it, never finds it, and does nothing, while Shift+Tab, the arrows
+and the D-pad still move. The gate backs out of every screen in the in-game
+menu that did this and requires the next Tab to land on a control drawn that
+frame, with the highlight showing, that announces itself.
+
+The eight overlay arms drive the real menu over an autoplay session through
+`MDKR_TEST_OVERLAY_NAV_SCRIPT` (`ui_overlay.cpp`): a list of keys and
+controller presses, one step every eight rendered frames, each printing a
+step marker and a `settled` line (focus drawn/stale/none, highlight, menu
+state, and the device ImGui's navigation last read) beside the `[SPEAK]`
+trace. Keys carry the window id, so both ImGui and the menu's back-stack see
+them; `pad-b` holds B on a virtual controller bound to ImGui, and the arm
+requires `input=gamepad`, so the press reached ImGui and not only the
+back-stack. The arms: the confirmation closed by Escape, by B and by Enter on
+Cancel; the confirmation opened from Quit to Desktop; the Settings list
+closed by Escape and by B from inside it; and the Settings button opening
+and closing the list. Every arm also checks that its earlier steps reached
+the screen it names, so a layout change fails by name rather than testing
+something else. Before the fix all eight ended with `focus=stale cursor=1`
+and nothing spoken.
 
 ### Per-viewport route isolation — `tests/check_viewport_route_isolation.py`
 

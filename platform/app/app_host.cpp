@@ -1138,6 +1138,9 @@ bool AppHost::endFrameGL(const char *captureBmpPath) {
 
 // Returns true when the host renderer is healthy and no capture failed.
 bool AppHost::endFrame(const char *captureBmpPath) {
+    // Every launcher window has ended; a control that held keyboard focus and
+    // was not drawn this frame must not leave Tab with nowhere to go.
+    (void)AppNavigation_recoverLostFocus();
 #ifdef MDKR_WEBGPU_BACKEND
     if (useWebGpu_) {
         return endFrameWebGpu(captureBmpPath);
