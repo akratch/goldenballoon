@@ -125,6 +125,9 @@ extern s32   alCSPGetTempo(void *seqp);
  * "declare, don't include" rule as the accessors above. Only called when
  * MDKR_RESOURCE_STATS is on. */
 extern void  mdkr_audio_voice_peaks_sample(void);
+/* Synth ALParam pool accounting (platform/audio_synth.c). Prints one
+ * [AUDIO-PARAMS] line when MDKR_AUDIO_SERVICE_TRACE is on, nothing otherwise. */
+extern void  mdkr_synth_param_report(void);
 extern void  music_volume_config_set(u32 slider_val);
 extern void  sndp_set_global_volume(u32 volume);
 extern void  music_jingle_volume_set(u8 volume);
@@ -1321,6 +1324,7 @@ void dkr_audio_service_summary(void) {
                 (unsigned long long)
                     s_queueController.stats.measured_decisions);
     }
+    mdkr_synth_param_report();
     fflush(stderr);
 }
 

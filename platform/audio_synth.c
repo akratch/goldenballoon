@@ -81,6 +81,162 @@ static void native_voice_trace_music(ALSynth *s, ALVoice *voice, u8 fxmix)
 #define native_voice_trace_music(s, voice, fxmix) ((void)0)
 #endif
 
+/*
+ * ALParam pool accounting (MDKR_AUDIO_SERVICE_TRACE, issue #66).
+ *
+ * Every alSyn* update, a steal's fade+stop pair and a stolen voice's deferred
+ * free take one ALParam from the single maxUpdates free list, which music,
+ * jingle and SFX share. A dry list drops the update without a trace, so a
+ * dropped START is a note that never sounds and a dropped release is a note
+ * cut off. Players run their handlers for a whole frame before the envmixer
+ * pulls (and frees) anything, so the pool must cover one frame of updates plus
+ * whatever the game thread posts between frames.
+ *
+ * Reported by dkr_audio_service_summary() as one [AUDIO-PARAMS] line:
+ *   minfree          lowest free count ever seen (capacity - minfree = peak)
+ *   exhaustedframes  synthesis frames whose window ever reached zero free
+ *   nulls            allocations refused, keyed by the update they carried
+ *
+ * Off by default. The switch is read once in alSynNew, before the first param
+ * exists, so the free count is exact for the whole session; when it is off
+ * each hook is a single untaken branch and no output is written. Accounting
+ * never changes which allocation succeeds, so PCM is identical either way.
+ */
+enum {
+    NATIVE_PARAM_START_ALT,
+    NATIVE_PARAM_START,
+    NATIVE_PARAM_VOLUME,
+    NATIVE_PARAM_PAN,
+    NATIVE_PARAM_PITCH,
+    NATIVE_PARAM_FXMIX,
+    NATIVE_PARAM_STOP,
+    NATIVE_PARAM_FREE,
+    NATIVE_PARAM_STEAL,
+    NATIVE_PARAM_OTHER,
+    NATIVE_PARAM_KINDS
+};
+
+#ifdef NATIVE_PORT
+static int s_param_stats;
+static s32 s_param_capacity;
+static s32 s_param_free;
+static s32 s_param_min_free;
+static s32 s_param_window_min_free;
+static u64 s_param_frames;
+static u64 s_param_exhausted_frames;
+static u64 s_param_nulls[NATIVE_PARAM_KINDS];
+
+static void native_param_stats_init(s32 capacity)
+{
+    const char *value = getenv("MDKR_AUDIO_SERVICE_TRACE");
+
+    s_param_stats = value != NULL && value[0] != '\0' &&
+                    strcmp(value, "0") != 0;
+    s_param_capacity = capacity;
+    s_param_free = capacity;
+    s_param_min_free = capacity;
+    s_param_window_min_free = capacity;
+}
+
+static void native_param_stats_take(void)
+{
+    if (!s_param_stats) {
+        return;
+    }
+    s_param_free--;
+    if (s_param_free < s_param_window_min_free) {
+        s_param_window_min_free = s_param_free;
+    }
+    if (s_param_free < s_param_min_free) {
+        s_param_min_free = s_param_free;
+    }
+}
+
+static void native_param_stats_give(void)
+{
+    if (s_param_stats) {
+        s_param_free++;
+    }
+}
+
+static void native_param_stats_null(int kind)
+{
+    if (s_param_stats) {
+        s_param_nulls[kind]++;
+    }
+}
+
+/* Closes one window: everything allocated since the previous frame's pull,
+ * including game-thread posts made between frames, plus this frame's
+ * handlers. */
+static void native_param_stats_frame(void)
+{
+    if (!s_param_stats) {
+        return;
+    }
+    s_param_frames++;
+    if (s_param_window_min_free <= 0) {
+        s_param_exhausted_frames++;
+    }
+    s_param_window_min_free = s_param_free;
+}
+
+static int native_param_kind(s16 type)
+{
+    switch (type) {
+    case AL_FILTER_START_VOICE_ALT: return NATIVE_PARAM_START_ALT;
+    case AL_FILTER_START_VOICE:     return NATIVE_PARAM_START;
+    case AL_FILTER_SET_VOLUME:      return NATIVE_PARAM_VOLUME;
+    case AL_FILTER_SET_PAN:         return NATIVE_PARAM_PAN;
+    case AL_FILTER_SET_PITCH:       return NATIVE_PARAM_PITCH;
+    case AL_FILTER_SET_FXAMT:       return NATIVE_PARAM_FXMIX;
+    case AL_FILTER_STOP_VOICE:      return NATIVE_PARAM_STOP;
+    case AL_FILTER_FREE_VOICE:      return NATIVE_PARAM_FREE;
+    default:                        return NATIVE_PARAM_OTHER;
+    }
+}
+
+void mdkr_synth_param_report(void)
+{
+    u64 total = 0;
+    int kind;
+
+    if (!s_param_stats) {
+        return;
+    }
+    for (kind = 0; kind < NATIVE_PARAM_KINDS; kind++) {
+        total += s_param_nulls[kind];
+    }
+    fprintf(stderr,
+            "[AUDIO-PARAMS] capacity=%d minfree=%d peak=%d frames=%llu "
+            "exhaustedframes=%llu nulls=%llu start_alt=%llu start=%llu "
+            "volume=%llu pan=%llu pitch=%llu fxmix=%llu stop=%llu free=%llu "
+            "steal=%llu other=%llu\n",
+            (int)s_param_capacity, (int)s_param_min_free,
+            (int)(s_param_capacity - s_param_min_free),
+            (unsigned long long)s_param_frames,
+            (unsigned long long)s_param_exhausted_frames,
+            (unsigned long long)total,
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_START_ALT],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_START],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_VOLUME],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_PAN],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_PITCH],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_FXMIX],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_STOP],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_FREE],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_STEAL],
+            (unsigned long long)s_param_nulls[NATIVE_PARAM_OTHER]);
+}
+#else
+#define native_param_stats_init(capacity) ((void)0)
+#define native_param_stats_take() ((void)0)
+#define native_param_stats_give() ((void)0)
+#define native_param_stats_null(kind) ((void)0)
+#define native_param_stats_frame() ((void)0)
+#define native_param_kind(type) (NATIVE_PARAM_OTHER)
+#endif
+
 static void enqueue_voice_update(ALVoice *voice, ALParam *update)
 {
     ALFilter *filter;
@@ -123,6 +279,7 @@ static ALParam *alloc_voice_update(ALSynth *synth, ALVoice *voice, s16 type)
 
     update = __allocParam();
     if (update == NULL) {
+        native_param_stats_null(native_param_kind(type));
         return NULL;
     }
 
@@ -323,6 +480,7 @@ void alSynNew(ALSynth *synth, ALSynConfig *config)
     if (params == NULL) {
         return;
     }
+    native_param_stats_init(config->maxUpdates);
     synth->paramList = NULL;
     for (i = 0; i < config->maxUpdates; i++) {
         ALParam *param =
@@ -395,6 +553,7 @@ Acmd *alAudioFrame(Acmd *cmd_list, s32 *cmd_len, s16 *out_buf, s32 out_len)
 
     *cmd_len = (s32)(cmd_end - cmd_list);
     _collectPVoices(synth);
+    native_param_stats_frame();
     return cmd_end;
 }
 
@@ -412,6 +571,7 @@ ALParam *__allocParam(void)
     if (param != NULL) {
         synth->paramList = param->next;
         param->next = NULL;
+        native_param_stats_take();
     }
 
     return param;
@@ -428,6 +588,7 @@ void __freeParam(ALParam *param)
     synth = &alGlobals->drvr;
     param->next = synth->paramList;
     synth->paramList = param;
+    native_param_stats_give();
 }
 
 void _collectPVoices(ALSynth *synth)
@@ -619,6 +780,7 @@ s32 alSynAllocVoice(ALSynth *s, ALVoice *voice, ALVoiceConfig *config)
             ALParam *stop = __allocParam();
 
             if (fade == NULL || stop == NULL) {
+                native_param_stats_null(NATIVE_PARAM_STEAL);
                 native_csp_trace_physical_voice("physical_steal_reject",
                                                 old_priority,
                                                 config->priority);
