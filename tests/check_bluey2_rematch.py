@@ -713,13 +713,17 @@ def main() -> int:
         if not cadence_failures(original, original):
             failures.append("same-as-Original sensitivity control was not rejected")
         # The Enhanced audio assertions must be able to fail: one lost start,
-        # and this run's measured demand against the stock 96-entry pool.
+        # and a pool used to its last entry at the N64's stock 96. The control
+        # pool is synthetic on purpose: this run's own peak (90) against 96
+        # fails the headroom rule only while demand stays above 48, so a
+        # legitimate drop in demand would quietly turn it into no control.
         if not validate_enhanced_audio(
                 replace(enhanced, voice_starts=enhanced.voice_starts - 1))[0]:
             failures.append("dropped-start sensitivity control was not rejected")
         pool = synth_update_pool(enhanced.output)
         if pool is not None and not synth_update_pool_failures(
-                {**pool, "capacity": STOCK_UPDATE_POOL}, "control"):
+                {**pool, "peak": STOCK_UPDATE_POOL, "capacity": STOCK_UPDATE_POOL},
+                "control"):
             failures.append("stock-pool sensitivity control was not rejected")
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

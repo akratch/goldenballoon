@@ -282,7 +282,13 @@ void audio_init(OSSched *sc) {
      *
      * 384 is 2.5x the highest measured peak. check_bluey2_rematch.py and
      * check_adventure_race_loop.py fail an Enhanced run that uses more than
-     * half of it. Cost is 40 bytes per entry, 15 KB of the audio heap. */
+     * half of it. Cost is 40 bytes per entry, 15 KB of the audio heap.
+     *
+     * Those peaks are per 736-sample measurement frame. Live play can ask one
+     * synthesis call for up to PORT_MAX_FRAME_SAMPLES (1792, audiomgr.c) when
+     * it refills a drained queue, about 2.4x as much audio, and per-tick
+     * updates scale with it: the worst measured peak becomes about 370, which
+     * still fits in 384 (the headroom rule above does not hold there). */
     synth_config.maxUpdates = 384;
 #else
     synth_config.maxUpdates = 96;
