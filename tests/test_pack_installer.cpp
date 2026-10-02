@@ -896,18 +896,31 @@ int main(int argc, char **argv) {
         std::ofstream(sweepMods / ".install-1-0" / "Pack" / "pack.ini") << "[pack]\nname=Partial\n";
         REQUIRE(fs::create_directories(sweepMods / ".install-2-0"));
         REQUIRE(fs::create_directories(sweepMods / ".keep-me"));
-        std::ofstream(sweepMods / ".install-file") << "a file, not staging";
+        // Named exactly like staging, but a file and a link: never touched,
+        // and a link never followed.
+        std::ofstream(sweepMods / ".install-4-0") << "a file, not staging";
         std::ofstream(sweepMods / "Installed.zip") << "an installed pack";
         REQUIRE(fs::create_directories(outside));
         std::ofstream(outside / "keep.bin") << "keep";
-        const bool linked = makeDirectoryLink(outside, sweepMods / ".install-link");
+        const bool linked = makeDirectoryLink(outside, sweepMods / ".install-5-0");
+        // A player's own folders that only start like staging. The installer
+        // names staging ".install-<tick>-<attempt>" (decimal, no leading
+        // zeros, attempt below 32); nothing else is its to delete.
+        const char *const playerFolders[] = {
+            ".install-backup", ".install-12-old", ".install-1-0.bak",
+            ".install-007-1", ".install-1-32", ".install--1-0", ".install-1-"};
+        for (const char *name : playerFolders) {
+            REQUIRE(fs::create_directories(sweepMods / name));
+            std::ofstream(sweepMods / name / "mine.txt") << "the player's";
+        }
         auto live = PreparedPackInstall::copyZip(input / "race.zip", sweepMods);
         fs::path liveStage;
         for (const auto &entry : fs::directory_iterator(sweepMods)) {
             const auto name = entry.path().filename().string();
-            if (name.rfind(".install-", 0) == 0 && name != ".install-1-0" &&
-                name != ".install-2-0" && name != ".install-file" && name != ".install-link")
-                liveStage = entry.path();
+            bool fixture = name == ".install-1-0" || name == ".install-2-0" ||
+                           name == ".install-4-0" || name == ".install-5-0";
+            for (const char *player : playerFolders) fixture = fixture || name == player;
+            if (name.rfind(".install-", 0) == 0 && !fixture) liveStage = entry.path();
         }
         REQUIRE(!liveStage.empty() && fs::is_regular_file(liveStage / "race.zip"));
 
@@ -916,12 +929,17 @@ int main(int argc, char **argv) {
         REQUIRE(!fs::exists(sweepMods / ".install-2-0"));
         REQUIRE(fs::is_regular_file(liveStage / "race.zip"));
         REQUIRE(fs::is_directory(sweepMods / ".keep-me"));
-        REQUIRE(fs::is_regular_file(sweepMods / ".install-file"));
+        REQUIRE(fs::is_regular_file(sweepMods / ".install-4-0"));
         REQUIRE(fs::is_regular_file(sweepMods / "Installed.zip"));
         REQUIRE(fs::file_size(outside / "keep.bin") == 4);
+        for (const char *name : playerFolders) {
+            if (!fs::is_regular_file(sweepMods / name / "mine.txt"))
+                std::fprintf(stderr, "swept a player's folder: %s\n", name);
+            REQUIRE(fs::file_size(sweepMods / name / "mine.txt") == 12);
+        }
         if (linked) {
-            REQUIRE(fs::exists(fs::symlink_status(sweepMods / ".install-link")));
-            removeLink(sweepMods / ".install-link");
+            REQUIRE(fs::exists(fs::symlink_status(sweepMods / ".install-5-0")));
+            removeLink(sweepMods / ".install-5-0");
         }
         REQUIRE(live.finalize().installed);
         REQUIRE(fs::is_regular_file(sweepMods / "race.zip"));

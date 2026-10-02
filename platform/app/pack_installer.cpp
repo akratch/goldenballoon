@@ -39,13 +39,38 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Every staging folder is named with this prefix, which is what lets a sweep
-// recognise the installer's own leftovers and nothing else.
+// Every staging folder is named ".install-<tick>-<attempt>": the steady-clock
+// tick and an attempt number below kStageAttempts, both decimal without
+// leading zeros. A sweep removes only names of exactly that form, so a
+// player's own folder that merely starts with ".install-" is never touched.
 constexpr char kStagePrefix[] = ".install-";
 constexpr size_t kStagePrefixLength = sizeof kStagePrefix - 1;
+constexpr unsigned kStageAttempts = 32;
+
+std::string stageName(unsigned long long tick, unsigned attempt) {
+    return kStagePrefix + std::to_string(tick) + "-" + std::to_string(attempt);
+}
+
+// A decimal number as std::to_string writes one: at least one digit, no
+// leading zero, no sign. Advances `text` past it.
+bool readDecimal(const char *&text, unsigned long long &value) {
+    if (*text < '0' || *text > '9' || (text[0] == '0' && text[1] >= '0' && text[1] <= '9'))
+        return false;
+    value = 0;
+    for (; *text >= '0' && *text <= '9'; ++text) {
+        const unsigned digit = static_cast<unsigned>(*text - '0');
+        if (value > (std::numeric_limits<unsigned long long>::max() - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    return true;
+}
 
 bool isStageName(const char *name) {
-    return std::strncmp(name, kStagePrefix, kStagePrefixLength) == 0;
+    if (std::strncmp(name, kStagePrefix, kStagePrefixLength) != 0) return false;
+    const char *cursor = name + kStagePrefixLength;
+    unsigned long long tick = 0, attempt = 0;
+    return readDecimal(cursor, tick) && *cursor++ == '-' && readDecimal(cursor, attempt) &&
+           *cursor == '\0' && attempt < kStageAttempts;
 }
 
 // A stop request, where an exception from the callback also means stop: the
@@ -655,10 +680,10 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         return prepared;
     }
 #endif
-    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
-    for (unsigned attempt = 0; attempt < 32; ++attempt) {
-        fs::path candidate = prepared.modsDir_ /
-            (kStagePrefix + std::to_string(tick) + "-" + std::to_string(attempt));
+    const auto tick = static_cast<unsigned long long>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    for (unsigned attempt = 0; attempt < kStageAttempts; ++attempt) {
+        fs::path candidate = prepared.modsDir_ / stageName(tick, attempt);
         prepared.stageName_ = candidate.filename();
         ec.clear();
 #if !MDKR_PACK_BY_PATH

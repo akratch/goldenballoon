@@ -451,7 +451,9 @@ Content list then refreshes on the launcher thread.
 A cancelled or refused copy is deleted on a background thread, never through
 a link. A live installation holds its staging folder; when the launcher
 starts, staging folders nothing holds (left by a crash or force-quit) are
-deleted in the background. Quitting cancels the copy and waits for the worker
+deleted in the background. Only folders named exactly as staging is named
+(`.install-<tick>-<n>`, both decimal) are deleted; a folder of the player's
+that merely starts with `.install-` is left alone. Quitting cancels the copy and waits for the worker
 and those deletions.
 
 How files are reached differs by platform:

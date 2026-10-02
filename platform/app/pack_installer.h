@@ -63,9 +63,9 @@ public:
     PackInstallResult finalize(const std::function<bool()> &cancelled = {});
 
     // Remove staging folders that a crashed or force-quit installation left in
-    // `modsDir`. Only real folders named with the installer's own prefix are
-    // touched, never through a link, and never one a live installation in any
-    // process still holds. `cancelled` is polled between entries; a stopped
+    // `modsDir`. Only real folders named exactly as the installer names its
+    // staging (".install-<tick>-<attempt>") are touched, never through a link,
+    // and never one a live installation in any process still holds. `cancelled` is polled between entries; a stopped
     // sweep leaves the rest for the next one. Returns how many were removed.
     static std::size_t reclaimAbandonedStaging(const std::filesystem::path &modsDir,
                                                const std::function<bool()> &cancelled = {});
