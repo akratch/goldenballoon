@@ -137,6 +137,15 @@ int mdkr_track_model_wave_basis_valid(const void *model, size_t size) {
     return mdkr_track_model_wave_grid(model, size, &grid);
 }
 
+/* A model has at most MODEL_SEGMENT_MAX segments (validate_spans), and the
+ * region check records five root regions plus at most five per segment.
+ * Both the region array and the guard in add_region use the one capacity,
+ * so neither can change without the other. */
+enum {
+    MODEL_SEGMENT_MAX = 128,
+    MODEL_REGION_CAPACITY = 5 + 5 * MODEL_SEGMENT_MAX
+};
+
 static int span(uint32_t offset, uint32_t count, uint32_t stride,
                 uint32_t extent, uint32_t alignment) {
     if (!count) return 1;
@@ -151,7 +160,7 @@ int mdkr_track_model_validate_spans(const void *model, size_t size) {
     const uint32_t textures = be16(bytes + 0x18), segments = be16(bytes + 0x1A);
     const uint32_t segment_offset = be32(bytes + 4);
     if (extent < 0x4C || extent > size || textures > 255 ||
-        !segments || segments > 128 ||
+        !segments || segments > MODEL_SEGMENT_MAX ||
         !span(be32(bytes), textures, 8, extent, 4) ||
         !span(segment_offset, segments, 0x44, extent, 4) ||
         !span(be32(bytes + 8), segments, 12, extent, 2) ||
@@ -240,8 +249,10 @@ int mdkr_track_model_validate_visibility(const void *model, size_t size) {
             !span(pvs + row, row_bytes, 1, extent, 1)) return 0;
     }
     if (count == 1) return 1;
-    struct Visit { uint32_t node, low, high; } stack[128];
-    unsigned char seen[127] = {0};
+    /* At most MODEL_SEGMENT_MAX - 1 split nodes; the push guard below stops a
+     * malformed tree from queueing more than the stack holds. */
+    struct Visit { uint32_t node, low, high; } stack[MODEL_SEGMENT_MAX];
+    unsigned char seen[MODEL_SEGMENT_MAX - 1] = {0};
     size_t pending = 1, visited = 0;
     stack[0] = (struct Visit){0, 0, count - 1};
     while (pending) {
@@ -258,7 +269,7 @@ int mdkr_track_model_validate_visibility(const void *model, size_t size) {
             if (child == 0xFFFF) {
                 if (low != high) return 0;
             } else {
-                if (pending >= 128) return 0;
+                if (pending >= MODEL_SEGMENT_MAX) return 0;
                 stack[pending++] = (struct Visit){child, low, high};
             }
         }
@@ -270,7 +281,7 @@ typedef struct ModelRegion { uint32_t begin, end; int pvs; } ModelRegion;
 static int add_region(ModelRegion *regions, size_t *count, uint32_t begin,
                       uint32_t bytes, int pvs) {
     if (!bytes) return 1;
-    if (*count >= 645 || bytes > UINT32_MAX - begin) return 0;
+    if (*count >= MODEL_REGION_CAPACITY || bytes > UINT32_MAX - begin) return 0;
     const uint32_t end = begin + bytes;
     for (size_t i = 0; i < *count; ++i)
         if (begin < regions[i].end && regions[i].begin < end &&
@@ -283,7 +294,7 @@ int mdkr_track_model_validate_regions(const void *model, size_t size) {
     if (!mdkr_track_model_validate_visibility(model, size)) return 0;
     const unsigned char *bytes = model;
     const uint32_t segments = be16(bytes + 0x1A);
-    ModelRegion regions[645]; /* Five root regions + five per segment. */
+    ModelRegion regions[MODEL_REGION_CAPACITY];
     size_t count = 0;
     if (!add_region(regions, &count, 0, 0x4C, 0) ||
         !add_region(regions, &count, be32(bytes), be16(bytes + 0x18) * 8, 0) ||

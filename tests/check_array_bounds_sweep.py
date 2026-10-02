@@ -671,14 +671,15 @@ SHAPE_TRIAGE = {
         "candidates[k], a TexCandidate[MDKR_MOD_MAX_PACKS] row, with max = "
         "MDKR_MOD_MAX_PACKS.",
     ("bare-pointer", "platform/custom_track_model.c", "add_region:regions"):
-        "BOUNDED BY LITERAL, PRE-CHECKED: `*count >= 645` returns 0 before "
-        "the single regions[(*count)++] write, so the highest index written "
-        "is 644. The sole caller, mdkr_track_model_validate_regions, passes a "
-        "local ModelRegion regions[645]; the greatest demand is 5 root "
-        "regions + 5 per segment with segments <= 128 (validate_spans, which "
-        "runs first through validate_visibility/validate_indices), i.e. "
-        "exactly 645. WATCH: the 645 is written twice (array and guard); "
-        "changing one without the other is the edit that breaks this.",
+        "BOUNDED BY CONSTANT, PRE-CHECKED: `*count >= MODEL_REGION_CAPACITY` "
+        "returns 0 before the single regions[(*count)++] write, so the "
+        "highest index written is MODEL_REGION_CAPACITY - 1. The sole caller, "
+        "mdkr_track_model_validate_regions, passes a local "
+        "ModelRegion regions[MODEL_REGION_CAPACITY]: one enum constant sizes "
+        "the array and the guard, so they cannot drift apart. It is "
+        "5 + 5 * MODEL_SEGMENT_MAX (645), the greatest demand: 5 root regions "
+        "+ 5 per segment with segments <= MODEL_SEGMENT_MAX (validate_spans, "
+        "which runs first through validate_visibility/validate_indices).",
     ("bare-pointer", "platform/gpu_diagnostics.c", "copy_field:destination"):
         "BOUNDED BY PARAMETER: the copy loop's own condition is "
         "`index + 1u < size`, so index stops at size-2 and the unconditional "
