@@ -3,8 +3,8 @@
 
 The base Time Trial fixture enters Ancient Lake once. This check extends its
 post-race A-button pulses so the original Try Again path loads the same race
-again and again in one process: twelve loads, and eleven completed renderer
-generations, in the default 35,000 frames, and the gate needs eleven loads.
+again and again in one process: fourteen loads, and thirteen completed renderer
+generations, in the default 40,000 frames, and the gate needs eleven loads.
 The first generations may warm persistent caches; the last three equivalent
 CPU/audio snapshots must be identical, while
 completed renderer generations must have coherent, bounded, non-growing
@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -46,19 +47,29 @@ from harness_utils import DEFAULT_BUILD_DIR, present_mode_rows, resolve_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE_SCRIPT = ROOT / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
-# Eleven race samples or more (the eleventh near frame 31,000, the twelfth near
-# 33,700), which the texture-cache window needs (CACHE_RACES_REQUIRED).
-DEFAULT_FRAMES = 35_000
-# Per child run. Measured under the suite runner's background policy
-# (`taskpolicy -b`) on a loaded M3 Max: GL 260-266 s, WebGPU 109-111 s, the
-# dump about 35 s. 240 s had become a contention red, and at 25,000 frames GL
-# already took 168-206 s. 720 s is 2.7x the worst measured, and the dump plus
-# two runs at the ceiling still fit inside run_checks' 1,800 s task budget.
-DEFAULT_RUN_TIMEOUT = 720.0
+# Fourteen race samples on both renderers (a race every ~2,700 frames after the
+# first), three more than the texture-cache window needs (CACHE_RACES_REQUIRED),
+# so a content or pacing change that slows each race a little cannot by itself
+# turn the gate red. The engine has no way to stop after N race loads, and
+# stopping it from outside would lose the terminal censuses this gate reads,
+# so the route is sized by frames, with that headroom.
+DEFAULT_FRAMES = 40_000
+# Per child run. Measured at 40,000 frames under the suite runner's background
+# policy (`taskpolicy -b`) on a loaded M3 Max (load average 4-6), two rounds:
+# GL 317-328 s, WebGPU 116-149 s. 900 s is 2.7x the worst. (240 s, the old
+# ceiling, was already a contention red at 35,000 frames.) The dump run has
+# its own ceiling, GENERATED_PACK_TIMEOUT; run_checks gives the task 2,400 s,
+# room for the dump and both runs at their ceilings (the oracle test checks).
+DEFAULT_RUN_TIMEOUT = 900.0
 # The generated pack's dump run: through the first race's start (it loads near
 # frame 2,000), which draws every texture a warm race load re-uploads.
 GENERATED_PACK_FRAMES = 4_500
 GENERATED_PACK_INI = "[pack]\nname=Plateau Fixture\npriority=100\n"
+# The dump run's own ceiling, separate from --timeout so that the dump plus
+# two backend runs, each at its ceiling, stay inside run_checks' task budget
+# (test_resource_plateau_oracle checks the sum). Measured 39-41 s under the
+# runner's background policy; 120 s is 2.9x that.
+GENERATED_PACK_TIMEOUT = 120.0
 
 RESOURCE_RE = re.compile(
     r"resource_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
@@ -293,6 +304,7 @@ def generate_pack(binary: Path, rom: Path, root: Path, timeout: float,
                "--input-script", str(script), "--rom", str(rom)]
     if verbose:
         print("$ MDKR_MOD_TEXTURE_DUMP=... " + " ".join(command))
+    started = time.monotonic()
     try:
         process = subprocess.run(command, cwd=root, env=env,
                                  stdout=subprocess.PIPE,
@@ -311,7 +323,8 @@ def generate_pack(binary: Path, rom: Path, root: Path, timeout: float,
         archive.writestr("pack.ini", GENERATED_PACK_INI)
         for digest in digests:
             archive.writestr(f"textures/{digest}.png", image)
-    print(f"  generated pack: {len(digests)} replacement textures")
+    print(f"  generated pack: {len(digests)} replacement textures; dump run "
+          f"{time.monotonic() - started:.0f}s of its {timeout:.0f}s")
     return pack
 
 
@@ -537,6 +550,7 @@ def run_backend(
         ]
         if verbose:
             print("$ " + " ".join(command))
+        started = time.monotonic()
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 process = subprocess.run(
@@ -553,6 +567,7 @@ def run_backend(
             output = log_path.read_text(encoding="utf-8", errors="replace")
             return failure(f"timed out after {timeout:.0f}s", output)
         output = log_path.read_text(encoding="utf-8", errors="replace")
+        elapsed = time.monotonic() - started
         if process.returncode != 0:
             return failure(f"exit code {process.returncode}", output)
         for marker in FATAL_MARKERS:
@@ -659,7 +674,9 @@ def run_backend(
             f"registry={registry_warmed[3]}/{registry_warmed[4]} "
             "live/high; "
             f"packPixels={cache_races[-1][3]} table={cache_races[-1][5]} bytes"
-            f"{cache_first_use_note(cache_rows)}"
+            f"{cache_first_use_note(cache_rows)}; "
+            f"{len(cache_races)} cache race samples (need "
+            f"{CACHE_RACES_REQUIRED}); run {elapsed:.0f}s of its {timeout:.0f}s"
         )
         if cleanup_on_success:
             shutil.rmtree(run_root)
@@ -849,8 +866,8 @@ def main() -> int:
         pack_root = Path(tempfile.mkdtemp(prefix="generated-pack-",
                                           dir=args.artifacts_dir))
         try:
-            pack = generate_pack(binary, rom, pack_root, args.timeout,
-                                 args.verbose)
+            pack = generate_pack(binary, rom, pack_root,
+                                 GENERATED_PACK_TIMEOUT, args.verbose)
         except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             print(f"check_resource_plateau: FAIL — could not generate the "
                   f"texture pack: {error}", file=sys.stderr)

@@ -1,4 +1,6 @@
 """Synthetic controls for cache plateau evidence; no ROM or renderer needed."""
+import importlib.util
+import sys
 import unittest
 from pathlib import Path
 import subprocess
@@ -6,9 +8,12 @@ import tempfile
 from unittest.mock import patch
 
 from check_resource_plateau import (CACHE_RACES_REQUIRED, CACHE_WARMUP_RACES,
-                                    cache_gate_error, cache_plateau_error,
-                                    extended_route, run_backend,
-                                    warm_reupload_error)
+                                    DEFAULT_RUN_TIMEOUT,
+                                    GENERATED_PACK_TIMEOUT, cache_gate_error,
+                                    cache_plateau_error, extended_route,
+                                    run_backend, warm_reupload_error)
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class CachePlateauTests(unittest.TestCase):
@@ -197,6 +202,22 @@ class CachePlateauTests(unittest.TestCase):
         self.assertIsNotNone(warm_reupload_error(rows[:2]))
         other_scene = [(0, 0, 0, 0, 5)] * 7
         self.assertIsNotNone(warm_reupload_error(other_scene))
+
+    def test_ceilings_fit_the_suite_budget(self):
+        # T12d: the dump run and both backend runs, each at its own ceiling,
+        # must fit inside the run_checks task's budget, so a slow run fails
+        # with the gate's message rather than being killed by the runner.
+        spec = importlib.util.spec_from_file_location(
+            "run_checks_for_budget", ROOT / "tools" / "run_checks.py")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        task = next(check for check in module.CHECKS
+                    if check.name == "resource_plateau")
+        # Plus a margin for the gate's own work between runs.
+        self.assertLessEqual(
+            GENERATED_PACK_TIMEOUT + 2 * DEFAULT_RUN_TIMEOUT + 120,
+            task.timeout)
 
     def test_long_route_keeps_retrying(self):
         rows = extended_route(75000).splitlines()

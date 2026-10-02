@@ -887,9 +887,14 @@ CHECKS = (
           "onto the big-room SFX bus after recycled SFX voices moved pool slots "
           "there: a Treasure Caves autopilot drive with the per-voice routing "
           "trace, asserting every music note-on is on bus 0"),
+    # 40,000 frames on two renderers plus a texture dump: measured 482-507 s
+    # under this runner's background policy on a loaded host. The gate's own
+    # ceilings (a 120 s dump, 900 s a run) sum to 1,920 s; this leaves room
+    # for them, so a slow run fails with the gate's own message.
     Check("resource_plateau", "check_resource_plateau.py", "native",
           "repeated GL/WebGPU stage, pool/audio/GPU/registry ownership plateau, "
-          "with a generated texture pack: cache plateau and warm re-uploads"),
+          "with a generated texture pack: cache plateau and warm re-uploads",
+          timeout=2400),
     Check("input_script_capacity", "check_input_script_capacity.py", "native",
           "input-script capacity boundary accepts 512 and rejects 513 entries"),
     Check("raw16_audio", "check_raw16_audio.py", "native",

@@ -8204,9 +8204,9 @@ python3 tests/check_resource_plateau.py --build build \
   --rom baserom.us.v80.z64
 ```
 
-Loads the same race eleven times or more in one process (the default 35,000
-frames record eleven or twelve race samples) through the original Try Again
-path and requires CPU pool, audio, GPU, and pointer-registry generations to
+Loads the same race eleven times or more in one process (the default 40,000
+frames record fourteen race samples, three more than required) through the
+original Try Again path and requires CPU pool, audio, GPU, and pointer-registry generations to
 reach a plateau. The first generations may warm persistent caches; the later
 ones may not grow.
 
@@ -8220,9 +8220,15 @@ pack-texture cache is judged in every suite run, and so is the warm-load window
 below. Pass `--texture-pack /path/to/pack.zip` to install a real pack instead
 (copied into the run's isolated preferences/mods directory), or `--no-pack` to
 run with none. Use `--artifacts-dir /private/path` to retain logs and the pack
-privately. Under the suite runner's background policy on a loaded host the task
-measured 404-412 s (it was 245-283 s at 25,000 frames with no pack). Each child
-run times out at 720 s (`--timeout`), 2.7x the slowest backend measured.
+privately. The route is sized in frames, because the engine cannot stop
+after N race loads and stopping it from outside would lose the terminal
+censuses; the three spare races absorb a change in content or pacing that
+slows each race. Under the suite runner's background policy on a loaded host
+the gate measured 482-507 s (it was 245-283 s at 25,000 frames with no pack):
+GL 317-328 s, WebGPU 116-149 s, the dump 39-41 s. Each backend run times out
+at 900 s (`--timeout`, 2.7x the slowest), the dump at 120 s, and run_checks
+gives the task 2,400 s, which `resource_plateau_oracle` checks covers all
+three ceilings. The PASS lines print each run's time and sample count.
 
 With a pack, a run must show that the pack was drawn, not merely indexed: the
 last race's census must hold resident pack identities (`firstResident` > 0), or
