@@ -910,14 +910,20 @@ realtime arms therefore downgrade to loud notes in-suite, and the measurement
 this section owns has to happen once per release on a machine that can
 actually present:
 
-1. Log in, unlock, leave the desktop clear (nothing covering the window that
-   opens), and keep hands off for the run.
+1. Log in, unlock, and stay at the machine for the run. The window comes to
+   the front and takes the keyboard. Leave the desktop clear and keep hands
+   off while it runs.
 2. ```bash
-   MDKR_TEST_VISIBLE_HEADLESS=1 python3 tests/check_pacing_quality.py \
-     --build build-rel --rom baserom.us.v80.z64
+   MDKR_TEST_VISIBLE_HEADLESS=1 MDKR_TEST_FOREGROUND=1 \
+     python3 tests/check_pacing_quality.py \
+     --build build-rel/mdkr64 --rom baserom.us.v80.z64
    ```
-3. Require the full PASS — no `--allow-no-baseline`, no downgraded notes.
-   This is the only coverage the alpha-grid projection has anywhere.
+   `--build` is the built binary. `--rom` is the US v80 ROM file, not the
+   folder that contains it. Do not pass `--allow-no-baseline`.
+3. Require the full PASS — no downgraded "quality not measured" note.
+   This is the only coverage the alpha-grid projection has anywhere. An
+   unlocked never-block fails here. The suite's copy of this gate passes
+   `--allow-no-baseline` and must not be used as this measurement.
 
 ## 3b. Independent real-ROM gameplay oracle
 

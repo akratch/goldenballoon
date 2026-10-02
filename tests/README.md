@@ -3467,9 +3467,13 @@ an unlocked 120 Hz panel measured 2200-2400) as one with no consumer. That is
 the host's doing only while the console is not observably unlocked (locked, no
 session, or unreadable); on an unlocked console it is a failure, "no consumer
 on an unlocked console", which is how an unthrottled never-blocking regression
-shows. The suite always passes `--allow-no-baseline`. That flag still
-downgrades a locked or unreadable host to a loud note. It does not downgrade
-an unlocked never-block. The run is SKIPPED (banner, exit 77, named by `tools/run_checks.py`, a
+shows, when the gate is run without `--allow-no-baseline`. The suite always
+passes that flag. Under it, an arm whose attempts all lacked a paced session
+— a host refusal, no consumer on an unlocked console, or an unthrottled
+present — is a loud note, and the banner is `PASS (REALTIME QUALITY NOT
+MEASURED)` with the cause named. A paced attempt that misses its bounds still
+fails. The prepared-machine command in `docs/RELEASE_CHECKLIST.md` §3a omits
+the flag. The run is SKIPPED (banner, exit 77, named by `tools/run_checks.py`, a
 failure in a release run) only when the console is locked before the arms or
 when every attempt of both arms had no consumer while it was not observably
 unlocked. One refused arm leaves the other arm's verdict standing, quality
@@ -3478,8 +3482,9 @@ and the realtime integrity assertions must still pass first.
 `pacing_quality_reporting` pins both detectors with the locked rows and drives
 `main()`'s combined verdict through scripted attempts: one arm refused with the
 other failing its bounds fails, both refused on a locked console skips,
-never-blocking on an unlocked console fails, and a lock after a paced failure
-keeps the failure.
+never-blocking on an unlocked console fails without `--allow-no-baseline`
+and is a loud "quality not measured" note with the flag, and a lock after a
+paced failure keeps the failure.
 
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing

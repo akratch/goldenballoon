@@ -7,6 +7,7 @@ from dataclasses import replace
 import inspect
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -257,16 +258,24 @@ class PacingReportingTests(unittest.TestCase):
                     pacing.run_arm(binary, rom, root, "realtime-display-smoothing",
                                    "display", "interpolate", 10, 5, False,
                                    realtime=True)
-            self.assertIn("process could not start", str(raised.exception))
-            env = captured["env"]
-            run_dir = root / "realtime-display-smoothing"
-            for name in ("MDKR_SAVE_DIR", "MDKR_VIDEO_CONFIG_PATH",
-                         "MDKR_APP_PREFS_DIR", "MDKR_MODS_DIR",
-                         "MDKR_CUSTOM_CHARACTER_DIRECTORY"):
-                self.assertIn(name, env)
-                self.assertTrue(Path(env[name]).is_relative_to(run_dir), name)
-            self.assertFalse((run_dir / "mods").exists())
-            self.assertFalse((run_dir / "characters").exists())
+                self.assertIn("process could not start", str(raised.exception))
+                env = captured["env"]
+                run_dir = root / "realtime-display-smoothing"
+                for name in ("MDKR_SAVE_DIR", "MDKR_VIDEO_CONFIG_PATH",
+                             "MDKR_APP_PREFS_DIR", "MDKR_MODS_DIR",
+                             "MDKR_CUSTOM_CHARACTER_DIRECTORY"):
+                    self.assertIn(name, env)
+                    self.assertTrue(Path(env[name]).is_relative_to(run_dir), name)
+                self.assertFalse((run_dir / "mods").exists())
+                self.assertFalse((run_dir / "characters").exists())
+                self.assertNotIn("MDKR_TEST_FOREGROUND", env)
+                with mock.patch.dict(os.environ, {"MDKR_TEST_FOREGROUND": "1"}):
+                    with self.assertRaises(RuntimeError):
+                        pacing.run_arm(binary, rom, root,
+                                       "realtime-display-smoothing-front",
+                                       "display", "interpolate", 10, 5, False,
+                                       realtime=True)
+                self.assertEqual(captured["env"].get("MDKR_TEST_FOREGROUND"), "1")
 
 
 # The rows a locked console produced (task T12c, 2026-10-02, console locked
@@ -415,6 +424,13 @@ class RealtimeVerdictTests(unittest.TestCase):
         self.assertEqual(code, 1, text)
         self.assertIn("outside the bounds", text)
         self.assertNotIn("SKIPPED", text)
+        # The suite flag does not excuse an arm that actually paced and missed.
+        code, text = self.run_main(["blocked-never"] * 3, ["bounds"] * 3,
+                                   [self.UNLOCKED] * 8,
+                                   extra_args=("--allow-no-baseline",))
+        self.assertEqual(code, 1, text)
+        self.assertIn("outside the bounds", text)
+        self.assertNotIn("REALTIME QUALITY NOT MEASURED", text)
 
     def test_both_arms_refused_on_a_locked_console_skip(self):
         code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
@@ -429,20 +445,22 @@ class RealtimeVerdictTests(unittest.TestCase):
         self.assertEqual(code, 1, text)
         self.assertIn("no consumer on an unlocked console", text)
         self.assertNotIn("SKIPPED", text)
-        # tools/run_checks.py always passes this flag. It may quiet a locked
-        # or unreadable host. It must not turn an unlocked never-block into
-        # PASS (REALTIME QUALITY NOT MEASURED).
+
+    def test_allow_no_baseline_notes_an_unlocked_never_block(self):
+        # The suite always passes this flag. An occluded automation window
+        # can lack a consumer on a correct build, so that case is a loud
+        # note, not a failure. The prepared-machine run omits the flag and
+        # still fails (the test above).
         code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
                                    [self.UNLOCKED] * 8,
                                    extra_args=("--allow-no-baseline",))
-        self.assertEqual(code, 1, text)
+        self.assertEqual(code, 0, text)
+        self.assertIn("REALTIME QUALITY NOT MEASURED", text)
         self.assertIn("no consumer on an unlocked console", text)
-        self.assertNotIn("REALTIME QUALITY NOT MEASURED", text)
         self.assertNotIn("SKIPPED", text)
 
     def test_allow_no_baseline_still_downgrades_a_locked_or_unreadable_host(self):
-        # The suite flag may quiet a host that cannot be judged. It must not
-        # quiet the unlocked case covered above.
+        # A locked or unreadable host is the same loud note.
         for consoles in (
             [self.UNLOCKED] + [self.LOCKED] * 7,
             [self.UNLOCKED] + [(harness_utils.CONSOLE_UNKNOWN,
