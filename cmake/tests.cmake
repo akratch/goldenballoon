@@ -157,6 +157,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     if(NOT MSVC)
         target_link_libraries(mdkr_pack_installer_test PRIVATE m)
     endif()
+    if(WIN32)
+        # CommandLineToArgvW: the optional ZIP argument is read as UTF-16.
+        target_link_libraries(mdkr_pack_installer_test PRIVATE shell32)
+    endif()
     add_test(NAME pack_installer COMMAND mdkr_pack_installer_test)
     # The app shell that ships this code is built as C++17 (see MDKR_APP in
     # CMakeLists.txt), but this file is included before that pin, and
@@ -1166,6 +1170,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         set_source_files_properties(${CMAKE_SOURCE_DIR}/lib/miniz/miniz.c
             PROPERTIES COMPILE_OPTIONS "-w")
         target_link_libraries(mdkr_mod_source_zip_test PRIVATE m)
+    endif()
+    if(WIN32)
+        # CommandLineToArgvW: the optional scratch argument is read as UTF-16.
+        target_link_libraries(mdkr_mod_source_zip_test PRIVATE shell32)
     endif()
     add_test(NAME mod_source_zip COMMAND mdkr_mod_source_zip_test
              ${CMAKE_CURRENT_BINARY_DIR}/mod_source_scratch)

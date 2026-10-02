@@ -30,7 +30,6 @@
 
 #include "miniz.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,17 +37,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+/* Every scratch path is UTF-8, and on Windows the temp directory may well not
+ * be ASCII: fixtures go through the fs_utf8 helpers or the wide API, never
+ * the narrow CRT, which would read UTF-8 in the ANSI code page. */
 #ifdef _WIN32
-#include <direct.h>
 #include <wchar.h>
 #include <windows.h>
-#define TEST_MKDIR(path) _mkdir(path)
-#define TEST_RMDIR(path) _rmdir(path)
+#include <shellapi.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
-#define TEST_MKDIR(path) mkdir((path), 0777)
-#define TEST_RMDIR(path) rmdir(path)
 #endif
 
 static int failures;
@@ -74,8 +72,8 @@ static void path2(char *out, size_t size, const char *a, const char *b) {
 }
 
 static int is_directory(const char *path) {
-    struct stat status;
-    return stat(path, &status) == 0 && S_ISDIR(status.st_mode);
+    int directory = 0;
+    return mdkr_path_query_utf8(path, NULL, NULL, &directory) == 0 && directory;
 }
 
 static void make_parent_directories(const char *path) {
@@ -87,7 +85,7 @@ static void make_parent_directories(const char *path) {
     for (index = 1; work[index] != '\0'; index++) {
         if (work[index] != '/') continue;
         work[index] = '\0';
-        if (TEST_MKDIR(work) != 0 && !is_directory(work)) {
+        if (mdkr_mkdir_utf8(work) != 0 && !is_directory(work)) {
             fatal("cannot create scratch directory", work);
         }
         work[index] = '/';
@@ -100,7 +98,7 @@ static int try_write_file(const char *path, const void *data, size_t size) {
     FILE *file;
 
     make_parent_directories(path);
-    file = fopen(path, "wb");
+    file = mdkr_fopen_utf8(path, "wb");
     if (file == NULL) return 0;
     if (size != 0 && fwrite(data, 1, size, file) != size) {
         fclose(file);
@@ -114,31 +112,30 @@ static void write_file(const char *path, const void *data, size_t size) {
     if (!try_write_file(path, data, size)) fatal("cannot write scratch file", path);
 }
 
+static void remove_tree(const char *path);
+
+static int remove_listed(const char *name, int kind, void *user) {
+    char child[1024];
+    (void)kind;
+    path2(child, sizeof child, (const char *)user, name);
+    remove_tree(child);
+    return 0;
+}
+
+/* A link is removed as a link (a Windows directory link or junction as a
+ * directory), never followed. */
 static void remove_tree(const char *path) {
-    DIR *dir;
-    struct dirent *entry;
-
-    if (mdkr_path_is_link_or_reparse_utf8(path) == 1) {
-        if (TEST_RMDIR(path) != 0) remove(path);
+    const int kind = mdkr_path_kind_utf8(path);
+    if (kind == MDKR_PATH_LINK) {
+        if (mdkr_rmdir_utf8(path) != 0) (void)mdkr_unlink_utf8(path);
         return;
     }
-    dir = opendir(path);
-
-    if (dir == NULL) {
-        remove(path);
+    if (kind != MDKR_PATH_DIRECTORY) {
+        (void)mdkr_remove_utf8(path);
         return;
     }
-    while ((entry = readdir(dir)) != NULL) {
-        char child[1024];
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
-        }
-        path2(child, sizeof child, path, entry->d_name);
-        if (is_directory(child)) remove_tree(child);
-        else                     remove(child);
-    }
-    closedir(dir);
-    TEST_RMDIR(path);
+    (void)mdkr_directory_list_utf8(path, remove_listed, (void *)path);
+    (void)mdkr_rmdir_utf8(path);
 }
 
 /* ------------------------------------------------------------- fixtures */
@@ -402,7 +399,7 @@ static int naive_join_opens(const char *rel) {
     int written = snprintf(joined, sizeof joined, "%s/%s", g_dir_root, rel);
 
     if (written < 0 || (size_t)written >= sizeof joined) return 0;
-    file = fopen(joined, "rb");
+    file = mdkr_fopen_utf8(joined, "rb");
     if (file == NULL) return 0;
     fclose(file);
     return 1;
@@ -892,6 +889,7 @@ static int make_test_link(const char *target, const char *link, int directory) {
                   SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
     char native_target[1024], native_link[1024], joined[2100];
     wchar_t wide_joined[2100], absolute[2100], command[4400], wide_link[1024];
+    wchar_t wide_target[1024];
     char *slash;
     if (strlen(target) >= sizeof native_target || strlen(link) >= sizeof native_link)
         fatal("link fixture path too long", link);
@@ -899,7 +897,10 @@ static int make_test_link(const char *target, const char *link, int directory) {
     strcpy(native_link, link);
     for (char *p = native_target; *p; ++p) if (*p == '/') *p = '\\';
     for (char *p = native_link; *p; ++p) if (*p == '/') *p = '\\';
-    if (CreateSymbolicLinkA(native_link, native_target, flags)) return 1;
+    if (!MultiByteToWideChar(CP_UTF8, 0, native_target, -1, wide_target, 1024) ||
+        !MultiByteToWideChar(CP_UTF8, 0, native_link, -1, wide_link, 1024))
+        fatal("convert link fixture path", link);
+    if (CreateSymbolicLinkW(wide_link, wide_target, flags)) return 1;
     if (!directory) {
         printf("SKIP a file symbolic link needs Windows Developer Mode\n");
         skips++;
@@ -914,7 +915,6 @@ static int make_test_link(const char *target, const char *link, int directory) {
         fatal("link fixture path too long", link);
     strcat(joined, native_target);
     if (!MultiByteToWideChar(CP_UTF8, 0, joined, -1, wide_joined, 2100) ||
-        !MultiByteToWideChar(CP_UTF8, 0, native_link, -1, wide_link, 1024) ||
         _wfullpath(absolute, wide_joined, 2100) == NULL)
         fatal("resolve junction target", link);
     swprintf(command, sizeof command / sizeof command[0],
@@ -933,7 +933,7 @@ static int make_test_link(const char *target, const char *link, int directory) {
 
 static void prove_link_bait(const char *path) {
     char bytes[7];
-    FILE *file = fopen(path, "rb");
+    FILE *file = mdkr_fopen_utf8(path, "rb");
     if (!file) fatal("link bait is not reachable by an unsafe open", path);
     expect(fread(bytes, 1, sizeof bytes, file) == sizeof bytes &&
                memcmp(bytes, "OUTSIDE", sizeof bytes) == 0,
@@ -1016,7 +1016,7 @@ static void test_directory_root_identity(void) {
     write_file(link, "ORIGINAL", 8);
     source = mdkr_mod_source_open(pack, 0);
     if (!source) fatal("open anchored source", pack);
-    if (rename(pack, retired) != 0) fatal("rename fixture", pack);
+    if (mdkr_rename_exclusive_utf8(pack, retired) != 0) fatal("rename fixture", pack);
     write_file(payload, "REPLACED", 8);
     path2(link, sizeof link, pack, "replacement-only.bin");
     write_file(link, "REPLACED", 8);
@@ -1110,8 +1110,29 @@ static const char *default_scratch(void) {
     return path;
 }
 
+/* The optional scratch argument. Windows hands argv over in the ANSI code
+ * page, so there it is read again from the UTF-16 command line. */
+static const char *argument_scratch(int argc, char **argv) {
+#ifdef _WIN32
+    static char path[1024];
+    int count = 0;
+    LPWSTR *wide = CommandLineToArgvW(GetCommandLineW(), &count);
+    const int converted = wide != NULL && count > 1 &&
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[1], -1, path,
+                            (int)sizeof path, NULL, NULL) > 0;
+    (void)argc;
+    (void)argv;
+    LocalFree(wide);
+    if (!converted) fatal("read the scratch argument", "CommandLineToArgvW");
+    return path;
+#else
+    (void)argc;
+    return argv[1];
+#endif
+}
+
 int main(int argc, char **argv) {
-    const char *scratch = argc > 1 ? argv[1] : default_scratch();
+    const char *scratch = argc > 1 ? argument_scratch(argc, argv) : default_scratch();
 
     remove_tree(scratch);
     fixture_build(scratch);

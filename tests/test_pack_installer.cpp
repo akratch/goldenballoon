@@ -8,6 +8,7 @@
 #include "mod_source.h"
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include <chrono>
@@ -1178,7 +1179,17 @@ int main(int argc, char **argv) {
     if (argc == 2) {
         // Optional maintainer-owned fixture: copy/validate in disposable
         // storage, never install into the user's live mods directory.
+#ifdef _WIN32
+        // argv is in the ANSI code page; read the path from the UTF-16
+        // command line so a non-ASCII path arrives intact.
+        int count = 0;
+        LPWSTR *wide = CommandLineToArgvW(GetCommandLineW(), &count);
+        const fs::path source = wide != nullptr && count == 2 ? fs::path(wide[1]) : fs::path();
+        LocalFree(wide);
+        REQUIRE(!source.empty());
+#else
         const fs::path source = fs::u8path(argv[1]);
+#endif
         auto prepared = PreparedPackInstall::copyZip(source, root.path / "real-mods");
         const PackInstallResult installed = prepared.finalize();
         if (!installed.installed) {
