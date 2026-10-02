@@ -459,7 +459,10 @@ configuration fails if that capability is unavailable rather than omitting the
 test. GNU link-time work for this target is limited to one compiler worker.
 `ainode_route`, `engine_guards`, `save_records` and `pulse_material` link
 production engine files the same way, through `mdkr_add_engine_unit_test` in
-`cmake/tests.cmake`.
+`cmake/tests.cmake`. On Windows that helper also gives them the engine's
+struct packing (`-mno-ms-bitfields`): under MinGW's default MSVC bitfield
+packing the display-list structs change size and `textures_sprites.c` refuses
+to compile.
 
 `pulse_material` decodes the display list the production
 `material_set_blinking_lights` emits into a small TMEM model. Retail loads two
@@ -7629,9 +7632,29 @@ directory hold) on every host, and that a listing reports a name with no
 UTF-8 spelling instead of skipping it (SKIP on macOS, as above). The Windows
 fixtures in these tests reach the file system only through fs_utf8 or the
 wide API, and read their optional path argument from the UTF-16 command line,
-so a non-ASCII `%TEMP%` or argument works. The Windows executables are built by
+so a non-ASCII `%TEMP%` or argument works. `fs_utf8` also lists a directory
+while it is held, which is how the installer empties its own stage: Wine's
+`FindFirstFileW` cannot open a directory whose holder has delete access, so
+the Windows listing goes through a handle it opens itself, sharing delete
+(with `FindFirstFileW` kept for a file system that does not answer that query
+on a handle), and lists a directory reached through a link the way `opendir()`
+does. The Windows executables are built by
 `tools/mingw_cross_check.sh --intake-tests`; they have not yet run on
 Windows, and the older mutation statement above does not qualify them.
+
+`tools/package_windows_test_bundle.sh` ships these, with every other ROM-free
+unit test CTest runs directly, as a zip for a Windows PC:
+`dist/Golden-Balloon-windows-tests-<version>.zip`. Unzip it, double-click
+`RUN-TESTS.cmd`, and `windows-test-results.txt` appears beside it. Each test
+runs from a copy of its executable in its own scratch folder with `TEMP` and
+`TMP` inside it, and the tests listed in
+`tools/windows_test_bundle/select_tests.py` (`UNICODE_PATH_TESTS`) run a second
+time from a folder with spaces, Latin-1 and CJK letters in its path; the
+selection file in the zip names every excluded test and why. Every Windows
+test executable links its runtimes statically, so it imports only stock
+Windows DLLs and the UCRT. `tools/run_windows_tests_wine.sh` runs the same zip
+under Wine in an existing Docker image; that is supplementary evidence, not a
+Windows run.
 
 ## Draw distance and model detail — `tests/check_enh_draw_distance.py`
 
