@@ -17,6 +17,7 @@
 #include <memory>
 #include <cstdlib>
 #include <cstddef>
+#include <exception>
 #include <limits>
 
 #if MDKR_PACK_BY_PATH
@@ -83,6 +84,26 @@ void noteStageCreated(const fs::path &stage) {
 #else
     (void)stage;
 #endif
+}
+
+constexpr char kCancelledMessage[] = "Pack installation cancelled. Nothing was installed.";
+
+// The admission walk's stop callback. It is called from C, so an exception
+// from the caller's callback must not unwind through it: it is kept here,
+// the walk stops and closes what it opened, and the caller rethrows it.
+struct WalkStop {
+    const std::function<bool()> *cancelled;
+    std::exception_ptr failure;
+};
+
+int walkStopRequested(void *opaque) {
+    auto &state = *static_cast<WalkStop *>(opaque);
+    try {
+        return *state.cancelled && (*state.cancelled)() ? 1 : 0;
+    } catch (...) {
+        state.failure = std::current_exception();
+        return 1;
+    }
 }
 
 // A stop request, where an exception from the callback also means stop: the
@@ -503,7 +524,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     PreparedPackInstall prepared;
     const auto stop = [&] {
         if (!cancelled || !cancelled()) return false;
-        prepared.error_ = "Pack installation cancelled. Nothing was installed.";
+        prepared.error_ = kCancelledMessage;
         return true;
     };
     if (stop()) return prepared;
@@ -669,12 +690,32 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             }
             archive.reset(mdkr_mod_source_from_zip_stream(openSource(prepared.filename_)));
         }
+        // A pick with no pack.ini is walked to see whether it is a texture
+        // pack. That walk keeps to the entry budget and polls cancellation
+        // before every file and folder, so a wrong pick the size of a home
+        // folder is refused, or cancelled, without walking all of it.
         MdkrModManifest manifest{};
         int isRice = 0;
         char reason[128]{};
-        if (!mdkr_mod_registry_probe_source(directory ? sourceRoot.get() : archive.get(),
-                                            prepared.filename_.u8string().c_str(),
-                                            &manifest, &isRice, reason, sizeof reason)) {
+        WalkStop walkStop{&cancelled, nullptr};
+        const int admission = mdkr_mod_registry_probe_source_bounded(
+            directory ? sourceRoot.get() : archive.get(),
+            prepared.filename_.u8string().c_str(),
+            static_cast<unsigned long long>(std::min<std::uintmax_t>(
+                limits.maxEntries, std::numeric_limits<unsigned long long>::max())),
+            walkStopRequested, &walkStop, &manifest, &isRice, reason, sizeof reason);
+        if (walkStop.failure) std::rethrow_exception(walkStop.failure);
+        if (admission == MDKR_MOD_PROBE_STOPPED) {
+            prepared.error_ = kCancelledMessage;
+            return prepared;
+        }
+        if (admission == MDKR_MOD_PROBE_OVER_BUDGET) {
+            prepared.error_ = "This is not an installable pack: it has no pack.ini, and it "
+                              "holds more files and folders than the installation entry "
+                              "budget allows.";
+            return prepared;
+        }
+        if (admission != MDKR_MOD_PROBE_ADMITTED) {
             prepared.error_ = std::string("This is not an installable pack: ") + reason;
             return prepared;
         }
@@ -966,7 +1007,7 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     PackInstallResult result;
     const auto stop = [&] {
         if (!cancelled || !cancelled()) return false;
-        result.message = "Pack installation cancelled. Nothing was installed.";
+        result.message = kCancelledMessage;
         return true;
     };
     if (stop()) return result;
@@ -1026,6 +1067,8 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
 #endif
     std::unique_ptr<MdkrModSource, decltype(&mdkr_mod_source_close)> source(
         opened, mdkr_mod_source_close);
+    // The staged copy holds no more entries than the copy's budget let in,
+    // so this admission's walk is bounded by that copy.
     MdkrModManifest manifest{};
     int isRice = 0;
     char reason[128]{};

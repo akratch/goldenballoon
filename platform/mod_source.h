@@ -110,6 +110,19 @@ typedef int (*MdkrModSourceVisit)(const char *rel, void *user);
 int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
                               void *user);
 
+/* The same walk, with every folder it reaches reported too: `visit` sees each
+ * directory, with `is_directory` set, before anything inside it, and each
+ * file with `is_directory` 0. Same return values and early stop. This is for
+ * a caller that must bound or interrupt the whole walk, not only its files --
+ * a tree of folders holding few files costs as much to walk as one full of
+ * files. What the walk passes over (names starting with '.', unusable names,
+ * links, special files) is not reported, and a ZIP has no folders to enter:
+ * its file members are reported as mdkr_mod_source_enumerate reports them. */
+typedef int (*MdkrModSourceEntryVisit)(const char *rel, int is_directory,
+                                       void *user);
+int mdkr_mod_source_enumerate_entries(MdkrModSource *src,
+                                      MdkrModSourceEntryVisit visit, void *user);
+
 /* Reads `rel` into `buf`. `rel` always uses '/' separators, on every platform.
  * Returns an MdkrModSourceResult.
  *

@@ -146,6 +146,25 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir);
  * would install a pack the game never loads. */
 int mdkr_mod_registry_probe_source(MdkrModSource *source, const char *name,
     MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size);
+
+/* The same admission for a caller that must stay responsive while it judges
+ * a pick it has never seen, such as the pack installer. A source with no
+ * pack.ini is walked to learn whether it is a Rice pack; here that walk
+ * visits at most `max_entries` files and folders, and calls `stop` (when
+ * not NULL) before each one. Returns one of the values below. A refusal,
+ * an exhausted budget and a stop each leave a bounded reason. */
+enum {
+    MDKR_MOD_PROBE_REFUSED = 0,
+    MDKR_MOD_PROBE_ADMITTED = 1,
+    /* No pack.ini, and no Rice texture within `max_entries` entries. */
+    MDKR_MOD_PROBE_OVER_BUDGET = 2,
+    /* `stop` answered non-zero. */
+    MDKR_MOD_PROBE_STOPPED = 3
+};
+typedef int (*MdkrModProbeStop)(void *user);
+int mdkr_mod_registry_probe_source_bounded(MdkrModSource *source, const char *name,
+    unsigned long long max_entries, MdkrModProbeStop stop, void *stop_user,
+    MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size);
 void mdkr_mod_registry_shutdown(MdkrModRegistry *reg);
 
 int  mdkr_mod_registry_count(const MdkrModRegistry *reg);

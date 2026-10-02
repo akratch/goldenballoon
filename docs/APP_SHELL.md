@@ -437,7 +437,10 @@ members, 256 MiB declared per member, 8 GiB declared in total, and 64 MiB of
 parser allocation for its central directory. A folder may hold only ordinary
 files and folders, with usable names, at most 24 folders deep. Cancellation is
 checked between 256 KiB chunks, so a blocked filesystem call can still delay
-it.
+it. A pick without a `pack.ini` is looked through for texture-pack textures
+before anything is copied; that look stays within the entry budget and checks
+cancellation before every file and folder, so a wrong pick as large as a home
+folder is refused, or cancelled, without being read to the end.
 
 Publication happens on the launcher thread, after that frame's input: a copy
 that finishes in the same frame as Cancel installation or Quit is not

@@ -6,6 +6,7 @@
 #include "mod_source.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <stdio.h>
@@ -711,51 +712,99 @@ static void registry_sort(MdkrModRegistry *reg) {
 
 /* ------------------------------------------------------------------- API */
 
+/* The walk that decides whether a manifest-less source is a Rice pack, held
+ * to an entry budget and interruptible before every file and folder. */
+typedef struct ProbeWalk {
+    RiceScan rice;
+    unsigned long long entries;
+    unsigned long long max_entries;
+    MdkrModProbeStop stop;
+    void *stop_user;
+    int over_budget;
+    int stopped;
+} ProbeWalk;
+
+static int probe_walk_visit(const char *rel, int is_directory, void *user) {
+    ProbeWalk *walk = (ProbeWalk *)user;
+    if (walk->stop != NULL && walk->stop(walk->stop_user) != 0) {
+        walk->stopped = 1;
+        return 1;
+    }
+    if (walk->entries >= walk->max_entries) {
+        walk->over_budget = 1;
+        return 1;
+    }
+    walk->entries++;
+    return is_directory ? 0 : rice_visit(rel, &walk->rice);
+}
+
 int mdkr_mod_registry_probe_source(MdkrModSource *source, const char *name,
+    MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size) {
+    return mdkr_mod_registry_probe_source_bounded(
+               source, name, ULLONG_MAX, NULL, NULL, manifest, is_rice,
+               reason, reason_size) == MDKR_MOD_PROBE_ADMITTED;
+}
+
+int mdkr_mod_registry_probe_source_bounded(MdkrModSource *source, const char *name,
+    unsigned long long max_entries, MdkrModProbeStop stop, void *stop_user,
     MdkrModManifest *manifest, int *is_rice, char *reason, size_t reason_size) {
     char text[MDKR_MOD_REGISTRY_MANIFEST_READ_MAX];
     size_t length = 0;
     int result;
-    if (!manifest || !is_rice || !reason || !reason_size) return 0;
+    if (!manifest || !is_rice || !reason || !reason_size) return MDKR_MOD_PROBE_REFUSED;
     memset(manifest, 0, sizeof(*manifest));
     *is_rice = 0;
     reason[0] = '\0';
     if (!source || !name || !mdkr_mod_source_path_is_safe(name)) {
         copy_bounded(reason, reason_size, "the pack source or name is unavailable");
-        return 0;
+        return MDKR_MOD_PROBE_REFUSED;
     }
     if (name[0] == '.') {
         copy_bounded(reason, reason_size,
                      "its name starts with '.', which hides it from the game. "
                      "Rename it and try again");
-        return 0;
+        return MDKR_MOD_PROBE_REFUSED;
     }
     result = mdkr_mod_source_read(source, "pack.ini", text, sizeof text, &length);
     if (result == MDKR_MOD_SOURCE_ABSENT) {
-        RiceScan probe;
-        memset(&probe, 0, sizeof probe);
-        probe.probe_only = 1;
-        (void)mdkr_mod_source_enumerate(source, rice_visit, &probe);
-        if (!probe.textures) {
+        ProbeWalk walk;
+        memset(&walk, 0, sizeof walk);
+        walk.rice.probe_only = 1;
+        walk.max_entries = max_entries;
+        walk.stop = stop;
+        walk.stop_user = stop_user;
+        (void)mdkr_mod_source_enumerate_entries(source, probe_walk_visit, &walk);
+        if (walk.stopped) {
+            copy_bounded(reason, reason_size, "the check was stopped");
+            return MDKR_MOD_PROBE_STOPPED;
+        }
+        if (!walk.rice.textures) {
+            if (walk.over_budget) {
+                copy_bounded(reason, reason_size,
+                             "it has no pack.ini, and more files and folders "
+                             "than the check may look through");
+                return MDKR_MOD_PROBE_OVER_BUDGET;
+            }
             copy_bounded(reason, reason_size, "this pack has no pack.ini");
-            return 0;
+            return MDKR_MOD_PROBE_REFUSED;
         }
         copy_bounded(manifest->name, sizeof manifest->name, name);
         manifest->priority = 100;
         manifest->enabled = 1;
         *is_rice = 1;
-        return 1;
+        return MDKR_MOD_PROBE_ADMITTED;
     }
     if (result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL || result == MDKR_MOD_SOURCE_TOO_LARGE) {
         snprintf(reason, reason_size, "its pack.ini is larger than %d bytes",
                  MDKR_MOD_REGISTRY_MANIFEST_READ_MAX);
-        return 0;
+        return MDKR_MOD_PROBE_REFUSED;
     }
     if (result != MDKR_MOD_SOURCE_OK) {
         copy_bounded(reason, reason_size, "this pack's pack.ini could not be read");
-        return 0;
+        return MDKR_MOD_PROBE_REFUSED;
     }
-    return mdkr_mod_manifest_parse(text, length, manifest, reason, reason_size) == 0;
+    return mdkr_mod_manifest_parse(text, length, manifest, reason, reason_size) == 0
+        ? MDKR_MOD_PROBE_ADMITTED : MDKR_MOD_PROBE_REFUSED;
 }
 
 int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {

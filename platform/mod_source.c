@@ -438,12 +438,12 @@ void mdkr_mod_source_close(MdkrModSource *src) {
 
 #if MDKR_PACK_BY_PATH
 static int directory_enumerate(const char *root, const char *prefix, int depth,
-                               MdkrModSourceVisit visit, void *user);
+                               MdkrModSourceEntryVisit visit, void *user);
 typedef struct DirectoryWalk {
     const char *root;
     const char *prefix;
     int depth;
-    MdkrModSourceVisit visit;
+    MdkrModSourceEntryVisit visit;
     void *user;
 } DirectoryWalk;
 
@@ -459,16 +459,17 @@ static int directory_walk_entry(const char *name, int kind, void *opaque) {
         !mdkr_mod_source_path_is_safe(rel)) return 0;
     /* Links are never followed; the listing reports them as links. */
     if (kind == MDKR_PATH_DIRECTORY) {
+        if (walk->visit(rel, 1, walk->user) != 0) return 1;
         /* A subdirectory that will not open is not the whole walk failing. */
         return directory_enumerate(walk->root, rel, walk->depth + 1,
                                    walk->visit, walk->user) == 2;
     }
-    if (kind == MDKR_PATH_FILE) return walk->visit(rel, walk->user) != 0;
+    if (kind == MDKR_PATH_FILE) return walk->visit(rel, 0, walk->user) != 0;
     return 0;
 }
 
 static int directory_enumerate(const char *root, const char *prefix, int depth,
-                               MdkrModSourceVisit visit, void *user) {
+                               MdkrModSourceEntryVisit visit, void *user) {
     char here[MDKR_MOD_PATH_MAX];
     DirectoryWalk walk;
     if (depth > MDKR_MOD_SOURCE_WALK_DEPTH_MAX) return 0;
@@ -488,7 +489,7 @@ static int directory_enumerate(const char *root, const char *prefix, int depth,
 /* Takes ownership of fd on every path. Each recursive directory is opened
  * relative to its parent, never by rebuilding an untrusted pathname. */
 static int directory_enumerate(int fd, const char *prefix, int depth,
-                               MdkrModSourceVisit visit, void *user) {
+                               MdkrModSourceEntryVisit visit, void *user) {
     DIR *directory;
     struct dirent *entry;
     int result = 0;
@@ -514,12 +515,16 @@ static int directory_enumerate(int fd, const char *prefix, int depth,
             !mdkr_mod_source_path_is_safe(rel)) continue;
         if (fstatat(fd, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) != 0) continue;
         if (S_ISDIR(status.st_mode)) {
-            const int child = openat(fd, entry->d_name,
-                                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            const int nested = directory_enumerate(child, rel, depth + 1, visit, user);
-            if (nested == 2) result = 2;
+            int child;
+            if (visit(rel, 1, user) != 0) {
+                result = 2;
+                continue;
+            }
+            child = openat(fd, entry->d_name,
+                           O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (directory_enumerate(child, rel, depth + 1, visit, user) == 2) result = 2;
         } else if (S_ISREG(status.st_mode)) {
-            if (visit(rel, user) != 0) result = 2;
+            if (visit(rel, 0, user) != 0) result = 2;
         }
     }
     closedir(directory);
@@ -527,9 +532,8 @@ static int directory_enumerate(int fd, const char *prefix, int depth,
 }
 #endif
 
-int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
-                              void *user) {
-    MOD_SOURCE_TEST_COUNT(s_test_queries);
+static int source_enumerate(MdkrModSource *src, MdkrModSourceEntryVisit visit,
+                            void *user) {
     if (src == NULL || visit == NULL) return 1;
     if (!src->is_zip) {
 #if MDKR_PACK_BY_PATH
@@ -552,10 +556,36 @@ int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
             if (!mz_zip_reader_file_stat(&src->zip, i, &stat)) continue;
             if (stat.m_is_directory) continue;
             if (!mdkr_mod_source_path_is_safe(stat.m_filename)) continue;
-            if (visit(stat.m_filename, user) != 0) break;
+            if (visit(stat.m_filename, 0, user) != 0) break;
         }
     }
     return 0;
+}
+
+typedef struct FilesOnly {
+    MdkrModSourceVisit visit;
+    void *user;
+} FilesOnly;
+
+static int files_only_visit(const char *rel, int is_directory, void *user) {
+    const FilesOnly *files = (const FilesOnly *)user;
+    return is_directory ? 0 : files->visit(rel, files->user);
+}
+
+int mdkr_mod_source_enumerate(MdkrModSource *src, MdkrModSourceVisit visit,
+                              void *user) {
+    FilesOnly files;
+    MOD_SOURCE_TEST_COUNT(s_test_queries);
+    if (visit == NULL) return 1;
+    files.visit = visit;
+    files.user = user;
+    return source_enumerate(src, files_only_visit, &files);
+}
+
+int mdkr_mod_source_enumerate_entries(MdkrModSource *src,
+                                      MdkrModSourceEntryVisit visit, void *user) {
+    MOD_SOURCE_TEST_COUNT(s_test_queries);
+    return source_enumerate(src, visit, user);
 }
 
 int mdkr_mod_source_has(MdkrModSource *src, const char *rel) {

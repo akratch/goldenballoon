@@ -805,6 +805,74 @@ static void test_directory_stream_boundary(void) {
     mdkr_mod_source_close(zip);
 }
 
+typedef struct EntryLog {
+    char names[16][64];
+    int directory[16];
+    int count;
+    int stop_at;
+} EntryLog;
+
+static int record_walk_entry(const char *rel, int is_directory, void *user) {
+    EntryLog *log = (EntryLog *)user;
+    if (log->count < 16) {
+        snprintf(log->names[log->count], sizeof log->names[0], "%s", rel);
+        log->directory[log->count] = is_directory;
+    }
+    log->count++;
+    return log->stop_at > 0 && log->count >= log->stop_at;
+}
+
+static int logged_at(const EntryLog *log, const char *rel, int is_directory) {
+    int index;
+    for (index = 0; index < log->count && index < 16; ++index) {
+        if (!strcmp(log->names[index], rel) && log->directory[index] == is_directory)
+            return index;
+    }
+    return -1;
+}
+
+/* The walk a caller bounds or interrupts entry by entry: folders are reported
+ * as well as files, each folder before anything inside it, and a stop on a
+ * folder means nothing inside it is walked. */
+static void test_enumerate_entries(void) {
+    MdkrModSource *dir = open_dir();
+    MdkrModSource *zip = open_zip();
+    EntryLog log;
+    int textures, shared, etc;
+
+    memset(&log, 0, sizeof log);
+    expect(mdkr_mod_source_enumerate_entries(dir, record_walk_entry, &log) == 0 &&
+               log.count == 7,
+           "a folder walk reports its three folders and four usable files");
+    textures = logged_at(&log, "textures", 1);
+    shared = logged_at(&log, "shared", 1);
+    etc = logged_at(&log, "etc", 1);
+    expect(textures >= 0 && shared >= 0 && etc >= 0,
+           "each folder is reported as a folder");
+    expect(textures < logged_at(&log, ENTRY_STORED, 0) &&
+               textures < logged_at(&log, ENTRY_DEFLATED, 0) &&
+               shared < logged_at(&log, ENTRY_PARITY, 0) &&
+               etc < logged_at(&log, "etc/passwd", 0),
+           "each folder is reported before the files inside it");
+
+    /* Only folders sit at the pack root, so the first entry is one. */
+    memset(&log, 0, sizeof log);
+    log.stop_at = 1;
+    expect(mdkr_mod_source_enumerate_entries(dir, record_walk_entry, &log) == 0 &&
+               log.count == 1 && log.directory[0] == 1,
+           "a stop at a folder ends the walk before anything inside it");
+
+    memset(&log, 0, sizeof log);
+    expect(mdkr_mod_source_enumerate_entries(zip, record_walk_entry, &log) == 0 &&
+               log.count == 3 && logged_at(&log, ENTRY_STORED, 0) >= 0 &&
+               logged_at(&log, ENTRY_DEFLATED, 0) >= 0 &&
+               logged_at(&log, ENTRY_PARITY, 0) >= 0,
+           "a ZIP walk reports its usable file members and no folders");
+
+    mdkr_mod_source_close(zip);
+    mdkr_mod_source_close(dir);
+}
+
 static int visit_identity(const char *rel, void *user) {
     unsigned *seen = (unsigned *)user;
     if (!strcmp(rel, "payload.bin")) *seen |= 1;
@@ -1058,6 +1126,7 @@ int main(int argc, char **argv) {
     test_truncated_central_directory();
     test_zip_bomb_is_refused();
     test_directory_and_zip_agree();
+    test_enumerate_entries();
     test_short_buffer_refuses_and_reports();
     test_absent_is_not_an_error();
     test_open_and_close_are_total();

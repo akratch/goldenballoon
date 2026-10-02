@@ -660,7 +660,9 @@ int main(int argc, char **argv) {
     // A wrong pick is refused before anything is copied: the chosen ZIP or
     // folder is checked with the admission rules the game applies, so nothing
     // is staged and the copy loop (one cancellation check per 256 KiB) never
-    // starts. The only check reached is the one at intake.
+    // starts. The checks reached are the one at intake and one per entry the
+    // admission walk looks at for want of a pack.ini: the ZIP's one member,
+    // the folder's three entries.
     {
         const auto earlyMods = root.path / "early-refusal";
         REQUIRE(fs::create_directory(earlyMods));
@@ -673,7 +675,7 @@ int main(int argc, char **argv) {
         };
         auto zip = PreparedPackInstall::copyZip(input / "not-a-pack.zip", earlyMods, observe);
         REQUIRE(fs::is_empty(earlyMods));
-        REQUIRE(checks == 1 && !sawStaging);
+        REQUIRE(checks == 1 + 1 && !sawStaging);
         const auto zipRefusal = zip.finalize();
         REQUIRE(!zipRefusal.installed);
         REQUIRE(zipRefusal.message.find("pack.ini") != std::string::npos);
@@ -685,10 +687,69 @@ int main(int argc, char **argv) {
         checks = 0;
         auto folderInstall = PreparedPackInstall::copyPack(notPack, earlyMods, observe);
         REQUIRE(fs::is_empty(earlyMods));
-        REQUIRE(checks == 1 && !sawStaging);
+        REQUIRE(checks == 1 + 3 && !sawStaging);
         const auto folderRefusal = folderInstall.finalize();
         REQUIRE(!folderRefusal.installed);
         REQUIRE(folderRefusal.message.find("pack.ini") != std::string::npos);
+    }
+    // A wrong pick the size of a home folder: no pack.ini, so admission walks
+    // it looking for a texture-pack texture. That walk stays inside the entry
+    // budget and stops at Cancel, polling before every file and folder, so
+    // neither waits on the whole tree. 8 folders of 8 files: 72 entries.
+    {
+        const auto huge = input / "HugePick";
+        for (int folder = 0; folder < 8; ++folder) {
+            const auto here = huge / ("folder" + std::to_string(folder));
+            REQUIRE(fs::create_directories(here));
+            for (int file = 0; file < 8; ++file)
+                std::ofstream(here / ("notes" + std::to_string(file) + ".txt")) << "not a pack";
+        }
+        const auto hugeMods = root.path / "huge-pick";
+        {
+            unsigned checks = 0;
+            PackInstallLimits limits;
+            limits.maxEntries = 10;
+            auto prepared = PreparedPackInstall::copyPack(huge, hugeMods,
+                [&] { ++checks; return false; }, limits);
+            const auto result = prepared.finalize();
+            if (result.installed || result.message.find("entry budget") == std::string::npos)
+                std::fprintf(stderr, "huge pick: %s\n", result.message.c_str());
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("entry budget") != std::string::npos);
+            // Intake, then at most the budget's entries and the one past it.
+            REQUIRE(checks <= 1 + limits.maxEntries + 1);
+        }
+        REQUIRE(noResidue(hugeMods));
+        {
+            unsigned checks = 0;
+            auto prepared = PreparedPackInstall::copyPack(huge, hugeMods,
+                [&] { return ++checks == 3; });
+            const auto result = prepared.finalize();
+            if (result.message.find("cancelled") == std::string::npos)
+                std::fprintf(stderr, "cancelled pick: %s\n", result.message.c_str());
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("cancelled") != std::string::npos);
+            // Intake, two entries, and nothing after the answer to stop.
+            REQUIRE(checks == 3);
+        }
+        REQUIRE(noResidue(hugeMods));
+        // A callback that throws mid-walk unwinds the installation after the
+        // walk has closed what it opened.
+        {
+            unsigned checks = 0;
+            bool caught = false;
+            try {
+                auto prepared = PreparedPackInstall::copyPack(huge, hugeMods, [&] {
+                    if (++checks == 4) throw std::runtime_error("walk cancel fixture");
+                    return false;
+                });
+            } catch (const std::runtime_error &error) {
+                caught = std::string(error.what()) == "walk cancel fixture";
+            }
+            REQUIRE(caught);
+            REQUIRE(checks == 4);
+        }
+        REQUIRE(noResidue(hugeMods));
     }
     {
         unsigned checks = 0;
