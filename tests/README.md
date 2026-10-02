@@ -8191,10 +8191,10 @@ python3 tests/check_resource_plateau.py --build build \
   --rom baserom.us.v80.z64
 ```
 
-Loads the same race four times in one process through the original Try Again
-path and requires CPU pool, audio, GPU, and pointer-registry generations to reach
-a plateau. The first generations may warm persistent caches; the later ones may
-not grow.
+Loads the same race at least four times in one process through the original
+Try Again path and requires CPU pool, audio, GPU, and pointer-registry
+generations to reach a plateau. The first generations may warm persistent
+caches; the later ones may not grow.
 
 Pass `--texture-pack /path/to/pack.zip` to copy a real pack into the run's
 isolated preferences/mods directory. This arm requires nonzero rendered
@@ -8202,19 +8202,43 @@ replacement-texture evidence, not merely successful indexing. Use
 `--artifacts-dir /private/path` to retain logs and the copied pack privately.
 The counters cover engine pools, renderer ownership, and retained decoded
 texture pixels/lookup-table bytes. Decoded pixels must stay within the reported
-budget. Across the final three equivalent races the texture cache must either
-hold still or grow by first use only: every byte it gains must belong to an
-identity resident for the first time (`firstResidentBytes`), nothing may be
-reloaded or evicted (`reloads`, `evictions`), and the lookup table may grow only
-with new entries. The races are not identical scenes -- the post-race and
-ghost state changes what each one draws, and on WebGPU the set of textures drawn
-varies a little from run to run -- so a texture can be first drawn in a late
-race however long the route; T12a saw exactly that fail the old byte-for-byte
-comparison about one WebGPU run in six. The PASS line reports any such late
-first use. Logs from builds whose census lacks those
-counters are still held to the byte-for-byte comparison. The counters do not
-measure process RSS, registry/ZIP memory, or frame-time spikes and cannot alone
-prove that total process memory has plateaued.
+budget in every sample. The texture cache is then judged over its warmed
+window: every race sample after the first two (`CACHE_WARMUP_RACES`), which is
+six of the eight this route records, and never fewer than the last three. On
+this route first use grows from the first race to the second (about 113
+identities) and from the second to the third (2), and is flat from the third
+on. Within the window:
+
+- every byte the cache gains must belong to an identity resident for the first
+  time (`firstResidentBytes`);
+- nothing may be reloaded or evicted (`reloads`, `evictions`);
+- the lookup table may grow only with new entries;
+- at most **one** step of the whole window may change at all. Store slots are
+  never released, so first use that recurs is unbounded growth however exactly
+  it is accounted, whether it recurs every race or every second or third race.
+  Growth every second or third race shows only one changed step inside any
+  three samples, so the window is every race after warm-up, not the last three;
+- that one step may add at most `CACHE_LATE_ENTRIES_MAX` = 8 lookup entries.
+  Every one of 24 real-pack runs (both renderers, the 1.8 pack) adds exactly 4
+  entries, 2 resident identities, from the second race to the third; that is
+  the largest late first use seen, and T12a's flake was a single texture. 8 is
+  twice the largest seen, and because slots are never released it bounds the
+  table rather than loosening the comparison.
+
+One late first use is allowed because the races are not identical scenes: the
+post-race and ghost state changes what each one draws, and on WebGPU the set
+of textures drawn varies a little from run to run, so a texture can be first
+drawn in a late race however long the route. T12a saw exactly that fail the old
+byte-for-byte comparison about one WebGPU run in six. The PASS line reports any
+such late first use. Positive controls, run at startup by the gate and as
+`resource_plateau_oracle` in CTest, must fail: pixel growth without a first use,
+a reload, a table that grows without entries, a burst of more than 8 entries,
+first use in every race, first use every second race and every third race over
+eight races, and a table doubling with its entries. T12a's single late texture
+must pass. Logs from builds whose census lacks the counters are still held to
+the byte-for-byte comparison over the same window. The counters do not measure
+process RSS, registry/ZIP memory, or frame-time spikes and cannot alone prove
+that total process memory has plateaued.
 
 For a longer cache-warmup check, use `--frames 75000`; generated retry pulses
 remain within the native loader's 512-entry capacity.

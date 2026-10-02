@@ -68,12 +68,26 @@ CACHE_RE = re.compile(
 # when the census carries them, inflight, pending, firstResident,
 # firstResidentBytes, reloads, evictions.
 CACHE_ACCOUNTED_FIELDS = 13
-# New lookup entries the final window may add by first use. Every one of 24
+# New lookup entries the warmed window may add by first use. Every one of 24
 # runs of this route (both renderers, the 1.8 pack) adds exactly 4 entries --
 # 2 resident identities -- from the second race to the third, the largest late
 # first use seen; T12a's flake was a single texture. Twice the largest seen.
 # Slots are never released, so this bounds the table, not a tolerance on it.
 CACHE_LATE_ENTRIES_MAX = 8
+# Races that may still warm the cache. On this route first use grows from the
+# first race to the second (~113 identities) and the second to the third (2),
+# and is flat from the third on, so every race from the third is judged
+# (T12d). A short run keeps at least its last three samples in the window.
+CACHE_WARMUP_RACES = 2
+
+
+def cache_window(races: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
+    """The warmed races the cache is judged over: every race after warm-up.
+
+    Not just the last three: growth that recurs every second or third race
+    shows only one changed step inside any three samples, and passed (T12d).
+    """
+    return races[min(CACHE_WARMUP_RACES, max(0, len(races) - 3)):]
 
 
 def cache_row(match: re.Match) -> tuple[int, ...]:
@@ -107,7 +121,7 @@ def extended_route(frames: int = DEFAULT_FRAMES) -> str:
 
 
 def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
-    """The decoded pack-texture cache across the last three equivalent races.
+    """The decoded pack-texture cache across the warmed races (cache_window).
 
     Identical samples are a plateau. Otherwise the cache may still have grown
     for exactly one reason: the race drew an identity for the FIRST time. The
@@ -119,21 +133,22 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
     first uses explain: re-decoding what it already had, evicting and
     reloading, or pixel/table accounting that moves on its own -- and first use
     that never stops. Store slots are never released, so an identity that is
-    new in EVERY race is unbounded growth however exactly it is accounted. So,
-    within the warmed window: every pixel byte the cache gains must be the
-    bytes of an identity resident for the first time; nothing may be reloaded
-    or evicted; the lookup table may grow only with new entries; at most one
-    of the window's two steps may change at all (first use that recurs race
-    after race is growth); and that one step may add at most
+    new in every race, or in every second or third race, is unbounded growth
+    however exactly it is accounted. So, within the warmed window -- every race
+    after the first CACHE_WARMUP_RACES -- every pixel byte the cache gains must
+    be the bytes of an identity resident for the first time; nothing may be
+    reloaded or evicted; the lookup table may grow only with new entries; at
+    most ONE of the window's steps may change at all (first use that recurs,
+    at any period, is growth); and that one step may add at most
     CACHE_LATE_ENTRIES_MAX entries. A census without those counters (an older
-    build) gets the strict comparison.
+    build) gets the strict comparison over the same window.
     """
     races = [row for row in rows if row[:3] == (5, 0, 100)]
     if len(races) < 4:
         return "missing repeated texture-cache boundary samples"
     if any(row[3] > row[4] or row[4] == 0 for row in rows):
         return "decoded texture cache exceeded its reported budget"
-    window = races[-3:]
+    window = cache_window(races)
     accounted = all(len(row) >= CACHE_ACCOUNTED_FIELDS for row in window)
     # Churn first: a cache evicting and reloading at its cap can land on the
     # same totals twice in a row, and that is not a plateau.
@@ -163,8 +178,10 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
                         if before[3:7] != after[3:7] or
                         before[9:11] != after[9:11])
     if steps_changed > 1:
-        return ("texture cache grew in both warmed steps: first use that "
-                f"recurs race after race is growth, not warm-up: {window}")
+        return (f"texture cache grew in {steps_changed} of the "
+                f"{len(window) - 1} warmed steps: first use that recurs, race "
+                f"after race or every few races, is growth, not warm-up: "
+                f"{window}")
     new_entries = window[-1][6] - window[0][6]
     if new_entries > CACHE_LATE_ENTRIES_MAX:
         return (f"texture cache added {new_entries} lookup entries in one "
@@ -175,7 +192,7 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
 
 def cache_first_use_note(rows: list[tuple[int, ...]]) -> str:
     """How much of the warmed window's change was first use, for the log."""
-    window = [row for row in rows if row[:3] == (5, 0, 100)][-3:]
+    window = cache_window([row for row in rows if row[:3] == (5, 0, 100)])
     if len(window) < 3 or any(len(row) < CACHE_ACCOUNTED_FIELDS
                               for row in window):
         return ""
@@ -605,6 +622,20 @@ def main() -> int:
                   f"passed: {label}", file=sys.stderr)
             return 1
     # Steady growth, accounted exactly as first use every race, must fail.
+    # So must growth that recurs every second or third race over the eight
+    # races this route records: only one of its steps falls inside any three
+    # samples (T12d).
+    def periodic(period: int) -> list[tuple[int, ...]]:
+        return [(5, 0, 100, 1000 + 100 * (race // period), 1 << 30, 320,
+                 4 + race // period, 0, 0, 4 + race // period,
+                 1000 + 100 * (race // period), 0, 0) for race in range(8)]
+    for label, rows in (
+            ("first use every second race", periodic(2)),
+            ("first use every third race", periodic(3))):
+        if cache_plateau_error(rows) is None:
+            print(f"check_resource_plateau: FAIL — periodic-growth positive "
+                  f"control passed: {label}", file=sys.stderr)
+            return 1
     for label, rows in (
             ("new entries every race",
              [(5, 0, 100, 1000, 4096, 320, 4 + 5 * race, 0, 0, 4, 1000, 0, 0)
