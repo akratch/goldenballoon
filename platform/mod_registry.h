@@ -110,6 +110,11 @@ typedef struct MdkrModRegistry {
     char         skip_name[MDKR_MOD_MAX_PACKS][MDKR_MOD_NAME_MAX];
     char         skip_reason[MDKR_MOD_MAX_PACKS][128];
     int          skipped;
+    /* 1 when `mods_dir` exists but could not be listed completely (a read
+     * error part-way, memory ran out, or it is not a folder): the packs read
+     * before the failure are kept and a [MODS] line says so. 0 when the
+     * listing completed or there is no mods folder at all. */
+    int          listing_incomplete;
     /* Owned here and freed by shutdown(). Empty unless a Rice pack is
      * installed, so a player with only digest-keyed packs pays nothing. */
     MdkrModRiceTexture *rice;
@@ -128,7 +133,10 @@ typedef struct MdkrModRegistry {
     uint64_t         names_unindexed;
 } MdkrModRegistry;
 
-/* Scans `mods_dir`. Returns 0 on success including "directory absent".
+/* Scans `mods_dir`. Returns 0 on success including "directory absent", and
+ * including a folder that could not be listed completely: the packs read
+ * before that failure are kept, `listing_incomplete` is set and a [MODS] line
+ * is logged (an absent folder sets nothing and logs nothing).
  *
  * `*reg` is fully overwritten, so an uninitialised registry is safe to pass.
  * Entries come back sorted ascending by priority, ties broken by ASCII

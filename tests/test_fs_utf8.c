@@ -85,6 +85,11 @@ static int make_directory_link(const char *target, const char *link) {
  * them would (FAT/exFAT and some network redirectors and filter drivers). */
 extern int mdkr_fs_utf8_test_refused_query;
 #endif
+#ifdef MDKR_FS_UTF8_TESTING
+/* fs_utf8.c's test seam: at 0 or more a collected listing stops with EIO once
+ * it holds that many names. */
+extern int mdkr_fs_utf8_test_names_fail_after;
+#endif
 
 typedef struct Listing {
     char names[8][64];
@@ -396,7 +401,7 @@ static void test_directory_names(const char *root) {
 
     memset(&names, 0x5a, sizeof names);
     expect(mdkr_directory_names_utf8(folder, &names) == 0 && names.count == 0 &&
-               names.unnamed == 0,
+               names.unnamed_count == 0,
            "an empty folder has no names");
     mdkr_directory_names_free(&names);
 
@@ -404,13 +409,29 @@ static void test_directory_names(const char *root) {
                mdkr_mkdir_utf8(inner) == 0,
            "fill the names fixture folder");
     expect(mdkr_directory_names_utf8(folder, &names) == 0 && names.count == 3 &&
-               names.unnamed == 0 && names_hold(&names, "plain.bin") &&
+               names.unnamed_count == 0 && names_hold(&names, "plain.bin") &&
                names_hold(&names, unicode_name) && names_hold(&names, "inner") &&
                !names_hold(&names, ".") && !names_hold(&names, ".."),
            "every name is collected once, a Unicode name exactly, never . or ..");
     mdkr_directory_names_free(&names);
-    expect(names.names == NULL && names.count == 0 && names.unnamed == 0,
+    expect(names.names == NULL && names.count == 0 && names.unnamed == NULL &&
+               names.unnamed_count == 0,
            "releasing the names clears them");
+#ifdef MDKR_FS_UTF8_TESTING
+    /* A listing that stops part-way keeps what it read (fs_utf8.h), so a
+     * caller that can use part of it is not left with nothing. */
+    mdkr_fs_utf8_test_names_fail_after = 2;
+    errno = 0;
+    expect(mdkr_directory_names_utf8(folder, &names) == -1 && errno == EIO &&
+               names.count == 2 && names.names != NULL,
+           "a listing that stops part-way fails and holds the names read before");
+    mdkr_directory_names_free(&names);
+    mdkr_fs_utf8_test_names_fail_after = 0;
+    expect(mdkr_directory_names_utf8(folder, &names) == -1 && names.count == 0,
+           "a listing that stops at once holds nothing");
+    mdkr_directory_names_free(&names);
+    mdkr_fs_utf8_test_names_fail_after = -1;
+#endif
 
     memset(&names, 0x5a, sizeof names);
     errno = 0;
@@ -469,9 +490,17 @@ static void test_names_without_utf8(const char *root) {
         {
             MdkrDirectoryNames names;
             expect(mdkr_directory_names_utf8(folder, &names) == 0 &&
-                       names.count == 0 && names.unnamed == 1,
+                       names.count == 0 && names.unnamed_count == 1 &&
+                       strstr(names.unnamed[0], "\xEF\xBF\xBD") != NULL &&
+                       strncmp(names.unnamed[0], "bad", 3) == 0 &&
+                       strstr(names.unnamed[0], "name.bin") != NULL,
                    "a collected listing leaves out a name with no UTF-8 "
-                   "spelling and counts it");
+                   "spelling and holds a readable stand-in for it");
+#ifndef _WIN32
+            expect(names.unnamed_count == 1 &&
+                       strcmp(names.unnamed[0], "bad\xEF\xBF\xBD" "name.bin") == 0,
+                   "the stand-in replaces exactly the byte with no spelling");
+#endif
             mdkr_directory_names_free(&names);
         }
 #ifdef _WIN32

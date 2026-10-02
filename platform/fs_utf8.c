@@ -68,6 +68,39 @@ int mdkr_windows_quote_argument_utf8(const char *argument, char *output,
     return (int)written;
 }
 
+/* The length of the well-formed UTF-8 sequence that starts at `cursor` -- no
+ * stray continuation byte, no truncated or overlong sequence, no UTF-16
+ * surrogate, nothing past U+10FFFF -- or 0 when none starts there. */
+static size_t utf8_sequence_length(const unsigned char *cursor) {
+    const unsigned lead = cursor[0];
+    unsigned long point;
+    size_t extra;
+    size_t index;
+    if (lead < 0x80u) return 1u;
+    if (lead >= 0xC2u && lead <= 0xDFu) {
+        extra = 1u;
+        point = lead & 0x1Fu;
+    } else if (lead >= 0xE0u && lead <= 0xEFu) {
+        extra = 2u;
+        point = lead & 0x0Fu;
+    } else if (lead >= 0xF0u && lead <= 0xF4u) {
+        extra = 3u;
+        point = lead & 0x07u;
+    } else {
+        return 0u;
+    }
+    for (index = 1u; index <= extra; ++index) {
+        /* A NUL is not a continuation byte, so this never reads past it. */
+        if ((cursor[index] & 0xC0u) != 0x80u) return 0u;
+        point = point * 64u + (cursor[index] & 0x3Fu);
+    }
+    if ((extra == 2u && point < 0x800u) || (extra == 3u && point < 0x10000u) ||
+        point > 0x10FFFFu || (point >= 0xD800u && point <= 0xDFFFu)) {
+        return 0u;
+    }
+    return extra + 1u;
+}
+
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <direct.h>
 #include <fcntl.h>
@@ -1115,36 +1148,9 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
 static int utf8_well_formed(const char *text) {
     const unsigned char *cursor = (const unsigned char *)text;
     while (*cursor != 0u) {
-        const unsigned lead = *cursor;
-        unsigned long point;
-        size_t extra;
-        size_t index;
-        if (lead < 0x80u) {
-            ++cursor;
-            continue;
-        }
-        if (lead >= 0xC2u && lead <= 0xDFu) {
-            extra = 1u;
-            point = lead & 0x1Fu;
-        } else if (lead >= 0xE0u && lead <= 0xEFu) {
-            extra = 2u;
-            point = lead & 0x0Fu;
-        } else if (lead >= 0xF0u && lead <= 0xF4u) {
-            extra = 3u;
-            point = lead & 0x07u;
-        } else {
-            return 0;
-        }
-        for (index = 1u; index <= extra; ++index) {
-            /* A NUL is not a continuation byte, so this never reads past it. */
-            if ((cursor[index] & 0xC0u) != 0x80u) return 0;
-            point = point * 64u + (cursor[index] & 0x3Fu);
-        }
-        if ((extra == 2u && point < 0x800u) || (extra == 3u && point < 0x10000u) ||
-            point > 0x10FFFFu || (point >= 0xD800u && point <= 0xDFFFu)) {
-            return 0;
-        }
-        cursor += extra + 1u;
+        const size_t sequence = utf8_sequence_length(cursor);
+        if (sequence == 0u) return 0;
+        cursor += sequence;
     }
     return 1;
 }
@@ -1435,47 +1441,110 @@ int mdkr_running_executable_path_utf8(char **output) {
 
 /* ---- Collected listings (fs_utf8.h), the same code on every platform ---- */
 
+#ifdef MDKR_FS_UTF8_TESTING
+/* Test-only, for the tests that define MDKR_FS_UTF8_TESTING: at 0 or more, a
+ * collected listing stops with EIO once it holds that many names, as a read
+ * error part-way through a listing would. */
+int mdkr_fs_utf8_test_names_fail_after = -1;
+#define NAMES_LISTING_FAILS(collected) \
+    (mdkr_fs_utf8_test_names_fail_after >= 0 && \
+     (collected) >= (size_t)mdkr_fs_utf8_test_names_fail_after)
+#else
+#define NAMES_LISTING_FAILS(collected) 0
+#endif
+
+/* A readable copy of a name with no UTF-8 spelling: what is well-formed is
+ * kept and every other byte becomes U+FFFD. (Windows' stand-in is already
+ * converted that way, so it comes back unchanged.) Never a path. */
+static char *utf8_display_stand_in(const char *name) {
+    const unsigned char *cursor = (const unsigned char *)name;
+    const size_t length = strlen(name);
+    char *output;
+    size_t written = 0u;
+    if (length > (SIZE_MAX - 1u) / 3u) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    output = (char *)malloc(length * 3u + 1u);
+    if (output == NULL) return NULL;
+    while (*cursor != 0u) {
+        const size_t sequence = utf8_sequence_length(cursor);
+        if (sequence == 0u) {
+            memcpy(output + written, "\xEF\xBF\xBD", 3u);
+            written += 3u;
+            ++cursor;
+        } else {
+            memcpy(output + written, cursor, sequence);
+            written += sequence;
+            cursor += sequence;
+        }
+    }
+    output[written] = '\0';
+    return output;
+}
+
 typedef struct DirectoryNamesCollector {
     MdkrDirectoryNames *names;
-    size_t capacity;
+    size_t names_capacity;
+    size_t unnamed_capacity;
     int failed;
 } DirectoryNamesCollector;
+
+/* Append `entry` (owned) to `*list`, growing it. Returns 0, or -1 when memory
+ * ran out (the entry is then released). */
+static int names_append(char ***list, size_t *count, size_t *capacity,
+                        char *entry) {
+    if (*count == *capacity) {
+        const size_t grown_capacity = *capacity == 0u ? 16u : *capacity * 2u;
+        char **grown;
+        if (grown_capacity < *capacity ||
+            grown_capacity > SIZE_MAX / sizeof(*grown)) {
+            free(entry);
+            errno = ENOMEM;
+            return -1;
+        }
+        grown = (char **)realloc(*list, grown_capacity * sizeof(*grown));
+        if (grown == NULL) {
+            free(entry);
+            return -1;
+        }
+        *list = grown;
+        *capacity = grown_capacity;
+    }
+    (*list)[(*count)++] = entry;
+    return 0;
+}
 
 static int collect_directory_name(const char *name, int kind, void *user) {
     DirectoryNamesCollector *collector = (DirectoryNamesCollector *)user;
     MdkrDirectoryNames *names = collector->names;
-    size_t length;
     char *copy;
+    int appended;
+    if (NAMES_LISTING_FAILS(names->count + names->unnamed_count)) {
+        errno = EIO;
+        collector->failed = 1;
+        return 1;
+    }
     if (kind == MDKR_PATH_BAD_NAME) {
-        names->unnamed++;
-        return 0;
+        copy = utf8_display_stand_in(name);
+    } else {
+        const size_t length = strlen(name);
+        copy = (char *)malloc(length + 1u);
+        if (copy != NULL) memcpy(copy, name, length + 1u);
     }
-    if (names->count == collector->capacity) {
-        const size_t capacity =
-            collector->capacity == 0u ? 16u : collector->capacity * 2u;
-        char **grown;
-        if (capacity < collector->capacity ||
-            capacity > SIZE_MAX / sizeof(*grown)) {
-            errno = ENOMEM;
-            collector->failed = 1;
-            return 1;
-        }
-        grown = (char **)realloc(names->names, capacity * sizeof(*grown));
-        if (grown == NULL) {
-            collector->failed = 1;
-            return 1;
-        }
-        names->names = grown;
-        collector->capacity = capacity;
-    }
-    length = strlen(name);
-    copy = (char *)malloc(length + 1u);
     if (copy == NULL) {
         collector->failed = 1;
         return 1;
     }
-    memcpy(copy, name, length + 1u);
-    names->names[names->count++] = copy;
+    appended = kind == MDKR_PATH_BAD_NAME
+        ? names_append(&names->unnamed, &names->unnamed_count,
+                       &collector->unnamed_capacity, copy)
+        : names_append(&names->names, &names->count,
+                       &collector->names_capacity, copy);
+    if (appended != 0) {
+        collector->failed = 1;
+        return 1;
+    }
     return 0;
 }
 
@@ -1486,15 +1555,13 @@ int mdkr_directory_names_utf8(const char *path, MdkrDirectoryNames *names) {
         return -1;
     }
     memset(names, 0, sizeof(*names));
+    memset(&collector, 0, sizeof(collector));
     collector.names = names;
-    collector.capacity = 0u;
-    collector.failed = 0;
     errno = 0;
     if (mdkr_directory_list_utf8(path, collect_directory_name, &collector) != 0 ||
         collector.failed) {
-        const int saved = errno != 0 ? errno : EIO;
-        mdkr_directory_names_free(names);
-        errno = saved;
+        /* What was read before the failure stays held (fs_utf8.h). */
+        if (errno == 0) errno = EIO;
         return -1;
     }
     return 0;
@@ -1504,6 +1571,10 @@ void mdkr_directory_names_free(MdkrDirectoryNames *names) {
     size_t index;
     if (names == NULL) return;
     for (index = 0u; index < names->count; ++index) free(names->names[index]);
+    for (index = 0u; index < names->unnamed_count; ++index) {
+        free(names->unnamed[index]);
+    }
     free(names->names);
+    free(names->unnamed);
     memset(names, 0, sizeof(*names));
 }

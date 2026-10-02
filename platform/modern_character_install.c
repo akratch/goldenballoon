@@ -1295,9 +1295,13 @@ int mdkr_modern_character_remove_installed_coordinated(
         return 0;
     }
     /* Listed through the UTF-8 boundary: a character folder outside the
-     * Windows ANSI code page is listed exactly. A name with no UTF-8 spelling
-     * is left out; it can never be one of this package's ASCII leaves. */
+     * Windows ANSI code page is listed exactly. Deletion needs the complete
+     * owned set, so a listing that stops part-way refuses it. A name with no
+     * UTF-8 spelling is left out; it can never be one of this package's ASCII
+     * leaves. */
+    memset(&names, 0, sizeof(names));
     if (fclose(lock) != 0 || mdkr_directory_names_utf8(directory, &names) != 0) {
+        mdkr_directory_names_free(&names);
         (void)mdkr_remove_utf8(lock_path);
         result_message(result, "installed character directory could not be opened");
         return 0;
@@ -1489,8 +1493,11 @@ static int reconcile_removal_quarantine(
      * treated as launcher trash -- a name with no UTF-8 spelling included.
      * The names are listed once, so the second pass changes exactly the set
      * the first one validated. */
-    if (mdkr_directory_names_utf8(quarantine_path, &names) != 0) return 0;
-    if (names.unnamed != 0u) valid = 0;
+    if (mdkr_directory_names_utf8(quarantine_path, &names) != 0) {
+        mdkr_directory_names_free(&names);
+        return 0;
+    }
+    if (names.unnamed_count != 0u) valid = 0;
     for (index = 0u; valid && index < names.count; ++index) {
         const char *name = names.names[index];
         char source[4096];

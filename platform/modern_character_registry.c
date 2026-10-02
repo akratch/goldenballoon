@@ -196,9 +196,12 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
     memset(registry, 0, sizeof(*registry));
     if (directory == NULL || directory[0] == '\0') return 0;
     /* Listed through the UTF-8 boundary, so a characters folder (or a cache
-     * name) outside the Windows ANSI code page is listed exactly. */
+     * name) outside the Windows ANSI code page is listed exactly. The
+     * inventory must be complete, so a listing that stops part-way makes it
+     * unavailable rather than partial. */
     if (mdkr_directory_names_utf8(directory, &names) != 0) {
         int exists = 0;
+        mdkr_directory_names_free(&names);
         /* A missing character directory is the documented empty state (the
          * query answers 0 with exists cleared, fs_utf8.h). An existing path
          * that cannot be enumerated, or a query that fails, is different:
@@ -209,6 +212,19 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
             return 0;
         }
         return -1;
+    }
+    /* A cache whose file name has no UTF-8 spelling is never loaded
+     * (fs_utf8.h: every path in the game is UTF-8), but it is never dropped
+     * without a word either: the Workshop lists it with what to do. */
+    for (name_index = 0u; name_index < names.unnamed_count; ++name_index) {
+        const char *stand_in = names.unnamed[name_index];
+        if (stand_in[0] != '.' &&
+            (has_cache_suffix(stand_in) ||
+             (include_disabled && has_disabled_cache_suffix(stand_in)))) {
+            add_skip(registry, stand_in,
+                     "the file name is not valid Unicode; rename the file to "
+                     "load this character");
+        }
     }
     for (name_index = 0u; name_index < names.count; ++name_index) {
         const char *leaf = names.names[name_index];

@@ -7,6 +7,7 @@
 #include "fs_utf8.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -817,8 +818,24 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
     if (mods_dir == NULL || mods_dir[0] == '\0') return 0;
 
     if (mdkr_directory_names_utf8(mods_dir, &names) != 0) {
-        /* No mods/ at all is what almost every install looks like. */
-        return 0;
+        const int listing_error = errno;
+        int exists = 0;
+        if (mdkr_path_query_utf8(mods_dir, &exists, NULL, NULL) == 0 &&
+            !exists) {
+            /* No mods/ at all is what almost every install looks like. */
+            mdkr_directory_names_free(&names);
+            return 0;
+        }
+        /* The folder is there but could not be listed completely. Keep the
+         * packs read before the failure -- a shorter set, still sorted and
+         * resolved by the same rules -- and say so, rather than look like an
+         * install with no mods folder. */
+        reg->listing_incomplete = 1;
+        fprintf(stderr,
+                "[MODS] the mods folder %s could not be read completely (%s); "
+                "using the %u entr%s read before that\n",
+                mods_dir, strerror(listing_error), (unsigned)names.count,
+                names.count == 1u ? "y" : "ies");
     }
 
     for (name_index = 0u; name_index < names.count; ++name_index) {
@@ -886,11 +903,13 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
         reg->entries[reg->count].is_rice = is_rice;
         reg->count++;
     }
-    /* A name with no UTF-8 spelling cannot reach its entry (fs_utf8.h). Say
-     * so rather than leave the pack out without a word. */
-    for (name_index = 0u; name_index < names.unnamed; ++name_index) {
-        registry_add_skip(reg, "(a name that is not valid Unicode)",
-                          "this pack's name cannot be used as a path");
+    /* A name with no UTF-8 spelling is never loaded (fs_utf8.h: every path
+     * in the game is UTF-8). Say so, under a readable stand-in, rather than
+     * leave the pack out without a word. */
+    for (name_index = 0u; name_index < names.unnamed_count; ++name_index) {
+        if (names.unnamed[name_index][0] == '.') continue;
+        registry_add_skip(reg, names.unnamed[name_index],
+                          "the name is not valid Unicode; rename it to load it");
     }
     mdkr_directory_names_free(&names);
 

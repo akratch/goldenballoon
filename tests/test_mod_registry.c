@@ -177,6 +177,8 @@ static void test_missing_mods_dir_is_not_an_error(void) {
            "absent mods dir is the normal case, not a failure");
     expect(mdkr_mod_registry_count(&reg) == 0, "and yields zero packs");
     expect(mdkr_mod_registry_skipped(&reg) == 0, "and reports nothing skipped");
+    expect(reg.listing_incomplete == 0,
+           "and is not reported as a folder that could not be read");
     mdkr_mod_registry_shutdown(&reg);
 }
 
@@ -601,6 +603,98 @@ static void test_digest_names_ignore_case(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
+#ifdef MDKR_FS_UTF8_TESTING
+/* fs_utf8.c's test seam: at 0 or more a collected listing stops with EIO once
+ * it holds that many names, as a read error part-way through would. */
+extern int mdkr_fs_utf8_test_names_fail_after;
+#endif
+
+/* 13. A mods folder that exists but cannot be listed completely is not "no
+ * mods folder": the packs read before the failure are kept, and the scan says
+ * the folder could not be read (a [MODS] line on stderr). 1.7.0's readdir()
+ * loop kept them too. */
+static void test_listing_failure_keeps_what_was_read(const char *scratch) {
+    char mods[1024];
+    char not_a_folder[1024];
+    MdkrModRegistry reg;
+
+    path2(mods, sizeof mods, scratch, "partial");
+    write_pack_file(mods, "one", "pack.ini", "[pack]\nname=One\n");
+    write_pack_file(mods, "two", "pack.ini", "[pack]\nname=Two\n");
+    write_pack_file(mods, "three", "pack.ini", "[pack]\nname=Three\n");
+#ifdef MDKR_FS_UTF8_TESTING
+    mdkr_fs_utf8_test_names_fail_after = 2;
+    expect(mdkr_mod_registry_init(&reg, mods) == 0,
+           "a listing that fails part-way does not fail the scan");
+    expect(mdkr_mod_registry_count(&reg) == 2,
+           "the packs read before the failure are kept");
+    expect(reg.listing_incomplete == 1,
+           "and the folder is reported as not read completely");
+    mdkr_mod_registry_shutdown(&reg);
+    mdkr_fs_utf8_test_names_fail_after = 0;
+    expect(mdkr_mod_registry_init(&reg, mods) == 0 &&
+               mdkr_mod_registry_count(&reg) == 0 && reg.listing_incomplete == 1,
+           "a folder that cannot be listed at all is reported, not taken for "
+           "a missing one");
+    mdkr_mod_registry_shutdown(&reg);
+    mdkr_fs_utf8_test_names_fail_after = -1;
+#else
+    printf("SKIP the listing-failure seam needs MDKR_FS_UTF8_TESTING\n");
+#endif
+    expect(mdkr_mod_registry_init(&reg, mods) == 0 &&
+               mdkr_mod_registry_count(&reg) == 3 && reg.listing_incomplete == 0,
+           "the same folder listed completely loads every pack");
+    mdkr_mod_registry_shutdown(&reg);
+
+    path2(not_a_folder, sizeof not_a_folder, scratch, "mods-is-a-file");
+    write_text_file(not_a_folder, "not a folder");
+    expect(mdkr_mod_registry_init(&reg, not_a_folder) == 0 &&
+               mdkr_mod_registry_count(&reg) == 0 && reg.listing_incomplete == 1,
+           "a mods path held by a file is reported as unreadable, not missing");
+    mdkr_mod_registry_shutdown(&reg);
+}
+
+/* 14. A pack whose name has no UTF-8 spelling is never loaded, but it is
+ * listed as skipped under a readable stand-in with what to do, never dropped
+ * without a word. Needs a file system that holds such names (Linux); macOS
+ * refuses them, and the narrow calls this fixture uses cannot spell the
+ * Windows equivalent, so both print a SKIP line. */
+static void test_name_without_utf8_is_reported(const char *scratch) {
+#ifndef _WIN32
+    char mods[1024];
+    char bad[1024];
+    char manifest[1100];
+    MdkrModRegistry reg;
+    FILE *probe;
+
+    path2(mods, sizeof mods, scratch, "unnamed");
+    write_pack_file(mods, "good", "pack.ini", "[pack]\nname=Good\n");
+    path2(bad, sizeof bad, mods, "lost-\xff-pack");
+    if (TEST_MKDIR(bad) != 0) {
+        printf("SKIP this file system cannot hold a name with no UTF-8 spelling\n");
+        return;
+    }
+    path2(manifest, sizeof manifest, bad, "pack.ini");
+    probe = fopen(manifest, "wb");
+    if (probe == NULL) fatal("cannot create scratch file", manifest);
+    fputs("[pack]\nname=Lost\n", probe);
+    fclose(probe);
+    expect(mdkr_mod_registry_init(&reg, mods) == 0 &&
+               mdkr_mod_registry_count(&reg) == 1,
+           "a pack whose name has no UTF-8 spelling does not stop the others");
+    expect(mdkr_mod_registry_skipped(&reg) == 1 &&
+               strcmp(reg.skip_name[0], "lost-\xEF\xBF\xBD" "-pack") == 0 &&
+               strstr(mdkr_mod_registry_skip_reason(&reg, 0),
+                      "not valid Unicode") != NULL,
+           "it is listed as skipped under a readable stand-in, with what to do");
+    mdkr_mod_registry_shutdown(&reg);
+#else
+    (void)scratch;
+    printf("SKIP the narrow fixture calls cannot spell a name with no UTF-8 "
+           "spelling here\n");
+#endif
+}
+
 int main(int argc, char **argv) {
     const char *scratch = argc > 1 ? argv[1] : "mod_registry_scratch";
 
@@ -618,6 +712,8 @@ int main(int argc, char **argv) {
     test_disabled_pack_never_wins(scratch);
     test_names_are_indexed_at_scan(scratch);
     test_digest_names_ignore_case(scratch);
+    test_listing_failure_keeps_what_was_read(scratch);
+    test_name_without_utf8_is_reported(scratch);
 
     remove_tree(scratch);
 

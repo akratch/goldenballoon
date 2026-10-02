@@ -1017,10 +1017,10 @@ static int collect_records(int controllerIndex, GhostBankSweepPair *pairs,
         return 0;
     }
     /* Listed through the UTF-8 boundary: narrow readdir() cannot list a save
-     * folder outside the Windows ANSI code page (fs_utf8.h). */
-    if (mdkr_directory_names_utf8(root, &names) != 0) {
-        return 0;
-    }
+     * folder outside the Windows ANSI code page (fs_utf8.h). A listing that
+     * stops part-way keeps what it read, as readdir() did: every caller only
+     * retires the records it was handed, so a shorter list retires less. */
+    (void)mdkr_directory_names_utf8(root, &names);
     for (index = 0u; count < capacity && index < names.count; ++index) {
         int level = -1;
         int vehicle = -1;

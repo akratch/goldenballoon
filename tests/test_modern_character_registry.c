@@ -25,7 +25,11 @@
  *   - a path that exists but cannot be listed is unavailable, never empty;
  *   - a folder and a cache whose names are not ASCII are listed exactly (the
  *     narrow opendir()/readdir() it used to use read Windows names in the
- *     ANSI code page, so such a folder could not be listed at all).
+ *     ANSI code page, so such a folder could not be listed at all);
+ *   - a cache whose file name has no UTF-8 spelling is not loaded but is
+ *     listed as skipped, under a readable stand-in, with what to do -- never
+ *     dropped without a word (it needs a file system that can hold such a
+ *     name: Linux, or NTFS on Windows; macOS and Wine print a SKIP line).
  *
  * Every scratch path is built under the temporary folder and reached through
  * the UTF-8 helpers; Windows reads %TEMP% as UTF-16.
@@ -39,6 +43,7 @@
 
 #ifdef _WIN32
 #include <process.h>
+#include <wchar.h>
 #include <windows.h>
 #else
 #include <unistd.h>
@@ -91,6 +96,91 @@ static int copy_file(const char *from, const char *to) {
     return fclose(out) == 0 && okay;
 }
 
+/* A copy of `fixture` in `folder` under a name with no UTF-8 spelling:
+ * `prefix`, then one byte (POSIX) or one unpaired UTF-16 surrogate (Windows)
+ * that has none, then `suffix`. Returns 1 when it was made, 0 when this file
+ * system cannot hold such a name. */
+typedef struct UnnamedFile {
+#ifdef _WIN32
+    wchar_t path[1400];
+#else
+    char path[1400];
+#endif
+    int made;
+} UnnamedFile;
+
+static int make_unnamed_copy(const char *fixture, const char *folder,
+                             const char *prefix, const char *suffix,
+                             UnnamedFile *file) {
+    FILE *in = mdkr_fopen_utf8(fixture, "rb");
+    unsigned char buffer[4096];
+    size_t got;
+    int okay = 1;
+    file->made = 0;
+    if (in == NULL) return 0;
+#ifdef _WIN32
+    {
+        wchar_t wide_prefix[128], wide_suffix[128];
+        HANDLE out;
+        int length = MultiByteToWideChar(CP_UTF8, 0, folder, -1, file->path, 1200);
+        if (length <= 0 ||
+            !MultiByteToWideChar(CP_UTF8, 0, prefix, -1, wide_prefix, 128) ||
+            !MultiByteToWideChar(CP_UTF8, 0, suffix, -1, wide_suffix, 128)) {
+            fclose(in);
+            return 0;
+        }
+        for (wchar_t *c = file->path; *c; ++c) if (*c == L'/') *c = L'\\';
+        swprintf(file->path + length - 1, 1400 - (size_t)length,
+                 L"\\%ls\xD800%ls", wide_prefix, wide_suffix);
+        out = CreateFileW(file->path, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                          FILE_ATTRIBUTE_NORMAL, NULL);
+        if (out == INVALID_HANDLE_VALUE) {
+            fclose(in);
+            return 0;
+        }
+        file->made = 1;
+        while ((got = fread(buffer, 1, sizeof buffer, in)) != 0u) {
+            DWORD wrote = 0;
+            if (!WriteFile(out, buffer, (DWORD)got, &wrote, NULL) || wrote != got) {
+                okay = 0;
+                break;
+            }
+        }
+        if (!CloseHandle(out)) okay = 0;
+    }
+#else
+    {
+        FILE *out;
+        if (snprintf(file->path, sizeof file->path, "%s/%s\xff%s", folder,
+                     prefix, suffix) >= (int)sizeof file->path) {
+            fclose(in);
+            return 0;
+        }
+        out = fopen(file->path, "wb");
+        if (out == NULL) {
+            fclose(in);
+            return 0;
+        }
+        file->made = 1;
+        while ((got = fread(buffer, 1, sizeof buffer, in)) != 0u) {
+            if (fwrite(buffer, 1, got, out) != got) { okay = 0; break; }
+        }
+        if (fclose(out) != 0) okay = 0;
+    }
+#endif
+    fclose(in);
+    return okay;
+}
+
+static void remove_unnamed(const UnnamedFile *file) {
+    if (!file->made) return;
+#ifdef _WIN32
+    (void)DeleteFileW(file->path);
+#else
+    (void)remove(file->path);
+#endif
+}
+
 static int write_text(const char *path, const char *text) {
     FILE *file = mdkr_fopen_utf8(path, "wb");
     int okay = file != NULL && fwrite(text, 1, strlen(text), file) == strlen(text);
@@ -113,6 +203,10 @@ int main(int argc, char **argv) {
     char unicode_directory[1300];
     char unicode_installed[1400];
     char revision[1600];
+    char unnamed_directory[1300];
+    char unnamed_neighbour[1400];
+    UnnamedFile unnamed_cache;
+    UnnamedFile unnamed_note;
     const char *fixture;
     int revision_written = 0;
 
@@ -135,7 +229,10 @@ int main(int argc, char **argv) {
         !join(unicode_directory, sizeof unicode_directory, root,
               unicode_folder) ||
         !join(unicode_installed, sizeof unicode_installed, unicode_directory,
-              unicode_cache)) {
+              unicode_cache) ||
+        !join(unnamed_directory, sizeof unnamed_directory, root, "unnamed") ||
+        !join(unnamed_neighbour, sizeof unnamed_neighbour, unnamed_directory,
+              "probe.mdkc")) {
         fprintf(stderr, "could not name the scratch folders\n");
         return 2;
     }
@@ -199,6 +296,50 @@ int main(int argc, char **argv) {
                            ->source_revisions == 1u,
                "the inventory of a non-ASCII folder counts its retained source");
     }
+
+    memset(&unnamed_cache, 0, sizeof unnamed_cache);
+    memset(&unnamed_note, 0, sizeof unnamed_note);
+    expect(mdkr_mkdir_utf8(unnamed_directory) == 0 &&
+               copy_file(fixture, unnamed_neighbour),
+           "stage a folder for a cache whose name has no UTF-8 spelling");
+    if (!make_unnamed_copy(fixture, unnamed_directory, "lost-", ".mdkc",
+                           &unnamed_cache)) {
+        printf("SKIP   this file system cannot hold a name with no UTF-8 "
+               "spelling\n");
+    } else {
+        const char *skip_name;
+        const char *skip_reason;
+        expect(make_unnamed_copy(fixture, unnamed_directory, "notes-", ".txt",
+                                 &unnamed_note),
+               "stage a file that is not a cache under such a name");
+        memset(&registry, 0, sizeof registry);
+        expect(mdkr_modern_character_registry_init(&registry,
+                                                   unnamed_directory) == 0 &&
+                   mdkr_modern_character_registry_count(&registry) == 1,
+               "a cache whose name has no UTF-8 spelling does not stop the "
+               "others loading");
+        skip_name = mdkr_modern_character_registry_skip_name(&registry, 0);
+        skip_reason = mdkr_modern_character_registry_skip_reason(&registry, 0);
+        expect(mdkr_modern_character_registry_skipped(&registry) == 1 &&
+                   skip_name != NULL && skip_reason != NULL &&
+                   strncmp(skip_name, "lost-", 5) == 0 &&
+                   strstr(skip_name, "\xEF\xBF\xBD") != NULL &&
+                   strstr(skip_name, ".mdkc") != NULL &&
+                   strstr(skip_reason, "not valid Unicode") != NULL &&
+                   strstr(skip_reason, "rename") != NULL,
+               "it is listed as skipped under a readable stand-in, with what "
+               "to do, and a non-cache file under such a name is not listed");
+        memset(&registry, 0, sizeof registry);
+        expect(mdkr_modern_character_registry_init_inventory(
+                   &registry, unnamed_directory) == 0 &&
+                   mdkr_modern_character_registry_count(&registry) == 1 &&
+                   mdkr_modern_character_registry_skipped(&registry) == 1,
+               "the inventory lists it as skipped too");
+    }
+    remove_unnamed(&unnamed_note);
+    remove_unnamed(&unnamed_cache);
+    (void)mdkr_remove_utf8(unnamed_neighbour);
+    (void)mdkr_rmdir_utf8(unnamed_directory);
 
     if (revision_written) (void)mdkr_remove_utf8(revision);
     (void)mdkr_remove_utf8(unicode_installed);

@@ -99,16 +99,31 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
  * them, collected first so a caller may change the directory while it works
  * through them. This is how product code lists a folder: never narrow
  * opendir()/readdir(), which on Windows read paths and names in the ANSI code
- * page and cannot list a folder (or return a name) outside it. A name with no
- * UTF-8 spelling (MDKR_PATH_BAD_NAME) cannot reach its entry, so it is left
- * out and counted in `unnamed`. Returns 0 with `names` filled (release it with
- * mdkr_directory_names_free), or -1 with errno set and nothing held when the
- * directory could not be listed completely. A missing directory is -1 here:
- * ask mdkr_path_query_utf8 whether that failure means "missing". */
+ * page and cannot list a folder (or return a name) outside it.
+ *
+ * `names` holds the UTF-8 names, every one usable as a path. A name with no
+ * UTF-8 spelling (MDKR_PATH_BAD_NAME) is not among them: `unnamed` holds a
+ * readable stand-in for each one (valid UTF-8, U+FFFD where the name has no
+ * spelling) for the caller to report, and a stand-in is never a path. On
+ * Windows that is a necessity: the stand-in cannot reach the entry. On POSIX
+ * the raw bytes could, and leaving them out is a deliberate policy: every
+ * path inside the game is UTF-8 (see the top of this file), so a caller
+ * reports such an entry ("rename it") instead of carrying a path the rest of
+ * the game cannot spell -- the answer the same file gets on every platform.
+ *
+ * Returns 0 when the listing completed. Returns -1 with errno set when it did
+ * not: when the directory could not be opened nothing is held; when the
+ * listing stopped part-way (a read error, or memory ran out) `names` and
+ * `unnamed` hold what was read before that. Either way release them with
+ * mdkr_directory_names_free. A caller that needs the complete set treats -1
+ * as failure; one that can use part of it may keep what was read. A missing
+ * directory is -1 here: ask mdkr_path_query_utf8 whether that means
+ * "missing". */
 typedef struct MdkrDirectoryNames {
     char **names;
     size_t count;
-    size_t unnamed;
+    char **unnamed;
+    size_t unnamed_count;
 } MdkrDirectoryNames;
 int mdkr_directory_names_utf8(const char *path, MdkrDirectoryNames *names);
 void mdkr_directory_names_free(MdkrDirectoryNames *names);

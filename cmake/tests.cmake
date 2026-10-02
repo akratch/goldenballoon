@@ -665,6 +665,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_mod_registry_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/lib/miniz)
+    # The listing-failure case stops fs_utf8's collected listing part-way.
+    target_compile_definitions(mdkr_mod_registry_test PRIVATE MDKR_FS_UTF8_TESTING)
     if(NOT MSVC)
         target_link_libraries(mdkr_mod_registry_test PRIVATE m)
     endif()
