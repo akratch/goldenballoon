@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <new>
 #include <optional>
+#include <vector>
 
 // Scoped to this fixture thread so asynchronous copy tests are unaffected.
 static thread_local bool rejectCppAllocation;
@@ -99,6 +100,38 @@ bool makeDirectoryLink(const fs::path &target, const fs::path &link) {
     std::puts("SKIP: this host could create neither a directory link nor a junction");
     return false;
 }
+
+// Another holder of a just-created staging folder: in another process, a
+// sweep; on Windows, also a scanner. The installer's own hold must fail
+// (EBUSY) while removing the empty folder stays possible, which on Windows
+// means a handle with DELETE access that still shares delete.
+struct ForeignHold {
+#ifdef _WIN32
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    bool take(const fs::path &directory) {
+        handle = CreateFileW(directory.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             nullptr, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                             nullptr);
+        return handle != INVALID_HANDLE_VALUE;
+    }
+    void release() {
+        if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+        handle = INVALID_HANDLE_VALUE;
+    }
+#else
+    MdkrFileLock hold{-1};
+    bool take(const fs::path &directory) {
+        return mdkr_directory_hold_utf8(directory.u8string().c_str(), &hold) == 0;
+    }
+    void release() { mdkr_file_lock_release(&hold); }
+#endif
+    ForeignHold() = default;
+    ForeignHold(const ForeignHold &) = delete;
+    ForeignHold &operator=(const ForeignHold &) = delete;
+    ~ForeignHold() { release(); }
+};
 
 void removeLink(const fs::path &link) {
 #ifdef _WIN32
@@ -415,6 +448,34 @@ int main(int argc, char **argv) {
         REQUIRE(fs::is_regular_file(committedMods / "race.zip"));
         REQUIRE(std::distance(fs::directory_iterator(committedMods),
                               fs::directory_iterator{}) == 1);
+    }
+    // A staging folder someone else takes hold of the moment it is created is
+    // neither used nor left behind: the installer made it and it is empty, so
+    // it is removed before the next name is tried.
+    {
+        const auto busyMods = root.path / "busy-stage";
+        std::vector<fs::path> created;
+        ForeignHold foreign;
+        bool taken = false;
+        PreparedPackInstall::setStageCreatedHookForTest([&](const fs::path &stage) {
+            created.push_back(stage);
+            if (created.size() == 1) taken = foreign.take(stage);
+            else foreign.release();
+        });
+        PackInstallResult result;
+        {
+            auto prepared = PreparedPackInstall::copyZip(input / "race.zip", busyMods);
+            PreparedPackInstall::setStageCreatedHookForTest({});
+            foreign.release();
+            REQUIRE(taken);
+            REQUIRE(created.size() == 2);
+            REQUIRE(!fs::exists(created[0]));
+            REQUIRE(fs::is_regular_file(created[1] / "race.zip"));
+            result = prepared.finalize();
+        }
+        REQUIRE(result.installed);
+        REQUIRE(fs::is_regular_file(busyMods / "race.zip"));
+        REQUIRE(std::distance(fs::directory_iterator(busyMods), fs::directory_iterator{}) == 1);
     }
     {
         auto abandoned = PreparedPackInstall::copyZip(input / "race.zip", mods);

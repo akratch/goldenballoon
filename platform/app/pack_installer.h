@@ -70,6 +70,15 @@ public:
     static std::size_t reclaimAbandonedStaging(const std::filesystem::path &modsDir,
                                                const std::function<bool()> &cancelled = {});
 
+#ifdef MDKR_PACK_INSTALLER_TESTING
+    // Test-only: called with each staging folder's path right after the
+    // installer creates it and before the installer holds it, so a test can
+    // take hold of it first, as another process could. Not thread-safe;
+    // an empty function clears it.
+    static void setStageCreatedHookForTest(
+        std::function<void(const std::filesystem::path &)> hook);
+#endif
+
 private:
     void cleanup() noexcept;
     std::filesystem::path stage_;

@@ -151,6 +151,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/app
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/lib/miniz)
+    target_compile_definitions(mdkr_pack_installer_test PRIVATE MDKR_PACK_INSTALLER_TESTING)
     target_compile_features(mdkr_pack_installer_test PRIVATE cxx_std_17)
     target_link_libraries(mdkr_pack_installer_test PRIVATE Threads::Threads)
     if(NOT MSVC)
@@ -206,7 +207,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/lib/miniz)
         target_compile_definitions(mdkr_pack_installer_path_test PRIVATE
-            MDKR_PACK_PATH_ARM=1)
+            MDKR_PACK_PATH_ARM=1 MDKR_PACK_INSTALLER_TESTING)
         target_compile_features(mdkr_pack_installer_path_test PRIVATE cxx_std_17)
         target_link_libraries(mdkr_pack_installer_path_test PRIVATE Threads::Threads m)
         set_target_properties(mdkr_pack_installer_path_test PROPERTIES

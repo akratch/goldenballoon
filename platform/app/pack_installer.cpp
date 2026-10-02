@@ -73,6 +73,18 @@ bool isStageName(const char *name) {
            *cursor == '\0' && attempt < kStageAttempts;
 }
 
+#ifdef MDKR_PACK_INSTALLER_TESTING
+std::function<void(const fs::path &)> g_stageCreatedForTest;
+#endif
+
+void noteStageCreated(const fs::path &stage) {
+#ifdef MDKR_PACK_INSTALLER_TESTING
+    if (g_stageCreatedForTest) g_stageCreatedForTest(stage);
+#else
+    (void)stage;
+#endif
+}
+
 // A stop request, where an exception from the callback also means stop: the
 // removal loops below must not unwind through open directory streams.
 bool stopRequested(const std::function<bool()> *stop) noexcept {
@@ -688,6 +700,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         ec.clear();
 #if !MDKR_PACK_BY_PATH
         if (relativeMkdir(prepared.modsFd_, candidate.filename(), ec)) {
+            noteStageCreated(candidate);
             const int stageFd = openat(prepared.modsFd_, prepared.stageName_.c_str(),
                                        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
             if (stageFd < 0) {
@@ -700,6 +713,11 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             // process leaves it alone. A filesystem without advisory locks
             // cannot record that; the installation proceeds unlocked there.
             if (flock(stageFd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK) {
+                // Taken the moment it was made (by a sweep). It is the folder
+                // this call created, and empty: remove it rather than leave
+                // it behind, then try another name.
+                if (sameDirectory(stageFd, prepared.modsFd_, prepared.stageName_.c_str()))
+                    (void)unlinkat(prepared.modsFd_, prepared.stageName_.c_str(), AT_REMOVEDIR);
                 close(stageFd);
                 continue;
             }
@@ -723,14 +741,23 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                                         std::error_code(errno, std::generic_category()));
             return prepared;
         }
+        noteStageCreated(candidate);
         // Hold the new folder for the whole installation. On Windows that also
         // stops anything renaming or replacing it until cleanup.
         if (mdkr_directory_hold_utf8(candidatePath.c_str(), &prepared.hold_) != 0) {
             const int error = errno;
-            // Taken or replaced since it was created: it is not ours to use or
-            // remove. Try another name.
-            if (error == EBUSY || error == ENOENT || error == ELOOP || error == ENOTDIR)
+            // Held by someone else the moment it was made (a sweep; on
+            // Windows also a scanner). It is the folder this call created,
+            // and empty: remove it rather than leave it behind, then try
+            // another name. If the holder refuses the removal, the next sweep
+            // reclaims it.
+            if (error == EBUSY) {
+                (void)removeDirectory(candidatePath.c_str());
                 continue;
+            }
+            // Replaced since it was created: it is not ours to use or remove.
+            // Try another name.
+            if (error == ENOENT || error == ELOOP || error == ENOTDIR) continue;
             // A filesystem without advisory locks cannot record the hold; the
             // installation proceeds unheld.
             if (error != ENOTSUP && error != EOPNOTSUPP && error != ENOLCK) {
@@ -1069,6 +1096,13 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
     cleanup();
     return result;
 }
+
+#ifdef MDKR_PACK_INSTALLER_TESTING
+void PreparedPackInstall::setStageCreatedHookForTest(
+        std::function<void(const fs::path &)> hook) {
+    g_stageCreatedForTest = std::move(hook);
+}
+#endif
 
 std::size_t PreparedPackInstall::reclaimAbandonedStaging(
         const fs::path &modsDir, const std::function<bool()> &cancelled) {
