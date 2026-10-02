@@ -829,11 +829,15 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
         /* The folder is there but could not be listed completely. Keep the
          * packs read before the failure -- a shorter set, still sorted and
          * resolved by the same rules -- and say so, rather than look like an
-         * install with no mods folder. */
+         * install with no mods folder. The listing order is the file
+         * system's, not priority order, so the packs left out can include
+         * the one that would have won an asset: say that too. */
         reg->listing_incomplete = 1;
         fprintf(stderr,
                 "[MODS] the mods folder %s could not be read completely (%s); "
-                "using the %u entr%s read before that\n",
+                "using the %u entr%s read before that. Pack order may differ "
+                "from a full read: a pack that was not read cannot supply "
+                "its files, so a lower-priority pack may be used instead\n",
                 mods_dir, strerror(listing_error), (unsigned)names.count,
                 names.count == 1u ? "y" : "ies");
     }
