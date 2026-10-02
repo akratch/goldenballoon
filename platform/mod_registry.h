@@ -35,6 +35,13 @@ extern "C" {
 #include <stdint.h>
 
 #define MDKR_MOD_MAX_PACKS 64
+/* Pack sets are uint64_t masks indexed by pack (UINT64_C(1) << index): more
+ * packs than bits would shift past the mask's width. */
+#ifdef __cplusplus
+static_assert(MDKR_MOD_MAX_PACKS <= 64, "pack masks are uint64_t");
+#else
+_Static_assert(MDKR_MOD_MAX_PACKS <= 64, "pack masks are uint64_t");
+#endif
 #define MDKR_MOD_PATH_MAX  1024
 
 typedef struct MdkrModEntry {
