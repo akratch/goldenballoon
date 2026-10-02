@@ -556,51 +556,6 @@ if [[ -n "$VEHICLE_RNG_TRACE" ]]; then
     python3 tools/validate_ares_vehicle_rng.py "$VEHICLE_RNG_TRACE"
 fi
 if [[ -n "$AUDIO_DUMP" ]]; then
-    python3 - "$AUDIO_DUMP" "$ROUTE_DIR/ares.log" "$((ARES_FRAMES+5))" "$FORCED_TRACK_SOURCE" "$FORCED_TRACK" <<'PY'
-import hashlib
-import re
-import sys
-from pathlib import Path
-
-audio = Path(sys.argv[1])
-log = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace")
-expected_frames = int(sys.argv[3])
-completed = re.search(r"reached frame limit (\d+) \(dumped \d+ frame\(s\), (\d+) audio sample-frame\(s\)\), exiting", log)
-if completed is None or int(completed.group(1)) != expected_frames:
-    raise SystemExit("FAIL: missing expected ares audio completion witness")
-source, target = int(sys.argv[4]), int(sys.argv[5])
-if target >= 0 and not re.search(
-        rf"(?:^|\n)(?:mdkr64 oracle: )?forced retail race load {source} -> {target}[ \t]*(?:\n|$)", log):
-    raise SystemExit("FAIL: ares did not load the requested boss race")
-rate_path = Path(str(audio) + ".rate")
-if not audio.is_file() or audio.stat().st_size < 4:
-    raise SystemExit(f"FAIL: ares produced no audio capture at {audio}")
-size = audio.stat().st_size
-if size % 4:
-    raise SystemExit(
-        f"FAIL: ares audio capture is not whole s16 stereo frames: {size} bytes")
-try:
-    rate = int(rate_path.read_text(encoding="ascii").strip())
-except (OSError, ValueError) as error:
-    raise SystemExit(f"FAIL: invalid ares audio rate sidecar {rate_path}: {error}")
-if not 8000 <= rate <= 96000:
-    raise SystemExit(f"FAIL: implausible ares audio rate {rate}")
-frames = size // 4
-reported_frames = int(completed.group(2))
-if frames != reported_frames:
-    raise SystemExit(
-        f"FAIL: ares audio capture length disagrees with completion witness: "
-        f"{frames} stored frames, {reported_frames} reported")
-if frames < rate:
-    raise SystemExit(
-        f"FAIL: ares audio capture is shorter than one second: {frames} frames")
-hasher = hashlib.sha256()
-with audio.open("rb") as stream:
-    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-        hasher.update(chunk)
-digest = hasher.hexdigest()
-print(
-    f"ares audio capture: PASS -- {frames} frames at {rate} Hz "
-    f"({frames / rate:.2f}s), sha256={digest}")
-PY
+    python3 tools/validate_ares_audio_capture.py "$AUDIO_DUMP" "$ROUTE_DIR/ares.log" \
+        "$((ARES_FRAMES+5))" "$FORCED_TRACK_SOURCE" "$FORCED_TRACK"
 fi

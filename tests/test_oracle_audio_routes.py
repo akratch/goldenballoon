@@ -17,10 +17,13 @@ import dkr_oracle_route as route_tool
 
 
 class AudioRoutes(unittest.TestCase):
-    def test_capture_completion_witness(self):
-        # Exercise the exact embedded validator used by the shell runner.
+    def test_the_runner_calls_the_validator_module(self):
+        # The shell runner invokes the module tested below, not a copy.
         runner = (ROOT / "tools/run_oracle.sh").read_text()
-        validator = runner.rsplit("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+        self.assertIn('python3 tools/validate_ares_audio_capture.py "$AUDIO_DUMP"', runner)
+
+    def test_capture_completion_witness(self):
+        validator = ROOT / "tools/validate_ares_audio_capture.py"
         completion = "reached frame limit 11005 (dumped 0 frame(s), 22050 audio sample-frame(s)), exiting"
         boss = "forced retail race load 5 -> 38"
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,7 +43,7 @@ class AudioRoutes(unittest.TestCase):
                     (boss + "\n" + completion.replace("11005", "100"), False)):
                 log.write_text(text)
                 result = subprocess.run(
-                    [sys.executable, "-c", validator, str(audio), str(log),
+                    [sys.executable, str(validator), str(audio), str(log),
                      "11005", "5", "38"], text=True, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, timeout=30)
                 self.assertEqual(result.returncode == 0, accepted, result.stdout)

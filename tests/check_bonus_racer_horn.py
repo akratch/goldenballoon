@@ -9,8 +9,9 @@ as the retail racer, Wizpig, Terry and Taj, without and with the horn cheat
 (seeded through the persisted magic-code state, the same file the Magic Codes
 menu writes).
 
-Expected clips are pinned to retail sound IDs independently of the
-production table:
+Expected clips are pinned as retail sound-ID literals, which are the same
+enum values the production table names, so this proves routing (which
+identity a press is dispatched as), not that each clip is the right one:
 
 * retail: its own character's horn (Diddy, the default pick), or the voice
   path under the cheat;
