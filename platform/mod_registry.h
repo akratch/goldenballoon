@@ -70,6 +70,11 @@ typedef struct MdkrModEntry {
      * Rice pack, whose own convention names its files. */
     int  textures_skipped;
     char textures_skipped_first[128];
+    /* Digest-named textures this pack holds twice, spelled differently only
+     * in case (textures/abc...png beside textures/ABC...PNG). The index keeps
+     * one spelling per pack (see name_hits()) and the scan prints one [MODS]
+     * note for each duplicate it set aside. */
+    int  textures_case_duplicates;
 } MdkrModEntry;
 
 /* One texture in a Rice/GLideN64 high-resolution pack.
@@ -236,7 +241,14 @@ typedef struct MdkrModNameHit {
  * files through filesystems that ignore case; each hit then carries the
  * spelling the pack really uses. Every other name, Rice textures included,
  * matches exactly. No I/O. Packs that could not be indexed are not listed
- * here (see name_packs()). */
+ * here (see name_packs()).
+ *
+ * Each pack is listed under at most one spelling: a pack holding a digest
+ * twice, differing only in case, is read by its exact lowercase spelling,
+ * otherwise by the first in byte order, and the scan says so. So there are
+ * never more hits than packs, and `max` = MDKR_MOD_MAX_PACKS never truncates.
+ * Hits come highest priority first (by the highest pack each serves), so a
+ * smaller `max` keeps the packs that win. */
 int mdkr_mod_registry_name_hits(const MdkrModRegistry *reg,
                                 const char *relative_path,
                                 MdkrModNameHit *out, int max);

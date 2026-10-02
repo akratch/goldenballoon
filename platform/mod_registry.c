@@ -278,22 +278,59 @@ static uint32_t name_pool_put(MdkrModRegistry *reg, const char *text) {
     return offset;
 }
 
+/* Which of two spellings of one digest name a pack holding both is read by:
+ * 1 for `a`, 0 for `b`. The exact lowercase form first -- the name 1.7.0
+ * asked for, and the one every published pack uses -- then plain byte order,
+ * so the answer never depends on the order the scan met them in or on where
+ * a table grow happened to put their slots (T12d). */
+static int spelling_preferred(const char *key, const char *a, const char *b) {
+    const int a_exact = strcmp(a, key) == 0;
+    const int b_exact = strcmp(b, key) == 0;
+    if (a_exact != b_exact) return a_exact;
+    return strcmp(a, b) < 0;
+}
+
+/* Says, once per duplicate set aside, that a pack holds one digest name under
+ * two spellings and which one is used. A folder pack can do this only on a
+ * file system that keeps case apart; a zip can anywhere. */
+static void note_case_duplicate(MdkrModRegistry *reg, int pack,
+                                const char *used, const char *ignored) {
+    reg->entries[pack].textures_case_duplicates++;
+    fprintf(stderr,
+            "[MODS] %s: %s and %s differ only in case; using %s\n",
+            reg->entries[pack].manifest.name, used, ignored, used);
+}
+
+/* The pool offset for `name` as a slot's spelling: the key's own text when
+ * the two are the same, so an ordinary name is stored once. */
+static uint32_t name_spelling_put(MdkrModRegistry *reg, const char *key,
+                                  uint32_t key_offset, const char *name) {
+    return strcmp(key, name) == 0 ? key_offset : name_pool_put(reg, name);
+}
+
 /* Records that pack `pack` serves `name`. 0 when memory ran out, which the
  * caller turns into "this pack's index is incomplete", never into a wrong
  * "absent".
  *
  * One slot per (key, spelling): packs that spell a name the same way share a
  * slot and its pack bits, and a digest name two packs spell differently gets
- * two slots under one key, each knowing how to read it back. */
+ * two slots under one key, each knowing how to read it back.
+ *
+ * A pack's bit is in at most ONE slot per key. A pack that holds a digest
+ * name twice, differing only in case, is listed under the spelling
+ * spelling_preferred() picks and the other is set aside with a note. That is
+ * also what bounds name_hits(): at most one hit per pack. */
 static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
-    char           folded[MDKR_MOD_DIGEST_NAME_CHARS + 1];
-    const char    *key = name_key(name, folded);
-    const uint32_t hash = name_hash(key);
-    const uint64_t bit = UINT64_C(1) << pack;
-    size_t         mask;
-    size_t         index;
-    uint32_t       key_offset;
-    uint32_t       spelling_offset;
+    char             folded[MDKR_MOD_DIGEST_NAME_CHARS + 1];
+    const char      *key = name_key(name, folded);
+    const uint32_t   hash = name_hash(key);
+    const uint64_t   bit = UINT64_C(1) << pack;
+    MdkrModNameSlot *same = NULL;   /* this key, spelled exactly as `name` */
+    MdkrModNameSlot *held = NULL;   /* this key, already holding `pack` */
+    size_t           mask;
+    size_t           index;
+    uint32_t         key_offset;
+    uint32_t         spelling_offset;
 
     if (reg->name_capacity == 0 ||
         (reg->name_count + 1u) * 10u >= reg->name_capacity * 7u) {
@@ -301,26 +338,55 @@ static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
                                                   : reg->name_capacity * 2u;
         if (!name_table_grow(reg, capacity)) return 0;
     }
+    /* The whole run, not just up to the first match: the slot already holding
+     * this pack under another spelling may lie after the exact match. */
     mask = reg->name_capacity - 1u;
     index = (size_t)hash & mask;
     while (reg->names[index].packs != 0) {
         MdkrModNameSlot *slot = &reg->names[index];
         if (slot->hash == hash &&
-            strcmp(reg->name_pool + slot->offset, key) == 0 &&
-            strcmp(reg->name_pool + slot->spelling, name) == 0) {
-            slot->packs |= bit;
-            return 1;
+            strcmp(reg->name_pool + slot->offset, key) == 0) {
+            if (same == NULL &&
+                strcmp(reg->name_pool + slot->spelling, name) == 0) {
+                same = slot;
+            }
+            if ((slot->packs & bit) != 0) held = slot;
         }
         index = (index + 1u) & mask;
     }
 
+    if (held != NULL && held == same) return 1;   /* listed twice; one entry */
+    if (held != NULL) {
+        const char *current = reg->name_pool + held->spelling;
+        if (spelling_preferred(key, current, name)) {
+            note_case_duplicate(reg, pack, current, name);
+            return 1;
+        }
+        note_case_duplicate(reg, pack, name, current);
+        if (held->packs == bit) {
+            /* This pack's slot alone: respell it in place. Its run position
+             * is unchanged, and a slot is never emptied (that would cut the
+             * probe run). If another slot already spells it this way, the
+             * two now share a spelling with disjoint packs, which name_hits()
+             * reports as two hits, each correct. Out of memory leaves the
+             * old spelling, which still reads a real file, and says the
+             * pack's index is incomplete. */
+            spelling_offset = name_spelling_put(reg, key, held->offset, name);
+            if (spelling_offset == UINT32_MAX) return 0;
+            held->spelling = spelling_offset;
+            return 1;
+        }
+        held->packs &= ~bit;    /* others still read it that way */
+    }
+    if (same != NULL) {
+        same->packs |= bit;
+        return 1;
+    }
+
     key_offset = name_pool_put(reg, key);
     if (key_offset == UINT32_MAX) return 0;
-    spelling_offset = key_offset;
-    if (strcmp(key, name) != 0) {
-        spelling_offset = name_pool_put(reg, name);
-        if (spelling_offset == UINT32_MAX) return 0;
-    }
+    spelling_offset = name_spelling_put(reg, key, key_offset, name);
+    if (spelling_offset == UINT32_MAX) return 0;
     reg->names[index].packs = bit;
     reg->names[index].hash = hash;
     reg->names[index].offset = key_offset;
@@ -1162,36 +1228,63 @@ uint64_t mdkr_mod_registry_name_packs(const MdkrModRegistry *reg,
     return (packs | reg->names_unindexed) & registry_live_packs(reg);
 }
 
+/* Every hit of one key. name_index_add() keeps each pack in at most one slot
+ * per key, so there are never more hits than packs. */
 typedef struct NameHits {
-    MdkrModNameHit *out;
-    int             max;
-    int             count;
-    uint64_t        live;
+    MdkrModNameHit all[MDKR_MOD_MAX_PACKS];
+    int            count;
+    uint64_t       live;
 } NameHits;
 
 static int name_hits_visit(const MdkrModRegistry *reg,
                            const MdkrModNameSlot *slot, void *user) {
     NameHits *hits = (NameHits *)user;
     if ((slot->packs & hits->live) == 0) return 0;
-    if (hits->count >= hits->max) return 1;
-    hits->out[hits->count].packs = slot->packs & hits->live;
-    hits->out[hits->count].name = reg->name_pool + slot->spelling;
+    /* Unreachable while the one-slot-per-pack rule holds; a stop, not an
+     * overrun, if it ever does not. */
+    if (hits->count >= MDKR_MOD_MAX_PACKS) return 1;
+    hits->all[hits->count].packs = slot->packs & hits->live;
+    hits->all[hits->count].name = reg->name_pool + slot->spelling;
     hits->count++;
     return 0;
+}
+
+/* The highest pack a hit serves: its rank, since entries[] ascends by
+ * priority. */
+static int name_hit_rank(const MdkrModNameHit *hit) {
+    int pack = MDKR_MOD_MAX_PACKS - 1;
+    while (pack > 0 && (hit->packs & (UINT64_C(1) << pack)) == 0) pack--;
+    return pack;
 }
 
 int mdkr_mod_registry_name_hits(const MdkrModRegistry *reg,
                                 const char *relative_path,
                                 MdkrModNameHit *out, int max) {
     NameHits hits;
+    int      index;
 
     if (reg == NULL || reg->count <= 0 || out == NULL || max <= 0) return 0;
     if (!mdkr_mod_source_path_is_safe(relative_path)) return 0;
-    hits.out = out;
-    hits.max = max;
     hits.count = 0;
     hits.live = registry_live_packs(reg);
     name_slots_for(reg, relative_path, name_hits_visit, &hits);
+    /* Highest priority first, so a caller asking for fewer than every hit
+     * keeps the ones that win rather than the ones indexed first (T12d: the
+     * store asked for eight, and the ninth spelling -- the top pack's, which
+     * is indexed last -- was dropped without a word). Insertion sort: there
+     * are a handful at most. */
+    for (index = 1; index < hits.count; index++) {
+        const MdkrModNameHit moving = hits.all[index];
+        const int            rank = name_hit_rank(&moving);
+        int                  place = index;
+        while (place > 0 && name_hit_rank(&hits.all[place - 1]) < rank) {
+            hits.all[place] = hits.all[place - 1];
+            place--;
+        }
+        hits.all[place] = moving;
+    }
+    if (hits.count > max) hits.count = max;
+    for (index = 0; index < hits.count; index++) out[index] = hits.all[index];
     return hits.count;
 }
 

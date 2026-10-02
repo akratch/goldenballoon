@@ -24,6 +24,7 @@
 #define TEST_MKDIR(path) _mkdir(path)
 #define TEST_RMDIR(path) _rmdir(path)
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #define TEST_MKDIR(path) mkdir((path), 0777)
 #define TEST_RMDIR(path) rmdir(path)
@@ -603,6 +604,300 @@ static void test_digest_names_ignore_case(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
+/* Writes an archive at `root/name` holding pack.ini (when `manifest` is not
+ * NULL) and then every name in `names`, in that order, each a one-byte file.
+ * That order is the central directory's, which is the order the scan indexes
+ * a zip in. */
+static void write_zip_names(const char *root, const char *name,
+                            const char *manifest, const char *const *names,
+                            size_t count) {
+    char           full[1024];
+    mz_zip_archive zip;
+    size_t         index;
+    int            ok;
+
+    path2(full, sizeof full, root, name);
+    make_parent_directories(full);
+    memset(&zip, 0, sizeof zip);
+    ok = mz_zip_writer_init_file(&zip, full, 0);
+    if (ok && manifest != NULL) {
+        ok = mz_zip_writer_add_mem(&zip, "pack.ini", manifest, strlen(manifest),
+                                   MZ_BEST_SPEED);
+    }
+    for (index = 0; ok && index < count; index++) {
+        ok = mz_zip_writer_add_mem(&zip, names[index], "Z", 1, MZ_BEST_SPEED);
+    }
+    if (!ok || !mz_zip_writer_finalize_archive(&zip)) {
+        mz_zip_writer_end(&zip);
+        fatal("cannot write scratch archive", full);
+    }
+    mz_zip_writer_end(&zip);
+}
+
+/* `textures/<digest>.png` with the hex digits and the extension upper-cased:
+ * the spelling a hand-renamed file has. */
+static void upper_digest_name(char *out, size_t size, const char *lower) {
+    size_t index;
+    if (strlen(lower) + 1 > size) fatal("digest name too long", lower);
+    for (index = 0; lower[index] != '\0'; index++) {
+        char c = lower[index];
+        out[index] = (index >= 9 && c >= 'a' && c <= 'z')
+                         ? (char)(c - 'a' + 'A') : c;
+    }
+    out[index] = '\0';
+}
+
+#ifndef _WIN32
+/* Runs a scan with stderr sent to `log`, so a case can count the [MODS]
+ * notes the scan printed. POSIX only; the Windows build prints a SKIP. */
+static int init_capturing_stderr(MdkrModRegistry *reg, const char *mods,
+                                 const char *log) {
+    int saved;
+    int fd;
+    int result;
+
+    fflush(stderr);
+    saved = dup(2);
+    fd = open(log, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (saved < 0 || fd < 0) fatal("cannot capture stderr", log);
+    dup2(fd, 2);
+    close(fd);
+    result = mdkr_mod_registry_init(reg, mods);
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    return result;
+}
+
+static int count_in_file(const char *path, const char *needle) {
+    static char text[65536];
+    FILE       *file = fopen(path, "rb");
+    size_t      length;
+    int         count = 0;
+    const char *cursor;
+
+    if (file == NULL) return -1;
+    length = fread(text, 1, sizeof text - 1, file);
+    fclose(file);
+    text[length] = '\0';
+    for (cursor = strstr(text, needle); cursor != NULL;
+         cursor = strstr(cursor + 1, needle)) {
+        count++;
+    }
+    return count;
+}
+#endif
+
+/* The one spelling `pack` is read by for `lower`, or NULL when the index
+ * lists it under none or under more than one. */
+static const char *only_spelling(const MdkrModRegistry *reg, const char *lower,
+                                 int pack) {
+    MdkrModNameHit hits[MDKR_MOD_MAX_PACKS];
+    const char    *found = NULL;
+    const int      count = mdkr_mod_registry_name_hits(reg, lower, hits,
+                                                       MDKR_MOD_MAX_PACKS);
+    int            index;
+
+    for (index = 0; index < count; index++) {
+        if ((hits[index].packs & (UINT64_C(1) << pack)) == 0) continue;
+        if (found != NULL) return NULL;
+        found = hits[index].name;
+    }
+    return found;
+}
+
+/* 15. One pack holding a digest twice, spelled differently only in case
+ * (T12d). The index is keyed by the lowercase form, so both spellings land
+ * under one key, and which one the store read used to depend on hash-probe
+ * and scan order -- which a table grow reshuffles. The rule is now fixed: the
+ * exact lowercase spelling (the name 1.7.0 asked for), otherwise the first in
+ * byte order. Each pack is listed under exactly one spelling, and the scan
+ * prints one [MODS] note per duplicate it set aside.
+ *
+ * The zip holds three pairs in different orders around 800 filler names,
+ * which force the name table to grow mid-pack: a pair indexed before the
+ * grow, a pair split across it each way. A folder pack can hold both
+ * spellings only on a case-sensitive file system; elsewhere that arm prints
+ * a SKIP (on macOS run the binary with a scratch root on a case-sensitive
+ * volume to exercise it). */
+#define CASE_DUP_FILLERS 800
+static void test_case_duplicates_prefer_lowercase(const char *scratch) {
+    static const char d1[] = "textures/aaaa00000000000000000000000000bb.png";
+    static const char d2[] = "textures/bbbb00000000000000000000000000cc.png";
+    static const char d3[] = "textures/cccc00000000000000000000000000dd.png";
+    static const char d4[] = "textures/dddd00000000000000000000000000ee.png";
+    static const char d4_dir[] = "Textures/dddd00000000000000000000000000ee.png";
+    static const char df[] = "textures/eeee00000000000000000000000000ff.png";
+    char        u1[64], u2[64], u3[64], u4[64], uf[64];
+    char        mods[1024];
+    char        probe[1024];
+    char        log[1024];
+    const char *names[8 + CASE_DUP_FILLERS];
+    char      (*fillers)[32];
+    size_t      count = 0;
+    MdkrModRegistry reg;
+    int         zipped = -1, folder = -1, index;
+    int         folder_arm;
+    struct stat status;
+
+    upper_digest_name(u1, sizeof u1, d1);
+    upper_digest_name(u2, sizeof u2, d2);
+    upper_digest_name(u3, sizeof u3, d3);
+    upper_digest_name(u4, sizeof u4, d4);
+    upper_digest_name(uf, sizeof uf, df);
+    fillers = (char (*)[32])calloc(CASE_DUP_FILLERS, sizeof *fillers);
+    if (fillers == NULL) fatal("out of memory", "fillers");
+    for (index = 0; index < CASE_DUP_FILLERS; index++) {
+        snprintf(fillers[index], sizeof fillers[index], "other/%04d.bin", index);
+    }
+    names[count++] = u1;        /* d1: upper then lower, both before the grow */
+    names[count++] = d1;
+    names[count++] = d2;        /* d2: lower before the grow, upper after */
+    names[count++] = u3;        /* d3: upper before the grow, lower after */
+    names[count++] = u4;        /* d4: two spellings, neither lowercase */
+    names[count++] = d4_dir;
+    for (index = 0; index < CASE_DUP_FILLERS; index++) {
+        names[count++] = fillers[index];
+    }
+    names[count++] = u2;
+    names[count++] = d3;
+
+    path2(mods, sizeof mods, scratch, "casedup");
+    write_zip_names(mods, "dupzip.zip", "[pack]\nname=DupZip\npriority=20\n",
+                    names, count);
+    write_pack_file(mods, "dupfolder", "pack.ini",
+                    "[pack]\nname=DupFolder\npriority=10\n");
+    write_pack_file(mods, "dupfolder", uf, "U");
+    path3(probe, sizeof probe, mods, "dupfolder", df);
+    folder_arm = stat(probe, &status) != 0;
+    if (folder_arm) {
+        write_pack_file(mods, "dupfolder", df, "L");
+    } else {
+        printf("SKIP this file system ignores case, so a folder cannot hold "
+               "both spellings\n");
+    }
+
+    path2(log, sizeof log, scratch, "casedup.log");
+#ifndef _WIN32
+    expect(init_capturing_stderr(&reg, mods, log) == 0,
+           "case-duplicate fixture initialises");
+#else
+    expect(mdkr_mod_registry_init(&reg, mods) == 0,
+           "case-duplicate fixture initialises");
+#endif
+    for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
+        if (strcmp(reg.entries[index].manifest.name, "DupZip") == 0) zipped = index;
+        if (strcmp(reg.entries[index].manifest.name, "DupFolder") == 0) folder = index;
+    }
+    if (zipped < 0 || folder < 0) {
+        expect(0, "both case-duplicate packs are discovered");
+        mdkr_mod_registry_shutdown(&reg);
+        free(fillers);
+        return;
+    }
+    expect(reg.name_capacity > 1024u,
+           "the fillers made the name table grow mid-pack");
+    expect(only_spelling(&reg, d1, zipped) != NULL &&
+           strcmp(only_spelling(&reg, d1, zipped), d1) == 0,
+           "a zip holding UPPER then lower is read by the lowercase name");
+    expect(only_spelling(&reg, d2, zipped) != NULL &&
+           strcmp(only_spelling(&reg, d2, zipped), d2) == 0,
+           "and lower, then UPPER after a table grow, still by the lowercase");
+    expect(only_spelling(&reg, d3, zipped) != NULL &&
+           strcmp(only_spelling(&reg, d3, zipped), d3) == 0,
+           "and UPPER, then lower after a table grow, still by the lowercase");
+    expect(only_spelling(&reg, d4, zipped) != NULL &&
+           strcmp(only_spelling(&reg, d4, zipped), d4_dir) == 0,
+           "with no lowercase spelling, the first in byte order wins");
+    expect(mdkr_mod_registry_find_file(&reg, d1) == zipped &&
+           mdkr_mod_registry_find_file(&reg, u2) == zipped,
+           "the pack still answers for the digest in any case");
+    expect(reg.entries[zipped].textures_case_duplicates == 4,
+           "each duplicate set aside is counted against its pack");
+    if (folder_arm) {
+        expect(only_spelling(&reg, df, folder) != NULL &&
+               strcmp(only_spelling(&reg, df, folder), df) == 0 &&
+               reg.entries[folder].textures_case_duplicates == 1,
+               "a folder pack holding both is read by the lowercase name too");
+    }
+#ifndef _WIN32
+    expect(count_in_file(log, "differ only in case") ==
+               4 + (folder_arm ? 1 : 0),
+           "the scan prints one [MODS] note per duplicate");
+#else
+    printf("SKIP the scan's notes are not captured on Windows\n");
+#endif
+    mdkr_mod_registry_shutdown(&reg);
+
+    /* The same rule with no grow at all: a two-name zip, upper first. */
+    path2(mods, sizeof mods, scratch, "casedup-small");
+    names[0] = u1;
+    names[1] = d1;
+    write_zip_names(mods, "small.zip", "[pack]\nname=Small\n", names, 2);
+    expect(mdkr_mod_registry_init(&reg, mods) == 0 &&
+               mdkr_mod_registry_count(&reg) == 1,
+           "the small case-duplicate fixture initialises");
+    expect(only_spelling(&reg, d1, 0) != NULL &&
+           strcmp(only_spelling(&reg, d1, 0), d1) == 0 &&
+           reg.name_capacity == 1024u,
+           "and without a grow the lowercase name wins the same way");
+    mdkr_mod_registry_shutdown(&reg);
+    free(fillers);
+}
+
+/* 16. More spellings of one digest than the store used to ask for (T12d).
+ * Nine packs each spell textures/<digest>.png their own way; the index then
+ * holds nine slots under one key, inserted lowest priority first. The store
+ * asked for eight hits, so the ninth -- the highest-priority pack's -- was
+ * dropped without a word and a lower pack's picture was drawn instead. Hits
+ * now come back highest priority first, at most one per pack, so a caller
+ * asking for MDKR_MOD_MAX_PACKS never truncates and one asking for fewer
+ * keeps the packs that win. */
+static void test_name_hits_keep_the_winning_pack(const char *scratch) {
+    static const char lower[] = "textures/abcdefabcdefabcdefabcdefabcdefab.png";
+    char            mods[1024];
+    char            spellings[9][64];
+    MdkrModNameHit  hits[MDKR_MOD_MAX_PACKS];
+    MdkrModRegistry reg;
+    int             top = -1, index, count, ordered = 1;
+
+    path2(mods, sizeof mods, scratch, "manyspellings");
+    for (index = 0; index < 9; index++) {
+        char pack[16];
+        char manifest[64];
+        snprintf(pack, sizeof pack, "p%d", index);
+        snprintf(manifest, sizeof manifest, "[pack]\nname=P%d\npriority=%d\n",
+                 index, 10 * (index + 1));
+        /* Pack i upper-cases the i-th hex letter: nine distinct spellings. */
+        memcpy(spellings[index], lower, sizeof lower);
+        spellings[index][9 + index] =
+            (char)(spellings[index][9 + index] - 'a' + 'A');
+        write_pack_file(mods, pack, "pack.ini", manifest);
+        write_pack_file(mods, pack, spellings[index], "X");
+    }
+    expect(mdkr_mod_registry_init(&reg, mods) == 0 &&
+               mdkr_mod_registry_count(&reg) == 9,
+           "nine spelling packs are discovered");
+    for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
+        if (strcmp(reg.entries[index].manifest.name, "P8") == 0) top = index;
+    }
+    count = mdkr_mod_registry_name_hits(&reg, lower, hits, MDKR_MOD_MAX_PACKS);
+    expect(count == 9, "every pack's spelling is listed");
+    for (index = 1; index < count; index++) {
+        if (hits[index - 1].packs <= hits[index].packs) ordered = 0;
+    }
+    expect(top >= 0 && count > 0 &&
+           hits[0].packs == (UINT64_C(1) << top) &&
+           strcmp(hits[0].name, spellings[8]) == 0 && ordered,
+           "highest priority first");
+    count = mdkr_mod_registry_name_hits(&reg, lower, hits, 1);
+    expect(count == 1 && top >= 0 && hits[0].packs == (UINT64_C(1) << top) &&
+           strcmp(hits[0].name, spellings[8]) == 0,
+           "a caller asking for fewer keeps the winning pack, not the first "
+           "one indexed");
+    mdkr_mod_registry_shutdown(&reg);
+}
+
 #ifdef MDKR_FS_UTF8_TESTING
 /* fs_utf8.c's test seam: at 0 or more a collected listing stops with EIO once
  * it holds that many names, as a read error part-way through would. */
@@ -719,6 +1014,8 @@ int main(int argc, char **argv) {
     test_disabled_pack_never_wins(scratch);
     test_names_are_indexed_at_scan(scratch);
     test_digest_names_ignore_case(scratch);
+    test_case_duplicates_prefer_lowercase(scratch);
+    test_name_hits_keep_the_winning_pack(scratch);
     test_listing_failure_keeps_what_was_read(scratch);
     test_name_without_utf8_is_reported(scratch);
 

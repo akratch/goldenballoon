@@ -1511,9 +1511,11 @@ static void loader_enqueue(StoreSlot *slot, TexRequest *req) {
  * listed too, asked by the name as given. Owner thread; the spellings point
  * into the registry and are copied into the request. */
 static int slot_candidates(const char *relative, TexCandidate *out, int max) {
-    MdkrModNameHit hits[8];
-    const int      hit_count = mdkr_mod_registry_name_hits(s_registry, relative,
-                                                           hits, 8);
+    /* One hit per pack at most (mod_registry.h), so this never truncates:
+     * every pack that holds the file is a candidate, down to the last. */
+    MdkrModNameHit hits[MDKR_MOD_MAX_PACKS];
+    const int      hit_count = mdkr_mod_registry_name_hits(
+        s_registry, relative, hits, MDKR_MOD_MAX_PACKS);
     int            count = 0;
     int            pack;
 

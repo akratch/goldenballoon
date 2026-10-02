@@ -1405,6 +1405,155 @@ static void test_digest_names_ignore_case(MdkrModRegistry *registry) {
            "and so does a zip's TEXTURES/<UPPER>.Png");
 }
 
+/* ------------------------------------------------------------ T12d cases */
+
+/* One file of a zipped fixture: an 8x8 gradient whose blue is `blue`. */
+typedef struct ZipPng {
+    const char   *name;
+    unsigned char blue;
+} ZipPng;
+
+static void write_zip_pngs(const char *root, const char *name,
+                           const char *manifest, const ZipPng *files,
+                           size_t count) {
+    char           full[1024];
+    mz_zip_archive zip;
+    size_t         index;
+    int            ok;
+
+    path2(full, sizeof full, root, name);
+    make_parent_directories(full);
+    memset(&zip, 0, sizeof zip);
+    ok = mz_zip_writer_init_file(&zip, full, 0) &&
+         mz_zip_writer_add_mem(&zip, "pack.ini", manifest, strlen(manifest),
+                               MZ_DEFAULT_COMPRESSION);
+    for (index = 0; ok && index < count; index++) {
+        PngBuffer png;
+        build_rgba_png(&png, 8, pixel_gradient, files[index].blue);
+        ok = mz_zip_writer_add_mem(&zip, files[index].name, png.bytes,
+                                   png.length, MZ_DEFAULT_COMPRESSION);
+    }
+    if (!ok || !mz_zip_writer_finalize_archive(&zip)) {
+        mz_zip_writer_end(&zip);
+        fatal("cannot write the scratch archive", full);
+    }
+    mz_zip_writer_end(&zip);
+}
+
+/* A registry over `mods`, and the store bound to it with the worker. */
+static void bind_store(MdkrModRegistry *registry, const char *mods) {
+    if (mdkr_mod_registry_init(registry, mods) != 0) {
+        fatal("a scratch pack tree did not initialise", mods);
+    }
+    store_reinit(registry, MDKR_MOD_TEXTURE_LOADER_WORKER);
+}
+
+static void unbind_store(MdkrModRegistry *registry) {
+    mdkr_mod_texture_store_shutdown();
+    mdkr_mod_registry_shutdown(registry);
+}
+
+/* 18. One pack holding a digest twice, spelled differently only in case: the
+ * picture drawn is the lowercase file's, whichever order the pack lists them
+ * in (T12d). It used to be whichever spelling the index probed first. A
+ * folder can hold both only on a case-sensitive file system; elsewhere that
+ * arm prints a SKIP. */
+#define DIGEST_DUP_A "a6000000000000000000000000000001"
+#define DIGEST_DUP_B "a6000000000000000000000000000002"
+#define DIGEST_DUP_C "a6000000000000000000000000000003"
+static void test_case_duplicates_read_the_lowercase_file(const char *scratch) {
+    char            mods[1024];
+    char            upper_a[128], upper_b[128], upper_c[128];
+    char            lower_c[128], probe[1200];
+    ZipPng          files[4];
+    MdkrModRegistry registry;
+    MdkrModTexture  texture;
+    struct stat     status;
+    int             folder_arm;
+
+    path2(mods, sizeof mods, scratch, "casedup");
+    spell_upper(upper_a, sizeof upper_a, "textures", DIGEST_DUP_A, ".PNG");
+    spell_upper(upper_b, sizeof upper_b, "textures", DIGEST_DUP_B, ".PNG");
+    spell_upper(upper_c, sizeof upper_c, "textures", DIGEST_DUP_C, ".PNG");
+    snprintf(lower_c, sizeof lower_c, "textures/%s.png", DIGEST_DUP_C);
+    files[0].name = upper_a;                       files[0].blue = 0xA1u;
+    files[1].name = "textures/" DIGEST_DUP_A ".png"; files[1].blue = 0xA2u;
+    files[2].name = "textures/" DIGEST_DUP_B ".png"; files[2].blue = 0xA3u;
+    files[3].name = upper_b;                       files[3].blue = 0xA4u;
+    write_zip_pngs(mods, "dup.zip", "[pack]\nname=Dup\n", files, 4);
+    write_pack_text(mods, "dupfolder", "pack.ini", "[pack]\nname=DupFolder\n");
+    write_png_file(mods, "dupfolder", upper_c, 8, pixel_gradient, 0xA5u);
+    path3(probe, sizeof probe, mods, "dupfolder", lower_c);
+    folder_arm = stat(probe, &status) != 0;
+    if (folder_arm) {
+        write_png_file(mods, "dupfolder", lower_c, 8, pixel_gradient, 0xA6u);
+    } else {
+        printf("SKIP this file system ignores case, so a folder cannot hold "
+               "both spellings\n");
+    }
+
+    bind_store(&registry, mods);
+    expect(lookup_settled(DIGEST_DUP_A, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xA2u),
+           "a zip listing UPPER then lower draws the lowercase file");
+    expect(lookup_settled(DIGEST_DUP_B, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xA3u),
+           "and listing lower then UPPER, the lowercase file too");
+    if (folder_arm) {
+        expect(lookup_settled(DIGEST_DUP_C, &texture) == 1 &&
+               pixels_are_gradient(&texture, 0xA6u),
+               "a folder holding both draws the lowercase file");
+    }
+    unbind_store(&registry);
+}
+
+/* 19. Nine packs each spelling one digest their own way, the highest-priority
+ * pack last in the index. The store asked the index for eight spellings, so
+ * that pack was dropped and the next one down was drawn (T12d). Every holder
+ * is a candidate, highest first, down to the last: with the eight above it
+ * gone from disk after the scan, the lowest pack's file is still read. */
+#define DIGEST_SPELLED  "abcdefabcdefabcdefabcdefabcdefab"
+#define DIGEST_SPELLED2 "fedcbafedcbafedcbafedcbafedcbafe"
+static void test_every_spelling_pack_is_a_candidate(const char *scratch) {
+    char            mods[1024];
+    char            gone[9][1200];
+    MdkrModRegistry registry;
+    MdkrModTexture  texture;
+    int             index;
+    int             removed = 1;
+
+    path2(mods, sizeof mods, scratch, "spellings");
+    for (index = 0; index < 9; index++) {
+        char pack[16];
+        char manifest[64];
+        char relative[64];
+        snprintf(pack, sizeof pack, "p%d", index);
+        snprintf(manifest, sizeof manifest, "[pack]\nname=P%d\npriority=%d\n",
+                 index, 10 * (index + 1));
+        write_pack_text(mods, pack, "pack.ini", manifest);
+        /* Pack i upper-cases the i-th hex letter: nine distinct spellings. */
+        snprintf(relative, sizeof relative, "textures/%s.png", DIGEST_SPELLED);
+        relative[9 + index] = (char)(relative[9 + index] - 'a' + 'A');
+        write_png_file(mods, pack, relative, 8, pixel_gradient,
+                       (unsigned char)(0xB0 + index));
+        snprintf(relative, sizeof relative, "textures/%s.png",
+                 DIGEST_SPELLED2);
+        relative[9 + index] = (char)(relative[9 + index] - 'a' + 'A');
+        write_png_file(mods, pack, relative, 8, pixel_gradient,
+                       (unsigned char)(0xC0 + index));
+        path3(gone[index], sizeof gone[index], mods, pack, relative);
+    }
+    bind_store(&registry, mods);
+    expect(lookup_settled(DIGEST_SPELLED, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xB8u),
+           "the highest-priority of nine spellings is the one drawn");
+    for (index = 1; index < 9; index++) removed &= remove(gone[index]) == 0;
+    expect(removed && lookup_settled(DIGEST_SPELLED2, &texture) == 1 &&
+           pixels_are_gradient(&texture, 0xC0u),
+           "and with the eight above it gone, the ninth holder is still read");
+    unbind_store(&registry);
+}
+
 /* ------------------------------------------------------- the author dump */
 
 /* Reads a whole scratch file into `out`, returning its length, or -1 when the
@@ -1556,7 +1705,9 @@ int main(int argc, char **argv) {
         strlen(DIGEST_FLIGHT1) != 32 || strlen(DIGEST_FLIGHT2) != 32 ||
         strlen(DIGEST_FLIGHT3) != 32 || strlen(DIGEST_WTIMED) != 32 ||
         strlen(DIGEST_CASE_FOLDER) != 32 || strlen(DIGEST_CASE_ZIP) != 32 ||
-        strlen(DIGEST_BOMB) != 32) {
+        strlen(DIGEST_BOMB) != 32 || strlen(DIGEST_DUP_A) != 32 ||
+        strlen(DIGEST_DUP_B) != 32 || strlen(DIGEST_DUP_C) != 32 ||
+        strlen(DIGEST_SPELLED) != 32 || strlen(DIGEST_SPELLED2) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -1648,6 +1799,8 @@ int main(int argc, char **argv) {
     test_worker_timing(&registry);
     test_owner_and_worker_overlap(&registry);
     test_digest_names_ignore_case(&registry);
+    test_case_duplicates_read_the_lowercase_file(scratch);
+    test_every_spelling_pack_is_a_candidate(scratch);
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();

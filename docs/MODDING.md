@@ -160,8 +160,11 @@ Texture files live in `textures/` and are named by a **content digest** — 32
 lowercase hex characters — with a `.png` extension. The digest identifies the
 picture, so a pack works regardless of where the game happens to load that
 texture from. Upper and lower case both work, in the folder name, the digest
-and the extension, in a folder pack or a zip. A file under `textures/` with any
-other name is never used, and the log says so when the game starts.
+and the extension, in a folder pack or a zip. If one pack holds the same digest
+twice in different case, it uses the all-lowercase file (or, with none, the one
+that sorts first) and the log names both when the game starts. A file under
+`textures/` with any other name is never used, and the log says so when the
+game starts.
 
 Your PNG does **not** have to match the original's size. A 64×64 replacement for
 a 16×16 original works; the game addresses the same logical tile either way.
