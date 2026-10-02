@@ -128,12 +128,19 @@ vsync-throttle on one run and free-run on the next, depending on how the
 compositor treats the automation window. Read the printed baseline, or its
 absence, rather than assuming a run produced one.
 
-When every realtime attempt was refused for the first reason, or the console
-was locked around the realtime arms, the quality half cannot be judged on this
-host at all: the gate says so loudly and exits 77 (SKIPPED, named by
-tools/run_checks.py, a failure in a release run) instead of failing on the
-re-anchor counts a free-running loop produces. The synthetic arms and the
-realtime integrity assertions still have to pass first.
+The console session is read before the realtime arms and after every attempt.
+An attempt with no consumer counts as the HOST's doing only while the console
+is not observably unlocked (locked, no session, or unreadable); on an unlocked
+console the same signature is a failure ("no consumer on an unlocked console"),
+which is what an unthrottled, never-blocking regression looks like. When the
+console is locked before the arms, or every attempt of BOTH arms had no
+consumer while the console was not observably unlocked, the quality half
+cannot be judged on this host at all: the gate says so loudly and exits 77
+(SKIPPED, named by tools/run_checks.py, a failure in a release run) instead of
+failing on the re-anchor counts a free-running loop produces. Quality failures
+of any attempt that did pace are never excused, whatever the console did
+afterwards, and the synthetic arms and the realtime integrity assertions still
+have to pass first.
 
 Exit 0 = pass, 77 = skipped (host cannot be judged), anything else = fail.
 """
@@ -150,8 +157,9 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (ABORT_MARKERS, DEFAULT_BUILD_DIR, console_unavailable,
-                           find_fatal, parse_last, parse_rows, resolve_binary,
+from harness_utils import (ABORT_MARKERS, CONSOLE_UNAVAILABLE, CONSOLE_UNLOCKED,
+                           DEFAULT_BUILD_DIR, console_state, find_fatal,
+                           parse_last, parse_rows, resolve_binary,
                            tear_free_presentation)
 
 SKIP_EXIT = 77
@@ -354,6 +362,11 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
     run_dir = root / label
     save_dir = run_dir / "save"
     save_dir.mkdir(parents=True)
+    # This rebuilds the environment from scratch, so a suite task's pins do
+    # not survive. Name prefs, mods and characters here too: without
+    # MDKR_APP_PREFS_DIR the shell writes the owner's real preferences.
+    prefs_dir = run_dir / "prefs"
+    prefs_dir.mkdir()
     env = {key: value for key, value in os.environ.items()
            if not key.startswith(("MDKR", "GE007_"))}
     env.update(
@@ -373,6 +386,12 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, policy: str,
         MDKR_SAVE_DIR=str(save_dir),
         # Isolate the video config with the save (see check_door_blocks.py).
         MDKR_VIDEO_CONFIG_PATH=str(save_dir / "video.ini"),
+        MDKR_APP_PREFS_DIR=str(prefs_dir),
+        # Named, never created: the engine then finds no packs and no
+        # imported characters. The working directory is already private, but
+        # the variables are what the resolvers honour first.
+        MDKR_MODS_DIR=str(run_dir / "mods"),
+        MDKR_CUSTOM_CHARACTER_DIRECTORY=str(run_dir / "characters"),
         # A hidden native Metal window has no drawable by design, and this gate
         # is about images that actually reach a surface. Use the established
         # compositor-visible headless seam rather than confusing offscreen
@@ -477,6 +496,28 @@ def explain_no_display_session(result: Run) -> str | None:
                 "or a display that is off; an unlocked console with an active "
                 "display is required for this arm")
     return None
+
+
+# What one realtime attempt was, for the verdict (classify_attempt).
+ATTEMPT_PACED = "paced"            # a consumer: judge its distributions
+ATTEMPT_HOST = "host"              # no consumer, console not observably unlocked
+ATTEMPT_REFUSED = "refused"        # no valid measurement, and not the host's doing
+
+
+def classify_attempt(result: Run, console: tuple[str, str]) -> tuple[str, str | None]:
+    """(kind, cause) for one realtime attempt, given the console as read
+    right after it. Only a console that is not observably unlocked can excuse
+    an attempt that had no consumer; an unlocked one cannot."""
+    no_consumer = explain_no_display_session(result)
+    if no_consumer:
+        state, why = console
+        if state == CONSOLE_UNLOCKED:
+            return ATTEMPT_REFUSED, f"no consumer on an unlocked console: {no_consumer}"
+        return ATTEMPT_HOST, f"{no_consumer} ({why})"
+    unthrottled = explain_unthrottled_presentation(result)
+    if unthrottled:
+        return ATTEMPT_REFUSED, unthrottled
+    return ATTEMPT_PACED, None
 
 
 def explain_unthrottled_presentation(result: Run) -> str | None:
@@ -1170,14 +1211,18 @@ def main() -> int:
             notes.append(
                 f"{label}: margin re-derived against {switch_to_hz}Hz")
 
-            unjudgeable = None if args.skip_realtime else console_unavailable()
+            if not args.skip_realtime:
+                state, why = console_state()
+                if state == CONSOLE_UNAVAILABLE:
+                    unjudgeable = why
             if args.skip_realtime:
                 notes.append("realtime arm skipped by --skip-realtime")
             elif unjudgeable:
                 notes.append(f"realtime arms not run: {unjudgeable}")
             else:
                 cause = None
-                # Attempts refused because nothing consumed their frames.
+                # Attempts with no consumer while the console was not
+                # observably unlocked (classify_attempt).
                 host_refusals = 0
                 quality: list[str] = []
                 paced = 0
@@ -1207,10 +1252,9 @@ def main() -> int:
                     # Structural failures survive retries and cannot be
                     # excused by a missing paced baseline.
                     failures.extend(check_realtime_integrity(result))
-                    host_cause = explain_no_display_session(result)
-                    cause = host_cause or explain_unthrottled_presentation(result)
-                    if cause:
-                        host_refusals += host_cause is not None
+                    kind, cause = classify_attempt(result, console_state())
+                    if kind != ATTEMPT_PACED:
+                        host_refusals += kind == ATTEMPT_HOST
                         notes.append(f"{label}: no valid baseline — {cause}")
                         continue
                     # This session paced, so its distributions describe
@@ -1232,6 +1276,7 @@ def main() -> int:
                     # busy attempt does not survive being repeated.
                     failures.extend(quality)
                 strict_host_refused = paced == 0 and host_refusals == REALTIME_ATTEMPTS
+                strict_cause = cause
                 if paced == 0 and not strict_host_refused:
                     # A run that obtained no paced session measured NOTHING
                     # about presentation quality -- and this is the only arm
@@ -1251,7 +1296,7 @@ def main() -> int:
                         "attempts. The no-tearing and no-underrun assertions "
                         "still ran, but the quality distributions -- and the "
                         "only coverage the alpha-grid projection has anywhere "
-                        "-- were not measured")
+                        f"-- were not measured (last attempt: {strict_cause})")
                     if args.allow_no_baseline:
                         notes.append(message + " (allowed by "
                                      "--allow-no-baseline)")
@@ -1271,6 +1316,7 @@ def main() -> int:
                 # threshold there).
                 honest_paced = False
                 honest_host_refusals = 0
+                honest_cause = None
                 honest_quality: list[str] = []
                 for attempt in range(1, REALTIME_ATTEMPTS + 1):
                     label = "realtime-display-smoothing-quantum-honest"
@@ -1281,12 +1327,10 @@ def main() -> int:
                         REALTIME_TICKS, args.timeout, args.verbose,
                         realtime=True)
                     failures.extend(check_realtime_integrity(honest_result))
-                    honest_host = explain_no_display_session(honest_result)
-                    honest_cause = (
-                        honest_host
-                        or explain_unthrottled_presentation(honest_result))
-                    if honest_cause:
-                        honest_host_refusals += honest_host is not None
+                    honest_kind, honest_cause = classify_attempt(
+                        honest_result, console_state())
+                    if honest_kind != ATTEMPT_PACED:
+                        honest_host_refusals += honest_kind == ATTEMPT_HOST
                         notes.append(
                             f"{label}: no valid measurement — {honest_cause}")
                         continue
@@ -1315,29 +1359,40 @@ def main() -> int:
                     failures.extend(honest_quality)
                 honest_host_refused = (not honest_paced and
                                        honest_host_refusals == REALTIME_ATTEMPTS)
-                if not honest_paced and not honest_host_refused:
+                # Unjudgeable only when NEITHER arm had a consumer and the host
+                # is to blame for every attempt. One refused arm leaves the
+                # other's verdict, and its own NO BASELINE, standing.
+                host_refused = strict_host_refused and honest_host_refused
+                if paced == 0 and strict_host_refused and not host_refused:
+                    message = (
+                        f"realtime arm: NO BASELINE after {REALTIME_ATTEMPTS} "
+                        "attempts with no consumer, while the companion arm "
+                        f"obtained one (last attempt: {strict_cause})")
+                    if args.allow_no_baseline:
+                        notes.append(message + " (allowed by --allow-no-baseline)")
+                    else:
+                        failures.append(message)
+                if not honest_paced and not host_refused:
                     honest_message = (
                         "quantum-honest companion arm: NO PACED SESSION "
                         f"after {REALTIME_ATTEMPTS} attempts — the "
-                        "mode-matches-variance assertion could not run")
+                        "mode-matches-variance assertion could not run "
+                        f"(last attempt: {honest_cause})")
                     if args.allow_no_baseline:
                         notes.append(honest_message +
                                      " (allowed by --allow-no-baseline)")
                     else:
                         failures.append(honest_message)
-                # A console locked during the arms, or one whose every attempt
-                # was refused for want of a consumer, cannot judge quality:
-                # what it measured is a free-running loop. The integrity
-                # assertions above still count.
-                locked_after = console_unavailable()
-                if locked_after:
-                    unjudgeable = f"{locked_after} (read after the realtime arms)"
-                elif strict_host_refused or honest_host_refused:
-                    unjudgeable = ("no realtime attempt had a consumer for its "
-                                   "frames (see the notes)")
-                if unjudgeable:
-                    failures = [failure for failure in failures
-                                if failure not in quality + honest_quality]
+                # Nothing measured anything but a free-running loop: say so
+                # rather than judge it. Quality failures of attempts that DID
+                # pace were never excused above and stay in `failures`.
+                if host_refused:
+                    unjudgeable = ("no realtime attempt of either arm had a "
+                                   "consumer for its frames, and the console "
+                                   "was not observably unlocked (see the notes)")
+                state, why = console_state()
+                if state != CONSOLE_UNLOCKED:
+                    notes.append(f"console after the realtime arms: {why}")
         except (RuntimeError, OSError) as error:
             failures.append(str(error))
 

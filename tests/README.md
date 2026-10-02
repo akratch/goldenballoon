@@ -3460,14 +3460,24 @@ keeps handing out drawables and presents complete, but nothing consumes them,
 so the drawable acquire never blocks, no vblank reaches the pacer, and the
 companion arm used to fail on 10-98 slot re-anchors (T12c, console locked).
 The gate now reads the console session (`ioreg`: `CGSSessionScreenIsLocked`,
-`kCGSSessionOnConsoleKey`) before and after the realtime arms, and treats an
-attempt whose `[PRESENT-DISCIPLINE]` row shows the acquire never waiting
-(`blockp95us` inside the first 100 µs bin over at least 600 acquires; an
-unlocked 120 Hz panel measured 2200-2400) as one with no consumer. When the
-host cannot judge pacing it says so in a SKIPPED banner and exits 77, which
-`tools/run_checks.py` names and a release run counts as a failure; the synthetic
-arms and the realtime integrity assertions must still pass first.
-`pacing_quality_reporting` pins both detectors with the locked rows.
+`kCGSSessionOnConsoleKey`) before the realtime arms and after every attempt,
+and treats an attempt whose `[PRESENT-DISCIPLINE]` row shows the acquire never
+waiting (`blockp95us` inside the first 100 µs bin over at least 600 acquires;
+an unlocked 120 Hz panel measured 2200-2400) as one with no consumer. That is
+the host's doing only while the console is not observably unlocked (locked, no
+session, or unreadable); on an unlocked console it is a failure, "no consumer
+on an unlocked console", which is how an unthrottled never-blocking regression
+shows. The run is SKIPPED (banner, exit 77, named by `tools/run_checks.py`, a
+failure in a release run) only when the console is locked before the arms or
+when every attempt of both arms had no consumer while it was not observably
+unlocked. One refused arm leaves the other arm's verdict standing, quality
+failures of any attempt that paced are never excused, and the synthetic arms
+and the realtime integrity assertions must still pass first.
+`pacing_quality_reporting` pins both detectors with the locked rows and drives
+`main()`'s combined verdict through scripted attempts: one arm refused with the
+other failing its bounds fails, both refused on a locked console skips,
+never-blocking on an unlocked console fails, and a lock after a paced failure
+keeps the failure.
 
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing

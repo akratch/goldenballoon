@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 import check_pacing_quality as pacing
+import harness_utils
 
 
 def sample_run(label: str, anchors: int) -> pacing.Run:
@@ -181,7 +182,8 @@ class PacingReportingTests(unittest.TestCase):
                           if any(isinstance(node, ast.Call) and
                                  isinstance(node.func, ast.Name) and
                                  node.func.id in {"explain_no_display_session",
-                                                  "explain_unthrottled_presentation"}
+                                                  "explain_unthrottled_presentation",
+                                                  "classify_attempt"}
                                  for node in ast.walk(statement))]
             self.assertTrue(exemptions)
             for statement in exemptions:
@@ -233,6 +235,38 @@ class PacingReportingTests(unittest.TestCase):
         self.assertEqual(len(reports), 1)
         self.assertEqual([arg.id for arg in reports[0].args if isinstance(arg, ast.Name)],
                          ["failures", "baselines", "notes"])
+
+    def test_an_arm_isolates_prefs_mods_and_characters(self):
+        """run_arm drops every inherited MDKR* variable, so the pins a suite
+        task exported never reach the process. The arm has to set them itself,
+        under its private run directory, or the launch writes the owner's
+        preferences and can read a mods folder beside some other cwd."""
+        captured = {}
+
+        def stop(command, **kwargs):
+            captured["env"] = kwargs["env"]
+            raise OSError("stop before launch")
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            binary, rom = root / "mdkr64", root / "rom.z64"
+            binary.touch()
+            rom.touch()
+            with mock.patch.object(pacing.subprocess, "run", side_effect=stop):
+                with self.assertRaises(RuntimeError) as raised:
+                    pacing.run_arm(binary, rom, root, "realtime-display-smoothing",
+                                   "display", "interpolate", 10, 5, False,
+                                   realtime=True)
+            self.assertIn("process could not start", str(raised.exception))
+            env = captured["env"]
+            run_dir = root / "realtime-display-smoothing"
+            for name in ("MDKR_SAVE_DIR", "MDKR_VIDEO_CONFIG_PATH",
+                         "MDKR_APP_PREFS_DIR", "MDKR_MODS_DIR",
+                         "MDKR_CUSTOM_CHARACTER_DIRECTORY"):
+                self.assertIn(name, env)
+                self.assertTrue(Path(env[name]).is_relative_to(run_dir), name)
+            self.assertFalse((run_dir / "mods").exists())
+            self.assertFalse((run_dir / "characters").exists())
 
 
 # The rows a locked console produced (task T12c, 2026-10-02, console locked
@@ -287,6 +321,130 @@ class LockedConsoleTests(unittest.TestCase):
         self.assertIn("SKIPPED", out.getvalue())
         self.assertIn("the console is locked", out.getvalue())
         self.assertNotIn("PASS", out.getvalue())
+
+
+class RealtimeVerdictTests(unittest.TestCase):
+    """main()'s combined verdict over both realtime arms.
+
+    The process launches and the per-attempt measurements are scripted; the
+    arm loops, the attempt classification and the final verdict are main()'s
+    own. Each attempt is one of: "paced" (a consumer, inside its bounds),
+    "bounds" (a consumer, outside its bounds), "blocked-never" (the acquire
+    never waited), while the console reads as scripted for that attempt.
+    """
+
+    UNLOCKED = (harness_utils.CONSOLE_UNLOCKED, "console unlocked")
+    LOCKED = (harness_utils.CONSOLE_UNAVAILABLE, "the console is locked")
+
+    def run_main(self, strict, honest, consoles):
+        """strict/honest: one kind per attempt; consoles: the console state
+        read before the arms, after each attempt (strict then honest), and
+        after the arms."""
+        plan = {"realtime-display-smoothing": strict,
+                "realtime-display-smoothing-quantum-honest": honest}
+        console = iter(consoles)
+
+        def next_state():
+            return next(console)
+
+        def next_unavailable():  # the older single-answer reader
+            state, reason = next_state()
+            return reason if state == harness_utils.CONSOLE_UNAVAILABLE else None
+
+        def fake_run_arm(binary, rom, root, label, policy, smoothing, ticks,
+                         timeout, verbose, realtime=False, extra_env=None):
+            if not realtime:
+                kind = next(k for _, value, k in pacing.POLICIES if value == policy)
+                name = next(n for n, value, _ in pacing.POLICIES if value == policy)
+                smooth = next(n for n, value in pacing.SMOOTHINGS if value == smoothing)
+                arm = f"{'capped' if kind == pacing.KIND_CAPPED else name}/{smooth}/synth"
+                return replace(sample_run(label, 0), arm=arm)
+            base, _, retry = label.partition("-retry")
+            outcome = plan[base][int(retry) if retry else 0]
+            run = sample_run(label, 0)
+            row = LOCKED_DISCIPLINE if outcome == "blocked-never" else UNLOCKED_DISCIPLINE
+            return replace(run, output=run.output + row,
+                           summary={"slotanchors": 9 if outcome == "bounds" else 0})
+
+        def quality(result):
+            return ([f"{result.label}: outside the bounds"]
+                    if result.summary["slotanchors"] else [])
+
+        with tempfile.TemporaryDirectory() as temp:
+            binary, rom = Path(temp) / "mdkr64", Path(temp) / "rom.z64"
+            binary.touch()
+            rom.touch()
+            argv = ["check_pacing_quality.py", "--build", str(binary), "--rom", str(rom)]
+            output = io.StringIO()
+            with mock.patch.object(pacing.sys, "argv", argv), \
+                    mock.patch.object(pacing, "run_arm", side_effect=fake_run_arm), \
+                    mock.patch.object(pacing, "run_display_switch_arm",
+                                      return_value=(sample_run("switch", 0), 120)), \
+                    mock.patch.object(pacing, "check_plumbing", return_value=[]), \
+                    mock.patch.object(pacing, "check_display_change", return_value=[]), \
+                    mock.patch.object(pacing, "check_display_margin_change", return_value=[]), \
+                    mock.patch.object(pacing, "check_alpha_quantum_honest", return_value=[]), \
+                    mock.patch.object(pacing, "check_realtime_quality", side_effect=quality), \
+                    mock.patch.object(pacing, "check_slot_quality", side_effect=quality), \
+                    mock.patch.object(pacing, "console_state", next_state, create=True), \
+                    mock.patch.object(pacing, "console_unavailable", next_unavailable,
+                                      create=True), \
+                    contextlib.redirect_stdout(output):
+                code = pacing.main()
+        return code, output.getvalue()
+
+    def test_both_arms_paced_and_in_bounds_pass(self):
+        code, text = self.run_main(["paced"], ["paced"], [self.UNLOCKED] * 4)
+        self.assertEqual(code, 0, text)
+        self.assertIn("check_pacing_quality: PASS --", text)
+
+    def test_one_arm_refused_while_the_other_fails_its_bounds_is_a_failure(self):
+        # The reviewer's case: on an unlocked console the strict arm trips the
+        # never-blocked heuristic and the honest arm paces and fails.
+        code, text = self.run_main(["blocked-never"] * 3, ["bounds"] * 3,
+                                   [self.UNLOCKED] * 8)
+        self.assertEqual(code, 1, text)
+        self.assertIn("outside the bounds", text)
+        self.assertNotIn("SKIPPED", text)
+        # And when the strict arm's attempts saw a locked console.
+        code, text = self.run_main(["blocked-never"] * 3, ["bounds"] * 3,
+                                   [self.UNLOCKED] + [self.LOCKED] * 3 +
+                                   [self.UNLOCKED] * 4)
+        self.assertEqual(code, 1, text)
+        self.assertIn("outside the bounds", text)
+        self.assertNotIn("SKIPPED", text)
+
+    def test_both_arms_refused_on_a_locked_console_skip(self):
+        code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
+                                   [self.UNLOCKED] + [self.LOCKED] * 7)
+        self.assertEqual(code, pacing.SKIP_EXIT, text)
+        self.assertIn("SKIPPED", text)
+        self.assertNotIn("FAIL", text)
+
+    def test_never_blocking_on_an_unlocked_console_is_a_failure(self):
+        code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
+                                   [self.UNLOCKED] * 8)
+        self.assertEqual(code, 1, text)
+        self.assertIn("no consumer on an unlocked console", text)
+        self.assertNotIn("SKIPPED", text)
+
+    def test_never_blocking_with_an_unreadable_session_is_not_a_pass(self):
+        unknown = (harness_utils.CONSOLE_UNKNOWN, "ioreg unavailable")
+        code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
+                                   [self.UNLOCKED] + [unknown] * 7)
+        self.assertEqual(code, pacing.SKIP_EXIT, text)
+
+    def test_a_lock_after_a_paced_failure_keeps_the_failure(self):
+        code, text = self.run_main(["bounds", "blocked-never", "blocked-never"],
+                                   ["blocked-never"] * 3,
+                                   [self.UNLOCKED, self.UNLOCKED] + [self.LOCKED] * 6)
+        self.assertEqual(code, 1, text)
+        self.assertIn("realtime-display-smoothing: outside the bounds", text)
+        self.assertNotIn("SKIPPED", text)
+
+    def test_a_console_locked_before_the_arms_skips_them(self):
+        code, text = self.run_main([], [], [self.LOCKED])
+        self.assertEqual(code, pacing.SKIP_EXIT, text)
 
 
 if __name__ == "__main__":

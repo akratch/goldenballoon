@@ -372,18 +372,40 @@ def console_lock_reason(ioreg_root: str) -> str | None:
     return None
 
 
-def console_unavailable() -> str | None:
-    """On macOS, why frames shown on the console right now reach nobody (see
-    console_lock_reason); None when they can, off macOS, or when the session
-    cannot be read (a caller that must know reads ioreg itself)."""
+CONSOLE_UNLOCKED = "unlocked"
+CONSOLE_UNAVAILABLE = "unavailable"
+CONSOLE_UNKNOWN = "unknown"
+
+
+def console_state() -> tuple[str, str]:
+    """(state, why) for this Mac's console right now.
+
+    CONSOLE_UNLOCKED: a user session is on the console, unlocked.
+    CONSOLE_UNAVAILABLE: locked, or no user session (console_lock_reason).
+    CONSOLE_UNKNOWN: not macOS, or ioreg could not be read -- nothing is known
+    either way, so a caller must not treat it as unlocked.
+    """
     if sys.platform != "darwin":
-        return None
+        return CONSOLE_UNKNOWN, "not macOS"
     try:
         text = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True,
                               text=True, timeout=10, check=False).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return console_lock_reason(text) if text else None
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return CONSOLE_UNKNOWN, f"ioreg unavailable ({error})"
+    if not text:
+        return CONSOLE_UNKNOWN, "ioreg printed nothing"
+    reason = console_lock_reason(text)
+    if reason:
+        return CONSOLE_UNAVAILABLE, reason
+    return CONSOLE_UNLOCKED, "console unlocked"
+
+
+def console_unavailable() -> str | None:
+    """On macOS, why frames shown on the console right now reach nobody (see
+    console_lock_reason); None when they can, off macOS, or when the session
+    cannot be read (console_state tells those apart)."""
+    state, reason = console_state()
+    return reason if state == CONSOLE_UNAVAILABLE else None
 
 
 # --------------------------------------------------------------------------- #
