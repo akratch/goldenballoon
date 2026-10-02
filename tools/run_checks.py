@@ -675,7 +675,8 @@ CHECKS = (
           "retail [SIMHASH] identity with the previous published release on AI, "
           "boss and challenge-arena routes (US and PAL), a legacy-RNG control, "
           "and that release's Time Trial record and ghost read back unchanged",
-          # Measured 10m20s alone under the runner's background scheduling.
+          # Measured 12m23s alone under the runner's background scheduling
+          # (10m20s before the 1.8 PAL routes).
           timeout=3600),
     Check("sim_hash_artifact", "check_sim_hash_artifact.py", "release",
           "on-disk per-tick [SIMHASH] artifact mode mirrors the stdout stream "

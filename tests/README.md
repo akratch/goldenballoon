@@ -3192,15 +3192,20 @@ instead of reading defaults past the retail asset), `save_records` (all four
 progress and record codecs use the retail save inventory) and `pulse_material`
 (see below). The rest are token
 checks of the essential guard inside the function that needs it, in the code
-the native build compiles: whitespace, line breaks, comments and braces do not
-matter, nothing is counted, and an `ordered` guard must come before the read it
-protects. The controls delete each guard's tokens, reverse each order and plant
-each forbidden form (every one must fail), and rewrite every guarded file with a
-comment and a line break between all tokens (every guard must still pass).
-Deleting the empty-batch skip in `tracks.c`, caching a failed object-header
-load, reading an object-map reference before resolving it, or sizing the
-redirected level-header load from the unchecked span each turns the gate red;
-rewording a guard's comment or bracing its body does not.
+the native build compiles (`#if 0` code dropped, `#if 1` code kept, as well as
+the `NATIVE_PORT` branches): whitespace, line breaks, comments and braces do not
+matter, nothing is counted, an `ordered` guard must come before the read it
+protects, and an `each` guard's check must come before every one of its reads
+(both `level_load` header loads, initial and redirected, need their own span
+check). The controls delete each guard's tokens (each occurrence of an `each`
+check in turn), reverse each order and plant each forbidden form (every one must
+fail), disable the redirected span check with `#if 0` (must fail) and `#if 1`
+(must pass), and rewrite every guarded file with a comment and a line break
+between all tokens (every guard must still pass). Deleting the empty-batch skip
+in `tracks.c`, caching a failed object-header load, reading an object-map
+reference before resolving it, deleting or compiling out the redirected
+level-header load's span check, or sizing it from the unchecked span each turns
+the gate red; rewording a guard's comment or bracing its body does not.
 
 ## Two ways a gate lies — read this before adding a check or a diagnostic
 

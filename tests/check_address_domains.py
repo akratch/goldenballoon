@@ -52,6 +52,10 @@ def native_condition(kind: str, expression: str) -> tuple[bool, bool]:
     if kind == "ifndef" and expression == "NATIVE_PORT":
         return True, False
     if kind in {"if", "elif"}:
+        # A literal is decided: `#if 0` code is never compiled, and a guard
+        # disabled with it must read as absent, not as present.
+        if expression in {"0", "1"}:
+            return True, expression == "1"
         if expression in {"defined(NATIVE_PORT)", "definedNATIVE_PORT"}:
             return True, True
         if expression in {

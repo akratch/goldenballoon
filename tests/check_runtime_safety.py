@@ -15,14 +15,19 @@ witness. Two kinds of check:
   Each required fragment is removed in memory as a positive control.
 * GUARDS (added in 1.8): token checks of the essential guard in the function
   that needs it, in the code the native build compiles (``#ifdef NATIVE_PORT``
-  branches taken, their ``#else`` dropped). Whitespace, line breaks, comments
-  and braces do not matter, ``$ID`` stands for any one identifier, and
-  nothing is counted: a guard is present in its function or not. ``ordered`` guards
-  must first appear in the order given (a check that runs after the read it
-  protects is no check). The positive controls delete each required token run,
-  reverse each order and plant each forbidden run, and every one must fail; a
-  reflow control rewrites every guarded file with a comment and a line break
-  between all tokens, and every guard must still pass.
+  branches taken, their ``#else`` dropped, ``#if 0`` code dropped and ``#if 1``
+  code kept). Whitespace, line breaks, comments and braces do not matter,
+  ``$ID`` stands for any one identifier, and nothing is counted: a guard is
+  present in its function or not. ``ordered`` guards must first appear in the
+  order given (a check that runs after the read it protects is no check), and
+  an ``each`` guard's first run must come before EVERY occurrence of its second
+  (each read has its own check, not one check for the function). The positive
+  controls delete each required token run (each occurrence of an ``each``
+  check in turn), reverse each order and plant each forbidden run, and every
+  one must fail; a dead-code control disables one guard with ``#if 0`` (must
+  fail) and with ``#if 1`` (must pass); a reflow control rewrites every guarded
+  file with a comment and a line break between all tokens, and every guard
+  must still pass.
 """
 
 from __future__ import annotations
@@ -181,6 +186,8 @@ class Guard:
     require: tuple[str, ...]
     forbid: tuple[str, ...] = ()
     ordered: bool = False
+    # require[0] must come before every occurrence of require[1].
+    each: bool = False
     why: str = ""
 
 
@@ -212,12 +219,16 @@ GUARDS = (
           why="a level name is selected within its own entry"),
     Guard("game/src/game.c", "level_load",
           ("level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId)",
-           "(s32)gCurrentLevelHeader->weatherVelX * 256",
+           "asset_load(ASSET_LEVEL_HEADERS,"),
+          forbid=("gTempAssetTable[levelId + 1] - offset",),
+          each=True,
+          why="every header load, initial and redirected, has its own span check "
+              "and none sizes itself unchecked"),
+    Guard("game/src/game.c", "level_load",
+          ("(s32)gCurrentLevelHeader->weatherVelX * 256",
            "(s32)gCurrentLevelHeader->weatherVelY * 256",
            "(s32)gCurrentLevelHeader->weatherVelZ * 256"),
-          forbid=("gTempAssetTable[levelId + 1] - offset",),
-          why="no header load (initial or redirected) sizes itself unchecked; "
-              "weather velocities widen before scaling"),
+          why="weather velocities widen before scaling"),
     Guard("game/src/tracks.c", "render_level_segment",
           ("if (numberVertices <= 0 || numberTriangles <= 0) continue;", "gSPVertexDKR("),
           ordered=True,
@@ -248,7 +259,8 @@ GUARDS = (
           ordered=True,
           why="a failed header load returns before it can be cached"),
     Guard("game/src/objects.c", "mdkr_objmap_swap_bodies",
-          ("if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;", "while ("),
+          ("if (!mdkr_objmap_validate_bodies(entries, totalSize)) return FALSE;",
+           "mdkr_objmap_swap_entry_body("),
           ordered=True,
           why="the whole object map is validated before any body is swapped"),
     Guard("game/src/objects.c", "track_spawn_objects",
@@ -394,6 +406,17 @@ def guard_failures(guard: Guard, body: list[str] | None) -> list[str]:
             failures.append(f"{label}: missing guard {snippet!r} ({guard.why})")
     if guard.ordered and all(p >= 0 for p in positions) and positions != sorted(positions):
         failures.append(f"{label}: guard out of order, need {list(guard.require)!r} ({guard.why})")
+    if guard.each and all(p >= 0 for p in positions):
+        check, read = pattern(guard.require[0]), pattern(guard.require[1])
+        start, at, number = 0, find_run(body, read), 1
+        while at >= 0:
+            found = find_run(body, check, start)
+            if found < 0 or found > at:
+                failures.append(f"{label}: {guard.require[1]!r} #{number} has no "
+                                f"{guard.require[0]!r} of its own before it ({guard.why})")
+                break
+            start = at + len(read)
+            at, number = find_run(body, read, start), number + 1
     for snippet in guard.forbid:
         if find_run(body, pattern(snippet)) >= 0:
             failures.append(f"{label}: unguarded form present {snippet!r} ({guard.why})")
@@ -436,6 +459,16 @@ def run_guard_controls(sources: dict[str, str]) -> list[str]:
                 moved = body[:at] + body[at + len(first):] + first
                 if not guard_failures(guard, moved):
                     failures.append(f"control: {guard.path}:{guard.function} passed out of order")
+        if guard.each:
+            check = pattern(guard.require[0])
+            at = find_run(body, check)
+            occurrence = 1
+            while at >= 0:
+                if not guard_failures(guard, body[:at] + body[at + len(check):]):
+                    failures.append(f"control: {guard.path}:{guard.function} passed "
+                                    f"without check #{occurrence} of {guard.require[0]!r}")
+                at = find_run(body, check, at + len(check))
+                occurrence += 1
         for snippet in guard.forbid:
             if not guard_failures(guard, body + pattern(snippet)):
                 failures.append(f"control: {guard.path}:{guard.function} passed with {snippet!r}")
@@ -445,6 +478,31 @@ def run_guard_controls(sources: dict[str, str]) -> list[str]:
         reflowed[path] = reflow(sources[path])
     for failure in validate_guards(guard_bodies(reflowed)):
         failures.append(f"reflow control: {failure}")
+    failures.extend(dead_code_controls(sources))
+    return failures
+
+
+# The redirected level-header load's own span check, on its own line.
+DEAD_CODE_LINE = "size = level_header_size_checked(gTempAssetTable, gNumberOfLevelHeaders, levelId);"
+
+
+def dead_code_controls(sources: dict[str, str]) -> list[str]:
+    """A guard left in the file but compiled out must read as missing."""
+
+    text = sources["game/src/game.c"]
+    lines = text.split("\n")
+    where = [index for index, line in enumerate(lines) if line.strip() == DEAD_CODE_LINE]
+    if len(where) < 2:
+        return [f"dead-code control: expected the initial and redirected "
+                f"{DEAD_CODE_LINE!r} in game.c, found {len(where)}"]
+    failures: list[str] = []
+    for condition, must_fail in (("0", True), ("1", False)):
+        mutated = list(lines)
+        mutated[where[-1]:where[-1] + 1] = [f"#if {condition}", lines[where[-1]], "#endif"]
+        found = validate_guards(guard_bodies({**sources, "game/src/game.c": "\n".join(mutated)}))
+        if bool(found) != must_fail:
+            failures.append(f"dead-code control: the redirected span check under "
+                            f"#if {condition} {'passed' if must_fail else 'failed'}: {found}")
     return failures
 
 
