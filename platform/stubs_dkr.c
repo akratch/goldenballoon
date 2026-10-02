@@ -1454,7 +1454,14 @@ static int eeprom_ensure_directory(void) {
         return 0;
     }
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    mdkr_path_query_utf8(s_eepromDir, &exists, NULL, &is_directory);
+    /* fs_utf8.h: a missing folder answers 0 with exists cleared and is
+     * created below; a failed query is a real error, as stat()'s non-ENOENT
+     * failures are on POSIX. */
+    if (mdkr_path_query_utf8(s_eepromDir, &exists, NULL, &is_directory) != 0) {
+        fprintf(stderr, "[SAVE] could not create %s: %s\n", s_eepromDir,
+                strerror(dkr_host_errno()));
+        return 0;
+    }
     if (exists) {
         if (is_directory) return 1;
         fprintf(stderr, "[SAVE] %s exists but is not a directory\n",
@@ -2163,8 +2170,8 @@ static void virtual_pak_quarantine(int channel) {
         }
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
         exists = 0;
-        mdkr_path_query_utf8(bad_path, &exists, NULL, NULL);
-        if (!exists) {
+        if (mdkr_path_query_utf8(bad_path, &exists, NULL, NULL) == 0 &&
+            !exists) {
 #else
         if (stat(bad_path, &status) != 0 && dkr_host_errno() == ENOENT) {
 #endif

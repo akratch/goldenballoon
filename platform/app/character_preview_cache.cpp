@@ -96,11 +96,11 @@ bool removeExactPath(const std::string &path) {
     int exists = 0;
     int regular = 0;
     int directory = 0;
-    errno = 0;
     const int query = mdkr_path_query_utf8(
         path.c_str(), &exists, &regular, &directory);
     if (!exists) {
-        return query == 0 || errno == ENOENT || errno == ENOTDIR;
+        /* Missing is already removed; a failed query proves nothing. */
+        return query == 0;
     }
     if (!regular || directory || link != 0) {
         return false;
@@ -269,11 +269,11 @@ bool removeAll(const std::string &charactersDirectory) {
     std::string directory;
     if (!cacheDirectoryPath(charactersDirectory, directory)) return false;
     int exists = 0;
-    errno = 0;
     const int query = mdkr_path_query_utf8(
         directory.c_str(), &exists, nullptr, nullptr);
     if (!exists) {
-        return query == 0 || errno == ENOENT || errno == ENOTDIR;
+        /* Missing is already removed; a failed query proves nothing. */
+        return query == 0;
     }
     if (!ordinaryDirectory(directory)) return false;
     std::error_code error;

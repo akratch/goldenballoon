@@ -38,9 +38,11 @@ static void require(int condition, const char *message) {
     }
 }
 
+/* Absent means the query answered "missing"; a query that failed proves
+ * nothing either way (fs_utf8.h). */
 static int path_absent(const char *path) {
     int exists = 1;
-    return mdkr_path_query_utf8(path, &exists, NULL, NULL) != 0 || !exists;
+    return mdkr_path_query_utf8(path, &exists, NULL, NULL) == 0 && !exists;
 }
 
 static int move_to_directory(const char *source, const char *directory,
@@ -1409,10 +1411,24 @@ int main(int argc, char **argv) {
     }
     mdkr_modern_character_registry_shutdown(&registry);
 
+    {
+        int install_exists = 1;
+        require(mdkr_path_query_utf8(argv[5], &install_exists, NULL, NULL) == 0 &&
+                    !install_exists,
+                "the character install folder does not exist before the first import");
+    }
     require(!mdkr_modern_character_install_portable(
                 argv[3], argv[5], &install_result) &&
                 install_result.needs_compiler,
             "native importer identifies a valid source-only package without publishing it");
+    {
+        int install_exists = 0;
+        int install_is_directory = 0;
+        require(mdkr_path_query_utf8(argv[5], &install_exists, NULL,
+                                     &install_is_directory) == 0 &&
+                    install_exists && install_is_directory,
+                "the first import created the missing character install folder");
+    }
     require(snprintf(import_lock, sizeof(import_lock),
                      "%s/.character-import.lock", argv[5]) > 0,
             "construct native import lock path");

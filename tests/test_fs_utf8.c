@@ -10,6 +10,7 @@
 #include <wchar.h>
 #include <windows.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -278,6 +279,99 @@ static void test_path_primitives(const char *root) {
            "remove primitive fixtures");
 }
 
+/* mdkr_path_query_utf8 has one contract on every platform (fs_utf8.h): a
+ * missing path answers 0 with every output cleared, and -1 is a real error.
+ * Callers create a missing save or character folder on the first answer and
+ * report the second, so a platform that answered "missing" with -1 (POSIX did)
+ * or a real error with 0 (Windows did) broke whichever callers were written
+ * against the other one. */
+static void test_query_contract(const char *root) {
+    char folder[1024], file[1024], missing[1024];
+    char missing_parent[1100], below_file[1100];
+    int exists, regular, directory;
+
+    join(folder, sizeof folder, root, "query-folder");
+    join(file, sizeof file, root, "query-file.bin");
+    join(missing, sizeof missing, root, "query-missing");
+    join(missing_parent, sizeof missing_parent, missing, "child.bin");
+    join(below_file, sizeof below_file, file, "child.bin");
+    expect(mdkr_mkdir_utf8(folder) == 0 && write_bytes(file, "file"),
+           "create the query fixtures");
+
+    exists = regular = directory = 7;
+    expect(mdkr_path_query_utf8(file, &exists, &regular, &directory) == 0 &&
+               exists == 1 && regular == 1 && directory == 0,
+           "query reports an existing file");
+    exists = regular = directory = 7;
+    expect(mdkr_path_query_utf8(folder, &exists, &regular, &directory) == 0 &&
+               exists == 1 && regular == 0 && directory == 1,
+           "query reports an existing folder");
+    exists = regular = directory = 7;
+    expect(mdkr_path_query_utf8(missing, &exists, &regular, &directory) == 0 &&
+               exists == 0 && regular == 0 && directory == 0,
+           "a missing name answers 0 with exists cleared, not an error");
+    exists = regular = directory = 7;
+    expect(mdkr_path_query_utf8(missing_parent, &exists, &regular,
+                                &directory) == 0 &&
+               exists == 0 && regular == 0 && directory == 0,
+           "a name whose folder is missing is missing, not an error");
+    exists = regular = directory = 7;
+    expect(mdkr_path_query_utf8(below_file, &exists, &regular, &directory) == 0 &&
+               exists == 0 && regular == 0 && directory == 0,
+           "a name below a file is missing, not an error");
+    expect(mdkr_path_query_utf8(missing, NULL, NULL, NULL) == 0,
+           "a missing name answers 0 with every output NULL");
+
+    exists = regular = directory = 7;
+    errno = 0;
+    expect(mdkr_path_query_utf8(NULL, &exists, &regular, &directory) == -1 &&
+               errno == EINVAL && exists == 0 && regular == 0 && directory == 0,
+           "no path at all is an error, with every output cleared");
+    exists = 7;
+    errno = 0;
+    expect(mdkr_path_query_utf8("", &exists, NULL, NULL) == -1 &&
+               errno == EINVAL && exists == 0,
+           "an empty path is an error, not a missing one");
+#ifdef _WIN32
+    {
+        /* '?' is not a legal character in a Windows file name, so the file
+         * system refuses the name itself (ERROR_INVALID_NAME). */
+        char invalid[1100];
+        join(invalid, sizeof invalid, root, "bad?name.bin");
+        exists = regular = directory = 7;
+        errno = 0;
+        expect(mdkr_path_query_utf8(invalid, &exists, &regular, &directory) == -1 &&
+                   errno == EINVAL && exists == 0 && regular == 0 && directory == 0,
+               "a name Windows refuses is an error, not a missing path");
+    }
+#else
+    {
+        char locked[1024], inside[1100];
+        join(locked, sizeof locked, root, "query-locked");
+        join(inside, sizeof inside, locked, "inside.bin");
+        expect(mdkr_mkdir_utf8(locked) == 0 && write_bytes(inside, "inside"),
+               "create the permission fixture");
+        expect(chmod(locked, 0) == 0, "deny search permission on the fixture folder");
+        if (geteuid() == 0) {
+            printf("SKIP: root searches a folder whatever its permissions\n");
+        } else {
+            exists = regular = directory = 7;
+            errno = 0;
+            expect(mdkr_path_query_utf8(inside, &exists, &regular, &directory) == -1 &&
+                       errno == EACCES && exists == 0 && regular == 0 &&
+                       directory == 0,
+                   "a name in a folder the caller may not search is an error, "
+                   "not a missing path");
+        }
+        expect(chmod(locked, 0700) == 0 && mdkr_remove_utf8(inside) == 0 &&
+                   mdkr_rmdir_utf8(locked) == 0,
+               "remove the permission fixture");
+    }
+#endif
+    expect(mdkr_remove_utf8(file) == 0 && mdkr_rmdir_utf8(folder) == 0,
+           "remove the query fixtures");
+}
+
 /* A name with no UTF-8 spelling -- on Windows a name that is not valid UTF-16
  * (an unpaired surrogate), elsewhere one that is not valid UTF-8 -- is listed
  * as MDKR_PATH_BAD_NAME, never skipped, so a caller copying a folder can
@@ -497,6 +591,7 @@ int main(void) {
     join(primitives, sizeof primitives, root, "primitives");
     expect(mdkr_mkdir_utf8(primitives) == 0, "create the primitive fixture root");
     test_path_primitives(primitives);
+    test_query_contract(primitives);
     test_names_without_utf8(primitives);
     expect(mdkr_rmdir_utf8(primitives) == 0, "remove the primitive fixture root");
 

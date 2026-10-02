@@ -132,6 +132,36 @@ int main(void) {
         }
     }
 
+    /* A save path that cannot be a folder is a real error: the store must
+     * refuse it rather than take the path for a folder still to be created,
+     * and must leave whatever holds the name untouched. */
+    {
+        char blocked[1200];
+        char blocked_text[8] = {0};
+        FILE *holder;
+        (void)snprintf(blocked, sizeof(blocked), "%s/save-held-by-a-file", root);
+        holder = mdkr_fopen_utf8(blocked, "wb");
+        if (holder == NULL || fwrite("keep", 1, 4, holder) != 4 ||
+            fclose(holder) != 0 ||
+            mdkr_test_env_set("MDKR_SAVE_DIR", blocked, 1) != 0) {
+            fprintf(stderr, "FAIL: could not stage a save path held by a file\n");
+            failed = 1;
+        } else {
+            if (taj_mod_state_store(&expected, storage) == 1) {
+                fprintf(stderr, "FAIL: a save path held by a file was accepted\n");
+                failed = 1;
+            }
+            holder = mdkr_fopen_utf8(blocked, "rb");
+            if (holder == NULL || fread(blocked_text, 1, 4, holder) != 4 ||
+                strcmp(blocked_text, "keep") != 0) {
+                fprintf(stderr, "FAIL: a refused save changed the file holding its path\n");
+                failed = 1;
+            }
+            if (holder != NULL) (void)fclose(holder);
+        }
+        (void)mdkr_remove_utf8(blocked);
+    }
+
     (void)mdkr_test_env_unset("MDKR_SAVE_DIR");
     (void)mdkr_remove_utf8(temporary);
     (void)snprintf(temporary, sizeof(temporary), "%s/taj_mod_state.ini.lock", save);

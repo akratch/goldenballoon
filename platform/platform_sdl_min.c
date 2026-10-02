@@ -1885,11 +1885,10 @@ static int platform_frame_capture_request(
                !suffix) {
         message = "the Workshop capture path must be a bounded PNG path";
     } else {
-        /* POSIX reports a missing path as a failed stat while Windows reports
-         * a successful query with exists=0. Missing is precisely what the
-         * exclusive writer requires, so only a positively observed entry is
-         * a refusal here. The writer remains final authority for permissions,
-         * parent availability, and races. */
+        /* Missing is precisely what the exclusive writer requires, so only a
+         * positively observed entry is a refusal here; a query that fails
+         * (fs_utf8.h) is left to the writer, which remains final authority
+         * for permissions, parent availability, and races. */
         (void)mdkr_path_query_utf8(png_path, &exists, NULL, NULL);
         if (exists) {
             message = "the Workshop capture path already exists";

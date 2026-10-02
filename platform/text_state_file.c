@@ -140,12 +140,19 @@ static int text_state_open_unique_temp(const char *path, char **temporary,
     return 0;
 }
 
+/* A missing save folder is created here (fs_utf8.h: the query answers 0 with
+ * exists cleared). A query that fails is a real error and is reported, never
+ * taken for a folder still to be created. */
 static int text_state_ensure_directory(const char *directory) {
     int exists = 0;
     int is_directory = 0;
 
-    if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) == 0) {
-        return exists && is_directory;
+    if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) != 0) {
+        return 0;
+    }
+    if (exists) {
+        if (!is_directory) errno = ENOTDIR;
+        return is_directory;
     }
     if (mdkr_mkdir_utf8(directory) != 0 && errno != EEXIST) {
         return 0;

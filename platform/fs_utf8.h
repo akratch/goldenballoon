@@ -29,7 +29,25 @@ int mdkr_rmdir_utf8(const char *path);
 int mdkr_move_utf8(const char *from, const char *to,
                    int replace, int write_through);
 
-/** Query without opening. Any output pointer may be NULL. */
+/** Query `path` without opening it. Any output pointer may be NULL; every
+ * output is cleared first. POSIX follows a final link (so a dangling link is
+ * missing); Windows answers for the entry itself.
+ *
+ * One contract on every platform:
+ *   - 0 with *exists = 1: the path exists, and *is_regular / *is_directory
+ *     say what it is.
+ *   - 0 with *exists = 0: the path is MISSING. The name, or a folder above
+ *     it, does not exist, or a folder above it is a file: ENOENT or ENOTDIR
+ *     on POSIX; ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_DIRECTORY
+ *     or ERROR_INVALID_DRIVE on Windows. A caller that needs the path
+ *     creates it.
+ *   - -1 with errno set: a REAL ERROR. Permission denied, a name the file
+ *     system refuses, a NULL or empty path, an I/O failure. The path may
+ *     exist, so a caller reports the failure and never creates anything.
+ *
+ * (Before 1.8, POSIX answered a missing path with -1 and Windows answered
+ * every failure with 0, so a caller written against one platform broke on
+ * the other: a missing save folder was never created on Windows.) */
 int mdkr_path_query_utf8(const char *path, int *exists,
                          int *is_regular, int *is_directory);
 

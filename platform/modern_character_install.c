@@ -193,30 +193,29 @@ static int path_join(char *output, size_t capacity,
     return written >= 0 && (size_t)written < capacity;
 }
 
-/* Windows reports a missing path as a successful query with exists=0; POSIX
- * reports ENOENT. Normalize that platform detail for lifecycle state checks. */
+/* A lifecycle state check: 1 with *exists answered (a missing path answers 0
+ * with exists cleared on every platform, fs_utf8.h), 0 on a real error. */
 static int query_path_state(const char *path, int *exists, int *regular) {
-    int result;
-    errno = 0;
-    result = mdkr_path_query_utf8(path, exists, regular, NULL);
-    if (result == 0) return 1;
-    if (errno == ENOENT) {
-        if (exists != NULL) *exists = 0;
-        if (regular != NULL) *regular = 0;
-        return 1;
-    }
-    return 0;
+    return mdkr_path_query_utf8(path, exists, regular, NULL) == 0;
 }
 
+/* The character folder, created when missing. A failed query is a real
+ * error, never a folder still to be created; whatever ends up at the path
+ * must be an ordinary folder, not a link. */
 static int ensure_directory(const char *directory) {
     int exists = 0;
     int is_directory = 0;
-    if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) == 0) {
-        return exists && is_directory &&
-               mdkr_path_is_link_or_reparse_utf8(directory) == 0;
+    if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) != 0) {
+        return 0;
     }
-    if (mdkr_mkdir_utf8(directory) != 0) return 0;
-    return mdkr_path_is_link_or_reparse_utf8(directory) == 0;
+    if (!exists) {
+        if (mdkr_mkdir_utf8(directory) != 0 && errno != EEXIST) return 0;
+        if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) != 0) {
+            return 0;
+        }
+    }
+    return exists && is_directory &&
+           mdkr_path_is_link_or_reparse_utf8(directory) == 0;
 }
 
 static int open_stage_mode(const char *destination, char *stage,
@@ -294,9 +293,8 @@ static int copy_source_if_absent(FILE *input, const char *destination,
     unsigned char buffer[64u * 1024u];
     size_t count;
     int okay = 1;
-    if (mdkr_path_query_utf8(destination, &exists, NULL, NULL) == 0 && exists) {
-        return stored_file_matches(destination, expected_hash);
-    }
+    if (mdkr_path_query_utf8(destination, &exists, NULL, NULL) != 0) return 0;
+    if (exists) return stored_file_matches(destination, expected_hash);
     if (input == NULL) return 0;
     clearerr(input);
     if (fseek(input, 0, SEEK_SET) != 0 ||

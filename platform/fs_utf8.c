@@ -367,17 +367,33 @@ int mdkr_move_utf8(const char *from, const char *to,
     return result;
 }
 
+/* The failures that mean nothing is there (fs_utf8.h): the name or a folder
+ * above it is absent, a folder above it is a file (NTFS answers that with
+ * ERROR_PATH_NOT_FOUND or ERROR_DIRECTORY), or its drive does not exist --
+ * POSIX's ENOENT and ENOTDIR. Everything else is a real error. */
+static int windows_error_means_missing(DWORD error) {
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ||
+           error == ERROR_DIRECTORY || error == ERROR_INVALID_DRIVE;
+}
+
 int mdkr_path_query_utf8(const char *path, int *exists,
                          int *is_regular, int *is_directory) {
-    wchar_t *wide = utf8_to_extended_path(path);
+    wchar_t *wide;
     DWORD attributes;
     if (exists) *exists = 0;
     if (is_regular) *is_regular = 0;
     if (is_directory) *is_directory = 0;
+    wide = utf8_to_extended_path(path);
     if (wide == NULL) return -1;
     attributes = GetFileAttributesW(wide);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        free(wide);
+        if (windows_error_means_missing(error)) return 0;
+        fail_windows(error);
+        return -1;
+    }
     free(wide);
-    if (attributes == INVALID_FILE_ATTRIBUTES) return 0;
     if (exists) *exists = 1;
     if (is_directory) *is_directory =
         (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
@@ -418,18 +434,13 @@ int mdkr_path_kind_utf8(const char *path) {
     if (attributes == INVALID_FILE_ATTRIBUTES) {
         const DWORD error = GetLastError();
         free(wide);
-        switch (error) {
-        case ERROR_FILE_NOT_FOUND:
-        case ERROR_PATH_NOT_FOUND:
-        case ERROR_INVALID_NAME:
-        case ERROR_BAD_PATHNAME:
-        case ERROR_DIRECTORY:
-        case ERROR_INVALID_DRIVE:
+        /* What the query calls missing, and (fs_utf8.h) an unusable name. */
+        if (windows_error_means_missing(error) || error == ERROR_INVALID_NAME ||
+            error == ERROR_BAD_PATHNAME) {
             return MDKR_PATH_MISSING;
-        default:
-            fail_windows(error);
-            return -1;
         }
+        fail_windows(error);
+        return -1;
     }
     if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         /* The attribute says "reparse point"; only the tag says which kind. A
@@ -1077,11 +1088,21 @@ int mdkr_move_utf8(const char *from, const char *to,
 int mdkr_path_query_utf8(const char *path, int *exists,
                          int *is_regular, int *is_directory) {
     struct stat status;
-    int found = path != NULL && stat(path, &status) == 0;
-    if (exists) *exists = found;
-    if (is_regular) *is_regular = found && S_ISREG(status.st_mode);
-    if (is_directory) *is_directory = found && S_ISDIR(status.st_mode);
-    return found ? 0 : -1;
+    if (exists) *exists = 0;
+    if (is_regular) *is_regular = 0;
+    if (is_directory) *is_directory = 0;
+    if (path == NULL || path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (stat(path, &status) != 0) {
+        /* fs_utf8.h: missing is an answer, not an error. */
+        return errno == ENOENT || errno == ENOTDIR ? 0 : -1;
+    }
+    if (exists) *exists = 1;
+    if (is_regular) *is_regular = S_ISREG(status.st_mode);
+    if (is_directory) *is_directory = S_ISDIR(status.st_mode);
+    return 0;
 }
 int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     struct stat status;
