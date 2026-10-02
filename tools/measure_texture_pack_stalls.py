@@ -27,7 +27,14 @@ GAME-THREAD PACK WORK, packUs = hashUs + resolveUs + pumpUs + overrideUploadUs:
 identity hashing, store lookups, installing finished textures (and, under the
 BUDGET loader, reading and decoding them), and uploading replacements. Raw
 frame time is not used for that: T12a showed pack-independent waits of 35-75 ms
-that would be misattributed. Each texture the store installs also prints a
+that would be misattributed. packUs leaves one thing out on purpose: when a
+replacement is still pending, or deferred past the frame's upload budget, that
+frame draws the texture's ORIGINAL, and that ROM decode and upload is in
+romUploadUs with every other ROM fill. It is the same work a run without the
+pack does for that texture on that frame, so it is not work the pack adds; the
+replacement's own upload, when it goes up, is in overrideUploadUs. (Against
+1.7's synchronous loader, which uploaded only the replacement, it is extra, and
+romUploadUs bounds it.) Each texture the store installs also prints a
 [TEXPACK-INSTALL] row, which gives the request->resident latency in frames and
 the set of identities that became resident (compare it across loaders).
 `--loader inline|budget|worker` forces a loader for A/B runs; `--state-hash`
@@ -135,6 +142,9 @@ INSTALL_TAG = "[TEXPACK-INSTALL]"
 ACTIVE_PACKS_RE = re.compile(r"\[MODS\] ([0-9]+) pack\(s\) active")
 RATE_RE = re.compile(r"\[PRESENT-MODE\].*?\brate=([0-9]+)")
 # Game-thread pack work per frame, in microseconds (see the module docstring).
+# Game-thread pack work. Not romUploadUs: the original drawn while a
+# replacement is pending or deferred costs what a run without the pack pays for
+# that texture anyway (see the module docstring).
 PACK_WORK_FIELDS = ("hashUs", "resolveUs", "pumpUs", "overrideUploadUs")
 PACK_WORK_LIMIT_US = 4000
 CACHE_RE = re.compile(

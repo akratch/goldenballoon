@@ -8308,6 +8308,12 @@ The engine side is off by default and reads no clock unless asked:
   the frame, so `readUs`/`decodeUs` are charged when a texture is installed and
   `workerUs` is the background thread's time, not the game thread's. Game-thread
   pack work for the frame is `hashUs + resolveUs + pumpUs + overrideUploadUs`.
+  It leaves out, on purpose, the ROM decode and upload of a texture's ORIGINAL
+  drawn while its replacement is pending or deferred: that is in `romUploadUs`
+  with every other ROM fill, and it is the same work a run without the pack
+  does for that texture on that frame. The replacement's own upload, when it
+  goes up, is in `overrideUploadUs`. Against 1.7's synchronous loader, which
+  uploaded only the replacement, it is extra; `romUploadUs` bounds it.
   `queued`, `installed`, `discarded`, `refills` (cache entries re-uploaded in
   place once their replacement arrived), `deferred` (resident replacements drawn
   from ROM for a frame because that frame's upload budget was spent),

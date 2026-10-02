@@ -3093,6 +3093,9 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
      * it was decoded: inside resolveUs under the INLINE loader, inside pumpUs
      * under BUDGET, and on the worker (workerUs, not this thread) otherwise.
      * pending is the number queued or decoding at the end of the frame.
+     * romUploadUs includes the originals drawn while a replacement is pending
+     * or deferred; the stall tool's game-thread pack work leaves them out, as
+     * a run without the pack pays the same (tests/README.md).
      *
      * The wait split (gfx_dkr_wait_*) follows. gameUs is the game pass and
      * contains walkUs, endUs, startUs, acquireUs, submitUs and presentUs;
