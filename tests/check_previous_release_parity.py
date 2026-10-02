@@ -204,7 +204,9 @@ def route_problems(route_label: str, route: Route, output: str,
     if packs is not None:
         problems.append(f"{route_label} {side}: {packs.group(1)} content pack(s) were "
                         "active; the run was not the retail game")
-    marker = find_fatal(output)
+    # The AI route search's pop budget is native-only; no retail route may
+    # reach it (it would end a search the previous release kept running).
+    marker = find_fatal(output, r"\[AI_ROUTE_BUDGET\]")
     if marker:
         problems.append(f"{route_label} {side}: log contains {marker!r}")
     return problems

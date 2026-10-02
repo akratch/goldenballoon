@@ -135,9 +135,11 @@ RACER_RE = re.compile(
 LEVEL_RE = re.compile(
     r"level_load: levelId=(\d+) numPlayers=(-?\d+).*@frame~(\d+)"
 )
+# [AI_ROUTE_BUDGET]: the arena AI's route search ran out its pop budget, which
+# only a graph the original search would spin on can do; no retail arena may.
 BAD_RE = re.compile(
     r"\[CRASH\]|\[FATAL\]|AddressSanitizer|UndefinedBehaviorSanitizer|"
-    r"runtime error:|Assertion failed"
+    r"runtime error:|Assertion failed|\[AI_ROUTE_BUDGET\]"
 )
 
 

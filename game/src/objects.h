@@ -679,6 +679,10 @@ s32 mdkr_object_assets_pinned_reference_deficit(void);
 void obj_door_number(ObjectModel *, Object *);
 #endif
 s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3);
+#ifdef NATIVE_PORT
+/* How many searches MDKR_AI_ROUTE_POP_BUDGET has ended this process. */
+u32 mdkr_ai_route_budget_hits(void);
+#endif
 f32 func_8001C6C4(Object_NPC *, Object *, f32, f32, s32);
 s32 collision_objectmodel(Object *obj, s32 arg1, s32* arg2, Vec3f *arg3, f32* arg4, f32* arg5, s8* surface);
 s32 func_80017A18(ObjectModel *arg0, s32 arg1, s32 *numCollisions, f32 *originPointsX, f32 *originPointsY, f32 *originPointsZ, f32 *targetPointsX, f32 *targetPointsY,

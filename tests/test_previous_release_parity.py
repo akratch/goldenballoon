@@ -79,6 +79,12 @@ class RouteProblemTests(unittest.TestCase):
         problems = gate.route_problems("r", ANCIENT_LAKE, output, 6600, "x")
         self.assertTrue(any("content pack" in p for p in problems))
 
+    def test_a_route_search_that_ran_out_its_budget_is_refused(self):
+        output = load(5) + ("[AI_ROUTE_BUDGET] search from node 3 for target 0x17f "
+                            "ended at the 16384-pop budget (hit 1)\n")
+        problems = gate.route_problems("r", ANCIENT_LAKE, output, 6600, "x")
+        self.assertTrue(any("AI_ROUTE_BUDGET" in p for p in problems))
+
 
 class SkipContractTests(unittest.TestCase):
     def test_the_skip_code_is_not_success_or_failure(self):

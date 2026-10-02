@@ -3207,6 +3207,12 @@ reference before resolving it, deleting or compiling out the redirected
 level-header load's span check, or sizing it from the unchecked span each turns
 the gate red; rewording a guard's comment or bracing its body does not.
 
+The AI route search's 16,384-pop budget (`MDKR_AI_ROUTE_POP_BUDGET`) prints
+`[AI_ROUTE_BUDGET]` for the first eight searches it ends, and `ainode_route`
+requires that report exactly when the original algorithm hit the same budget.
+No retail route may reach it: `check_challenge_modes.py` (every battle arena and
+challenge) and `check_previous_release_parity.py` fail on the line.
+
 ## Two ways a gate lies — read this before adding a check or a diagnostic
 
 Gates fail in two distinct ways here, and only one of them is loud.

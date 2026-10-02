@@ -14365,6 +14365,26 @@ s32 ainode_find_next(s32 nodeId, s32 nextNodeId, s32 direction) {
     }
 }
 
+#ifdef NATIVE_PORT
+/* Searches the pop budget ended in func_8001CD28. No retail route reaches it
+ * (check_challenge_modes.py and check_previous_release_parity.py fail on the
+ * [AI_ROUTE_BUDGET] line), so a hit names a graph the original search would
+ * have spun on. The first few are printed; the count is kept for tests. */
+static u32 sAiRouteBudgetHits;
+
+u32 mdkr_ai_route_budget_hits(void) {
+    return sAiRouteBudgetHits;
+}
+
+static void mdkr_ai_route_budget_hit(s32 start, s32 target) {
+    if (++sAiRouteBudgetHits <= 8) {
+        fprintf(stderr, "[AI_ROUTE_BUDGET] search from node %d for target 0x%x ended at "
+                "the %d-pop budget (hit %u)\n", (int) start, (unsigned) target,
+                MDKR_AI_ROUTE_POP_BUDGET, (unsigned) sAiRouteBudgetHits);
+    }
+}
+#endif
+
 s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
     s16 result;
     s32 sp370;
@@ -14508,6 +14528,7 @@ s16 func_8001CD28(s32 arg0, s32 arg1, s32 arg2, s32 arg3) {
              * whose frontier empties. No retail search reaches the budget. */
             if (++pops >= MDKR_AI_ROUTE_POP_BUDGET && result == NODE_NONE) {
                 result = var_s3;
+                mdkr_ai_route_budget_hit(arg0, arg1);
             }
 #endif
         }

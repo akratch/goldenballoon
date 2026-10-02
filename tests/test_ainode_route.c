@@ -292,10 +292,18 @@ static s16 compare(s32 start, s32 target, s32 previous, s32 lane, const char *la
     int stop = sRetailStop;
     snapshot_directions(reference);
     restore_directions(before);
+    const u32 budget_hits = mdkr_ai_route_budget_hits();
     s16 actual = func_8001CD28(start, target, previous, lane);
     snapshot_directions(native);
     sStops[stop]++;
     sCompared++;
+    /* The budget announces itself ([AI_ROUTE_BUDGET], counted here) exactly
+     * when it ends a search, so a gate can require that no retail route ever
+     * reaches it. */
+    EXPECT(mdkr_ai_route_budget_hits() - budget_hits == (u32) (stop == STOP_BUDGET),
+           "%s: start=%d target=0x%x: budget reported %u time(s), original stop %d",
+           label, (int) start, (unsigned) target,
+           (unsigned) (mdkr_ai_route_budget_hits() - budget_hits), stop);
     EXPECT(actual == expected,
            "%s: start=%d target=0x%x previous=%d lane=%d: native %d, original %d (stop %d)",
            label, (int) start, (unsigned) target, (int) previous, (int) lane, actual, expected, stop);
