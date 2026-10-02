@@ -109,11 +109,14 @@ int main(int argc, char **argv) {
     char override_config[4096];
 
     /* A stray override inherited from the caller's shell would silence every
-     * precedence assertion below; strip both before anything reads them. Also
-     * strip $APPIMAGE unless this run is deliberately exercising it, so a suite
-     * launched from inside an AppImage cannot relocate the non-appimage arms. */
+     * precedence assertion below; strip them before anything reads them
+     * (tools/run_checks.py exports all three to every task, ctest included).
+     * Also strip $APPIMAGE unless this run is deliberately exercising it, so a
+     * suite launched from inside an AppImage cannot relocate the non-appimage
+     * arms. */
     (void)mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
     (void)mdkr_test_env_unset("MDKR_SAVE_DIR");
+    (void)mdkr_test_env_unset("MDKR_MODS_DIR");
     if (!appimage_mode) {
         (void)mdkr_test_env_unset("APPIMAGE");
     }
