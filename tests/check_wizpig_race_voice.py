@@ -12,7 +12,15 @@ other racer (the second human and the CPU racers) must keep its retail voice:
 retail identity, never a Wizpig or Taj clip, and only player one may resolve
 to Wizpig. The same race with no test player is the retail control: no
 bonus-identity dispatch at all. Both arms require reactions from the other
-human and from CPU racers, so neither check can pass for want of voices.
+human, and the two together at least MIN_CPU_REACTIONS from unfinished CPU
+racers, so neither check can pass for want of voices. The CPU floor is pooled
+because a CPU reaction is rare on this route (2 in the retail arm, 4 with
+Wizpig, measured on build-rel and build-asan alike): per arm, one benign shift
+in race timing would read as lost coverage.
+
+Evidence (run.log and the save of every arm) goes to a private temporary
+directory that is removed on PASS and kept, and named, on FAIL; --evidence-dir
+keeps it in a directory of your choosing either way.
 """
 from __future__ import annotations
 
@@ -21,6 +29,7 @@ from collections import Counter
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -46,6 +55,8 @@ RACER_VOICE = re.compile(
     r"racer_voice: racer=(-?\d+) player=(-?\d+) finished=([01]) identity=(\d+) "
     r"event=(\d+) sound=(\d+)")
 FATAL = ("[CRASH]", "[FATAL]", "AddressSanitizer", "runtime error:")
+# Reactions from unfinished CPU racers, both field arms together.
+MIN_CPU_REACTIONS = 2
 
 
 def check_fatal(output: str) -> None:
@@ -116,11 +127,21 @@ def check_field_arm(output: str, wizpig_player: int | None) -> Counter:
     if "level_load: levelId=5 numPlayers=1 " not in output:
         raise ValueError("the two-player Ancient Lake race did not load")
     counts = check_field(output, wizpig_player)
-    expected = {"human", "cpu"} | ({"wizpig"} if wizpig_player is not None else set())
+    expected = {"human"} | ({"wizpig"} if wizpig_player is not None else set())
     missing = expected - {key for key, value in counts.items() if value}
     if missing:
         raise ValueError(f"no reactions observed from {sorted(missing)}: {dict(counts)}")
     return counts
+
+
+def check_cpu_coverage(*arms: Counter) -> int:
+    """The CPU racers' retail voice was exercised, across the field arms."""
+    total = sum(arm["cpu"] for arm in arms)
+    if total < MIN_CPU_REACTIONS:
+        raise ValueError(f"only {total} CPU racer reaction(s) across the field "
+                         f"arms (need {MIN_CPU_REACTIONS}): "
+                         f"{[dict(arm) for arm in arms]}")
+    return total
 
 
 def self_test() -> None:
@@ -130,7 +151,23 @@ def self_test() -> None:
             "mod_racer_voice: player=0 identity=2 event=354 sound=179\n"
             "racer_voice: racer=1 player=1 finished=0 identity=0 event=450 sound=486\n"
             "racer_voice: racer=2 player=-1 finished=0 identity=0 event=354 sound=402\n")
-    check_field_arm(good, WIZPIG_PLAYER)
+    retail = ("level_load: levelId=5 numPlayers=1 \n"
+              "racer_voice: racer=0 player=0 finished=0 identity=0 event=354 sound=402\n"
+              "racer_voice: racer=1 player=1 finished=0 identity=0 event=450 sound=486\n"
+              "racer_voice: racer=2 player=-1 finished=0 identity=0 event=354 sound=402\n")
+    check_cpu_coverage(check_field_arm(good, WIZPIG_PLAYER),
+                       check_field_arm(retail, None))
+    # The pooled floor still rejects arms whose CPU racers never reacted.
+    no_cpu = good.replace("player=-1 finished=0", "player=-1 finished=1")
+    try:
+        check_cpu_coverage(check_field_arm(no_cpu, WIZPIG_PLAYER),
+                           check_field_arm(retail.replace("finished=0 identity=0 event=354 sound=402\n",
+                                                          "finished=1 identity=0 event=354 sound=402\n"),
+                                           None))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("field runs with no CPU reactions were accepted")
     for bad, player in (
             (good + "racer_voice: racer=3 player=-1 finished=0 identity=2 event=354 sound=180\n",
              WIZPIG_PLAYER),
@@ -140,8 +177,7 @@ def self_test() -> None:
              WIZPIG_PLAYER),
             (good + "racer_voice: racer=0 player=0 finished=0 identity=0 event=354 sound=354\n",
              WIZPIG_PLAYER),
-            (good, None),
-            (good.replace("player=-1 finished=0", "player=-1 finished=1"), WIZPIG_PLAYER)):
+            (good, None)):
         try:
             check_field_arm(bad, player)
         except ValueError:
@@ -175,8 +211,10 @@ def main() -> int:
     if not binary.is_file() or not rom.is_file():
         parser.error("binary and supported ROM must exist")
     self_test()
-    # Keep failures for investigation; evidence stays outside source by default.
-    root = (args.evidence_dir.resolve() if args.evidence_dir else
+    # Private run logs and saves: kept for investigation on FAIL, removed on
+    # PASS unless the caller named a directory to keep them in.
+    keep = args.evidence_dir is not None
+    root = (args.evidence_dir.resolve() if keep else
             Path(tempfile.mkdtemp(prefix="mdkr-wizpig-race-voice-")))
     root.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items()
@@ -193,13 +231,17 @@ def main() -> int:
             FIELD_SCRIPT, 7600), WIZPIG_PLAYER)
         retail = check_field_arm(run(
             binary, rom, root / "retail", env, FIELD_SCRIPT, 7600), None)
+        cpu = check_cpu_coverage(field, retail)
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-        print(f"check_wizpig_race_voice: FAIL -- {error}; evidence: {root}")
+        print(f"check_wizpig_race_voice: FAIL -- {error}; evidence kept: {root}")
         return 1
+    if not keep:
+        shutil.rmtree(root, ignore_errors=True)
     print(f"check_wizpig_race_voice: PASS -- {count} Wizpig-owned positive/negative "
           f"race voice dispatches, no consecutive repeats; two-player field "
           f"{dict(field)} and retail control {dict(retail)} kept bonus clips to "
-          f"Wizpig alone; evidence: {root}")
+          f"Wizpig alone ({cpu} CPU reactions across both)"
+          + (f"; evidence: {root}" if keep else ""))
     return 0
 
 
