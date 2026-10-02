@@ -84,9 +84,9 @@ int mdkr_user_paths_save_write_failed_directory(char *output, size_t output_size
 /* The content-pack root (`mods/`). Same policy as the save directory and for
  * the same reason: a signed bundle cannot host player-installed content, so a
  * packaged app looks beside its writable save directory, and a command-line
- * build stays CWD-relative so a test run cannot pick up a developer's packs.
- * Unlike saves and config there is no environment override, because nothing
- * needs to relocate the folder a player is told to drop packs into. */
+ * build stays CWD-relative. MDKR_MODS_DIR overrides all of it, like
+ * MDKR_SAVE_DIR: automated runs point it at an empty private folder so a pack
+ * installed into the folder a developer launches from cannot reach a test. */
 int mdkr_user_mods_directory(char *output, size_t output_size);
 /* Locally imported custom characters and their disposable compiled caches.
  * Separate from mods/: ordinary content packs are read-only override sources,

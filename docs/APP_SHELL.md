@@ -145,9 +145,9 @@ Mutable state is separate and always outside the signed bundle:
 - app-shell preferences and diagnostics already use that same SDL preference
   root.
 
-`MDKR_VIDEO_CONFIG_PATH` (a complete filename) and `MDKR_SAVE_DIR` remain
-explicit native overrides. They are used by automated/headless runs to isolate
-state. A non-packaged command-line build retains the historical CWD-relative
+`MDKR_VIDEO_CONFIG_PATH` (a complete filename), `MDKR_SAVE_DIR` and
+`MDKR_MODS_DIR` (the content-pack folder) remain explicit native overrides. They
+are used by automated/headless runs to isolate state. A non-packaged command-line build retains the historical CWD-relative
 defaults for the same reason. The browser remains `/save/mdkr64.ini` plus
 `/save` on IDBFS.
 

@@ -1142,6 +1142,13 @@ int mdkr_user_mods_directory(char *output, size_t output_size) {
     return path_copy(output, output_size, "/mods");
 #else
     char relocation[MDKR_USER_PATH_MAX];
+    /* Automated runs point this at an empty private folder, as they do with
+     * MDKR_SAVE_DIR: a pack installed into a repo-root, portable or per-user
+     * mods/ would otherwise load into every test that boots the game. */
+    const char *override = getenv("MDKR_MODS_DIR");
+    if (override != NULL && override[0] != '\0') {
+        return path_copy(output, output_size, override);
+    }
     if (active_relocation_dir(relocation, sizeof(relocation))) {
         return path_join(output, output_size, relocation, "mods");
     }

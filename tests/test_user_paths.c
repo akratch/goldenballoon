@@ -155,6 +155,7 @@ int main(int argc, char **argv) {
     char override_config[4096];
     char override_save[4096];
     char override_characters[4096];
+    char override_mods[4096];
     char path[4096];
     char other[4096];
     char interrupted_stage[4096];
@@ -279,6 +280,12 @@ int main(int argc, char **argv) {
     expect("set character catalog override",
            mdkr_test_env_set("MDKR_CUSTOM_CHARACTER_DIRECTORY",
                              override_characters, 1) == 0);
+    /* Tests isolate the content-pack root the same way: a pack a developer
+     * installed into a repo-root or per-user mods/ must not reach a gate. */
+    expect("override mods path",
+           join(override_mods, sizeof(override_mods), override_dir, "mods"));
+    expect("set mods override",
+           mdkr_test_env_set("MDKR_MODS_DIR", override_mods, 1) == 0);
     expect("entered launch cwd", chdir(cwd) == 0);
     s_mock_pref = pref;
     expect("packaged paths initialized", mdkr_user_paths_init(executable) == 1);
@@ -292,6 +299,10 @@ int main(int argc, char **argv) {
     expect("character catalog override wins",
            mdkr_user_characters_directory(path, sizeof(path)) &&
            strcmp(path, override_characters) == 0);
+    expect("mods override wins",
+           mdkr_user_mods_directory(path, sizeof(path)) &&
+           strcmp(path, override_mods) == 0);
+    expect("override mods not created", missing(override_mods));
     expect("override config not migrated", missing(override_config));
     expect("override save not migrated", missing(override_save));
     expect("default config absent while override active",
@@ -302,6 +313,7 @@ int main(int argc, char **argv) {
     (void) mdkr_test_env_unset("MDKR_VIDEO_CONFIG_PATH");
     (void) mdkr_test_env_unset("MDKR_SAVE_DIR");
     (void) mdkr_test_env_unset("MDKR_CUSTOM_CHARACTER_DIRECTORY");
+    (void) mdkr_test_env_unset("MDKR_MODS_DIR");
     /* A killed prior copier can leave only a sibling stage. It must never be
      * interpreted as the live save directory or partly installed over it. */
     expect("interrupted stage path",
@@ -393,6 +405,10 @@ int main(int argc, char **argv) {
            join(override_characters, sizeof(override_characters),
                 pref, "characters") &&
            strcmp(path, override_characters) == 0);
+    expect("packaged mods resolve below prefs once the override is gone",
+           mdkr_user_mods_directory(path, sizeof(path)) &&
+           join(override_mods, sizeof(override_mods), pref, "mods") &&
+           strcmp(path, override_mods) == 0);
     expect("migrated EEPROM path",
            join(path, sizeof(path), other, "eeprom.bin"));
     expect("resource EEPROM won migration precedence",

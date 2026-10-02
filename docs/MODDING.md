@@ -817,7 +817,10 @@ and online package negotiation/fallback is not yet implemented.
 `MDKR_CUSTOM_CHARACTER_DIRECTORY` is a diagnostic and automated-test override
 for launching against an isolated catalog. Ordinary players should use the
 workshop-managed per-user character directory; the override does not bypass
-package validation or installation policy.
+package validation or installation policy. `MDKR_MODS_DIR` does the same for
+content packs: it replaces the mods folder outright (including a portable
+`mods/`), and the test suite points it at an empty folder so packs installed
+for play never reach a test run.
 
 The launcher Workshop's **Test in the exact game renderer** section starts the
 selected package directly in character select or an Ancient Lake car,
