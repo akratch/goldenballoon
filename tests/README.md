@@ -7231,10 +7231,20 @@ filtering, directory ordering, navigation and failed directory recovery.
 Installer coverage includes manifest/Rice ZIP discovery, invalid ZIP refusal,
 Unicode filenames, exclusive publication under races, move/cancellation
 cleanup and dangling destination symlink refusal. A non-pack ZIP or folder is
-refused before anything is staged, with only the intake cancellation check
-reached. A ZIP inside a folder the process may enter but not list still
+refused before anything is staged; the cancellation checks reached are the
+one at intake and one per entry of the admission walk a pick without a
+pack.ini needs. That walk stays within the entry budget and stops at Cancel
+(an over-budget pick, a cancelled walk and a throwing callback are each
+covered). A ZIP inside a folder the process may enter but not list still
 installs; a mods folder that is a link works; abandoned staging is reclaimed
-while a live installation's is not; each refusal message names its cause.
+while a live installation's is not, and folders that merely start with
+`.install-` are left alone; a staging folder another holder takes the moment
+it is created is removed, not left behind (through a test-only hook,
+`MDKR_PACK_INSTALLER_TESTING`); each refusal message names its cause,
+including a pick that is gone, unreadable, or a plain file other than a ZIP.
+The pathname installer refuses a folder holding a name with no UTF-8
+spelling; macOS file systems refuse such names, so that case prints SKIP
+there and runs on Linux and Windows.
 Cancellation coverage includes a request before staging and after the first
 256 KiB copy chunk, with no publication or surviving partial staging.
 Folder cases cover nested content, existing and concurrently-created empty
@@ -7611,9 +7621,15 @@ old reader before its fix. Windows reads folder packs by pathname and refuses a
 symbolic link, junction or mount point at any depth; `mod_source_zip_path`
 runs that reader on POSIX. On Windows a directory link fixture falls back to a
 junction when symbolic links need Developer Mode; a file link that cannot be
-created prints a SKIP line rather than passing silently. `fs_utf8` checks the
+created prints a SKIP line rather than passing silently. `mod_source_zip`
+also checks the walk that reports folders as well as files (each folder
+before its contents, a stop at a folder ending the walk). `fs_utf8` checks the
 pathname primitives both arms share (entry kinds, listing, exclusive rename,
-directory hold) on every host. The Windows executables are built by
+directory hold) on every host, and that a listing reports a name with no
+UTF-8 spelling instead of skipping it (SKIP on macOS, as above). The Windows
+fixtures in these tests reach the file system only through fs_utf8 or the
+wide API, and read their optional path argument from the UTF-16 command line,
+so a non-ASCII `%TEMP%` or argument works. The Windows executables are built by
 `tools/mingw_cross_check.sh --intake-tests`; they have not yet run on
 Windows, and the older mutation statement above does not qualify them.
 
