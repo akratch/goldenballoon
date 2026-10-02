@@ -2122,7 +2122,10 @@ def pack_leaks(binaries: "tuple[Path, ...]", root: Path = ROOT) -> list[str]:
                             "and mods/ next to it")
     for folder in dict.fromkeys(folders):
         try:
-            entries = sorted(entry.name for entry in folder.iterdir())
+            # Hidden names (.DS_Store, ._ AppleDouble files, editor state) are
+            # skipped by the registry itself, so they cannot load as packs.
+            entries = sorted(entry.name for entry in folder.iterdir()
+                             if not entry.name.startswith("."))
         except FileNotFoundError:
             continue
         except OSError as error:

@@ -872,6 +872,12 @@ def isolation_problems() -> list[str]:
         (root / "mods").mkdir()
         if run_checks.pack_leaks((binary,), root):
             problems.append("an empty repo-root mods folder was reported")
+        # The registry skips hidden names, so Finder's litter is not a pack.
+        (root / "mods" / ".DS_Store").write_bytes(b"\0\0\0\1Bud1")
+        (root / "mods" / "._SomePack").write_bytes(b"\0\5\26\7")
+        if run_checks.pack_leaks((binary,), root):
+            problems.append("a mods folder holding only hidden files (.DS_Store) "
+                            "was reported; the registry never loads those")
         (root / "mods" / "SomePack").mkdir()
         if not run_checks.pack_leaks((binary,), root):
             problems.append("a pack in the repo-root mods folder was not "
