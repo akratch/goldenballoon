@@ -1004,6 +1004,7 @@ static void platform_macos_activate_app(const char *why);
 static void platform_macos_install_occlusion_shim(void);
 static int platform_macos_app_is_hidden(void);
 static void platform_macos_visible_automation_policy(void);
+static void platform_macos_order_automation_window(void);
 #endif
 
 /* MDKR_TEST_FOREGROUND=1, together with MDKR_TEST_VISIBLE_HEADLESS=1: a
@@ -1271,7 +1272,18 @@ int platform_sdl_init(void) {
 #endif
         if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
             SDL_ShowWindow(s_window);
-            SDL_RaiseWindow(s_window);
+#if defined(__APPLE__)
+            /* Never SDL_RaiseWindow an automation window: SDL's raise
+             * activates the application, and an accessory application (the
+             * policy every visible automation window now has) CAN be
+             * activated. Order it behind instead, as the app shell does. */
+            if (sdl_automation_surface_requested()) {
+                platform_macos_order_automation_window();
+            } else
+#endif
+            {
+                SDL_RaiseWindow(s_window);
+            }
             SDL_PumpEvents();
         }
         printf("[SDL] Window created (WebGPU / wgpu-native)\n");
@@ -1286,6 +1298,9 @@ int platform_sdl_init(void) {
          * to until the frontmost test arm asked for it. */
         if (result == 0 && sdl_test_foreground_requested()) {
             platform_macos_activate_app("test foreground run (GL)");
+        } else if (result == 0 && sdl_automation_surface_requested() &&
+                   !sdl_should_hide_window()) {
+            platform_macos_order_automation_window();
         }
 #endif
         return result;
@@ -5155,7 +5170,10 @@ static void platform_macos_activate_app(const char *why) {
  * 46/47. A real-time pacing measurement taken there is not measuring what a
  * player's window gets: T12c traced pacer oversleeps, preempted event pumps
  * and blocked swaps to exactly that difference (frame-wait rows, prio=31
- * against prio=46). Accessory changes the scheduling class, never the focus.
+ * against prio=46). Unlike the old policy an accessory app CAN be activated,
+ * so its window is shown ordered behind and never raised
+ * (platform_macos_order_automation_window); tests/
+ * check_automation_window_policy.py holds both halves.
  */
 static void platform_macos_visible_automation_policy(void) {
     Class cls = objc_getClass("NSApplication");
@@ -5171,6 +5189,31 @@ static void platform_macos_visible_automation_policy(void) {
     /* NSApplicationActivationPolicyAccessory == 1 */
     (void)((signed char (*)(void *, SEL, long))objc_msgSend)(
         app, sel_registerName("setActivationPolicy:"), 1L);
+}
+
+/*
+ * Visible, never activated: the contract the app shell gives its automation
+ * surfaces (platform/app/app_activation_mac.mm). Show the NSWindow and order
+ * it behind existing windows, so it still has a drawable, but never activate
+ * NSApp, make the window key, or raise it -- which, for an accessory app, is
+ * what SDL_RaiseWindow would do.
+ */
+static void platform_macos_order_automation_window(void) {
+    SDL_SysWMinfo info;
+    void *window;
+    if (s_window == NULL) {
+        return;
+    }
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(s_window, &info) ||
+        info.subsystem != SDL_SYSWM_COCOA || info.info.cocoa.window == NULL) {
+        return;
+    }
+    window = (void *)info.info.cocoa.window;
+    ((void (*)(void *, SEL, signed char))objc_msgSend)(
+        window, sel_registerName("setIsVisible:"), (signed char)1);
+    ((void (*)(void *, SEL, void *))objc_msgSend)(
+        window, sel_registerName("orderBack:"), NULL);
 }
 
 int platform_app_active_honest(void) {

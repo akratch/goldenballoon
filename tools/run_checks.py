@@ -244,6 +244,9 @@ GPU_SERIAL_NAMES = frozenset({
 })
 SERIAL_NAMES = frozenset({
     "pacing_quality",        # realtime arms assert displayed-interval tails
+    # Asserts its own process's scheduling class (an application's priority);
+    # launched into the background band, every arm would read the band's.
+    "automation_window_policy",
     "boost_magnitude",       # MDKR_PACE_REALTIME arm
     "webgpu_recovery",       # realtime WebGPU arm
     "presentation_matrix",   # presentation perf census cost gate
@@ -321,12 +324,21 @@ SKIP_EXIT = 77
 class SkipContract:
     reason: str
     missing_input: str
+    # True when what is missing is a host the check has to run on (a platform,
+    # an unlocked console), not an argument the operator passes. A release
+    # run still fails on the skip, naming that host instead of a flag.
+    host_condition: bool = False
 
 
 SKIPPABLE_CHECKS = {
     "previous_release_parity": SkipContract(
         "no --reference-build (a build of the previous published release) "
         "was supplied", "--reference-build"),
+    "automation_window_policy": SkipContract(
+        "frontmost state is not observable here (not macOS, or the console "
+        "is locked or has no user session)",
+        "a macOS host with an unlocked console session",
+        host_condition=True),
 }
 # Checks that are handed --reference-build when the operator supplies one.
 REFERENCE_BUILD_CHECKS = frozenset(
@@ -703,6 +715,11 @@ CHECKS = (
           "default-WebGPU intro identity"),
     Check("gpu_backpressure", "check_gpu_backpressure.py", "native",
           "live uncapped GL fences and bounded WebGPU queue completions"),
+    Check("automation_window_policy", "check_automation_window_policy.py",
+          "native",
+          "a visible automation window is an accessory app at an "
+          "application's priority that never becomes frontmost, against a "
+          "hidden BackgroundOnly control (macOS)"),
     Check("pacing_quality", "check_pacing_quality.py", "native",
           "displayed-interval, interpolation-phase and present-queue-latency "
           "distributions across every policy/smoothing arm, plus a realtime "

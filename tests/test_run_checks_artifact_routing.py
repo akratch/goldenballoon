@@ -308,8 +308,27 @@ class SkippedTaskVerdict(unittest.TestCase):
     def test_every_skippable_check_names_the_input_it_needs(self):
         for name, contract in run_checks.SKIPPABLE_CHECKS.items():
             with self.subTest(check=name):
+                if contract.host_condition:
+                    # Not an argument: the host the check must run on, which
+                    # the release-run failure then names instead of a flag.
+                    self.assertFalse(contract.missing_input.startswith("--"))
+                    self.assertTrue(contract.missing_input.strip())
+                    continue
                 self.assertTrue(contract.missing_input.startswith("--"))
                 self.assertIn(contract.missing_input, contract.reason)
+
+    def test_a_host_condition_skip_still_fails_a_release_run(self):
+        host = next(name for name, contract
+                    in run_checks.SKIPPABLE_CHECKS.items()
+                    if contract.host_condition)
+        check = next(check for check in run_checks.CHECKS
+                     if check.name == host)
+        skip = run_checks.SKIP_EXIT
+        self.assertTrue(run_checks.was_skipped(check, skip))
+        self.assertFalse(run_checks.counts_as_failure(check, skip, self.args()))
+        self.assertTrue(run_checks.counts_as_failure(
+            check, skip, self.args(require_fresh=True)))
+        self.assertNotIn(host, run_checks.REFERENCE_BUILD_CHECKS)
 
 
 if __name__ == "__main__":

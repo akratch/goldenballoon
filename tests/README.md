@@ -2051,6 +2051,21 @@ OS fullscreen effects while preserving the settings transaction, and prevents
 persisted fullscreen from affecting creation. Automation windows render hidden
 or ordered behind the desktop by design (set `MDKR_TEST_VISIBLE_HEADLESS=1` to
 watch one), and the release gate is the complete suite wherever it runs.
+`check_automation_window_policy.py` (registered as `automation_window_policy`,
+run serially at the shell's priority) holds the same contract for the engine's
+own VISIBLE automation window (`MDKR_TEST_VISIBLE_HEADLESS=1`, alone and under
+the runner's environment), on both renderers. That window is an accessory app
+(LaunchServices `UIElement`), so its game thread runs at an application's
+priority (46+) rather than the BackgroundOnly default 31 that real-time
+measurements were taken at before T12c. An accessory app CAN be activated, so
+the window is ordered behind and never raised, and the check requires that
+NSApp is never active on any frame and `lsappinfo front` never names the
+process. A hidden bounded run is the control: it must still read
+BackgroundOnly at the default priority, or the probe could not tell the
+policies apart. It is macOS-only and exits 77 (SKIPPED, a host condition the
+runner names) elsewhere. It also exits 77, after the type and priority
+assertions pass, when the console is locked or has no session, because nothing
+can become frontmost then.
 Use `ctest -LE 'gpu|app_process|browser'` for a suite
 that cannot launch the production app or create any native launcher surface;
 the `gpu` lane remains real
@@ -8258,8 +8273,10 @@ priority (46, or 47 frontmost; the `prio` field). A visible automation window
 policy the app shell already gives its own automation: SDL's background-app
 hint alone left the process registered BackgroundOnly at the default priority
 31, where T12c traced most of the 35-75 ms waits T12a reported (coarse timer
-wakes, preempted event pumps, blocked swaps). Accessory changes the scheduling
-class, never the focus.
+wakes, preempted event pumps, blocked swaps). An accessory app can be
+activated, so that window is shown ordered behind and never raised;
+`automation_window_policy` (with `app_background_activation_contract`
+above) holds both halves.
 
 The game's output reaches the run log through a pipe that a thread in the tool
 drains, not a file redirect. Every frame row is a `write()` on the game thread,
