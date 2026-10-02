@@ -2379,7 +2379,7 @@ if(NOT EMSCRIPTEN)
                 # explicit ordering statement.
                 add_test(NAME app_shell_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_shell_smoke PROPERTIES
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_shell_smoke.bmp;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/shell/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/shell/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/shell/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_shell_smoke.bmp;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/shell/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/shell/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/shell/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/shell/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     TIMEOUT 180)
 
@@ -2389,7 +2389,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_settings_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_settings_smoke PROPERTIES
                     FIXTURES_SETUP app_settings_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/settings/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/settings/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/settings/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_smoke.bmp;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/settings/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/settings/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/settings/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/settings/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "frame-rate-controls visible=1 gameplay-accuracy-separated=1"
                     TIMEOUT 180)
@@ -2413,7 +2413,7 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_character_workshop_smoke PROPERTIES
                     FIXTURES_SETUP app_character_workshop_capture
                     WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop"
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=6;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/workshop/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "active-panel=Character Workshop workshop-primary=contextual rom=optional"
                     TIMEOUT 180)
@@ -2433,7 +2433,7 @@ if(NOT EMSCRIPTEN)
                 set_tests_properties(app_character_workshop_minimum_smoke PROPERTIES
                     FIXTURES_SETUP app_character_workshop_minimum_capture
                     WORKING_DIRECTORY "${MDKR_APP_TEST_ROOT}/workshop-min"
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_character_workshop_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Character Workshop;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/workshop-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/workshop-min/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1 primaryLabelContained=1;character-workshop-layout compact=1"
                     TIMEOUT 180)
@@ -2525,7 +2525,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_online_room_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_online_room_smoke PROPERTIES
                     FIXTURES_SETUP app_online_room_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=8;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Online Room;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=8;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_PANEL=Online Room;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/online/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     TIMEOUT 180)
 
@@ -2546,7 +2546,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_online_room_minimum_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_online_room_minimum_smoke PROPERTIES
                     FIXTURES_SETUP app_online_room_minimum_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Online Room;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online-min/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_online_room_minimum.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Online Room;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_ONLINE_FAKE=1;MDKR_APP_UI_TRACE=1;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/online-min/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/online-min/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/online-min/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/online-min/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
                     LABELS gpu
                     TIMEOUT 180)
@@ -2627,7 +2627,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=800x600;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
@@ -2644,7 +2644,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_top_tabs_scale075_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_top_tabs_scale075_smoke PROPERTIES
                     FIXTURES_SETUP app_top_tabs_scale075_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_top_tabs_scale075.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Play;MDKR_ONLINE_ROOM_PREVIEW=1;MDKR_APP_SMOKE_NAV_TARGET=2;MDKR_APP_SMOKE_NAV_TOKEN=mdkr64-app-nav-v1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/top-tabs-small/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/top-tabs-small/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     PASS_REGULAR_EXPRESSION "top navigation target=2 actual=2 queued=1"
                     LABELS gpu
                     TIMEOUT 180)
@@ -2665,7 +2665,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_controller_settings_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_controller_settings_smoke PROPERTIES
                     FIXTURES_SETUP app_controller_settings_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_controller_settings_smoke.bmp;MDKR_APP_SMOKE_CONTROLLER_SETTINGS=1;MDKR_APP_SMOKE_CONTROLLER_RESTORE=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/controller/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/controller/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/controller/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_controller_settings_smoke.bmp;MDKR_APP_SMOKE_CONTROLLER_SETTINGS=1;MDKR_APP_SMOKE_CONTROLLER_RESTORE=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/controller/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/controller/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/controller/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/controller/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "controller settings rendered mappings=19 rumble=2 restoreAvailable=1 restoreSucceeded=1"
                     TIMEOUT 180)
@@ -2682,7 +2682,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_boot_recovery_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_boot_recovery_smoke PROPERTIES
                     FIXTURES_SETUP app_boot_recovery_capture
-                    ENVIRONMENT "MDKR_APP_BOOT_RECOVERY=The renderer could not start. Your ROM and settings were kept.;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_boot_recovery.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/recovery/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/recovery/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/recovery/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_BOOT_RECOVERY=The renderer could not start. Your ROM and settings were kept.;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_boot_recovery.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/recovery/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/recovery/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/recovery/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/recovery/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
                     TIMEOUT 180)
@@ -2702,7 +2702,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_settings_minimum_scale2 COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_settings_minimum_scale2 PROPERTIES
                     FIXTURES_SETUP app_settings_minimum_scale2_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_minimum_scale2.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/minimum/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/minimum/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/minimum/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_settings_minimum_scale2.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=640x480;MDKR_APP_PANEL=Settings;MDKR_APP_UI_TRACE=1;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/minimum/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/minimum/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/minimum/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/minimum/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "compact-layout dense=1 contained=1 overlap=0 contentSeparated=1"
                     TIMEOUT 180)
@@ -2726,7 +2726,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_touch_handheld_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_touch_handheld_smoke PROPERTIES
                     FIXTURES_SETUP app_touch_handheld_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_touch_handheld.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/touch-handheld/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=10;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_touch_handheld.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_TOUCH_SCROLL=1;MDKR_APP_SMOKE_TOUCH_TOKEN=mdkr64-app-touch-v1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/touch-handheld/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/touch-handheld/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "touch handheld targets=1 scroll=1"
                     TIMEOUT 180)
@@ -2750,7 +2750,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_wheel_handheld_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_wheel_handheld_smoke PROPERTIES
                     FIXTURES_SETUP app_wheel_handheld_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=12;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_wheel_handheld.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_WHEEL_SCROLL=1;MDKR_APP_SMOKE_WHEEL_TOKEN=mdkr64-app-wheel-v1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/wheel-handheld/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/wheel-handheld/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/wheel-handheld/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=12;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_wheel_handheld.bmp;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_WHEEL_SCROLL=1;MDKR_APP_SMOKE_WHEEL_TOKEN=mdkr64-app-wheel-v1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/wheel-handheld/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/wheel-handheld/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/wheel-handheld/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/wheel-handheld/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "wheel handheld scroll=1"
                     TIMEOUT 180)
@@ -2773,7 +2773,7 @@ if(NOT EMSCRIPTEN)
                 # fails -- the "trackpad scrolls the wrong way" defect.
                 add_test(NAME app_wheel_flipped_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_wheel_flipped_smoke PROPERTIES
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=12;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_WHEEL_SCROLL=1;MDKR_APP_SMOKE_WHEEL_TOKEN=mdkr64-app-wheel-v1;MDKR_APP_SMOKE_WHEEL_FLIPPED=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/wheel-flipped/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=12;MDKR_APP_SMOKE_WINDOW_SIZE=1280x720;MDKR_APP_SMOKE_WHEEL_SCROLL=1;MDKR_APP_SMOKE_WHEEL_TOKEN=mdkr64-app-wheel-v1;MDKR_APP_SMOKE_WHEEL_FLIPPED=1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/wheel-flipped/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/wheel-flipped/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "wheel handheld scroll=1"
                     TIMEOUT 180)
@@ -2789,7 +2789,7 @@ if(NOT EMSCRIPTEN)
                 add_test(NAME app_dpi_transition_smoke COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_dpi_transition_smoke PROPERTIES
                     FIXTURES_SETUP app_dpi_transition_capture
-                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=5;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp;MDKR_APP_SMOKE_DPI_SEQUENCE=1,2,1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/dpi/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/dpi/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/dpi/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_APP_SMOKE_FRAMES=5;MDKR_APP_SMOKE_SHOT=${CMAKE_CURRENT_BINARY_DIR}/app_dpi_transition.bmp;MDKR_APP_SMOKE_DPI_SEQUENCE=1,2,1;MDKR_APP_PANEL=Settings;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/dpi/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/dpi/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/dpi/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/dpi/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "dpi transition scale=2 atlasGeneration="
                     TIMEOUT 180)
@@ -2806,7 +2806,7 @@ if(NOT EMSCRIPTEN)
 
                 add_test(NAME app_gl_swap_interval_fallback COMMAND ${MDKR_TARGET})
                 set_tests_properties(app_gl_swap_interval_fallback PROPERTIES
-                    ENVIRONMENT "MDKR_RENDERER=gl;MDKR_TEST_GL_SWAP_INTERVAL_FAILURE=1;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/gl/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/gl/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/gl/saves;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
+                    ENVIRONMENT "MDKR_RENDERER=gl;MDKR_TEST_GL_SWAP_INTERVAL_FAILURE=1;MDKR_APP_SMOKE_FRAMES=4;MDKR_APP_PREFS_DIR=${MDKR_APP_TEST_ROOT}/gl/prefs;MDKR_VIDEO_CONFIG_PATH=${MDKR_APP_TEST_ROOT}/gl/video.ini;MDKR_SAVE_DIR=${MDKR_APP_TEST_ROOT}/gl/saves;MDKR_MODS_DIR=${MDKR_APP_TEST_ROOT}/gl/mods;MDKR64_HIDDEN=1;MDKR_AUDIO=0"
                     LABELS gpu
                     PASS_REGULAR_EXPRESSION "OpenGL swap interval unavailable; using bounded 60 Hz launcher pacing"
                     TIMEOUT 180)
