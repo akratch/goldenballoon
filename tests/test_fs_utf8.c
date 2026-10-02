@@ -479,10 +479,25 @@ static void test_names_without_utf8(const char *root) {
     created = file != NULL;
     if (file != NULL) fclose(file);
 #endif
-    if (!created) {
+    {
+        /* A file system can also accept the name and keep a rewritten one:
+         * Emscripten's MEMFS stores every name as UTF-8, U+FFFD in place of
+         * what has none. That is not such a name either. */
+        char rewritten[1100];
+        int rewritten_exists = 0;
+        join(rewritten, sizeof rewritten, folder, "bad\xEF\xBF\xBD" "name.bin");
+        if (created &&
+            mdkr_path_query_utf8(rewritten, &rewritten_exists, NULL, NULL) == 0 &&
+            rewritten_exists) {
+            printf("SKIP: this file system rewrote a name with no UTF-8 spelling\n");
+            (void)mdkr_remove_utf8(rewritten);
+            created = -1;
+        }
+    }
+    if (created == 0) {
         printf("SKIP: this file system cannot hold a name with no UTF-8 spelling (errno=%d)\n",
                errno);
-    } else {
+    } else if (created > 0) {
         memset(&listing, 0, sizeof listing);
         expect(mdkr_directory_list_utf8(folder, record_entry, &listing) == 0 &&
                    listing.count == 1 && listing.kinds[0] == MDKR_PATH_BAD_NAME,

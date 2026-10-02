@@ -674,6 +674,13 @@ static void test_name_without_utf8_is_reported(const char *scratch) {
         printf("SKIP this file system cannot hold a name with no UTF-8 spelling\n");
         return;
     }
+    path2(manifest, sizeof manifest, mods, "lost-\xEF\xBF\xBD-pack");
+    if (is_directory(manifest)) {
+        /* The file system rewrote the name (Emscripten's MEMFS keeps every
+         * name as UTF-8, U+FFFD in place of what has none). */
+        printf("SKIP this file system rewrote a name with no UTF-8 spelling\n");
+        return;
+    }
     path2(manifest, sizeof manifest, bad, "pack.ini");
     probe = fopen(manifest, "wb");
     if (probe == NULL) fatal("cannot create scratch file", manifest);

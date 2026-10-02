@@ -172,6 +172,17 @@ static int make_unnamed_copy(const char *fixture, const char *folder,
     return okay;
 }
 
+/* 1 when `folder` holds a file named exactly `stand_in`: the file system
+ * rewrote the name it was given (Emscripten's MEMFS keeps every name as
+ * UTF-8, U+FFFD in place of what has none), so it never held a name without
+ * a UTF-8 spelling. */
+static int name_was_rewritten(const char *folder, const char *stand_in) {
+    char path[1400];
+    int exists = 0;
+    return join(path, sizeof path, folder, stand_in) &&
+           mdkr_path_query_utf8(path, &exists, NULL, NULL) == 0 && exists;
+}
+
 static void remove_unnamed(const UnnamedFile *file) {
     if (!file->made) return;
 #ifdef _WIN32
@@ -305,6 +316,10 @@ int main(int argc, char **argv) {
     if (!make_unnamed_copy(fixture, unnamed_directory, "lost-", ".mdkc",
                            &unnamed_cache)) {
         printf("SKIP   this file system cannot hold a name with no UTF-8 "
+               "spelling\n");
+    } else if (name_was_rewritten(unnamed_directory,
+                                  "lost-\xEF\xBF\xBD.mdkc")) {
+        printf("SKIP   this file system rewrote a name with no UTF-8 "
                "spelling\n");
     } else {
         const char *skip_name;
