@@ -24,6 +24,13 @@ extern "C" {
  * Inside GFX_DKR_WAIT_GAME (the game pass: host boundary exit to the next
  * entry) sit START, ACQUIRE, SUBMIT and PRESENT, and the walk/end-of-frame
  * terms the row already had. The rest are the host boundary's own.
+ *
+ * With presentation smoothing on, the presentation subloop replays the held
+ * display list from INSIDE the host boundary. That whole replay is REPLAY;
+ * its walk is also in the row's walk total (reported again as replayWalkUs,
+ * so the game pass's own walk is walk minus that), and its acquire, submit
+ * and present stay inside REPLAY rather than in their own buckets. So the
+ * parts still tile the frame: game + REPLAY + the boundary waits.
  */
 typedef enum GfxDkrWait {
     GFX_DKR_WAIT_GAME = 0,  /* game pass, boundary exit -> next entry */
@@ -36,6 +43,7 @@ typedef enum GfxDkrWait {
     GFX_DKR_WAIT_ACQUIRE,   /* WebGPU surface acquire, occlusion retries too */
     GFX_DKR_WAIT_SUBMIT,    /* WebGPU queue submit */
     GFX_DKR_WAIT_PRESENT,   /* WebGPU surface present */
+    GFX_DKR_WAIT_REPLAY,    /* a presentation replay walk, whole */
     GFX_DKR_WAIT_COUNT
 } GfxDkrWait;
 

@@ -8217,7 +8217,11 @@ The engine side is off by default and reads no clock unless asked:
   `paceLateUs` the latest it woke past its target), `eventsUs` (SDL event pump
   and late input sample), `swapUs` and `fenceUs` (GL swap and frame-queue
   fence), `audioUs` (audio time advance and service), and `rowUs`, the previous
-  row's own print. What is left of `dtUs` is unaccounted. The host counters are
+  row's own print. With presentation smoothing on, the presentation replays
+  also run inside the host boundary: `replayUs` is all of them, their walk is
+  in `walkUs` too (`replayWalkUs` of it, so the game pass's own walk is the
+  difference), and their acquire, submit and present are only in `replayUs`.
+  What is left of `dtUs` is unaccounted. The host counters are
   process-wide deltas from `platform/host_sched_probe.c`: `procCpuUs` against
   `runnableUs` (a thread ready and given no core), `lowQosUs` (CPU billed at
   utility/background QoS), `pageins`, `vcsw`/`ivcsw`; `prio` is the game
@@ -8260,7 +8264,7 @@ class, never the focus.
 The game's output reaches the run log through a pipe that a thread in the tool
 drains, not a file redirect. Every frame row is a `write()` on the game thread,
 and a write straight into a file blocks whenever the disk is busy: T12c
-measured single rows taking 32-38 ms, which the row then reported as its own
+measured single rows taking 31-155 ms, which the row then reported as its own
 frame's stall. `--log-direct` restores the file redirect for an A/B of exactly
 that. The shipped app already tees its output through a pipe
 (`platform/app/diag_log.cpp`), so players never had this wait.

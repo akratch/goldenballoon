@@ -2870,6 +2870,7 @@ typedef struct DkrTexpackTotals {
                                  * the budget, after a level load or toggle */
     /* Frame-wait attribution (gfx_dkr_wait_*), rows only. */
     uint64_t wait_ns[GFX_DKR_WAIT_COUNT];
+    uint64_t replay_walk_ns;    /* the part of walk_ns run by replay passes */
     uint64_t pace_calls;
     uint64_t pace_requested_ns; /* what the pacer asked to sleep */
 } DkrTexpackTotals;
@@ -3031,6 +3032,13 @@ void gfx_dkr_wait_end(GfxDkrWait which, uint64_t start) {
     if (start == 0u || (unsigned)which >= (unsigned)GFX_DKR_WAIT_COUNT) {
         return;
     }
+    /* A replay's backend waits are inside its REPLAY bracket, which sits in
+     * the host boundary; counting them here too would charge them twice. */
+    if (dkr_replay_pass && (which == GFX_DKR_WAIT_ACQUIRE ||
+                            which == GFX_DKR_WAIT_SUBMIT ||
+                            which == GFX_DKR_WAIT_PRESENT)) {
+        return;
+    }
     now = dkr_texpack_clock_ns();
     if (now > start) s_texpack.wait_ns[which] += now - start;
 }
@@ -3115,7 +3123,10 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
      * The wait split (gfx_dkr_wait_*) follows. gameUs is the game pass and
      * contains walkUs, endUs, startUs, acquireUs, submitUs and presentUs;
      * paceUs, eventsUs, swapUs, fenceUs and audioUs are the host boundary's,
-     * and rowUs is the previous row's own print. paceReqUs is what the pacer
+     * and rowUs is the previous row's own print. With smoothing on, replayUs
+     * is the presentation replays, also in the boundary: their walk is in
+     * walkUs too (replayWalkUs of it), their acquire/submit/present only in
+     * replayUs (gfx_frame_wait.h). paceReqUs is what the pacer
      * asked to sleep and paceLateUs the latest it woke past its target. The
      * host counters are process-wide deltas (host_sched_probe.h): procCpuUs
      * against runnableUs says whether a thread was ready and not given a
@@ -3136,7 +3147,7 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             "acquireUs=%llu submitUs=%llu presentUs=%llu paceUs=%llu "
             "paceReqUs=%llu paceLateUs=%llu paceCalls=%llu eventsUs=%llu "
             "swapUs=%llu fenceUs=%llu audioUs=%llu rowUs=%llu "
-            "procCpuUs=%llu runnableUs=%llu lowQosUs=%llu pageins=%llu "
+            "replayUs=%llu replayWalkUs=%llu procCpuUs=%llu runnableUs=%llu lowQosUs=%llu pageins=%llu "
             "vcsw=%llu ivcsw=%llu prio=%d visible=%d active=%d\n",
             frame, tick, swapped ? 1 : 0, (unsigned long long)(dt / 1000u),
             (unsigned long long)(cpu / 1000u), DKR_TEXPACK_US(walk_ns),
@@ -3165,6 +3176,7 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             DKR_TEXPACK_DIFF(pace_calls), DKR_WAIT_US(EVENTS),
             DKR_WAIT_US(SWAP), DKR_WAIT_US(FENCE), DKR_WAIT_US(AUDIO),
             (unsigned long long)(s_texpack_row_ns / 1000u),
+            DKR_WAIT_US(REPLAY), DKR_TEXPACK_US(replay_walk_ns),
             DKR_HOST_US(cpu_ns), DKR_HOST_US(runnable_ns),
             DKR_HOST_US(low_qos_cpu_ns), DKR_HOST_DIFF(pageins),
             DKR_HOST_DIFF(voluntary_switches),
@@ -9303,6 +9315,9 @@ void gfx_run(Gfx *dl) {
                    dkr_frame_index, dkr_dbg_emitted, dkr_dbg_onscreen,
                    dkr_dbg_clipped, dkr_dbg_clip_dropped, dkr_dbg_clip_degen);
     dkr_trace_this_frame = false;
+    if (dkr_replay_pass) {
+        dkr_texpack_add(&s_texpack.replay_walk_ns, texpack_walk_start);
+    }
     dkr_texpack_add(&s_texpack.walk_ns, texpack_walk_start);
 }
 
@@ -9389,6 +9404,7 @@ static bool gfx_dkr_replay_walk_impl(
     void *live_arena = NULL;
     uint32_t live_arena_size = 0u;
     uint8_t *live_arena_backup = NULL;
+    uint64_t wait_replay = 0u;
     GfxRetainedTaskView retained_task;
 
     if (gfx_rapi == NULL || dkr_last_walked_dl == NULL || dkr_replay_pass ||
@@ -9489,6 +9505,7 @@ static bool gfx_dkr_replay_walk_impl(
     g_dkrArenaSize = (uint32_t)retained_task.arena_size;
     retained_entered = true;
 
+    wait_replay = gfx_dkr_wait_begin();
     if (gfx_rapi->start_frame == NULL || !gfx_rapi->start_frame()) {
         goto replay_cleanup;
     }
@@ -9511,6 +9528,9 @@ static bool gfx_dkr_replay_walk_impl(
     completed = !dkr_replay_dependency_failed;
 
 replay_cleanup:
+    /* Before dkr_replay_pass drops: the frame-wait rows charge this replay to
+     * the host boundary (gfx_frame_wait.h). */
+    gfx_dkr_wait_end(GFX_DKR_WAIT_REPLAY, wait_replay);
     if (retained_entered) {
         g_dkrArenaBase = live_arena;
         g_dkrArenaSize = live_arena_size;

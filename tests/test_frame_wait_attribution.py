@@ -11,6 +11,8 @@ Two things the stall tables rest on:
 """
 from __future__ import annotations
 
+import os
+import signal
 import sys
 import tempfile
 import time
@@ -54,6 +56,21 @@ class AttributionTest(unittest.TestCase):
         frames = tool.displayed_frames(tool.parse_run(run_log({}))[0])
         split = tool.wait_split(frames[10])
         self.assertEqual(sum(split.values()), frames[10]["dtUs"])
+
+    def test_replay_frames_still_tile(self) -> None:
+        # Smoothing on: a presentation replay ran in the host boundary. Its
+        # walk is inside walkUs too; the game pass's own walk is the rest.
+        replay = {"gameUs": 1500, "startUs": 100, "walkUs": 1600,
+                  "replayWalkUs": 1200, "endUs": 500, "replayUs": 3000,
+                  "paceUs": 11917, "paceReqUs": 11917, "paceLateUs": 0}
+        frames = tool.displayed_frames(
+            tool.parse_run(run_log({10: replay}))[0])
+        frame = next(f for f in frames if f["frame"] == 10)
+        split = tool.wait_split(frame)
+        self.assertEqual(sum(split.values()), frame["dtUs"])
+        self.assertEqual(split["walk"], 400)
+        self.assertEqual(split["replay"], 3000)
+        self.assertEqual(split["game logic"], 500)
 
     def test_blocked_log_write_is_the_row_print(self) -> None:
         # The T12c shape: the pacer did not sleep at all because the row
@@ -148,6 +165,23 @@ class PipeLoggingTest(unittest.TestCase):
                 tool.run_game([sys.executable, "-c", probe],
                               Path(directory), {}, log, 60, direct)
                 self.assertIn(expected, log.read_text())
+
+    def test_a_held_pipe_is_reported_not_waited_on(self) -> None:
+        # The game exits but leaves a helper holding its output open: the
+        # reader must give up and say so instead of hanging the run.
+        script = ("import subprocess, sys\n"
+                  "helper = subprocess.Popen(['sleep', '30'])\n"
+                  "print('helper', helper.pid, flush=True)\n")
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "run.log"
+            started = time.monotonic()
+            with self.assertRaises(tool.LogReaderError):
+                tool.run_game([sys.executable, "-c", script],
+                              Path(directory), {}, log, 60, False,
+                              reader_timeout=1.0)
+            self.assertLess(time.monotonic() - started, 20)
+            helper = int(log.read_text().split()[1])
+            os.kill(helper, signal.SIGKILL)
 
     def test_a_timed_out_game_is_killed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

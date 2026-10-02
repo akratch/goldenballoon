@@ -247,7 +247,7 @@ SUM_FIELDS = (
     "gameUs", "startUs", "acquireUs", "submitUs", "presentUs", "paceUs",
     "paceReqUs", "paceCalls", "eventsUs", "swapUs", "fenceUs", "audioUs",
     "rowUs", "procCpuUs", "runnableUs", "lowQosUs", "pageins", "vcsw",
-    "ivcsw",
+    "ivcsw", "replayUs", "replayWalkUs",
 )
 # Not sums: the latest wake past target is a maximum, the rest are states.
 MAX_FIELDS = ("paceLateUs",)
@@ -256,11 +256,19 @@ LAST_FIELDS = ("tUs", "prio", "visible", "active")
 # Where a waiting frame's time went (T12c). Each part is microseconds of one
 # displayed frame; together they tile dtUs, and "unaccounted" is the rest.
 # game = logic + start + walk + end; end = acquire + submit + present + other.
+# With smoothing on, presentation replays run in the host boundary: replayUs
+# is all of them, their walk is also in walkUs (replayWalkUs of it), and their
+# acquire/submit/present are only in replayUs (gfx_frame_wait.h). So the game
+# pass's own walk is walkUs - replayWalkUs.
+def _game_walk(f: dict) -> int:
+    return max(0, f["walkUs"] - f.get("replayWalkUs", 0))
+
+
 WAIT_PARTS = (
     ("game logic", lambda f: max(0, f["gameUs"] - f["startUs"] -
-                                 f["walkUs"] - f["endUs"])),
+                                 _game_walk(f) - f["endUs"])),
     ("frame start", lambda f: f["startUs"]),
-    ("walk", lambda f: f["walkUs"]),
+    ("walk", _game_walk),
     ("acquire", lambda f: f["acquireUs"]),
     ("submit", lambda f: f["submitUs"]),
     ("present", lambda f: f["presentUs"]),
@@ -273,10 +281,11 @@ WAIT_PARTS = (
     ("fence", lambda f: f["fenceUs"]),
     ("audio", lambda f: f["audioUs"]),
     ("row print", lambda f: f["rowUs"]),
+    ("replay", lambda f: f.get("replayUs", 0)),
     ("unaccounted", lambda f: max(0, f["dtUs"] - f["gameUs"] - f["paceUs"] -
                                   f["eventsUs"] - f["swapUs"] -
                                   f["fenceUs"] - f["audioUs"] -
-                                  f["rowUs"])),
+                                  f["rowUs"] - f.get("replayUs", 0))),
 )
 
 
@@ -615,18 +624,32 @@ def realtime_error(record: dict, output: str, ticks: int,
 # ------------------------------------------------------------------ runs
 
 
+# How long the pipe reader may take to reach end-of-file once the game has
+# exited. Anything that still holds the game's output open past this (a
+# helper the game left running) would otherwise hang the run forever.
+READER_DRAIN_S = 30.0
+
+
+class LogReaderError(RuntimeError):
+    """The game exited but its output pipe never reached end-of-file."""
+
+
 def run_game(command: list[str], cwd: Path, env: dict, log_path: Path,
-             timeout: float, direct: bool) -> int | None:
+             timeout: float, direct: bool,
+             reader_timeout: float = READER_DRAIN_S) -> int | None:
     """Run the game with its output in log_path; None on timeout.
 
     The game prints a row per frame, and stderr is unbuffered: every row is
     a write() on the game thread. Pointed straight at a file, that write
     blocks whenever the file is busy -- T12c measured single rows taking
-    32-38 ms on a loaded disk, which the row then reports as the frame's own
-    stall. So by default the output goes through a pipe that a thread here
-    drains into the file: the game's write is a memory copy, and a slow disk
-    stalls this reader, not the frame being measured. --log-direct restores
-    the file redirect for an A/B of exactly that.
+    31-155 ms on a loaded machine, which the row then reports as the frame's
+    own stall. So by default the output goes through a pipe that a thread
+    here drains into the file: the game's write is a memory copy, and a slow
+    disk stalls this reader, not the frame being measured. --log-direct
+    restores the file redirect for an A/B of exactly that.
+
+    Raises LogReaderError when the pipe is still open reader_timeout seconds
+    after the game ended: something else holds it, and the log may be cut.
     """
     with log_path.open("wb") as log:
         if direct:
@@ -651,19 +674,30 @@ def run_game(command: list[str], cwd: Path, env: dict, log_path: Path,
 
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
+        stuck = False
         try:
             try:
-                return process.wait(timeout=timeout)
+                returncode: int | None = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                return None
+                returncode = None
         finally:
             # Completed, timed out, Ctrl-C or SIGTERM (SystemExit): the game
             # never outlives the run, as subprocess.run() guaranteed before.
             if process.poll() is None:
                 process.kill()
                 process.wait()
-            reader.join()
-            process.stdout.close()
+            reader.join(timeout=reader_timeout)
+            stuck = reader.is_alive()
+            if not stuck:
+                process.stdout.close()
+        if stuck:
+            # The daemon reader stays parked on the open pipe; the file
+            # holds everything read so far.
+            raise LogReaderError(
+                f"the game exited but its output pipe stayed open for "
+                f"{reader_timeout:.0f} s (another process holds it); "
+                f"{log_path} may be incomplete")
+        return returncode
 
 
 def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
@@ -733,8 +767,13 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         started = time.monotonic()
         tick_hz = 60 if scale == 2 else 30
         timeout = args.timeout or (ticks / tick_hz) * 2 + 180
-        returncode = run_game(command, run_root, env, log_path, timeout,
-                              args.log_direct)
+        log_error = None
+        try:
+            returncode = run_game(command, run_root, env, log_path, timeout,
+                                  args.log_direct)
+        except LogReaderError as exc:
+            returncode = None
+            log_error = str(exc)
         wall = time.monotonic() - started
         output = log_path.read_text(encoding="utf-8", errors="replace")
         record: dict = {
@@ -760,6 +799,8 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
                 f"machine still busy after --load-wait: load "
                 f"{load['at_start'][0]:.2f} > {args.max_load:.2f}")
         busy_only = bool(problems)
+        if log_error:
+            problems.append(log_error)
         if returncode != 0:
             problems.append(f"exit {returncode}")
         if f"renderer backend: {renderer}" not in output:
