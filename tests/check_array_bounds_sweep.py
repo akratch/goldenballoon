@@ -645,7 +645,7 @@ SHAPE_TRIAGE = {
         "equalling it because the test is an inequality on the total, evaluated "
         "once, before the first byte. Overflow of that sum needs two strings "
         "summing past SIZE_MAX; both come from a bounded MDKR_MOD_PATH_MAX "
-        "buffer or a readdir entry.",
+        "buffer or a listed directory entry.",
     # -- 1.8 pack-texture work: four writes through a caller's buffer, each
     #    read with every call site. None is a defect; the reasons differ.
     ("bare-pointer", "platform/mod_source.c", "path_join:out"):
@@ -751,9 +751,10 @@ SHAPE_TRIAGE = {
         "(`used + len > scratch_capacity` returns -1), NOT the records array -- "
         "its bound is the loop's own slot count.",
     ("bare-pointer", "platform/ghost_bank.c", "collect_records:pairs"):
-        "BOUNDED BY PARAMETER: the loop condition `while (count < capacity && "
-        "(entry = readdir(...)))` is a pre-check evaluated before every "
-        "pairs[count] write, and count has a single increment on the write path "
+        "BOUNDED BY PARAMETER: the loop condition `count < capacity && index < "
+        "names.count` (the collected listing, fs_utf8.h) is a pre-check "
+        "evaluated before every pairs[count] write, and count has a single "
+        "increment on the write path "
         "-- so it cannot pass `capacity` without equalling it. Both callers "
         "(wipe_library, reconcile's on_disk sweep) pass GHOST_BANK_SWEEP_MAX "
         "(1024) with a matching local GhostBankSweepPair[GHOST_BANK_SWEEP_MAX].",

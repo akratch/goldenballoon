@@ -372,6 +372,62 @@ static void test_query_contract(const char *root) {
            "remove the query fixtures");
 }
 
+static int names_hold(const MdkrDirectoryNames *names, const char *name) {
+    for (size_t index = 0; index < names->count; ++index) {
+        if (!strcmp(names->names[index], name)) return 1;
+    }
+    return 0;
+}
+
+/* The collected listing product code uses in place of narrow
+ * opendir()/readdir(): every entry once, Unicode names exact, and nothing
+ * held when the folder cannot be listed. */
+static void test_directory_names(const char *root) {
+    char folder[1024], file[1100], unicode[1100], inner[1100], missing[1024];
+    const char *unicode_name = "char-\xc3\xa9\xe5\x90\x8d.mdkc";
+    MdkrDirectoryNames names;
+
+    join(folder, sizeof folder, root, "names-folder");
+    join(file, sizeof file, folder, "plain.bin");
+    join(unicode, sizeof unicode, folder, unicode_name);
+    join(inner, sizeof inner, folder, "inner");
+    join(missing, sizeof missing, root, "names-missing");
+    expect(mdkr_mkdir_utf8(folder) == 0, "create the names fixture folder");
+
+    memset(&names, 0x5a, sizeof names);
+    expect(mdkr_directory_names_utf8(folder, &names) == 0 && names.count == 0 &&
+               names.unnamed == 0,
+           "an empty folder has no names");
+    mdkr_directory_names_free(&names);
+
+    expect(write_bytes(file, "plain") && write_bytes(unicode, "unicode") &&
+               mdkr_mkdir_utf8(inner) == 0,
+           "fill the names fixture folder");
+    expect(mdkr_directory_names_utf8(folder, &names) == 0 && names.count == 3 &&
+               names.unnamed == 0 && names_hold(&names, "plain.bin") &&
+               names_hold(&names, unicode_name) && names_hold(&names, "inner") &&
+               !names_hold(&names, ".") && !names_hold(&names, ".."),
+           "every name is collected once, a Unicode name exactly, never . or ..");
+    mdkr_directory_names_free(&names);
+    expect(names.names == NULL && names.count == 0 && names.unnamed == 0,
+           "releasing the names clears them");
+
+    memset(&names, 0x5a, sizeof names);
+    errno = 0;
+    expect(mdkr_directory_names_utf8(missing, &names) == -1 && errno != 0 &&
+               names.names == NULL && names.count == 0,
+           "a missing folder cannot be listed, and nothing is held");
+    memset(&names, 0x5a, sizeof names);
+    expect(mdkr_directory_names_utf8(file, &names) == -1 &&
+               names.names == NULL && names.count == 0,
+           "a file cannot be listed as a folder, and nothing is held");
+    mdkr_directory_names_free(NULL);
+
+    expect(mdkr_remove_utf8(file) == 0 && mdkr_remove_utf8(unicode) == 0 &&
+               mdkr_rmdir_utf8(inner) == 0 && mdkr_rmdir_utf8(folder) == 0,
+           "remove the names fixture");
+}
+
 /* A name with no UTF-8 spelling -- on Windows a name that is not valid UTF-16
  * (an unpaired surrogate), elsewhere one that is not valid UTF-8 -- is listed
  * as MDKR_PATH_BAD_NAME, never skipped, so a caller copying a folder can
@@ -410,6 +466,14 @@ static void test_names_without_utf8(const char *root) {
         expect(mdkr_directory_list_utf8(folder, record_entry, &listing) == 0 &&
                    listing.count == 1 && listing.kinds[0] == MDKR_PATH_BAD_NAME,
                "a name with no UTF-8 spelling is listed as such, not skipped");
+        {
+            MdkrDirectoryNames names;
+            expect(mdkr_directory_names_utf8(folder, &names) == 0 &&
+                       names.count == 0 && names.unnamed == 1,
+                   "a collected listing leaves out a name with no UTF-8 "
+                   "spelling and counts it");
+            mdkr_directory_names_free(&names);
+        }
 #ifdef _WIN32
         expect(strstr(listing.names[0], "\xEF\xBF\xBD") != NULL,
                "its stand-in name marks what could not convert");
@@ -592,6 +656,7 @@ int main(void) {
     expect(mdkr_mkdir_utf8(primitives) == 0, "create the primitive fixture root");
     test_path_primitives(primitives);
     test_query_contract(primitives);
+    test_directory_names(primitives);
     test_names_without_utf8(primitives);
     expect(mdkr_rmdir_utf8(primitives) == 0, "remove the primitive fixture root");
 

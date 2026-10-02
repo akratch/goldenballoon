@@ -1432,3 +1432,78 @@ int mdkr_running_executable_path_utf8(char **output) {
 }
 
 #endif
+
+/* ---- Collected listings (fs_utf8.h), the same code on every platform ---- */
+
+typedef struct DirectoryNamesCollector {
+    MdkrDirectoryNames *names;
+    size_t capacity;
+    int failed;
+} DirectoryNamesCollector;
+
+static int collect_directory_name(const char *name, int kind, void *user) {
+    DirectoryNamesCollector *collector = (DirectoryNamesCollector *)user;
+    MdkrDirectoryNames *names = collector->names;
+    size_t length;
+    char *copy;
+    if (kind == MDKR_PATH_BAD_NAME) {
+        names->unnamed++;
+        return 0;
+    }
+    if (names->count == collector->capacity) {
+        const size_t capacity =
+            collector->capacity == 0u ? 16u : collector->capacity * 2u;
+        char **grown;
+        if (capacity < collector->capacity ||
+            capacity > SIZE_MAX / sizeof(*grown)) {
+            errno = ENOMEM;
+            collector->failed = 1;
+            return 1;
+        }
+        grown = (char **)realloc(names->names, capacity * sizeof(*grown));
+        if (grown == NULL) {
+            collector->failed = 1;
+            return 1;
+        }
+        names->names = grown;
+        collector->capacity = capacity;
+    }
+    length = strlen(name);
+    copy = (char *)malloc(length + 1u);
+    if (copy == NULL) {
+        collector->failed = 1;
+        return 1;
+    }
+    memcpy(copy, name, length + 1u);
+    names->names[names->count++] = copy;
+    return 0;
+}
+
+int mdkr_directory_names_utf8(const char *path, MdkrDirectoryNames *names) {
+    DirectoryNamesCollector collector;
+    if (names == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    memset(names, 0, sizeof(*names));
+    collector.names = names;
+    collector.capacity = 0u;
+    collector.failed = 0;
+    errno = 0;
+    if (mdkr_directory_list_utf8(path, collect_directory_name, &collector) != 0 ||
+        collector.failed) {
+        const int saved = errno != 0 ? errno : EIO;
+        mdkr_directory_names_free(names);
+        errno = saved;
+        return -1;
+    }
+    return 0;
+}
+
+void mdkr_directory_names_free(MdkrDirectoryNames *names) {
+    size_t index;
+    if (names == NULL) return;
+    for (index = 0u; index < names->count; ++index) free(names->names[index]);
+    free(names->names);
+    memset(names, 0, sizeof(*names));
+}

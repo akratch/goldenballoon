@@ -68,6 +68,7 @@ UNICODE_PATH_TESTS = {
     "file_browser_ui", "save_v170_fixture", "save_state_container",
     "video_config", "controller_mapping", "character_draft_store",
     "character_draft_transfer", "character_preview_cache",
+    "modern_character_registry",
 }
 
 # Runs that CTest has no registration for. pack_installer takes an optional
@@ -95,8 +96,6 @@ EXPLICIT_EXCLUSIONS: dict[str, str] = {
                          "source path (MDKR_SOURCE_DIR)",
     "lan_party_launch": "makes its fixture folder with std::system(\"mkdir -p\"), "
                         "a POSIX shell command",
-    "modern_character_registry": "makes its scratch folder with "
-                                 "mkdtemp(\"/tmp/...\"), a POSIX path",
 }
 
 

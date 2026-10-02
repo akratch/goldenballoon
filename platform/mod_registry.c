@@ -4,23 +4,24 @@
 #include "mod_registry.h"
 #include "mod_manifest.h"
 #include "mod_source.h"
+#include "fs_utf8.h"
 
 #include <ctype.h>
 #include <limits.h>
 #include <stdlib.h>
-#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 
-/* Windows builds are mingw-w64 only (MSVC is rejected outright in
- * CMakeLists.txt), and mingw-w64 ships <dirent.h>, so enumeration is the same
- * code on both platforms and there is no second Win32 walk to keep in step.
+/* Enumeration is the same code on every platform: the mods folder is listed
+ * through mdkr_directory_names_utf8 (fs_utf8.h). mingw-w64's narrow
+ * opendir()/readdir() read the path and the names in the active code page
+ * and stop at MAX_PATH, so a mods folder outside the code page could not be
+ * listed at all; the wide listing has no such limit.
  *
- * What used to differ was path access — the narrow CRT reads paths in the
- * active code page and stops at MAX_PATH — and this file carried its own
+ * Path access used to differ the same way, and this file carried its own
  * `#if defined(_WIN32)` open/stat pair to route around it. It no longer needs
  * one: every byte and every existence question goes through mod_source, which
- * owns that boundary for both pack kinds at once. `readdir()` is the only
+ * owns that boundary for both pack kinds at once. The listing is the only
  * filesystem call left in this file. */
 
 /* mdkr_mod_manifest_parse() refuses input at or beyond its own 8 KiB bound
@@ -808,21 +809,20 @@ int mdkr_mod_registry_probe_source_bounded(MdkrModSource *source, const char *na
 }
 
 int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
-    DIR *directory;
-    struct dirent *entry;
+    MdkrDirectoryNames names;
+    size_t name_index;
 
     if (reg == NULL) return -1;
     memset(reg, 0, sizeof(*reg));
     if (mods_dir == NULL || mods_dir[0] == '\0') return 0;
 
-    directory = opendir(mods_dir);
-    if (directory == NULL) {
+    if (mdkr_directory_names_utf8(mods_dir, &names) != 0) {
         /* No mods/ at all is what almost every install looks like. */
         return 0;
     }
 
-    while ((entry = readdir(directory)) != NULL) {
-        const char *name = entry->d_name;
+    for (name_index = 0u; name_index < names.count; ++name_index) {
+        const char *name = names.names[name_index];
         char pack_root[MDKR_MOD_PATH_MAX];
         char error[128];
         MdkrModManifest manifest;
@@ -886,7 +886,13 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
         reg->entries[reg->count].is_rice = is_rice;
         reg->count++;
     }
-    closedir(directory);
+    /* A name with no UTF-8 spelling cannot reach its entry (fs_utf8.h). Say
+     * so rather than leave the pack out without a word. */
+    for (name_index = 0u; name_index < names.unnamed; ++name_index) {
+        registry_add_skip(reg, "(a name that is not valid Unicode)",
+                          "this pack's name cannot be used as a path");
+    }
+    mdkr_directory_names_free(&names);
 
     registry_sort(reg);
 
@@ -894,7 +900,7 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
      * priority and both indexes store entry indices. Capturing them during the
      * scan recorded pre-sort positions, so a Rice pack could end up consulting
      * a DIFFERENT pack's enabled flag -- silently, and dependent on whatever
-     * order readdir happened to return.
+     * order the listing happened to return.
      *
      * Ascending priority order also gives the format's own precedence for free:
      * a later pack's entry for the same identity is appended after an earlier

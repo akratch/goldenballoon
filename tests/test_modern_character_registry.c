@@ -17,11 +17,15 @@
  * pre-fix code reports a stack-buffer-overflow WRITE at the
  * `animation_moves[index] = 1u` line; the fixed code is clean.
  *
- * It also pins what the scan does with the folder itself, on every platform:
+ * It also pins what the scan does with the folder itself, on every platform
+ * (the Windows test bundle runs it from a folder with non-ASCII letters):
  *   - a characters folder that does not exist yet is the documented empty
  *     state, not "unavailable" (POSIX used to answer -1, because the path
  *     query answered a missing path differently there);
- *   - a path that exists but cannot be listed is unavailable, never empty.
+ *   - a path that exists but cannot be listed is unavailable, never empty;
+ *   - a folder and a cache whose names are not ASCII are listed exactly (the
+ *     narrow opendir()/readdir() it used to use read Windows names in the
+ *     ANSI code page, so such a folder could not be listed at all).
  *
  * Every scratch path is built under the temporary folder and reached through
  * the UTF-8 helpers; Windows reads %TEMP% as UTF-16.
@@ -95,6 +99,9 @@ static int write_text(const char *path, const char *text) {
 }
 
 int main(int argc, char **argv) {
+    static const char unicode_folder[] =
+        "characters-Gr\xC3\xBC\xC3\x9F" "e-\xE8\xB7\xAF\xE5\xBE\x84";
+    static const char unicode_cache[] = "pr\xC3\xB6" "be-\xE5\xAD\x97.mdkc";
     MdkrModernCharacterRegistry registry;
     char temp[1024];
     char name[128];
@@ -103,7 +110,11 @@ int main(int argc, char **argv) {
     char installed[1400];
     char missing[1300];
     char not_a_folder[1300];
+    char unicode_directory[1300];
+    char unicode_installed[1400];
+    char revision[1600];
     const char *fixture;
+    int revision_written = 0;
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s <sixtyfive-animations.mdkc>\n", argv[0]);
@@ -120,15 +131,21 @@ int main(int argc, char **argv) {
         !join(directory, sizeof directory, root, "installed") ||
         !join(installed, sizeof installed, directory, "probe.mdkc") ||
         !join(missing, sizeof missing, root, "not-created-yet") ||
-        !join(not_a_folder, sizeof not_a_folder, root, "a-file")) {
+        !join(not_a_folder, sizeof not_a_folder, root, "a-file") ||
+        !join(unicode_directory, sizeof unicode_directory, root,
+              unicode_folder) ||
+        !join(unicode_installed, sizeof unicode_installed, unicode_directory,
+              unicode_cache)) {
         fprintf(stderr, "could not name the scratch folders\n");
         return 2;
     }
-    if (mdkr_mkdir_utf8(root) != 0 || mdkr_mkdir_utf8(directory) != 0) {
+    if (mdkr_mkdir_utf8(root) != 0 || mdkr_mkdir_utf8(directory) != 0 ||
+        mdkr_mkdir_utf8(unicode_directory) != 0) {
         fprintf(stderr, "could not create the scratch folders under %s\n", temp);
         return 2;
     }
     if (!copy_file(fixture, installed) ||
+        !copy_file(fixture, unicode_installed) ||
         !write_text(not_a_folder, "not a folder")) {
         fprintf(stderr, "could not stage %s\n", fixture);
         return 2;
@@ -158,6 +175,34 @@ int main(int argc, char **argv) {
     expect(mdkr_modern_character_registry_init(&registry, not_a_folder) == -1,
            "a path that exists but cannot be listed is unavailable, not empty");
 
+    memset(&registry, 0, sizeof registry);
+    expect(mdkr_modern_character_registry_init(&registry, unicode_directory) == 0 &&
+               mdkr_modern_character_registry_count(&registry) == 1 &&
+               mdkr_modern_character_registry_skipped(&registry) == 0,
+           "a non-ASCII characters folder and cache name are scanned exactly");
+    if (mdkr_modern_character_registry_count(&registry) == 1) {
+        const MdkrModernCharacterEntry *entry =
+            mdkr_modern_character_registry_entry(&registry, 0);
+        char leaf[256];
+        /* A retained source revision: <id>.<64 hex digits>.mdkrchar. The
+         * inventory counts it in a second listing of the same folder. */
+        revision_written =
+            snprintf(leaf, sizeof leaf, "%s.%064d.mdkrchar", entry->id, 0) > 0 &&
+            join(revision, sizeof revision, unicode_directory, leaf) &&
+            write_text(revision, "retained source");
+        expect(revision_written, "stage a retained source revision");
+        memset(&registry, 0, sizeof registry);
+        expect(mdkr_modern_character_registry_init_inventory(
+                   &registry, unicode_directory) == 0 &&
+                   mdkr_modern_character_registry_count(&registry) == 1 &&
+                   mdkr_modern_character_registry_entry(&registry, 0)
+                           ->source_revisions == 1u,
+               "the inventory of a non-ASCII folder counts its retained source");
+    }
+
+    if (revision_written) (void)mdkr_remove_utf8(revision);
+    (void)mdkr_remove_utf8(unicode_installed);
+    (void)mdkr_rmdir_utf8(unicode_directory);
     (void)mdkr_remove_utf8(not_a_folder);
     (void)mdkr_remove_utf8(installed);
     (void)mdkr_rmdir_utf8(directory);

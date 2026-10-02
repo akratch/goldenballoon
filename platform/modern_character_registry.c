@@ -5,7 +5,6 @@
 #include "fs_utf8.h"
 #include "modern_character_identity.h"
 
-#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -191,25 +190,28 @@ static void sort_entries(MdkrModernCharacterRegistry *registry) {
 
 static int registry_init(MdkrModernCharacterRegistry *registry,
                          const char *directory, int include_disabled) {
-    DIR *handle;
-    struct dirent *item;
+    MdkrDirectoryNames names;
+    size_t name_index;
     if (registry == NULL) return -1;
     memset(registry, 0, sizeof(*registry));
     if (directory == NULL || directory[0] == '\0') return 0;
-    handle = opendir(directory);
-    if (handle == NULL) {
+    /* Listed through the UTF-8 boundary, so a characters folder (or a cache
+     * name) outside the Windows ANSI code page is listed exactly. */
+    if (mdkr_directory_names_utf8(directory, &names) != 0) {
         int exists = 0;
-        int is_directory = 0;
-        /* A missing character directory is the documented empty state. An
-         * existing path that cannot be enumerated is different: callers must
-         * not mistake an unavailable inventory for an empty one. */
-        if (mdkr_path_query_utf8(directory, &exists, NULL, &is_directory) == 0 &&
+        /* A missing character directory is the documented empty state (the
+         * query answers 0 with exists cleared, fs_utf8.h). An existing path
+         * that cannot be enumerated, or a query that fails, is different:
+         * callers must not mistake an unavailable inventory for an empty
+         * one. */
+        if (mdkr_path_query_utf8(directory, &exists, NULL, NULL) == 0 &&
             !exists) {
             return 0;
         }
         return -1;
     }
-    while ((item = readdir(handle)) != NULL) {
+    for (name_index = 0u; name_index < names.count; ++name_index) {
+        const char *leaf = names.names[name_index];
         MdkrModernCharacterAsset asset;
         MdkrModernCharacterDefinition definition;
         MdkrModernCharacterEntry entry;
@@ -223,25 +225,25 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         char error[MDKR_MODERN_CHARACTER_SKIP_REASON_MAX];
         int regular = 0;
         int enabled;
-        if (item->d_name[0] == '.') continue;
-        enabled = has_cache_suffix(item->d_name);
+        if (leaf[0] == '.') continue;
+        enabled = has_cache_suffix(leaf);
         if (!enabled &&
-            !(include_disabled && has_disabled_cache_suffix(item->d_name))) {
+            !(include_disabled && has_disabled_cache_suffix(leaf))) {
             continue;
         }
-        if (!path_join(path, sizeof(path), directory, item->d_name) ||
+        if (!path_join(path, sizeof(path), directory, leaf) ||
             mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 || !regular) {
-            add_skip(registry, item->d_name, "cache path is not a regular readable file");
+            add_skip(registry, leaf, "cache path is not a regular readable file");
             continue;
         }
         if (!mdkr_modern_character_asset_load_file(path, &asset, error, sizeof(error))) {
-            add_skip(registry, item->d_name, error);
+            add_skip(registry, leaf, error);
             continue;
         }
         if (!mdkr_modern_identity_init(&asset, &decoded_identity,
                                        error, sizeof(error))) {
             mdkr_modern_character_asset_unload(&asset);
-            add_skip(registry, item->d_name, error);
+            add_skip(registry, leaf, error);
             continue;
         }
         memset(&entry, 0, sizeof(entry));
@@ -286,7 +288,7 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
             !copy_string(entry.sort_label, sizeof(entry.sort_label), sort_label) ||
             !copy_string(entry.path, sizeof(entry.path), path)) {
             mdkr_modern_character_asset_unload(&asset);
-            add_skip(registry, item->d_name, "compiled identity or path exceeds the registry bound");
+            add_skip(registry, leaf, "compiled identity or path exceeds the registry bound");
             continue;
         }
         memcpy(entry.source_sha256, asset.source_sha256, sizeof(entry.source_sha256));
@@ -323,7 +325,7 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
                     !copy_string(entry.source_url,
                                  sizeof(entry.source_url), source_url)) {
                     mdkr_modern_character_asset_unload(&asset);
-                    add_skip(registry, item->d_name,
+                    add_skip(registry, leaf,
                              "compiled provenance exceeds the registry bound");
                     continue;
                 }
@@ -551,12 +553,11 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         }
         mdkr_modern_character_asset_unload(&asset);
         if (registry->count >= MDKR_MODERN_CHARACTER_MAX) {
-            add_skip(registry, item->d_name, "the 64-character local registry is full");
+            add_skip(registry, leaf, "the 64-character local registry is full");
             continue;
         }
         registry->entries[registry->count++] = entry;
     }
-    (void)closedir(handle);
     sort_entries(registry);
     {
         int read_index;
@@ -575,39 +576,37 @@ static int registry_init(MdkrModernCharacterRegistry *registry,
         registry->count = write_index;
     }
     if (include_disabled && registry->count > 0) {
-        handle = opendir(directory);
-        if (handle != NULL) {
-            while ((item = readdir(handle)) != NULL) {
-                int regular = 0;
-                char path[MDKR_MODERN_CHARACTER_PATH_MAX];
-                int index;
-                if (item->d_name[0] == '.' ||
-                    !path_join(path, sizeof(path), directory, item->d_name) ||
-                    mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
-                    !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
-                    continue;
+        /* Retained sources and provenance reports, counted from the same
+         * listing the caches came from. */
+        for (name_index = 0u; name_index < names.count; ++name_index) {
+            const char *leaf = names.names[name_index];
+            int regular = 0;
+            char path[MDKR_MODERN_CHARACTER_PATH_MAX];
+            int index;
+            if (leaf[0] == '.' ||
+                !path_join(path, sizeof(path), directory, leaf) ||
+                mdkr_path_query_utf8(path, NULL, &regular, NULL) != 0 ||
+                !regular || mdkr_path_is_link_or_reparse_utf8(path) != 0) {
+                continue;
+            }
+            for (index = 0; index < registry->count; index++) {
+                MdkrModernCharacterEntry *entry = &registry->entries[index];
+                if (content_addressed_leaf(leaf, entry->id, ".mdkrchar")) {
+                    if (entry->source_revisions != UINT32_MAX) {
+                        entry->source_revisions++;
+                    }
+                    break;
                 }
-                for (index = 0; index < registry->count; index++) {
-                    MdkrModernCharacterEntry *entry = &registry->entries[index];
-                    if (content_addressed_leaf(item->d_name, entry->id,
-                                               ".mdkrchar")) {
-                        if (entry->source_revisions != UINT32_MAX) {
-                            entry->source_revisions++;
-                        }
-                        break;
+                if (content_addressed_leaf(leaf, entry->id, ".json")) {
+                    if (entry->provenance_reports != UINT32_MAX) {
+                        entry->provenance_reports++;
                     }
-                    if (content_addressed_leaf(item->d_name, entry->id,
-                                               ".json")) {
-                        if (entry->provenance_reports != UINT32_MAX) {
-                            entry->provenance_reports++;
-                        }
-                        break;
-                    }
+                    break;
                 }
             }
-            (void)closedir(handle);
         }
     }
+    mdkr_directory_names_free(&names);
     return 0;
 }
 

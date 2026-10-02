@@ -95,6 +95,24 @@ typedef int (*MdkrDirectoryVisit)(const char *name, int kind, void *user);
 int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
                              void *user);
 
+/** The entry names of directory `path`, as mdkr_directory_list_utf8 lists
+ * them, collected first so a caller may change the directory while it works
+ * through them. This is how product code lists a folder: never narrow
+ * opendir()/readdir(), which on Windows read paths and names in the ANSI code
+ * page and cannot list a folder (or return a name) outside it. A name with no
+ * UTF-8 spelling (MDKR_PATH_BAD_NAME) cannot reach its entry, so it is left
+ * out and counted in `unnamed`. Returns 0 with `names` filled (release it with
+ * mdkr_directory_names_free), or -1 with errno set and nothing held when the
+ * directory could not be listed completely. A missing directory is -1 here:
+ * ask mdkr_path_query_utf8 whether that failure means "missing". */
+typedef struct MdkrDirectoryNames {
+    char **names;
+    size_t count;
+    size_t unnamed;
+} MdkrDirectoryNames;
+int mdkr_directory_names_utf8(const char *path, MdkrDirectoryNames *names);
+void mdkr_directory_names_free(MdkrDirectoryNames *names);
+
 /** Rename a file or directory within one volume, refusing with EEXIST to
  * replace anything already named `to` (a dangling link included). There is
  * no check-then-rename fallback: where the filesystem cannot refuse

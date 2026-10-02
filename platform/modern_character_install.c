@@ -7,7 +7,6 @@
 #include "sha256.h"
 #include "miniz.h"
 
-#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdatomic.h>
@@ -1267,8 +1266,8 @@ int mdkr_modern_character_remove_installed_coordinated(
     const char *package_id, const char *directory,
     MdkrModernCharacterLifecycleCommit commit, void *context,
     MdkrModernCharacterInstallResult *result) {
-    DIR *handle;
-    struct dirent *item;
+    MdkrDirectoryNames names;
+    size_t name_index;
     char lock_path[4096];
     char quarantine_path[4096];
     FILE *lock = NULL;
@@ -1295,14 +1294,17 @@ int mdkr_modern_character_remove_installed_coordinated(
         result_message(result, "another character import or removal is active");
         return 0;
     }
-    if (fclose(lock) != 0 || (handle = opendir(directory)) == NULL) {
+    /* Listed through the UTF-8 boundary: a character folder outside the
+     * Windows ANSI code page is listed exactly. A name with no UTF-8 spelling
+     * is left out; it can never be one of this package's ASCII leaves. */
+    if (fclose(lock) != 0 || mdkr_directory_names_utf8(directory, &names) != 0) {
         (void)mdkr_remove_utf8(lock_path);
         result_message(result, "installed character directory could not be opened");
         return 0;
     }
-    while ((item = readdir(handle)) != NULL) {
+    for (name_index = 0u; name_index < names.count; ++name_index) {
         int regular = 0;
-        const char *name = item->d_name;
+        const char *name = names.names[name_index];
         int source_revision = 0;
         int provenance_report = 0;
         const int candidate = removal_owned_leaf(
@@ -1345,8 +1347,7 @@ int mdkr_modern_character_remove_installed_coordinated(
             candidate_count++;
         }
     }
-    (void)closedir(handle);
-    handle = NULL;
+    mdkr_directory_names_free(&names);
     if (failed != 0) {
         result_message(result,
             "Character deletion was refused before changing any file because the complete owned set could not be validated.");
@@ -1479,33 +1480,32 @@ int mdkr_modern_character_remove_installed(
 static int reconcile_removal_quarantine(
     const char *package_id, const char *directory,
     const char *quarantine_path, int retire, unsigned *changed) {
-    DIR *handle;
-    struct dirent *item;
+    MdkrDirectoryNames names;
+    size_t index;
     int valid = 1;
 
     /* Validate the complete quarantine before changing any entry. A private
      * directory containing anything not owned by this exact package is never
-     * treated as launcher trash. */
-    handle = opendir(quarantine_path);
-    if (handle == NULL) return 0;
-    while ((item = readdir(handle)) != NULL) {
+     * treated as launcher trash -- a name with no UTF-8 spelling included.
+     * The names are listed once, so the second pass changes exactly the set
+     * the first one validated. */
+    if (mdkr_directory_names_utf8(quarantine_path, &names) != 0) return 0;
+    if (names.unnamed != 0u) valid = 0;
+    for (index = 0u; valid && index < names.count; ++index) {
+        const char *name = names.names[index];
         char source[4096];
         char destination[4096];
         int exists = 0;
         int regular = 0;
-        if (strcmp(item->d_name, ".") == 0 ||
-            strcmp(item->d_name, "..") == 0) continue;
-        if (!removal_owned_leaf(item->d_name, package_id, NULL, NULL) ||
-            !path_join(source, sizeof(source), quarantine_path,
-                       item->d_name) ||
+        if (!removal_owned_leaf(name, package_id, NULL, NULL) ||
+            !path_join(source, sizeof(source), quarantine_path, name) ||
             mdkr_path_query_utf8(source, NULL, &regular, NULL) != 0 ||
             !regular || mdkr_path_is_link_or_reparse_utf8(source) != 0) {
             valid = 0;
             break;
         }
         if (!retire) {
-            if (!path_join(destination, sizeof(destination), directory,
-                           item->d_name) ||
+            if (!path_join(destination, sizeof(destination), directory, name) ||
                 !query_path_state(destination, &exists, NULL) ||
                 (exists && !regular_files_equal(source, destination))) {
                 valid = 0;
@@ -1513,26 +1513,23 @@ static int reconcile_removal_quarantine(
             }
         }
     }
-    (void)closedir(handle);
-    if (!valid) return 0;
+    if (!valid) {
+        mdkr_directory_names_free(&names);
+        return 0;
+    }
 
-    handle = opendir(quarantine_path);
-    if (handle == NULL) return 0;
-    while ((item = readdir(handle)) != NULL) {
+    for (index = 0u; index < names.count; ++index) {
+        const char *name = names.names[index];
         char source[4096];
         char destination[4096];
         int operation;
-        if (strcmp(item->d_name, ".") == 0 ||
-            strcmp(item->d_name, "..") == 0) continue;
-        if (!path_join(source, sizeof(source), quarantine_path,
-                       item->d_name)) {
+        if (!path_join(source, sizeof(source), quarantine_path, name)) {
             valid = 0;
             break;
         }
         if (retire) {
             operation = mdkr_remove_utf8(source);
-        } else if (path_join(destination, sizeof(destination), directory,
-                             item->d_name)) {
+        } else if (path_join(destination, sizeof(destination), directory, name)) {
             int exists = 0;
             if (!query_path_state(destination, &exists, NULL)) {
                 operation = -1;
@@ -1551,7 +1548,7 @@ static int reconcile_removal_quarantine(
         }
         if (changed != NULL) ++*changed;
     }
-    (void)closedir(handle);
+    mdkr_directory_names_free(&names);
     if (valid && mdkr_rmdir_utf8(quarantine_path) != 0) valid = 0;
     if (mdkr_parent_directory_sync_utf8(quarantine_path) != 0) valid = 0;
     return valid;

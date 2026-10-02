@@ -30,7 +30,6 @@
 #include "PR/os_cont.h" /* MAXCONTROLLERS */
 #include "save_data.h"
 
-#include <dirent.h> /* mingw-w64 ships it too; see platform/mod_registry.c */
 #include <stdio.h>
 #include <string.h>
 
@@ -1011,27 +1010,28 @@ typedef struct {
 static int collect_records(int controllerIndex, GhostBankSweepPair *pairs,
                            int capacity) {
     char root[GHOST_BANK_PATH_MAX];
-    DIR *directory;
-    struct dirent *entry;
+    MdkrDirectoryNames names;
+    size_t index;
     int count = 0;
     if (!bank_root(root, sizeof(root))) {
         return 0;
     }
-    directory = opendir(root);
-    if (directory == NULL) {
+    /* Listed through the UTF-8 boundary: narrow readdir() cannot list a save
+     * folder outside the Windows ANSI code page (fs_utf8.h). */
+    if (mdkr_directory_names_utf8(root, &names) != 0) {
         return 0;
     }
-    while (count < capacity && (entry = readdir(directory)) != NULL) {
+    for (index = 0u; count < capacity && index < names.count; ++index) {
         int level = -1;
         int vehicle = -1;
-        if (record_name_pair(entry->d_name, controllerIndex, &level,
+        if (record_name_pair(names.names[index], controllerIndex, &level,
                              &vehicle)) {
             pairs[count].level = (uint8_t)level;
             pairs[count].vehicle = (uint8_t)vehicle;
             count++;
         }
     }
-    closedir(directory);
+    mdkr_directory_names_free(&names);
     return count;
 }
 
