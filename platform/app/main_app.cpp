@@ -6295,6 +6295,13 @@ int main(int argc, char **argv) {
             std::fprintf(stderr, "[SAVE] directory %s (%s)\n", saveDirectory,
                          mdkr_user_paths_save_origin_label());
         }
+        /* And where content packs are read from: a stray MDKR_MODS_DIR
+         * ("env") would otherwise make installed packs vanish unexplained. */
+        char modsDirectory[4096];
+        if (mdkr_user_mods_directory(modsDirectory, sizeof(modsDirectory))) {
+            std::fprintf(stderr, "[MODS] folder %s (%s)\n", modsDirectory,
+                         mdkr_user_paths_mods_origin_label());
+        }
     }
 
     AppHost host;

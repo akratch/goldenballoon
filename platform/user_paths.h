@@ -88,6 +88,9 @@ int mdkr_user_paths_save_write_failed_directory(char *output, size_t output_size
  * MDKR_SAVE_DIR: automated runs point it at an empty private folder so a pack
  * installed into the folder a developer launches from cannot reach a test. */
 int mdkr_user_mods_directory(char *output, size_t output_size);
+/* Where that folder came from: "env", "portable", "fallback", "per-user",
+ * "cwd" (a command-line build), or "browser". For the boot log. */
+const char *mdkr_user_paths_mods_origin_label(void);
 /* Locally imported custom characters and their disposable compiled caches.
  * Separate from mods/: ordinary content packs are read-only override sources,
  * while character import is a launcher-owned transaction with provenance and

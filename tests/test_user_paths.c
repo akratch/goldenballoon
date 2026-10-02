@@ -302,6 +302,8 @@ int main(int argc, char **argv) {
     expect("mods override wins",
            mdkr_user_mods_directory(path, sizeof(path)) &&
            strcmp(path, override_mods) == 0);
+    expect("mods origin reads env",
+           strcmp(mdkr_user_paths_mods_origin_label(), "env") == 0);
     expect("override mods not created", missing(override_mods));
     expect("override config not migrated", missing(override_config));
     expect("override save not migrated", missing(override_save));
@@ -409,6 +411,8 @@ int main(int argc, char **argv) {
            mdkr_user_mods_directory(path, sizeof(path)) &&
            join(override_mods, sizeof(override_mods), pref, "mods") &&
            strcmp(path, override_mods) == 0);
+    expect("packaged mods origin reads per-user",
+           strcmp(mdkr_user_paths_mods_origin_label(), "per-user") == 0);
     expect("migrated EEPROM path",
            join(path, sizeof(path), other, "eeprom.bin"));
     expect("resource EEPROM won migration precedence",

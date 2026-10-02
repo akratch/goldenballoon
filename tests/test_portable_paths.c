@@ -171,6 +171,8 @@ int main(int argc, char **argv) {
                mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
                join(expected, sizeof(expected), appdir, "mods") &&
                strcmp(resolved, expected) == 0);
+        expect("mods origin reads portable",
+               strcmp(mdkr_user_paths_mods_origin_label(), "portable") == 0);
         expect("save origin is labelled portable",
                strcmp(mdkr_user_paths_save_origin_label(), "portable") == 0);
         (void)mdkr_remove_utf8(marker);
@@ -211,6 +213,8 @@ int main(int argc, char **argv) {
                mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
                join(expected, sizeof(expected), exe_dir, "mods") &&
                strcmp(resolved, expected) == 0);
+        expect("mods origin reads portable",
+               strcmp(mdkr_user_paths_mods_origin_label(), "portable") == 0);
         /* A portable install is never a write-relocation, so it must not raise
          * the "saved next to the game" notice. */
         expect("portable mode is not a relocation notice",
@@ -252,6 +256,11 @@ int main(int argc, char **argv) {
         expect("save resolves below the per-user root before fallback",
                mdkr_user_save_directory(resolved, sizeof(resolved)) &&
                strcmp(resolved, pref_save) == 0);
+        expect("mods stays in the working directory before fallback",
+               mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
+               strcmp(resolved, "mods") == 0);
+        expect("mods origin reads cwd",
+               strcmp(mdkr_user_paths_mods_origin_label(), "cwd") == 0);
         expect("no relocation notice before a failure",
                !mdkr_user_paths_write_relocated());
         /* Simulate the home-directory write failing. */
@@ -271,6 +280,8 @@ int main(int argc, char **argv) {
                mdkr_user_mods_directory(resolved, sizeof(resolved)) &&
                join(expected, sizeof(expected), exe_dir, "mods") &&
                strcmp(resolved, expected) == 0);
+        expect("mods origin reads fallback",
+               strcmp(mdkr_user_paths_mods_origin_label(), "fallback") == 0);
         /* A second activation offers nothing new, so it must report 0 and not
          * leave the caller retrying forever. */
         expect("second fallback activation is a no-op",

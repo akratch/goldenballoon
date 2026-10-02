@@ -1159,6 +1159,24 @@ int mdkr_user_mods_directory(char *output, size_t output_size) {
 #endif
 }
 
+/* One-word classification of what mdkr_user_mods_directory() resolves to,
+ * for the boot log. Mirrors that resolution order exactly. */
+const char *mdkr_user_paths_mods_origin_label(void) {
+#ifdef __EMSCRIPTEN__
+    return "browser";
+#else
+    const char *override = getenv("MDKR_MODS_DIR");
+    if (override != NULL && override[0] != '\0') {
+        return "env";
+    }
+    ensure_portable_resolved();
+    if ((s_portable || s_fallback_active) && s_exe_dir[0] != '\0') {
+        return s_portable ? "portable" : "fallback";
+    }
+    return s_packaged ? "per-user" : "cwd";
+#endif
+}
+
 int mdkr_user_characters_directory(char *output, size_t output_size) {
 #ifdef __EMSCRIPTEN__
     return path_copy(output, output_size, "/characters");
