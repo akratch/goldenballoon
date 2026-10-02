@@ -30,6 +30,7 @@
 #include "PR/os_cont.h" /* MAXCONTROLLERS */
 #include "save_data.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -823,32 +824,34 @@ static int load_image(const char *path, uint8_t *image, size_t capacity,
     return 1;
 }
 
-/* Rename a file out of active service, virtual_pak style: corrupt images,
- * and records being retired by a wipe or orphan sweep. A .bad.N name never
- * matches record_name_pair() or any load path, so a quarantined file is
- * dead to the bank while staying recoverable by hand. */
+/* Rename a file out of active service, as the controller pak does: corrupt
+ * images, and records being retired by a wipe or orphan sweep. A .bad.N name
+ * never matches record_name_pair() or any load path, so a quarantined file
+ * is dead to the bank while staying recoverable by hand. */
 static void quarantine(const char *path, const char *reason) {
     char bad_path[GHOST_BANK_PATH_MAX + 16];
-    int suffix;
-    for (suffix = 1; suffix <= 99; suffix++) {
-        int exists = 1;
-        if (snprintf(bad_path, sizeof(bad_path), "%s.bad.%d", path,
-                     suffix) < 0) {
-            return;
+    const int moved = mdkr_set_aside_utf8(path, bad_path, sizeof(bad_path));
+    if (moved > 0) {
+        fprintf(stderr, "[GHOSTBANK] quarantined %s file as %s\n", reason,
+                bad_path);
+#ifdef __EMSCRIPTEN__
+        /* Commit the move like any other bank write, or the next visit
+         * finds the file where it was. */
+        if (!mdkr_persist_save_async(1)) {
+            fprintf(stderr,
+                    "[GHOSTBANK] browser storage did not acknowledge setting "
+                    "aside %s; automatic retry remains armed\n",
+                    bad_path);
         }
-        if (mdkr_path_query_utf8(bad_path, &exists, NULL, NULL) == 0 &&
-            exists) {
-            continue;
-        }
-        if (mdkr_move_utf8(path, bad_path, 0, 1) == 0) {
-            fprintf(stderr, "[GHOSTBANK] quarantined %s file as %s\n",
-                    reason, bad_path);
-        }
-        return;
+#endif
+    } else if (moved == 0) {
+        fprintf(stderr,
+                "[GHOSTBANK] %s file retained; quarantine slots are full\n",
+                reason);
+    } else {
+        fprintf(stderr, "[GHOSTBANK] could not quarantine %s file %s: %s\n",
+                reason, path, strerror(errno));
     }
-    fprintf(stderr,
-            "[GHOSTBANK] %s file retained; quarantine slots are full\n",
-            reason);
 }
 
 /* Load the controller's index sidecar; absent or corrupt (after quarantine)

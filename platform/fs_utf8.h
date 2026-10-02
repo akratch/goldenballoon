@@ -25,9 +25,32 @@ int mdkr_mkdir_utf8(const char *path);
 int mdkr_rmdir_utf8(const char *path);
 
 /** Atomic move. `replace` permits replacing a file; `write_through` requests
- * durable metadata completion on Windows. Returns zero on success. */
+ * durable metadata completion on Windows. Returns zero on success.
+ *
+ * Without `replace` the move refuses (EEXIST) to replace anything already
+ * named `to`, a dangling link included. Natively that refusal is atomic. The
+ * browser's file system has no hard links, so there the move checks that
+ * `to` is free and then renames: the engine is single-threaded and nothing
+ * yields between the two calls, so no other writer can take the name in
+ * between. */
 int mdkr_move_utf8(const char *from, const char *to,
                    int replace, int write_through);
+
+/** Set a damaged or retired file aside instead of deleting it: move `path`
+ * to the first free "<path>.bad.N", N = 1..MDKR_SET_ASIDE_SLOTS, with the
+ * no-replace move above. A slot that already holds anything (a dangling link
+ * included) is skipped, so an earlier set-aside copy is never overwritten,
+ * and no load path matches a .bad.N name. `bad_path` receives the name used,
+ * or the one that failed.
+ *   1  moved;
+ *   0  every slot is taken, so the file stays where it is;
+ *  -1  errno set: the file could not be moved and stays where it is (also
+ *      for a NULL or empty argument, or a slot name that does not fit).
+ * The caller reports every outcome; in the browser it also commits the move
+ * to storage, as it would any other save write. */
+#define MDKR_SET_ASIDE_SLOTS 99
+int mdkr_set_aside_utf8(const char *path, char *bad_path,
+                        size_t bad_path_size);
 
 /** Query `path` without opening it. Any output pointer may be NULL; every
  * output is cleared first. POSIX follows a final link (so a dangling link is

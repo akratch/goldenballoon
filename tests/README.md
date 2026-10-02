@@ -7641,9 +7641,18 @@ system that refuses the handle's attribute or directory query as unsupported
 (FAT/exFAT and some network drives, for some queries) is listed through
 `FindFirstFileW` instead; the Windows `fs_utf8` build forces both refusals
 through a test-only seam (`MDKR_FS_UTF8_TESTING`, defined for that target
-alone) and checks the listing is unchanged. The Windows executables are built by
-`tools/mingw_cross_check.sh --intake-tests`; they have not yet run on
-Windows, and the older mutation statement above does not qualify them.
+alone) and checks the listing is unchanged. `fs_set_aside` checks how a damaged
+controller pak or ghost file is moved out of service (`mdkr_set_aside_utf8`:
+the next free `.bad.N`, never over an earlier copy or a dangling link, failures
+reported) and the no-replace move under it. The browser's file system has no
+hard links, so that move has an Emscripten arm. CTest does not build for
+Emscripten: `tools/web/run_emscripten_unit_tests.sh` builds `fs_set_aside` and
+`ghost_bank` with the pinned emcc and runs them under node, on the in-memory
+file system the browser's save mount sits on, where the ghost bank also checks
+that each set-aside asks for browser storage to be committed. The Windows
+executables are built by `tools/mingw_cross_check.sh --intake-tests`; they have
+not yet run on Windows, and the older mutation statement above does not qualify
+them.
 
 `tools/package_windows_test_bundle.sh` ships these, with every other ROM-free
 unit test CTest runs directly, as a zip for a Windows PC:

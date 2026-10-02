@@ -56,6 +56,16 @@ save formats). Everything below 1.0.0 predates that commitment.
   megabytes of crafted data could demand gigabytes for a small picture; such a
   file is now refused within its header's budget.
 
+### Fixed
+
+- In the browser, a damaged controller-pak image or ghost file is now set
+  aside as it is on the desktop: renamed to the next free `.bad.N` name, never
+  over an earlier one, and committed to browser storage. Before, the browser's
+  file system (which has no hard links) refused the move without a word, so
+  the damaged file stayed where it was and was rejected again on every visit,
+  and ghosts that a pak reformat had wiped could come back. A set-aside that
+  fails is now logged on every platform.
+
 ## [1.7.0] — 2026-09-11
 
 ### Added

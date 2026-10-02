@@ -62,7 +62,8 @@ WIDE_ARGUMENT_TESTS = {"mod_source_zip"}
 # pass from that folder under Wine, whose ANSI code page (1252) cannot spell
 # it either.
 UNICODE_PATH_TESTS = {
-    "fs_utf8", "mod_source_zip", "pack_installer", "pack_install_job",
+    "fs_utf8", "fs_set_aside", "mod_source_zip", "pack_installer",
+    "pack_install_job",
     "pack_installer_zip_argument",
     "portable_paths_marker", "app_config_persistence", "rom_browser",
     "file_browser_ui", "save_v170_fixture", "save_state_container",

@@ -1569,6 +1569,16 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_fs_utf8_test PRIVATE MDKR_FS_UTF8_TESTING)
     add_test(NAME fs_utf8 COMMAND mdkr_fs_utf8_test)
 
+    # How a damaged controller pak or ghost record is set aside (.bad.N),
+    # including the no-replace move under it. Also built with emcc and run
+    # under node for the browser arm (see the test's header).
+    add_executable(mdkr_fs_set_aside_test
+        ${CMAKE_SOURCE_DIR}/tests/test_fs_set_aside.c
+        ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
+    target_include_directories(mdkr_fs_set_aside_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME fs_set_aside COMMAND mdkr_fs_set_aside_test)
+
     add_executable(mdkr_app_overlay_hooks_test
         ${CMAKE_SOURCE_DIR}/tests/test_app_overlay_hooks.c
         ${CMAKE_SOURCE_DIR}/platform/app_overlay_hooks.c)

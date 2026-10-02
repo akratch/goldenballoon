@@ -65,11 +65,14 @@ encoded to a temporary file, flushed, synchronized where the host supports it,
 renamed into place, and only then committed to memory. In the browser, the game
 awaits the corresponding IDBFS persistence request before continuing.
 
-A malformed stored image is never interpreted as ghost data. It is moved to a
-numbered `.bad.N` quarantine file and the current session reports bad data until
-the Pak is explicitly reformatted. Browser bundle import validates every image
-through the same C decoder used by the game, stages all four ports, persists and
-reloads the set, and verifies exact bytes. Any failure restores the prior set.
+A malformed stored image is never interpreted as ghost data. It is moved to the
+next free numbered `.bad.N` quarantine file (never over an earlier one; in the
+browser the move is persisted like any other Pak write) and the current session
+reports bad data until the Pak is explicitly reformatted. A move that fails is
+logged and leaves the image where it was. Browser bundle import validates every
+image through the same C decoder used by the game, stages all four ports,
+persists and reloads the set, and verifies exact bytes. Any failure restores the
+prior set.
 
 The launcher's complete erase operates on every file in `/save`, including
 EEPROM generations, Pak images, rollback files, and quarantines, and verifies

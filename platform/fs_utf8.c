@@ -101,6 +101,36 @@ static size_t utf8_sequence_length(const unsigned char *cursor) {
     return extra + 1u;
 }
 
+/* Platform-independent: both quarantine call sites (the controller pak in
+ * stubs_dkr.c, the ghost bank) share it, so a fix to one cannot miss the
+ * other. See fs_utf8.h. */
+int mdkr_set_aside_utf8(const char *path, char *bad_path,
+                        size_t bad_path_size) {
+    int slot;
+    if (bad_path != NULL && bad_path_size > 0u) bad_path[0] = '\0';
+    if (path == NULL || path[0] == '\0' || bad_path == NULL ||
+        bad_path_size == 0u) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (slot = 1; slot <= MDKR_SET_ASIDE_SLOTS; ++slot) {
+        const int written =
+            snprintf(bad_path, bad_path_size, "%s.bad.%d", path, slot);
+        int kind;
+        if (written < 0 || (size_t)written >= bad_path_size) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        kind = mdkr_path_kind_utf8(bad_path);
+        if (kind < 0) return -1;
+        if (kind != MDKR_PATH_MISSING) continue;
+        if (mdkr_move_utf8(path, bad_path, 0, 1) == 0) return 1;
+        /* Taken since the check: the no-replace move refused it. */
+        if (errno != EEXIST) return -1;
+    }
+    return 0;
+}
+
 #if defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <direct.h>
 #include <fcntl.h>
@@ -1104,6 +1134,21 @@ int mdkr_move_utf8(const char *from, const char *to,
                    int replace, int write_through) {
     (void)write_through;
     if (!replace) {
+#ifdef __EMSCRIPTEN__
+        /* Emscripten's file system has no hard links: link() always fails
+         * (EMLINK), so the install below could never move a file in the
+         * browser, and a damaged pak or ghost file was never set aside. One
+         * single-threaded engine owns this file system and nothing yields
+         * between these two calls, so the check cannot go stale (fs_utf8.h).
+         * lstat: a dangling link is a name already taken. */
+        struct stat status;
+        if (lstat(to, &status) == 0) {
+            errno = EEXIST;
+            return -1;
+        }
+        if (errno != ENOENT) return -1;
+        return rename(from, to);
+#else
         int saved;
         /* The non-replacing native call sites move regular files. link()+
          * unlink() gives them an atomic no-clobber install on POSIX, matching
@@ -1115,6 +1160,7 @@ int mdkr_move_utf8(const char *from, const char *to,
         (void)unlink(to);
         errno = saved;
         return -1;
+#endif
     }
     return rename(from, to);
 }

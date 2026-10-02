@@ -479,6 +479,20 @@ void mdkr_trace(const char *fmt, ...) {
     (void)fmt;
 }
 
+#ifdef __EMSCRIPTEN__
+/* The browser build commits its in-memory save folder to IndexedDB through
+ * this seam (stubs_dkr.c). Built with emcc and run under node, the test
+ * counts the requests: a set-aside that is never committed comes back on
+ * the next visit. */
+static int s_persistRequests;
+
+int mdkr_persist_save_async(int kind) {
+    (void)kind;
+    s_persistRequests++;
+    return 1;
+}
+#endif
+
 static int bank_file_exists(int level, int vehicle) {
     char path[1200];
     FILE *file;
@@ -792,6 +806,74 @@ static void test_reconcile_quarantines_orphans(void) {
     CHECK(mdkr_ghost_window_find(s_note, NOTE_BYTES, 11, 2) == -1);
 }
 
+static void remove_tree(const char *root);
+
+static void write_text(const char *path, const char *text) {
+    FILE *file = fopen(path, "wb");
+    CHECK(file != NULL);
+    if (file != NULL) {
+        CHECK(fwrite(text, 1, strlen(text), file) == strlen(text));
+        fclose(file);
+    }
+}
+
+/* 1 when `path` exists and holds exactly `text`. */
+static int file_holds(const char *path, const char *text) {
+    char buffer[128];
+    size_t got;
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        return 0;
+    }
+    got = fread(buffer, 1, sizeof(buffer), file);
+    fclose(file);
+    return got == strlen(text) && memcmp(buffer, text, got) == 0;
+}
+
+/* A corrupt index sidecar is set aside under the next free .bad.N name --
+ * never on top of an earlier set-aside copy -- and, in the browser, the move
+ * is committed to storage so the next visit does not find it again. */
+static void test_corrupt_index_set_aside(void) {
+    char index[1200];
+    char first[1220];
+    char second[1220];
+    FILE *file;
+#ifdef __EMSCRIPTEN__
+    int persisted;
+#endif
+
+    reset_fake_pak();
+    mdkr_ghost_bank_reset();
+    remove_tree(s_root);
+#if defined(_WIN32)
+    _mkdir(s_root);
+#else
+    mkdir(s_root, 0700);
+#endif
+    snprintf(index, sizeof(index), "%s/controller-1-index.mdgi", s_root);
+    snprintf(first, sizeof(first), "%s.bad.1", index);
+    snprintf(second, sizeof(second), "%s.bad.2", index);
+    write_text(first, "an earlier set-aside index");
+    write_text(index, "not an index");
+
+    /* No note: the select loads and rejects the index, then wipes a library
+     * that has no records, so the only file it moves is the index. */
+#ifdef __EMSCRIPTEN__
+    persisted = s_persistRequests;
+#endif
+    CHECK(mdkr_ghost_bank_select(0, 2, 1) == 0);
+    file = fopen(index, "rb");
+    CHECK(file == NULL);
+    if (file != NULL) {
+        fclose(file);
+    }
+    CHECK(file_holds(first, "an earlier set-aside index"));
+    CHECK(file_holds(second, "not an index"));
+#ifdef __EMSCRIPTEN__
+    CHECK(s_persistRequests == persisted + 1);
+#endif
+}
+
 static void remove_tree(const char *root) {
     /* Only the flat bank directory layout is created here, plus the .bad.N
      * quarantine names the wipe/orphan arms deliberately produce. */
@@ -851,6 +933,7 @@ int main(void) {
     test_select_failure_no_ops();
     test_wipe_quarantines_orphans();
     test_reconcile_quarantines_orphans();
+    test_corrupt_index_set_aside();
 
     mdkr_ghost_bank_set_root(NULL);
     remove_tree(s_root);

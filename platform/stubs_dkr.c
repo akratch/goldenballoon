@@ -2154,39 +2154,32 @@ static int virtual_pak_store(int channel, const MdkrVirtualPak *pak) {
     return 1;
 }
 
+/* Move a corrupt image to the first free .bad.N name (fs_utf8.h): out of
+ * service, never deleted, never over an earlier set-aside copy. */
 static void virtual_pak_quarantine(int channel) {
-    char bad_path[1200];
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-    int exists;
-#else
-    struct stat status;
-#endif
-    int suffix;
-    for (suffix = 1; suffix <= 99; suffix++) {
-        if (snprintf(
-                bad_path, sizeof(bad_path), "%s.bad.%d",
-                s_virtualPakPath[channel], suffix) < 0) {
-            return;
-        }
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
-        exists = 0;
-        if (mdkr_path_query_utf8(bad_path, &exists, NULL, NULL) == 0 &&
-            !exists) {
-#else
-        if (stat(bad_path, &status) != 0 && dkr_host_errno() == ENOENT) {
-#endif
-            if (mdkr_move_utf8(s_virtualPakPath[channel], bad_path, 0, 1) == 0) {
-                fprintf(stderr, "[PFS] quarantined corrupt pack as %s\n",
-                        bad_path);
+    char bad_path[sizeof(s_virtualPakPath[0]) + 16];
+    const int moved = mdkr_set_aside_utf8(s_virtualPakPath[channel], bad_path,
+                                          sizeof(bad_path));
+    if (moved > 0) {
+        fprintf(stderr, "[PFS] quarantined corrupt pack as %s\n", bad_path);
 #ifdef __EMSCRIPTEN__
-                (void)mdkr_persist_save_async(1);
-#endif
-            }
-            return;
+        /* Commit the move like any other pak write, or the next visit finds
+         * the corrupt image where it was. */
+        if (!mdkr_persist_save_async(1)) {
+            fprintf(stderr,
+                    "[PFS] browser storage did not acknowledge setting aside "
+                    "%s; automatic retry remains armed\n",
+                    bad_path);
         }
+#endif
+    } else if (moved == 0) {
+        fprintf(stderr,
+                "[PFS] corrupt pack retained in place; quarantine slots are "
+                "full\n");
+    } else {
+        fprintf(stderr, "[PFS] could not set aside corrupt pack %s: %s\n",
+                s_virtualPakPath[channel], strerror(dkr_host_errno()));
     }
-    fprintf(stderr,
-            "[PFS] corrupt pack retained in place; quarantine slots are full\n");
 }
 
 static int virtual_pak_load(int channel) {
