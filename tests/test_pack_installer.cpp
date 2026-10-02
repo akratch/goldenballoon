@@ -954,6 +954,54 @@ int main(int argc, char **argv) {
         REQUIRE(noResidue(unsafeMods));
     }
 #endif
+    // A pick that is gone, or that cannot even be looked at, says so: it is
+    // not "a link or special file". So does a plain file that is not a ZIP.
+    {
+        const auto pickMods = root.path / "pick-mods";
+        {
+            auto prepared = PreparedPackInstall::copyPack(input / "Vanished.zip", pickMods);
+            const auto result = prepared.finalize();
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("could not be found") != std::string::npos);
+        }
+        std::ofstream(input / "notes.txt") << "not a pack";
+        {
+            auto prepared = PreparedPackInstall::copyPack(input / "notes.txt", pickMods);
+            const auto result = prepared.finalize();
+            REQUIRE(!result.installed);
+            REQUIRE(result.message.find("Choose a .zip content pack or a pack folder") !=
+                    std::string::npos);
+        }
+        REQUIRE(noResidue(pickMods));
+#ifndef _WIN32
+        const auto locked = input / "locked";
+        REQUIRE(fs::create_directories(locked / "LockedFolder"));
+        REQUIRE(writeZip(locked / "Locked.zip", "pack.ini", "[pack]\nname=Locked\n"));
+        fs::permissions(locked, fs::perms::none, fs::perm_options::replace);
+        std::error_code denied;
+        (void)fs::symlink_status(locked / "Locked.zip", denied);
+        PackInstallResult zipResult, folderResult;
+        {
+            auto zip = PreparedPackInstall::copyPack(locked / "Locked.zip", pickMods);
+            zipResult = zip.finalize();
+            auto folder = PreparedPackInstall::copyPack(locked / "LockedFolder", pickMods);
+            folderResult = folder.finalize();
+        }
+        fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
+        if (!denied) {
+            std::puts("SKIP: this user can look inside any folder, so the access-denied "
+                      "pick proves nothing here");
+        } else {
+            if (zipResult.message.find("Cannot read the selected pack") == std::string::npos)
+                std::fprintf(stderr, "denied pick: %s\n", zipResult.message.c_str());
+            REQUIRE(!zipResult.installed && !folderResult.installed);
+            REQUIRE(zipResult.message.find("Cannot read the selected pack") != std::string::npos);
+            REQUIRE(folderResult.message.find("Cannot read the selected pack") !=
+                    std::string::npos);
+        }
+        REQUIRE(noResidue(pickMods));
+#endif
+    }
     // A file whose name has no UTF-8 spelling (Windows: not valid UTF-16;
     // elsewhere: not valid UTF-8). The pathname installer Windows ships cannot
     // name it in staging, so it refuses the pack rather than leave the file

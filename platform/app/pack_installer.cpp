@@ -547,17 +547,39 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     }
 
     std::error_code ec;
+    // What the pick is, without following a link. One message per cause:
+    // a pick that is gone or cannot be looked at is not "a link".
 #if MDKR_PACK_BY_PATH
     // std::filesystem cannot see Windows junctions or symbolic links, so the
     // pathname arm asks fs_utf8, which reports them as links.
-    const int sourceKind = mdkr_path_kind_utf8(source.u8string().c_str());
+    const std::string sourcePath = source.u8string();
+    const int sourceKind = mdkr_path_kind_utf8(sourcePath.c_str());
+    const std::error_code kindError =
+        sourceKind < 0 ? std::error_code(errno, std::generic_category()) : std::error_code();
+    const bool missing = sourceKind == MDKR_PATH_MISSING;
     const bool directory = sourceKind == MDKR_PATH_DIRECTORY;
-    if (!directory && (sourceKind != MDKR_PATH_FILE || !zipExtension(source))) {
+    const bool regularFile = sourceKind == MDKR_PATH_FILE;
 #else
     const auto sourceStatus = fs::symlink_status(source, ec);
-    const bool directory = fs::is_directory(sourceStatus);
-    if (ec || (!directory && (!fs::is_regular_file(sourceStatus) || !zipExtension(source)))) {
+    const bool missing = sourceStatus.type() == fs::file_type::not_found;
+    const std::error_code kindError = missing ? std::error_code() : ec;
+    const bool directory = !kindError && fs::is_directory(sourceStatus);
+    const bool regularFile = !kindError && fs::is_regular_file(sourceStatus);
 #endif
+    if (kindError) {
+        prepared.error_ = fileError("Cannot read the selected pack", kindError);
+        return prepared;
+    }
+    if (missing) {
+        prepared.error_ = "The selected pack could not be found. It may have been moved, "
+                          "renamed or deleted.";
+        return prepared;
+    }
+    if (regularFile && !zipExtension(source)) {
+        prepared.error_ = "Choose a .zip content pack or a pack folder.";
+        return prepared;
+    }
+    if (!directory && !regularFile) {
         prepared.error_ = "Choose a regular ZIP or folder, not a link or special file.";
         return prepared;
     }
@@ -664,12 +686,13 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
 #endif
     // Any entry at the name counts, a dangling link included: publication
     // never replaces one, so say so now rather than after the copy.
-    const int existing = mdkr_path_kind_utf8(
-        (prepared.modsDir_ / prepared.filename_).u8string().c_str());
+    const std::string destinationPath = (prepared.modsDir_ / prepared.filename_).u8string();
+    const int existing = mdkr_path_kind_utf8(destinationPath.c_str());
+    const int existingError = errno;
     if (existing != MDKR_PATH_MISSING) {
         prepared.error_ = existing < 0
             ? fileError("Cannot check for an existing pack",
-                        std::error_code(errno, std::generic_category()))
+                        std::error_code(existingError, std::generic_category()))
             : "A pack named \"" + prepared.filename_.u8string() + "\" is already "
               "installed. To update it, remove the installed copy from your mods "
               "folder first. Nothing was replaced.";
@@ -1143,10 +1166,19 @@ PackInstallResult PreparedPackInstall::finalize(const std::function<bool()> &can
         result.message = ec == std::errc::file_exists
             ? "A pack with that filename was installed meanwhile. Nothing was replaced."
             : exclusiveRenameUnsupported(ec)
+#ifdef _WIN32
+            // MoveFileExW refuses an existing name on every Windows file
+            // system, FAT and exFAT included; this is a drive that cannot
+            // rename at all.
+            ? "The drive your mods folder is on does not support moving the pack "
+              "into place (some network or virtual drives). Nothing was installed. "
+              "Copy the pack into the mods folder yourself."
+#else
             ? "The drive your mods folder is on cannot add a pack without risking "
               "replacing another one (a FAT or exFAT drive, or some network "
               "folders). Nothing was installed. Copy the pack into the mods folder "
               "yourself."
+#endif
             : fileError("Could not publish the pack", ec);
         return result;
     }

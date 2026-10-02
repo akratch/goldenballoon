@@ -113,6 +113,9 @@ static void fail_windows(DWORD error) {
     case ERROR_NOT_SAME_DEVICE:
         errno = EXDEV;
         break;
+    /* The file system does not implement the operation at all (some network
+     * and virtual drives). FAT and exFAT do implement rename, including the
+     * refusal of an existing name, so this is not a FAT/exFAT answer. */
     case ERROR_NOT_SUPPORTED:
     case ERROR_INVALID_FUNCTION:
         errno = ENOTSUP;

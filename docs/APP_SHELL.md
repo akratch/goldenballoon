@@ -427,7 +427,8 @@ installed copy first); a folder must not contain the mods folder; a ZIP's
 central directory must fit the budgets below, read without inflating any
 member; and the pack must pass the admission rules the game applies when it
 loads packs (a `pack.ini`, or Rice/GLideN64 texture names). A refusal says
-which rule failed.
+which rule failed; a pick that is gone, that cannot be read, or that is a file
+but not a ZIP is refused with that reason.
 
 The copy runs on a worker while the launcher stays usable, into a hidden
 staging folder `mods/.install-<tick>-<n>` that the pack scan ignores. Budgets:
@@ -446,10 +447,13 @@ Publication happens on the launcher thread, after that frame's input: a copy
 that finishes in the same frame as Cancel installation or Quit is not
 published. While the engine runs, a finished copy waits until the launcher is
 back. The staged copy is admitted again, then moved into place by a rename
-that refuses an existing name. There is no overwriting fallback; on a drive
-that cannot refuse (FAT, exFAT, some network folders) the install is refused
-with that reason. Cancellation after the move does not undo it, and the
-Content list then refreshes on the launcher thread.
+that refuses an existing name. There is no overwriting fallback. On macOS and
+Linux a drive whose rename cannot refuse (FAT, exFAT, some network folders)
+refuses the install with that reason; on Windows every file system's rename
+refuses an existing name, FAT and exFAT included, and only a drive that cannot
+rename at all (some network or virtual drives) refuses it. Cancellation after
+the move does not undo it, and the Content list then refreshes on the
+launcher thread.
 
 A cancelled or refused copy is deleted on a background thread, never through
 a link. A live installation holds its staging folder; when the launcher
