@@ -2299,6 +2299,21 @@ void platform_content_packs_init(void) {
                         entry->textures_skipped == 1 ? "" : "s",
                         entry->textures_skipped_first);
             }
+            /* One line for every texture the pack holds twice in different
+             * case, however many there are: the index reads the
+             * all-lowercase file, or failing that the first by name. */
+            if (entry->textures_case_duplicates > 0) {
+                fprintf(stderr,
+                        "[MODS]     %d file%s under textures/ will not be "
+                        "used: %s a texture the pack also has in another "
+                        "case, and the all-lowercase file (else the first by "
+                        "name) is the one used (first: %s)\n",
+                        entry->textures_case_duplicates,
+                        entry->textures_case_duplicates == 1 ? "" : "s",
+                        entry->textures_case_duplicates == 1 ? "it names"
+                                                             : "each names",
+                        entry->textures_case_duplicates_first);
+            }
         } else if (platform_content_pack_name_disabled(
                        disabled_list, entry->manifest.name)) {
             fprintf(stderr,

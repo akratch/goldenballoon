@@ -711,15 +711,17 @@ static const char *only_spelling(const MdkrModRegistry *reg, const char *lower,
  * under one key, and which one the store read used to depend on hash-probe
  * and scan order -- which a table grow reshuffles. The rule is now fixed: the
  * exact lowercase spelling (the name 1.7.0 asked for), otherwise the first in
- * byte order. Each pack is listed under exactly one spelling, and the scan
- * prints one [MODS] note per duplicate it set aside.
+ * byte order. Each pack is listed under exactly one spelling. The scan counts
+ * what it set aside against the pack, with the first one's name, and prints
+ * nothing per duplicate: the startup log gives each pack one line for all of
+ * them (platform_sdl_min.c).
  *
  * The zip holds three pairs in different orders around 800 filler names,
  * which force the name table to grow mid-pack: a pair indexed before the
  * grow, a pair split across it each way. A folder pack can hold both
- * spellings only on a case-sensitive file system; elsewhere that arm prints
- * a SKIP (on macOS run the binary with a scratch root on a case-sensitive
- * volume to exercise it). */
+ * spellings only on a case-sensitive file system: Linux must, so there the
+ * arm FAILS if it cannot; elsewhere it prints a SKIP (on macOS run the binary
+ * with a scratch root on a case-sensitive volume to exercise it). */
 #define CASE_DUP_FILLERS 800
 static void test_case_duplicates_prefer_lowercase(const char *scratch) {
     static const char d1[] = "textures/aaaa00000000000000000000000000bb.png";
@@ -773,8 +775,13 @@ static void test_case_duplicates_prefer_lowercase(const char *scratch) {
     if (folder_arm) {
         write_pack_file(mods, "dupfolder", df, "L");
     } else {
+#ifdef __linux__
+        expect(0, "a Linux scratch folder holds two names that differ only "
+                  "in case");
+#else
         printf("SKIP this file system ignores case, so a folder cannot hold "
                "both spellings\n");
+#endif
     }
 
     path2(log, sizeof log, scratch, "casedup.log");
@@ -812,8 +819,10 @@ static void test_case_duplicates_prefer_lowercase(const char *scratch) {
     expect(mdkr_mod_registry_find_file(&reg, d1) == zipped &&
            mdkr_mod_registry_find_file(&reg, u2) == zipped,
            "the pack still answers for the digest in any case");
-    expect(reg.entries[zipped].textures_case_duplicates == 4,
-           "each duplicate set aside is counted against its pack");
+    expect(reg.entries[zipped].textures_case_duplicates == 4 &&
+           strcmp(reg.entries[zipped].textures_case_duplicates_first, u1) == 0,
+           "each duplicate set aside is counted against its pack, and the "
+           "first one is named");
     if (folder_arm) {
         expect(only_spelling(&reg, df, folder) != NULL &&
                strcmp(only_spelling(&reg, df, folder), df) == 0 &&
@@ -821,11 +830,11 @@ static void test_case_duplicates_prefer_lowercase(const char *scratch) {
                "a folder pack holding both is read by the lowercase name too");
     }
 #ifndef _WIN32
-    expect(count_in_file(log, "differ only in case") ==
-               4 + (folder_arm ? 1 : 0),
-           "the scan prints one [MODS] note per duplicate");
+    expect(count_in_file(log, "case") == 0,
+           "the scan prints nothing per duplicate: one startup line per pack "
+           "says it");
 #else
-    printf("SKIP the scan's notes are not captured on Windows\n");
+    printf("SKIP the scan's output is not captured on Windows\n");
 #endif
     mdkr_mod_registry_shutdown(&reg);
 
@@ -898,20 +907,29 @@ static void test_name_hits_keep_the_winning_pack(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
-/* 17. Every file under textures/ that no lookup can reach is counted and
- * named at scan (T12d), whatever its extension: a .jpg or a readme there is a
- * texture the author expected to see and never will. Hidden names (a dot
- * first, as editors and archivers leave behind) are not the author's and are
- * not counted, in a folder or a zip. */
+/* 17. Files under textures/ that no lookup can reach are counted and the
+ * first is named at scan (T12d), when they look like a texture the author
+ * meant: an image format (a .jpg, a .DDS, a .ktx2...) under any name, or any
+ * file whose name before the extension is 32 hex digits. A readme or other
+ * non-image file there is not counted, nor is what an operating system leaves
+ * behind (Thumbs.db, ehthumbs.db, desktop.ini, Icon\r) or a hidden name with
+ * a dot first, in a folder or a zip. */
 static void test_unusable_texture_files_are_named(const char *scratch) {
+    static const char hex_txt[] =
+        "textures/0123456789abcdef0123456789abcdef.txt";
     static const char *zipped_names[] = {
         "textures/0123456789abcdef0123456789abcdef.png",
         "textures/.DS_Store",
         "textures/notes.txt",
+        "textures/ehthumbs.db",
+        "textures/Icon\r",
+        "textures/foo.DDS",
+        "textures/sky.ktx2",
     };
     char            mods[1024];
     MdkrModRegistry reg;
     int             folder = -1, zipped = -1, index;
+    const char     *first;
 
     path2(mods, sizeof mods, scratch, "unusable");
     write_pack_file(mods, "loose", "pack.ini", "[pack]\nname=Loose\n");
@@ -919,25 +937,37 @@ static void test_unusable_texture_files_are_named(const char *scratch) {
                     "textures/0123456789abcdef0123456789abcdef.png", "P");
     write_pack_file(mods, "loose",
                     "textures/0123456789abcdef0123456789abcdef.jpg", "J");
+    write_pack_file(mods, "loose", hex_txt, "T");
+    write_pack_file(mods, "loose",
+                    "textures/sub/0123456789abcdef0123456789abcdef.png", "S");
     write_pack_file(mods, "loose", "textures/.hidden.png", "H");
+    write_pack_file(mods, "loose", "textures/readme.txt", "R");
+    write_pack_file(mods, "loose", "textures/Thumbs.db", "D");
+    write_pack_file(mods, "loose", "textures/desktop.ini", "I");
     write_pack_file(mods, "loose", "music/readme.txt", "M");
     write_zip_names(mods, "loosezip.zip", "[pack]\nname=LooseZip\n",
-                    zipped_names, 3);
+                    zipped_names, sizeof zipped_names / sizeof zipped_names[0]);
     expect(mdkr_mod_registry_init(&reg, mods) == 0,
            "unusable-file fixture initialises");
     for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
         if (strcmp(reg.entries[index].manifest.name, "Loose") == 0) folder = index;
         if (strcmp(reg.entries[index].manifest.name, "LooseZip") == 0) zipped = index;
     }
-    expect(folder >= 0 && reg.entries[folder].textures_skipped == 1 &&
-           strcmp(reg.entries[folder].textures_skipped_first,
-                  "textures/0123456789abcdef0123456789abcdef.jpg") == 0,
-           "a digest-named .jpg is counted and named; a hidden file and a "
-           "file outside textures/ are not");
-    expect(zipped >= 0 && reg.entries[zipped].textures_skipped == 1 &&
+    first = folder >= 0 ? reg.entries[folder].textures_skipped_first : "";
+    expect(folder >= 0 && reg.entries[folder].textures_skipped == 3 &&
+           (same_ignoring_case(first,
+                "textures/0123456789abcdef0123456789abcdef.jpg") ||
+            same_ignoring_case(first, hex_txt) ||
+            same_ignoring_case(first,
+                "textures/sub/0123456789abcdef0123456789abcdef.png")),
+           "a digest-named .jpg, a 32-hex .txt and a digest in a subfolder are "
+           "counted and named; a readme, Thumbs.db, desktop.ini and a hidden "
+           "file are not");
+    expect(zipped >= 0 && reg.entries[zipped].textures_skipped == 2 &&
            strcmp(reg.entries[zipped].textures_skipped_first,
-                  "textures/notes.txt") == 0,
-           "a zip's textures/notes.txt is counted, its .DS_Store is not");
+                  "textures/foo.DDS") == 0,
+           "a zip's .DDS and .ktx2 are counted; its notes.txt, .DS_Store, "
+           "ehthumbs.db and Icon\\r are not");
     mdkr_mod_registry_shutdown(&reg);
 }
 

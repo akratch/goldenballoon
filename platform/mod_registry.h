@@ -64,19 +64,24 @@ typedef struct MdkrModEntry {
      * lookup can match. Zero lets the texture store skip that probe for this
      * pack entirely, which for a Rice pack is every probe it would make. */
     int  digest_textures;
-    /* Files under textures/ (any case) that are NOT named by a content
-     * digest -- another name, another image format, anything in a subfolder
-     * -- so no lookup can ever reach them, counted at scan with the first
-     * one's name, so the player can be told why. Hidden names (a component
-     * starting with a dot) are not counted. Zero for a Rice pack, whose own
-     * convention names its files. */
+    /* Files under textures/ (any case) that look like a texture the author
+     * meant -- an image format (.png .jpg .jpeg .bmp .tga .dds .webp .gif
+     * .tif .tiff .ktx .ktx2 .basis) or a name that is 32 hex digits before
+     * its extension -- but are NOT named textures/<digest>.png, so no lookup
+     * can ever reach them. Counted at scan with the first one's name, so the
+     * player can be told why. Not counted: other files (a readme), what an
+     * operating system leaves behind (Thumbs.db, ehthumbs.db, desktop.ini,
+     * Icon\r) and hidden names (a component starting with a dot). Zero for a
+     * Rice pack, whose own convention names its files. */
     int  textures_skipped;
     char textures_skipped_first[128];
     /* Digest-named textures this pack holds twice, spelled differently only
      * in case (textures/abc...png beside textures/ABC...PNG). The index keeps
-     * one spelling per pack (see name_hits()) and the scan prints one [MODS]
-     * note for each duplicate it set aside. */
+     * one spelling per pack (see name_hits()); this counts the ones it set
+     * aside, with the first one's name, and the startup log gives the pack
+     * one line for all of them. */
     int  textures_case_duplicates;
+    char textures_case_duplicates_first[128];
 } MdkrModEntry;
 
 /* One texture in a Rice/GLideN64 high-resolution pack.

@@ -217,20 +217,70 @@ static int is_digest_texture_name(const char *rel) {
     return digest_name_fold(rel, NULL);
 }
 
-/* A file under textures/ (any case) that is NOT digest-shaped -- another name,
- * another image format, a subfolder: a file a digest pack ships that no
- * lookup can ever reach. Hidden names (any component starting with a dot) are
- * left out: those are what editors and archivers leave behind, not the
- * author's, and the folder walk never lists them anyway. */
+/* The extensions of the image formats a pack author could plausibly have
+ * saved a replacement in. Matched ignoring case. */
+static int has_image_extension(const char *base) {
+    static const char *const extensions[] = {
+        ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".dds", ".webp", ".gif",
+        ".tif", ".tiff", ".ktx", ".ktx2", ".basis"
+    };
+    const char *dot = strrchr(base, '.');
+    size_t      index;
+
+    if (dot == NULL) return 0;
+    for (index = 0; index < sizeof extensions / sizeof extensions[0];
+         index++) {
+        const size_t length = strlen(extensions[index]);
+        if (strlen(dot) == length &&
+            ascii_ncasecmp(dot, extensions[index], length) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* 32 hex digits before the extension (or as the whole name): a digest the
+ * author meant to use, whatever it is saved as. */
+static int has_hex_stem(const char *base) {
+    const char  *dot = strrchr(base, '.');
+    const size_t stem = dot != NULL ? (size_t)(dot - base) : strlen(base);
+    size_t       index;
+
+    if (stem != 32) return 0;
+    for (index = 0; index < stem; index++) {
+        if (!isxdigit((unsigned char)base[index])) return 0;
+    }
+    return 1;
+}
+
+/* What an operating system leaves in a folder its user browsed. */
+static int is_os_metadata(const char *base) {
+    return ascii_casecmp(base, "Thumbs.db") == 0 ||
+           ascii_casecmp(base, "ehthumbs.db") == 0 ||
+           ascii_casecmp(base, "desktop.ini") == 0 ||
+           strcmp(base, "Icon\r") == 0;
+}
+
+/* A file under textures/ (any case) that no lookup can ever reach but that
+ * looks like a texture its author meant: an image format, or a name that is
+ * 32 hex digits before its extension, anywhere but textures/<digest>.png.
+ * A readme or another non-image file is not reported, nor is what an
+ * operating system or an archiver leaves behind: OS metadata, and hidden names
+ * (any component starting with a dot), which the folder walk never lists
+ * anyway. Those are not the author's, and naming them would only be noise. */
 static int is_unusable_texture_name(const char *rel) {
     const char *component;
+    const char *base = rel + 9;
     if (strlen(rel) <= 9) return 0;
     if (ascii_ncasecmp(rel, "textures/", 9) != 0) return 0;
     for (component = rel + 9; component != NULL;
          component = strchr(component, '/')) {
         if (*component == '/') component++;
         if (*component == '.') return 0;
+        base = component;
     }
+    if (is_os_metadata(base)) return 0;
+    if (!has_image_extension(base) && !has_hex_stem(base)) return 0;
     return !is_digest_texture_name(rel);
 }
 
@@ -297,15 +347,17 @@ static int spelling_preferred(const char *key, const char *a, const char *b) {
     return strcmp(a, b) < 0;
 }
 
-/* Says, once per duplicate set aside, that a pack holds one digest name under
- * two spellings and which one is used. A folder pack can do this only on a
- * file system that keeps case apart; a zip can anywhere. */
+/* Counts a spelling set aside because the pack holds the same digest name
+ * in another case, keeping the first one's name. The startup log gives the
+ * pack one line for all of them (platform_sdl_min.c). A folder pack can do
+ * this only on a file system that keeps case apart; a zip can anywhere. */
 static void note_case_duplicate(MdkrModRegistry *reg, int pack,
-                                const char *used, const char *ignored) {
-    reg->entries[pack].textures_case_duplicates++;
-    fprintf(stderr,
-            "[MODS] %s: %s and %s differ only in case; using %s\n",
-            reg->entries[pack].manifest.name, used, ignored, used);
+                                const char *ignored) {
+    MdkrModEntry *entry = &reg->entries[pack];
+    if (entry->textures_case_duplicates++ == 0) {
+        copy_bounded(entry->textures_case_duplicates_first,
+                     sizeof entry->textures_case_duplicates_first, ignored);
+    }
 }
 
 /* The pool offset for `name` as a slot's spelling: the key's own text when
@@ -325,7 +377,7 @@ static uint32_t name_spelling_put(MdkrModRegistry *reg, const char *key,
  *
  * A pack's bit is in at most ONE slot per key. A pack that holds a digest
  * name twice, differing only in case, is listed under the spelling
- * spelling_preferred() picks and the other is set aside with a note. That is
+ * spelling_preferred() picks and the other is set aside and counted. That is
  * also what bounds name_hits(): at most one hit per pack. */
 static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
     char             folded[MDKR_MOD_DIGEST_NAME_CHARS + 1];
@@ -366,10 +418,10 @@ static int name_index_add(MdkrModRegistry *reg, const char *name, int pack) {
     if (held != NULL) {
         const char *current = reg->name_pool + held->spelling;
         if (spelling_preferred(key, current, name)) {
-            note_case_duplicate(reg, pack, current, name);
+            note_case_duplicate(reg, pack, name);
             return 1;
         }
-        note_case_duplicate(reg, pack, name, current);
+        note_case_duplicate(reg, pack, current);
         if (held->packs == bit) {
             /* This pack's slot alone: respell it in place. Its run position
              * is unchanged, and a slot is never emptied (that would cut the

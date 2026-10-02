@@ -162,12 +162,17 @@ picture, so a pack works regardless of where the game happens to load that
 texture from. Upper and lower case both work, in the folder name, the digest
 and the extension, in a folder pack or a zip. If one pack holds the same digest
 twice in different case, it uses the all-lowercase file (or, with none, the one
-that sorts first) and the log names both when the game starts.
+that sorts first). When the game starts, the log says how many files a pack
+sets aside this way and names the first.
 
-Any other file under `textures/` is never used: another name, another image
-format such as `.jpg`, or anything in a subfolder. When the game starts the log
-says how many such files a pack has and names the first one. Hidden files,
-whose names start with a dot, are ignored without a message.
+No other file under `textures/` is used: a picture under another name, in
+another image format such as `.jpg` or `.dds`, or in a subfolder. When the game
+starts, the log says how many such files a pack has and names the first. It
+counts image files (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.tga`, `.dds`, `.webp`,
+`.gif`, `.tif`, `.tiff`, `.ktx`, `.ktx2`, `.basis`) and any file whose name is
+32 hex digits before its extension. Other files there, such as a readme,
+`Thumbs.db`, `desktop.ini`, the macOS `Icon` file, or anything whose name
+starts with a dot, are ignored without a message.
 
 Your PNG does **not** have to match the original's size. A 64×64 replacement for
 a 16×16 original works; the game addresses the same logical tile either way.
