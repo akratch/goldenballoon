@@ -3365,6 +3365,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_pacing_quality_reporting.py)
     add_test(
+        NAME frame_wait_attribution
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_frame_wait_attribution.py)
+    add_test(
         NAME camera_motion_reporting
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_camera_motion_reporting.py)

@@ -8208,6 +8208,24 @@ The engine side is off by default and reads no clock unless asked:
   end of the frame) describe the loader. Each
   installed texture also prints a `[TEXPACK-INSTALL]` row with its identity and
   how many frames it was pending.
+- The same row also says what a frame WAITED on (frame-wait attribution, for
+  the pack-independent 35-75 ms frames whose thread ran for a few ms). `gameUs`
+  is the game pass, from the host boundary's exit to its next entry, and holds
+  `startUs` (`gfx_start_frame`), the walk and end-of-frame, and inside the end
+  WebGPU's `acquireUs`, `submitUs` and `presentUs`. The host boundary's own
+  waits are `paceUs` (the pacer's sleep; `paceReqUs` is what it asked for and
+  `paceLateUs` the latest it woke past its target), `eventsUs` (SDL event pump
+  and late input sample), `swapUs` and `fenceUs` (GL swap and frame-queue
+  fence), `audioUs` (audio time advance and service), and `rowUs`, the previous
+  row's own print. What is left of `dtUs` is unaccounted. The host counters are
+  process-wide deltas from `platform/host_sched_probe.c`: `procCpuUs` against
+  `runnableUs` (a thread ready and given no core), `lowQosUs` (CPU billed at
+  utility/background QoS), `pageins`, `vcsw`/`ivcsw`; `prio` is the game
+  thread's current priority, `visible` the window's honest occlusion bit and
+  `active` whether the app is frontmost (-1 unknown). `tUs` is
+  `CLOCK_MONOTONIC`, for lining rows up with an outside sampler. Rows only: the
+  census alone does not arm this, and an ordinary run pays one cached flag test
+  per bracketed call.
 - The resource census (`MDKR_RESOURCE_STATS=1`, or `MDKR_TRACE`) adds one
   `texture_pack_generation:` row per completed level generation, beside
   `renderer_generation:`, with the same totals and the generation's worst frame.
@@ -8229,6 +8247,36 @@ authored rate, and its median frame must sit at the present period
 forces the loader for an A/B run, and `--state-hash` records the `[SIMHASH]` v3
 stream per run (compare pack on and off under `--synthetic`, the only pacing
 under which two runs simulate the same ticks).
+
+It also refuses a run whose game thread did not run at an application's
+priority (46, or 47 frontmost; the `prio` field). A visible automation window
+(`MDKR_TEST_VISIBLE_HEADLESS=1`) is an accessory app for that reason, the
+policy the app shell already gives its own automation: SDL's background-app
+hint alone left the process registered BackgroundOnly at the default priority
+31, where T12c traced most of the 35-75 ms waits T12a reported (coarse timer
+wakes, preempted event pumps, blocked swaps). Accessory changes the scheduling
+class, never the focus.
+
+The game's output reaches the run log through a pipe that a thread in the tool
+drains, not a file redirect. Every frame row is a `write()` on the game thread,
+and a write straight into a file blocks whenever the disk is busy: T12c
+measured single rows taking 32-38 ms, which the row then reported as its own
+frame's stall. `--log-direct` restores the file redirect for an A/B of exactly
+that. The shipped app already tees its output through a pipe
+(`platform/app/diag_log.cpp`), so players never had this wait.
+
+For the frame-wait attribution (no pack needed): `--arms nopack` runs without
+`--texture-pack`; `--variant NAME` labels the arms, `--env KEY=VALUE`
+(repeatable) adds engine environment, `--hidden` runs the window hidden
+(`MDKR64_HIDDEN=1`) and `--repeat N` repeats every arm. Each run's tables then
+end with one row per frame over 33.3 ms: which part of the frame grew (the part
+with the largest excess over its run median), how late the pacer woke, the
+off-CPU time, priority, and whether the window was visible and the app
+frontmost. Two test-only engine seams serve the variants:
+`MDKR_TEST_FOREGROUND=1` (with `MDKR_TEST_VISIBLE_HEADLESS=1`) makes the bounded
+run a regular, activated, frontmost app like a Finder launch -- it takes
+keyboard focus for the run -- and `MDKR_TEST_GL_SWAP_INTERVAL=0|1` replaces
+automation's uncapped GL swap with the player's vsync'd one.
 
 ### Rolling attract demo — `tests/check_attract_demo.py`
 

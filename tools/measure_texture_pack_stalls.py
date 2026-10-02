@@ -34,6 +34,14 @@ the set of identities that became resident (compare it across loaders).
 records the authoritative [SIMHASH] stream (use with --synthetic, the only
 pacing under which two runs simulate identically).
 
+The same rows carry a frame-wait split (T12c): the game pass, the pacer's
+sleep and how late it woke, the event pump, swap, audio, the row's own print,
+and host counters (off-CPU time, priority, whether the window was visible and
+the app frontmost). Every frame over 33.3 ms is attributed to the part that
+grew most over its run median. `--arms nopack` runs without a pack;
+`--variant`, `--env KEY=VALUE`, `--hidden` and `--repeat` drive the comparison
+arms (tests/README.md).
+
 Usage (the pack is private: it is copied into a fresh temporary mods
 directory per run and never anywhere else):
 
@@ -64,6 +72,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -234,6 +243,40 @@ SUM_FIELDS = (
     # The off-frame loader's fields; absent (0) in pre-#66 logs.
     "pumpUs", "workerUs", "queued", "installed", "discarded", "refills",
     "deferred", "unbudgeted",
+    # Frame-wait attribution (T12c); absent (0) in earlier logs.
+    "gameUs", "startUs", "acquireUs", "submitUs", "presentUs", "paceUs",
+    "paceReqUs", "paceCalls", "eventsUs", "swapUs", "fenceUs", "audioUs",
+    "rowUs", "procCpuUs", "runnableUs", "lowQosUs", "pageins", "vcsw",
+    "ivcsw",
+)
+# Not sums: the latest wake past target is a maximum, the rest are states.
+MAX_FIELDS = ("paceLateUs",)
+LAST_FIELDS = ("tUs", "prio", "visible", "active")
+
+# Where a waiting frame's time went (T12c). Each part is microseconds of one
+# displayed frame; together they tile dtUs, and "unaccounted" is the rest.
+# game = logic + start + walk + end; end = acquire + submit + present + other.
+WAIT_PARTS = (
+    ("game logic", lambda f: max(0, f["gameUs"] - f["startUs"] -
+                                 f["walkUs"] - f["endUs"])),
+    ("frame start", lambda f: f["startUs"]),
+    ("walk", lambda f: f["walkUs"]),
+    ("acquire", lambda f: f["acquireUs"]),
+    ("submit", lambda f: f["submitUs"]),
+    ("present", lambda f: f["presentUs"]),
+    ("end other", lambda f: max(0, f["endUs"] - f["acquireUs"] -
+                                f["submitUs"] - f["presentUs"])),
+    ("pacer asked", lambda f: min(f["paceUs"], f["paceReqUs"])),
+    ("pacer oversleep", lambda f: max(0, f["paceUs"] - f["paceReqUs"])),
+    ("events", lambda f: f["eventsUs"]),
+    ("swap", lambda f: f["swapUs"]),
+    ("fence", lambda f: f["fenceUs"]),
+    ("audio", lambda f: f["audioUs"]),
+    ("row print", lambda f: f["rowUs"]),
+    ("unaccounted", lambda f: max(0, f["dtUs"] - f["gameUs"] - f["paceUs"] -
+                                  f["eventsUs"] - f["swapUs"] -
+                                  f["fenceUs"] - f["audioUs"] -
+                                  f["rowUs"])),
 )
 
 
@@ -257,6 +300,10 @@ def displayed_frames(rows: list[dict]) -> list[dict]:
             pending["presents"] = 0
         for key in SUM_FIELDS:
             pending[key] += row.get(key, 0)
+        for key in MAX_FIELDS:
+            pending[key] = max(pending.get(key, 0), row.get(key, 0))
+        for key in LAST_FIELDS:
+            pending[key] = row.get(key, -1)
         pending["dtUs"] += row.get("dtUs", 0)
         pending["presents"] += 1
         if row.get("swap", 1):
@@ -359,6 +406,96 @@ def frame_record(frame: dict, visits: list[dict]) -> dict:
     }
 
 
+def wait_split(frame: dict) -> dict:
+    return {name: part(frame) for name, part in WAIT_PARTS}
+
+
+def wait_attribution(frames: list[dict], visits: list[dict]) -> dict:
+    """Which wait each long frame spent its time in (T12c).
+
+    A part's EXCESS is its value in the long frame minus its median over the
+    run, so the pacer's ordinary 14 ms sleep does not count as the cause of a
+    50 ms frame; the cause is the part with the largest excess. offCpuUs is
+    the process's runnable-but-not-running time (host_sched_probe.h): a
+    thread was ready and the host gave it no core.
+    """
+    if not frames or "gameUs" not in frames[0] or not any(
+            frame["gameUs"] for frame in frames):
+        return {"available": False}
+    medians = {}
+    for name, part in WAIT_PARTS:
+        medians[name] = percentile([part(frame) for frame in frames], 0.50)
+    def off_cpu(frame: dict) -> int:
+        return max(0, frame["runnableUs"] - frame["procCpuUs"])
+    stalls = []
+    causes: collections.Counter = collections.Counter()
+    for frame in frames:
+        if frame["dtUs"] <= STALL_MS[0] * 1000:
+            continue
+        split = wait_split(frame)
+        excess = {name: value - medians[name] for name, value in split.items()}
+        cause = max(excess, key=lambda name: excess[name])
+        causes[cause] += 1
+        visit = visits[frame["visit_index"]]
+        stalls.append({
+            "frame": frame["frame"], "tick": frame["tick"],
+            "t_s": round(frame.get("tUs", 0) / 1e6, 3),
+            "area": visit["label"], "kind": visit["kind"],
+            "frame_ms": round(frame["dtUs"] / 1000, 2),
+            "cpu_ms": round(frame["cpuUs"] / 1000, 2),
+            "cause": cause,
+            "cause_excess_ms": round(excess[cause] / 1000, 2),
+            "pace_late_ms": round(frame.get("paceLateUs", 0) / 1000, 2),
+            "off_cpu_ms": round(off_cpu(frame) / 1000, 2),
+            "proc_cpu_ms": round(frame["procCpuUs"] / 1000, 2),
+            "low_qos_ms": round(frame["lowQosUs"] / 1000, 2),
+            "pageins": frame["pageins"], "ivcsw": frame["ivcsw"],
+            "prio": frame.get("prio", -1),
+            "visible": frame.get("visible", -1),
+            "active": frame.get("active", -1),
+            "split_ms": {name: round(value / 1000, 2)
+                         for name, value in split.items() if value >= 500},
+        })
+    normal = [frame for frame in frames if frame["dtUs"] <= 20000]
+    def summary(values: list[float]) -> dict:
+        return {"p50": round(percentile(values, 0.50), 2),
+                "p99": round(percentile(values, 0.99), 2),
+                "max": round(max(values), 2) if values else 0.0}
+    priorities = collections.Counter(frame.get("prio", -1)
+                                     for frame in frames)
+    # When the window's honest occlusion bit or the app's frontmost state
+    # changed: a background test window's pacing changes with both.
+    transitions = []
+    previous = None
+    for frame in frames:
+        state = (frame.get("visible", -1), frame.get("active", -1))
+        if state != previous:
+            transitions.append({"frame": frame["frame"],
+                                "t_s": round(frame.get("tUs", 0) / 1e6, 3),
+                                "visible": state[0], "active": state[1]})
+            previous = state
+    return {
+        "available": True,
+        "median_ms": {name: round(value / 1000, 2)
+                      for name, value in medians.items()},
+        "causes": dict(causes.most_common()),
+        "stalls": stalls,
+        "pace_late_ms": summary([frame.get("paceLateUs", 0) / 1000
+                                 for frame in frames]),
+        "off_cpu_ms_normal": summary([off_cpu(frame) / 1000
+                                      for frame in normal]),
+        "priorities": {str(key): value
+                       for key, value in priorities.most_common()},
+        "visible_frames": sum(1 for frame in frames
+                              if frame.get("visible") == 1),
+        "active_frames": sum(1 for frame in frames
+                             if frame.get("active") == 1),
+        "pageins": sum(frame["pageins"] for frame in frames),
+        "window_transitions": transitions[:64],
+        "window_transition_count": max(0, len(transitions) - 1),
+    }
+
+
 def analyse(output: str) -> dict:
     rows, visits = parse_run(output)
     frames = displayed_frames(rows)
@@ -405,6 +542,7 @@ def analyse(output: str) -> dict:
         },
         "override_uploads": sum(row.get("overrideUploads", 0)
                                 for row in rows),
+        "waits": wait_attribution(frames, visits),
     }
 
 
@@ -419,6 +557,30 @@ def route_error(result: dict) -> str | None:
               if level != 5 and count >= 2]
     if not others:
         return f"no second course was raced twice: {dict(races)}"
+    return None
+
+
+# A macOS application's game thread runs at priority 46 (47 frontmost). A
+# process macOS registered as BackgroundOnly runs at the default 31, and on a
+# shared machine that alone produced most of the 35-75 ms waits T12a reported
+# (T12c): coarser timer wakes, preempted event pumps and swaps. The engine
+# makes a visible automation window an accessory app (46) for that reason;
+# this refuses a run that did not get it.
+APP_PRIORITY_MIN = 40
+
+
+def scheduling_error(record: dict) -> str | None:
+    """Evidence that the game thread ran at an application's priority."""
+    priorities = (record.get("waits") or {}).get("priorities") or {}
+    known = {int(key): count for key, count in priorities.items()
+             if int(key) >= 0}
+    if not known:
+        return None  # the host does not report it (not macOS)
+    typical = max(known, key=lambda key: known[key])
+    if typical < APP_PRIORITY_MIN:
+        return (f"game thread ran at priority {typical}, below an "
+                f"application's {APP_PRIORITY_MIN}+: frame times are not a "
+                f"player's (was the process registered BackgroundOnly?)")
     return None
 
 
@@ -453,10 +615,63 @@ def realtime_error(record: dict, output: str, ticks: int,
 # ------------------------------------------------------------------ runs
 
 
+def run_game(command: list[str], cwd: Path, env: dict, log_path: Path,
+             timeout: float, direct: bool) -> int | None:
+    """Run the game with its output in log_path; None on timeout.
+
+    The game prints a row per frame, and stderr is unbuffered: every row is
+    a write() on the game thread. Pointed straight at a file, that write
+    blocks whenever the file is busy -- T12c measured single rows taking
+    32-38 ms on a loaded disk, which the row then reports as the frame's own
+    stall. So by default the output goes through a pipe that a thread here
+    drains into the file: the game's write is a memory copy, and a slow disk
+    stalls this reader, not the frame being measured. --log-direct restores
+    the file redirect for an A/B of exactly that.
+    """
+    with log_path.open("wb") as log:
+        if direct:
+            try:
+                return subprocess.run(
+                    command, cwd=cwd, env=env, stdout=log,
+                    stderr=subprocess.STDOUT, timeout=timeout,
+                    check=False).returncode
+            except subprocess.TimeoutExpired:
+                return None
+        process = subprocess.Popen(
+            command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT)
+
+        def drain() -> None:
+            source = process.stdout.fileno()
+            while True:
+                chunk = os.read(source, 1 << 16)
+                if not chunk:
+                    return
+                log.write(chunk)
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        try:
+            try:
+                return process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return None
+        finally:
+            # Completed, timed out, Ctrl-C or SIGTERM (SystemExit): the game
+            # never outlives the run, as subprocess.run() guaranteed before.
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            reader.join()
+            process.stdout.close()
+
+
 def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
     label = f"{renderer}-{'pack' if pack else 'nopack'}"
     if args.loader and pack:
         label += f"-{args.loader}"
+    if args.variant:
+        label += f"-{args.variant}"
     run_root = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=artifacts))
     scale = 2 if args.cadence == "enhanced" else 1
     ticks = ROUTE_END_TICKS * scale
@@ -482,6 +697,14 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         # meaningful when images actually reach a surface.
         "MDKR_TEST_VISIBLE_HEADLESS": "1",
     })
+    if args.hidden:
+        # The comparison arm for the frame-wait attribution: the automation
+        # window genuinely hidden, as an ordinary --headless-ticks run is.
+        del env["MDKR_TEST_VISIBLE_HEADLESS"]
+        env["MDKR64_HIDDEN"] = "1"
+    for assignment in args.env:
+        key, _, value = assignment.partition("=")
+        env[key] = value
     if not args.synthetic:
         env["MDKR_PACE_REALTIME"] = "1"
     if args.loader:
@@ -510,19 +733,14 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         started = time.monotonic()
         tick_hz = 60 if scale == 2 else 30
         timeout = args.timeout or (ticks / tick_hz) * 2 + 180
-        try:
-            with log_path.open("w", encoding="utf-8") as log:
-                process = subprocess.run(
-                    command, cwd=run_root, env=env, stdout=log,
-                    stderr=subprocess.STDOUT, text=True, timeout=timeout,
-                    check=False)
-            returncode = process.returncode
-        except subprocess.TimeoutExpired:
-            returncode = None
+        returncode = run_game(command, run_root, env, log_path, timeout,
+                              args.log_direct)
         wall = time.monotonic() - started
         output = log_path.read_text(encoding="utf-8", errors="replace")
         record: dict = {
             "label": label, "renderer": renderer, "pack": pack is not None,
+            "variant": args.variant, "env": list(args.env),
+            "hidden": args.hidden, "log_direct": args.log_direct,
             "cadence": args.cadence, "realtime": not args.synthetic,
             "window": args.window_size, "ticks": ticks,
             "returncode": returncode, "wall_s": round(wall, 1), "load": load,
@@ -580,6 +798,9 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
                 problems.append(error)
             if not args.synthetic:
                 error = realtime_error(record, output, ticks, tick_hz)
+                if error:
+                    problems.append(error)
+                error = scheduling_error(record)
                 if error:
                     problems.append(error)
         record["problems"] = problems
@@ -747,6 +968,42 @@ def print_tables(records: list[dict], synthetic: bool) -> None:
                       f"{frame['outside_render_ms']} |")
 
 
+def print_wait_tables(records: list[dict]) -> None:
+    """Frame-wait attribution (T12c): what each >33.3 ms frame waited on."""
+    for record in records:
+        waits = record.get("waits") or {}
+        if not waits.get("available"):
+            continue
+        frames = record["all"]["frames"]
+        print(f"\n{record['label']}: frame waits -- "
+              f"{len(waits['stalls'])} frames > {STALL_MS[0]} ms; causes "
+              f"{waits['causes'] or '{}'}; pacer late p50/p99/max "
+              f"{waits['pace_late_ms']['p50']}/{waits['pace_late_ms']['p99']}/"
+              f"{waits['pace_late_ms']['max']} ms; off-CPU (normal frames) "
+              f"p50/p99 {waits['off_cpu_ms_normal']['p50']}/"
+              f"{waits['off_cpu_ms_normal']['p99']} ms; window visible "
+              f"{waits['visible_frames']}/{frames}, app active "
+              f"{waits['active_frames']}/{frames} "
+              f"({waits['window_transition_count']} changes); priorities "
+              f"{waits['priorities']}; page-ins {waits['pageins']}")
+        if not waits["stalls"]:
+            continue
+        print("| t s | frame | area | frame ms | cpu ms | cause (excess ms) | "
+              "pacer late ms | off-CPU ms | proc cpu ms | low-QoS ms | "
+              "page-ins | prio | vis/act | parts >= 0.5 ms |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for stall in waits["stalls"]:
+            parts = ", ".join(f"{name} {value}"
+                              for name, value in stall["split_ms"].items())
+            print(f"| {stall['t_s']} | {stall['frame']} | {stall['area']} | "
+                  f"{stall['frame_ms']} | {stall['cpu_ms']} | "
+                  f"{stall['cause']} ({stall['cause_excess_ms']}) | "
+                  f"{stall['pace_late_ms']} | {stall['off_cpu_ms']} | "
+                  f"{stall['proc_cpu_ms']} | {stall['low_qos_ms']} | "
+                  f"{stall['pageins']} | {stall['prio']} | "
+                  f"{stall['visible']}/{stall['active']} | {parts} |")
+
+
 def _terminate(signum, _frame) -> None:
     """SIGTERM -> SystemExit, so every pending finally still runs.
 
@@ -799,6 +1056,22 @@ def main() -> int:
     parser.add_argument("--keep-pack", action="store_true",
                         help="keep each run's private pack copy")
     parser.add_argument("--json", type=Path, help="write the results here")
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="run every arm this many times")
+    parser.add_argument("--variant", default="",
+                        help="suffix for the arm labels of a variant run "
+                             "(frame-wait attribution, T12c)")
+    parser.add_argument("--env", action="append", default=[],
+                        metavar="KEY=VALUE",
+                        help="extra engine environment for a variant run; "
+                             "repeatable")
+    parser.add_argument("--log-direct", action="store_true",
+                        help="redirect the game's output straight to the run "
+                             "log file instead of through a pipe (A/B of the "
+                             "logging's own stalls)")
+    parser.add_argument("--hidden", action="store_true",
+                        help="run the window hidden (MDKR64_HIDDEN=1) "
+                             "instead of visible")
     parser.add_argument("--reanalyse", type=Path, metavar="JSON",
                         help="re-read the run logs an earlier --json names "
                              "and recompute its tables (no runs)")
@@ -815,21 +1088,30 @@ def main() -> int:
         print_tables(results.get("runs", []),
                      any(not run.get("realtime", True)
                          for run in results.get("runs", [])))
+        print_wait_tables(results.get("runs", []))
         if args.json:
             args.json.write_text(json.dumps(results, indent=2))
             print(f"\nwrote {args.json}")
         return 0
 
+    for assignment in args.env:
+        if "=" not in assignment or not assignment.split("=", 1)[0]:
+            parser.error(f"--env expects KEY=VALUE, got {assignment!r}")
     if args.texture_pack is None:
-        parser.error("--texture-pack is required")
-    pack = args.texture_pack.expanduser().resolve()
-    if not pack.is_file():
-        parser.error("--texture-pack must name an existing file")
-    pack_sha = sha256(pack)
-    if args.expect_sha256 and pack_sha != args.expect_sha256.lower():
-        print(f"pack SHA-256 {pack_sha} != expected {args.expect_sha256}",
-              file=sys.stderr)
-        return 1
+        # A no-pack run (the frame-wait attribution, T12c) needs no pack.
+        if args.inventory or args.arms != "nopack":
+            parser.error("--texture-pack is required unless --arms nopack")
+        pack = None
+        pack_sha = None
+    else:
+        pack = args.texture_pack.expanduser().resolve()
+        if not pack.is_file():
+            parser.error("--texture-pack must name an existing file")
+        pack_sha = sha256(pack)
+        if args.expect_sha256 and pack_sha != args.expect_sha256.lower():
+            print(f"pack SHA-256 {pack_sha} != expected {args.expect_sha256}",
+                  file=sys.stderr)
+            return 1
     artifacts = (args.artifacts_dir.expanduser().resolve()
                  if args.artifacts_dir else
                  Path(tempfile.mkdtemp(prefix="texpack-stalls-")))
@@ -838,12 +1120,13 @@ def main() -> int:
         args.json = args.json.expanduser().resolve()
         args.json.parent.mkdir(parents=True, exist_ok=True)
     results: dict = {
-        "pack": {"name": pack.name, "sha256": pack_sha,
-                 "bytes": pack.stat().st_size},
+        "pack": ({"name": pack.name, "sha256": pack_sha,
+                  "bytes": pack.stat().st_size} if pack is not None else None),
         "artifacts": str(artifacts),
         "host": {"cpus": os.cpu_count(), "platform": sys.platform},
     }
-    print(f"pack {pack.name}: sha256 {pack_sha}")
+    if pack is not None:
+        print(f"pack {pack.name}: sha256 {pack_sha}")
 
     if args.inventory:
         results["inventory"] = inventory(pack, artifacts,
@@ -863,14 +1146,17 @@ def main() -> int:
         arms = {"pack": (pack,), "nopack": (None,),
                 "both": (None, pack)}[args.arms]
         records = []
-        for renderer in renderers:
-            for arm_pack in arms:
-                records.append(run_arm(args, renderer, arm_pack, artifacts))
-                if args.json:
-                    results["runs"] = records
-                    args.json.write_text(json.dumps(results, indent=2))
+        for _repeat in range(max(1, args.repeat)):
+            for renderer in renderers:
+                for arm_pack in arms:
+                    records.append(
+                        run_arm(args, renderer, arm_pack, artifacts))
+                    if args.json:
+                        results["runs"] = records
+                        args.json.write_text(json.dumps(results, indent=2))
         results["runs"] = records
         print_tables(records, args.synthetic)
+        print_wait_tables(records)
 
     if args.json:
         args.json.write_text(json.dumps(results, indent=2))
