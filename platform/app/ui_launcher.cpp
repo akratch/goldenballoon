@@ -1649,16 +1649,25 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
             if (ImGui::GetContentRegionAvail().x > ui::kBtnWide().x * 2.0f)
                 ImGui::SameLine();
             if (ImGui::Button("Open mods folder", ui::kBtnWide())) {
+                // The location is UTF-8; on Windows a narrow path would be read
+                // in the ANSI code page. A failure at any step shows the note,
+                // so each step keeps its own error.
+                const auto mods = std::filesystem::u8path(modsDirectory);
                 std::error_code created;
-                std::filesystem::create_directories(modsDirectory, created);
+                std::filesystem::create_directories(mods, created);
+                bool opened = false;
+                if (!created) {
 #if defined(__linux__)
-                const auto folder = std::filesystem::absolute(modsDirectory, created);
-                if (created || !openWithDesktopOpener(folder.u8string()))
+                    std::error_code located;
+                    const auto folder = std::filesystem::absolute(mods, located);
+                    opened = !located && openWithDesktopOpener(folder.u8string());
+#else
+                    opened = filedialog::revealInFileManager(modsDirectory);
+#endif
+                }
+                if (!opened)
                     g_packInstall.setNote("Could not open the mods folder. Its location "
                                           "is shown below.");
-#else
-                (void)filedialog::revealInFileManager(modsDirectory);
-#endif
             }
             ui::SpeakFocusedItem(
                 "Open mods folder", nullptr,
