@@ -6,6 +6,9 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -94,6 +97,12 @@ int main() {
         if (browser.directory() != root || browser.error().empty()) return 11;
         browser.open((restricted / "game.z64").string());
         if (browser.directory() != downloads || !browser.error().empty()) return 16;
+    } else {
+        // Say so: a green result here covers less than it does elsewhere.
+        std::printf("SKIP denied-folder witness: this process can list a folder "
+                    "with no permissions (uid %ld; root or a privileged "
+                    "container bypasses mode bits), so a denied removable-media "
+                    "folder could not be simulated\n", (long)geteuid());
     }
     fs::permissions(restricted, fs::perms::owner_all, ec);
     if (ec) return 10;

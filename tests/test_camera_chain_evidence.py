@@ -1,5 +1,33 @@
 import unittest
-from check_camera_chain_evidence import audit
+from check_camera_chain_evidence import ROW, audit
+
+# Rows exactly as the runtime prints them (camera_obstruction_runtime.c), cut
+# from a build-rel run of check_camera_motion_quality's first route at
+# MDKR_CAMERA_TRACE=2 (3629d458). The rows above are written by this file and
+# can only ever agree with the parser; these are what it is for. The held-shot
+# fault gate audits every row of its own live runs as well.
+REAL_SEED = ("camera_held_chain_probe tick=669 slot=0 continued=0 prior_length=0 valid=1 "
+             "target=(0.02327,-0.23060) recovering=0 remaining=0.65183 returned=0 "
+             "rejection=none contact=1 near=0 dwell=0.0167 divergence=0.306 leash=0.000 "
+             "leash_from=nan")
+REAL_CONTINUED = ("camera_held_chain_probe tick=670 slot=0 continued=1 prior_length=1 valid=1 "
+                  "target=(0.02327,-0.23060) recovering=0 remaining=1.23307 returned=0 "
+                  "rejection=none contact=1 near=0 dwell=0.0333 divergence=0.575 leash=0.000 "
+                  "leash_from=nan")
+REAL_BOOM = ("camera_held_chain_probe tick=688 slot=0 continued=1 prior_length=19 valid=0 "
+             "target=(0.02327,-0.23060) recovering=0 remaining=nan returned=0 rejection=boom "
+             "contact=1 near=0 dwell=0.3333 divergence=1.520 leash=0.000 leash_from=nan")
+REAL_ENDPOINT = ("camera_held_chain_probe tick=717 slot=0 continued=1 prior_length=22 valid=0 "
+                 "target=(nan,nan) recovering=0 remaining=nan returned=0 rejection=endpoint "
+                 "contact=1 near=0 dwell=0.3833 divergence=0.411 leash=0.000 leash_from=nan")
+REAL_FRAMING = ("camera_held_chain_probe tick=1356 slot=0 continued=0 prior_length=0 valid=0 "
+                "target=(0.92818,1.59895) recovering=0 remaining=nan returned=0 "
+                "rejection=framing contact=1 near=0 dwell=0.0167 divergence=0.321 leash=0.000 "
+                "leash_from=nan")
+REAL_RETURN = ("camera_held_chain_probe tick=1015 slot=0 continued=1 prior_length=92 valid=1 "
+               "target=(0.00446,-0.13072) recovering=1 remaining=0.00000 returned=1 "
+               "rejection=none contact=0 near=0 dwell=0.0000 divergence=0.000 leash=0.000 "
+               "leash_from=nan")
 
 
 def row(tick=1, continued=0, length=0, valid=1, recovering=0, remaining=2, returned=0):
@@ -72,6 +100,23 @@ class ChainEvidence(unittest.TestCase):
                     " rejection=none contact=1 near=0 dwell=0.1 divergence=181"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 audit([row() + bad])
+
+    def test_real_production_rows(self):
+        # Every field the runtime prints is one the parser reads: the tail
+        # groups are optional for older logs, so a match alone would accept a
+        # row whose contact/leash fields no longer parse.
+        for line in (REAL_SEED, REAL_CONTINUED, REAL_BOOM, REAL_ENDPOINT,
+                     REAL_FRAMING, REAL_RETURN):
+            with self.subTest(line=line):
+                match = ROW.search(line)
+                self.assertIsNotNone(match, "the production row no longer parses")
+                self.assertEqual(match.end(), len(line))
+                self.assertTrue(all(group is not None for group in match.groups()))
+        self.assertEqual(audit([REAL_SEED, REAL_CONTINUED])["accepted"], 2)
+        self.assertEqual(audit([REAL_FRAMING])["rejections"], {"framing": 1})
+        # Out of its chain, a real continuation is refused for its history.
+        with self.assertRaisesRegex(ValueError, "continuation lacks matching accepted history"):
+            audit([REAL_BOOM])
 
     def test_rejection_classification(self):
         self.assertEqual(audit([row(valid=0) + " rejection=boom"])["rejections"], {"boom": 1})
