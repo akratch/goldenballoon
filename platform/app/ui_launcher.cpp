@@ -1580,6 +1580,9 @@ void servicePackInstall(bool quitting) {
 
 void installContentPack(const char *modsDirectory) {
 #if defined(__linux__)
+    // The in-window browser installs through startPackInstall once a ZIP is
+    // picked, which finds the mods folder again then.
+    (void)modsDirectory;
     g_packBrowser.open("", BrowserFileKind::ZipPack);
 #else
     std::string picked;
