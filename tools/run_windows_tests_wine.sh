@@ -7,8 +7,10 @@
 # Wine is not Windows. This lane exists to find a bundle problem, or a defect
 # that is not Wine's own, before the bundle reaches a Windows PC; it never
 # stands in for that run. tools/windows_test_bundle/wine_runner.py mirrors
-# RUN-TESTS.cmd (non-ASCII folders with spaces, a scratch folder per test,
-# TEMP/TMP inside it, an ASCII-only re-run of each failure).
+# RUN-TESTS.cmd: the bundle in a folder with spaces and non-ASCII letters, a
+# scratch folder per test with TEMP/TMP inside it, every test from an ASCII
+# folder and the tests marked "unicode" in the manifest again from a folder
+# with spaces, Latin-1 and CJK letters.
 #
 # Nothing is installed, built or pulled: the image must already exist
 # (default mdkr-wine:jammy, amd64, Wine 11). The zip and the runner reach the
@@ -18,7 +20,8 @@
 # Usage: tools/run_windows_tests_wine.sh [--image IMAGE] [--output FILE]
 #                                        [--only REGEX] [--jobs N] [ZIP]
 #   ZIP     default: the newest dist/Golden-Balloon-windows-tests-*.zip
-#   FILE    default: build-mingw-test-bundle-wine.txt (the full lane output)
+#   FILE    default: build-mingw-test-bundle/wine-lane.txt (the full lane
+#           output, in the packager's git-ignored folder)
 #   REGEX   run only the tests whose name it matches (Python syntax)
 #   N       tests run at once (default 6); every Windows program start costs
 #           seconds under Wine in an emulated amd64 container
@@ -59,7 +62,10 @@ if [ -z "$ZIP" ]; then
     [ -n "$ZIP" ] || { echo "no bundle in dist/; run tools/package_windows_test_bundle.sh first" >&2; exit 2; }
 fi
 [ -f "$ZIP" ] || { echo "no such bundle: $ZIP" >&2; exit 2; }
-OUTPUT="${OUTPUT:-$REPO_ROOT/build-mingw-test-bundle-wine.txt}"
+if [ -z "$OUTPUT" ]; then
+    mkdir -p "$REPO_ROOT/build-mingw-test-bundle"
+    OUTPUT="$REPO_ROOT/build-mingw-test-bundle/wine-lane.txt"
+fi
 
 command -v docker >/dev/null 2>&1 || skip "no docker command"
 # colima publishes its socket here rather than at the default context's path.

@@ -12,8 +12,9 @@ Manifest (tests/tests.txt): one test per line, tab-separated fields
     name  executable  timeout-seconds  expect  environment  arguments  unicode
     folders
 
-`expect` is a regular expression the output must match ("-" for none; CTest's
-PASS_REGULAR_EXPRESSION). `environment` and `arguments` are "|"-separated
+`expect` is a regular expression the output must match, case-sensitively ("-"
+for none; CTest's PASS_REGULAR_EXPRESSION). Unlike CTest, the runners also
+require exit 0 when there is one. `environment` and `arguments` are "|"-separated
 lists ("-" for none). The runner starts each test in its own scratch folder,
 so a relative path lands there, and rewrites two spellings:
     {WORK}   that scratch folder, as an absolute path
@@ -149,6 +150,7 @@ def main() -> int:
     fixtures: dict[str, Path] = {}
 
     programs = registered_programs(build_dir)
+    socket_excluded = 0
     for test in run_ctest_json(build_dir):
         name = test["name"]
         command = test.get("command") or []
@@ -157,7 +159,11 @@ def main() -> int:
         if name in EXPLICIT_EXCLUSIONS:
             excluded.append((name, EXPLICIT_EXCLUSIONS[name]))
             continue
-        if programs.get(name) == "mdkr64.exe":
+        # Both spellings: the CTest file (built or not) and the JSON command,
+        # including any argument naming the game, so a test name the regex
+        # misreads can still never ship a game-launching test.
+        if programs.get(name) == "mdkr64.exe" or any(
+                Path(part).name.lower() == "mdkr64.exe" for part in command):
             excluded.append((name, "runs the game itself, which the acceptance "
                                    "session covers"))
             continue
@@ -176,7 +182,9 @@ def main() -> int:
         dlls = {dll.lower() for dll in imports_of(options.objdump, program)}
         if "ws2_32.dll" in dlls:
             excluded.append((name, "opens network sockets, so Windows "
-                                   "Firewall would ask about it"))
+                                   "Firewall would ask about it (see the note "
+                                   "below)"))
+            socket_excluded += 1
             continue
         for unsupported in ("WILL_FAIL", "FAIL_REGULAR_EXPRESSION",
                             "SKIP_REGULAR_EXPRESSION", "SKIP_RETURN_CODE"):
@@ -286,6 +294,10 @@ def main() -> int:
               for key, source in sorted(fixtures.items())]
     lines += [f"  {PACK_FIXTURE}  (written by select_tests.py: a pack.ini only)"]
     lines += ["", "Also run from a non-ASCII folder: " + ", ".join(sorted(UNICODE_PATH_TESTS))]
+    if socket_excluded:
+        lines += ["", f"Note: with the {socket_excluded} socket tests excluded, this bundle runs no "
+                      "Winsock code at all; Windows networking (LAN party, online, phone "
+                      "party transport) is not tested by it."]
     (tests_dir / "selection.txt").write_text("\n".join(lines) + "\n",
                                              encoding="utf-8", newline="\r\n")
     print("\n".join(lines))

@@ -116,6 +116,8 @@ def run_test(test: dict, tests_dir: Path, root: Path, index: int) -> dict:
     error = stderr.decode("utf-8", "replace")
     if error:
         output += "\n--- standard error ---\n" + error
+    # As in RUN-TESTS.cmd: the expectation is case-sensitive like CTest's,
+    # and exit 0 is required as well.
     summary = ""
     if process.returncode != 0:
         summary = f"exit {process.returncode}"

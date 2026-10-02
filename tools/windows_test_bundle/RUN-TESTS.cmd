@@ -4,13 +4,13 @@ rem in tests\tests.txt; the results are written to windows-test-results.txt
 rem beside this file. The batch part only starts Windows PowerShell, which
 rem reads the rest of this file (after the marker line) and runs it. Keep the
 rem whole file ASCII: cmd.exe reads it in the console code page.
-setlocal
+setlocal EnableExtensions DisableDelayedExpansion
 title Golden Balloon Windows tests
 set "GB_RUNNER=%~f0"
 set "GB_BUNDLE=%~dp0"
 set "GB_POWERSHELL=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%GB_POWERSHELL%" set "GB_POWERSHELL=powershell.exe"
-"%GB_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$t = [IO.File]::ReadAllText($env:GB_RUNNER); $i = $t.IndexOf([string][char]10 + '#POWER' + 'SHELL'); if ($i -lt 0) { exit 98 }; Invoke-Expression $t.Substring($i + 1)"
+"%GB_POWERSHELL%" -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$t = [IO.File]::ReadAllText($env:GB_RUNNER); $i = $t.IndexOf([string][char]10 + '#POWER' + 'SHELL', [StringComparison]::Ordinal); if ($i -lt 0) { exit 98 }; Invoke-Expression $t.Substring($i + 1)"
 set "GB_EXIT=%ERRORLEVEL%"
 if "%GB_EXIT%"=="98" echo The test runner could not read RUN-TESTS.cmd itself.
 echo.
@@ -186,7 +186,10 @@ function Invoke-Test($test, [string]$root, [int]$index) {
         $result.Summary = $(if ($code -lt 0 -or $code -gt 255) { 'exit 0x{0:X8}' -f $code } else { "exit $code" })
         return $result
     }
-    if ($test.Expect.Length -gt 0 -and -not ($out + $err -match $test.Expect)) {
+    # CTest's PASS_REGULAR_EXPRESSION is case-sensitive, hence -cmatch. Unlike
+    # CTest, which then ignores the exit code, this runner also requires exit
+    # 0 (in this bundle that only concerns app_lifecycle).
+    if ($test.Expect.Length -gt 0 -and -not ($out + $err -cmatch $test.Expect)) {
         $result.Summary = 'exit 0 but the output lacks: ' + $test.Expect
         return $result
     }
