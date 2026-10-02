@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 
 from test_character_asset_probe import make_animated_glb  # noqa: E402
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
 
 
 MAX_OUTPUT_BYTES = 64 * 1024

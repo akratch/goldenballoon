@@ -7,11 +7,12 @@ import argparse
 import os
 import re
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
-                           resolve_binary)
+                           resolve_binary, save_env)
 
 
 SCRIPT = "tests/input_scripts/race_drive_long.txt"
@@ -30,7 +31,14 @@ def main() -> int:
         if not Path(path).is_file():
             raise SystemExit(f"missing: {path}")
 
-    env = dict(os.environ)
+    # Private saves, preferences and mods for this run, suite or not. The suite
+    # exports its own per-task pins, but a direct run has none to inherit, and
+    # the engine then writes the owner's real per-user save.
+    private = tempfile.TemporaryDirectory(prefix="mdkr-camera-fault-")
+    (Path(private.name) / "save").mkdir()
+    env = save_env(dict(os.environ), str(Path(private.name) / "save"))
+    env["MDKR_APP_PREFS_DIR"] = str(Path(private.name) / "prefs")
+    env["MDKR_MODS_DIR"] = str(Path(private.name) / "isolated-mods")
     env.update(
         MDKR_RENDERER="gl",
         MDKR_AUDIO="0",
@@ -47,6 +55,7 @@ def main() -> int:
         env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, timeout=args.timeout,
     )
+    private.cleanup()
     failures: list[str] = []
     if proc.returncode != 0:
         failures.append(f"process exited {proc.returncode}")

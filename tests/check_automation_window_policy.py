@@ -44,6 +44,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import harness_utils  # noqa: E402 -- also isolates a direct run (saves, prefs, mods)
+
 SKIP_EXIT = 77
 APP_PRIORITY_MIN = 46
 DEFAULT_PRIORITY_MAX = 40

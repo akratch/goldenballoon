@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
+
 env = dict(os.environ)
 env.update(MDKR_INTERNAL_TEST_TOKEN='mdkr64-presentation-replay-v1',
            MDKR_TEST_ROTATION_LONG_ARC='1', MDKR_TRIG='table',

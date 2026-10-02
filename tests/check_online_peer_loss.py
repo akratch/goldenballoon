@@ -79,6 +79,8 @@ import threading
 import time
 from pathlib import Path
 
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
+
 ROOT = Path(__file__).resolve().parent.parent
 TEST_TOKEN = "mdkr64-party-e2e-v1"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"

@@ -392,6 +392,8 @@ def run_arm(binary: Path, rom: Path, root: Path, label: str, character: str,
         "MDKR_LOAD_TRACK": "5:0",
         variable: "0",
         "MDKR_SAVE_DIR": str(save),
+        # This arm's own pack folder, whatever a portable marker would say.
+        "MDKR_MODS_DIR": str(run_dir / "mods"),
         "MDKR_RENDERER": renderer,
         "MDKR64_HIDDEN": "1",
         "MDKR_DUMP_FROM": str(CAPTURE_FRAME),

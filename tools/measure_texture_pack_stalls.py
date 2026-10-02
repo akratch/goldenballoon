@@ -736,6 +736,7 @@ def run_arm(args, renderer: str, pack: Path | None, artifacts: Path) -> dict:
         "MDKR_TEXTURE_PACK_TIMING": "1",
         "MDKR_APP_PREFS_DIR": str(run_root),
         "MDKR_SAVE_DIR": str(run_root / "save"),
+        "MDKR_MODS_DIR": str(mods),
         "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
         # A hidden native window has no drawable; frame times are only
         # meaningful when images actually reach a surface.

@@ -549,9 +549,20 @@ script is not
 registered, or if a `tests/test_*.py` has no CMake `add_test()` to carry it into
 the ctest task. Each task receives its own temporary save directory, exported as
 both `MDKR_SAVE_DIR` and `MDKR_TEST_SAVE_DIR`, so parallel tasks cannot overwrite
-one another's EEPROM fixtures or the repository's playable `save/`. A
-standalone check still defaults to `save/` and restores the EEPROM images it
-found there. Inherited `MDKR*` hooks are cleared except for those two,
+one another's EEPROM fixtures or the repository's playable `save/`. Each task
+also gets its own empty `MDKR_MODS_DIR` (named, never created, so the engine
+finds no content packs) and its own `MDKR_APP_PREFS_DIR`, and every `asan`
+task runs with `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`, because
+that build's UndefinedBehaviorSanitizer otherwise reports and carries on to a
+clean exit. Checks that scrub `MDKR*` drop the mods pin with the rest and fall
+back to `mods/` beside their working directory, so the runner refuses to start
+(and fails at the end) while the repository's `mods/`, a tested build
+directory's `mods/`, or a `portable.txt` beside a tested binary holds anything.
+A check started by hand, outside the runner, gets the same isolation from
+`harness_utils`: importing it from a `check_*.py` with no `MDKR_SAVE_DIR`
+exports a private save, preferences and mods directory and the null video
+config, all removed at exit (`isolate_direct_run`). Inherited `MDKR*` hooks are
+cleared except for `MDKR_SAVE_DIR`, `MDKR_TEST_SAVE_DIR`,
 `MDKR_TEXCACHE_VERIFY`, and the caller's `MDKR_DEDICATED_TEST_DESKTOP`
 attestation. `MDKR_VIDEO_CONFIG_PATH` is pointed at the null device,
 and audio is forced off. `--only NAME`, `--role ROLE`, `--primary-only`,
@@ -8218,7 +8229,7 @@ two-colour PNG, the image `check_mod_texture_override.py` uses, and the dump is
 deleted at once. On this route that is about 600 replacements. So the
 pack-texture cache is judged in every suite run, and so is the warm-load window
 below. Pass `--texture-pack /path/to/pack.zip` to install a real pack instead
-(copied into the run's isolated preferences/mods directory), or `--no-pack` to
+(copied into the run's own `mods/`, which `MDKR_MODS_DIR` names), or `--no-pack` to
 run with none. Use `--artifacts-dir /private/path` to retain logs and the pack
 privately. The route is sized in frames, because the engine cannot stop
 after N race loads and stopping it from outside would lose the terminal
@@ -9503,15 +9514,38 @@ corpus uses: an `os.environ` comprehension that filters `MDKR` keys, a
 `pop("MDKR_SAVE_DIR")` or `del env["MDKR_SAVE_DIR"]`, an environment written
 out inline at the launch that inherits nothing, and a factory function whose
 scrubbed return value the caller launches with. Repairs it accepts:
-`harness_utils.save_env(env, run_dir)` (preferred — it pins the video config in
-the same breath, which `check_harness_isolation.py` requires), an explicit
-`env["MDKR_SAVE_DIR"] = …`, `MDKR_SAVE_DIR=…` passed into the call that builds
-the environment, or simply inheriting `os.environ` unscrubbed. Controls: nine
-synthetic fixtures ship with the gate — five offending shapes it must reject
-and four pinned shapes it must accept — and they run ahead of the corpus scan
-on every invocation, so a scanner that stopped matching fails loudly instead of
-passing an empty sweep. One documented exemption,
-`check_portable_paths.py`, whose subject *is* unpinned save resolution.
+`harness_utils.save_env(env, run_dir)` (preferred — it pins the video config,
+which `check_harness_isolation.py` requires, and an empty `MDKR_MODS_DIR` in the
+same breath), an explicit `env["MDKR_SAVE_DIR"] = …`, `MDKR_SAVE_DIR=…` passed into
+the call that builds the environment, or inheriting `os.environ` unscrubbed.
+
+Inheriting is only safe when there is a pin to inherit. Run by hand, a check
+that launches with `dict(os.environ)`, `os.environ.copy()`, `{**os.environ}` or
+no `env=` at all hands the engine no `MDKR_SAVE_DIR`, and the engine writes the
+owner's real per-user save. `check_camera_projection_fallback_runtime.py` and
+`check_camera_probe_invalid_recovery.py` did exactly that, and this gate could
+not see it because it only followed environments that scrub `MDKR*`. Importing
+`harness_utils` from a check that was started without `MDKR_SAVE_DIR` now
+exports a private save, preferences and mods directory into `os.environ`, so the
+second rule is: a check that launches with an inherited environment must import
+`harness_utils`, directly or through another `tests/` module it imports.
+
+Controls: thirteen synthetic fixtures ship with the gate — eight offending
+shapes it must reject (including inheriting without the import, launching with
+no `env=`, and an `os.environ.copy()`) and five pinned or isolated shapes it must
+accept (including isolation reached through a helper module) — and they run
+ahead of the corpus scan on every invocation, so a scanner that stopped matching
+fails loudly instead of passing an empty sweep. The mechanisms the rules rely on
+are exercised for real as well: a `check_*.py` probe started with no `MDKR*`
+variables must see a private, existing save directory, the null video config and
+private mods/preferences paths, all gone after it exits, while a probe that
+already has `MDKR_SAVE_DIR` and a `test_*.py` probe are left alone; `save_env`
+must pin a mods folder it never creates; `tools/run_checks.py` must give each
+task a fresh, uncreated mods folder and a private preferences folder (and
+halting `UBSAN_OPTIONS` to `asan` tasks only); and its pack-leak check must
+report a pack in the repository's `mods/` and a `portable.txt` beside a tested
+build. One documented exemption, `check_portable_paths.py`, whose subject *is*
+unpinned save resolution.
 
 ### Delta inventory — `tests/check_delta_inventory.py`
 

@@ -29,6 +29,7 @@ are accepted but ignored: those classes now run by default.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import json
 import os
@@ -2047,6 +2048,77 @@ def total_physical_memory() -> int | None:
     return pages * page_size
 
 
+# The asan lane's binary is built with -fsanitize=address,undefined and no
+# -fno-sanitize-recover, so UndefinedBehaviorSanitizer prints its report and
+# the process keeps going to a clean exit: a gate that judges only the exit
+# status and its markers would pass a run that tripped UB. Every asan-role task
+# therefore halts on the first report, whatever the caller's shell exports.
+SANITIZER_TASK_ENV = {"UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"}
+
+
+@contextlib.contextmanager
+def task_environment(check: Check, base: dict[str, str]):
+    """``base`` plus what belongs to this one task.
+
+    Each task gets its own content-pack root and app-preferences directory,
+    both empty. Without MDKR_MODS_DIR a non-packaged build reads mods/ beside
+    the working directory, which is the repository root for every task: a
+    pack the launcher's "Install pack..." published there (or that sits in a
+    portable or per-user mods folder) would load into every gate that boots
+    the game. The mods folder is named but never created, so the engine finds
+    nothing; a gate that wants packs points MDKR_MODS_DIR at its own fixture.
+    The app shell writes mdkr64_app.ini and mdkr64.log to its preferences
+    directory, which without MDKR_APP_PREFS_DIR is the owner's real one.
+    """
+    with tempfile.TemporaryDirectory(
+            prefix=f"mdkr64-task-{check.name}-",
+            ignore_cleanup_errors=True) as private:
+        prefs = os.path.join(private, "prefs")
+        os.makedirs(prefs)
+        environment = dict(base)
+        environment["MDKR_MODS_DIR"] = os.path.join(private, "isolated-mods")
+        environment["MDKR_APP_PREFS_DIR"] = prefs
+        if check.role == "asan":
+            environment.update(SANITIZER_TASK_ENV)
+        yield environment
+
+
+def pack_leaks(binaries: "tuple[Path, ...]", root: Path = ROOT) -> list[str]:
+    """Content-pack folders a task could load from although its own
+    MDKR_MODS_DIR pin was scrubbed away.
+
+    Most checks build their engine environment by dropping every MDKR*
+    variable, which drops the task's MDKR_MODS_DIR too. Such an engine reads
+    mods/ beside its working directory (the repository root, for every task
+    that does not choose its own), or beside the executable when a
+    portable.txt marker (or the save-write fallback) relocates it there. A
+    pack the launcher's "Install pack..." published from a checkout lands in
+    exactly those places, so the run refuses to start while any of them holds
+    anything, rather than let one pack silently reach every gate.
+    """
+    problems: list[str] = []
+    folders = [root / "mods"]
+    for binary in binaries:
+        folders.append(binary.parent / "mods")
+        marker = binary.parent / "portable.txt"
+        if marker.exists():
+            problems.append(f"{marker} relocates that build's saves, config "
+                            "and mods/ next to it")
+    for folder in dict.fromkeys(folders):
+        try:
+            entries = sorted(entry.name for entry in folder.iterdir())
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            problems.append(f"{folder} cannot be listed ({error})")
+            continue
+        if entries:
+            shown = ", ".join(entries[:3]) + (", ..." if len(entries) > 3 else "")
+            problems.append(f"{folder} holds {len(entries)} entr"
+                            f"{'y' if len(entries) == 1 else 'ies'} ({shown})")
+    return problems
+
+
 def stale_artifacts(
     artifacts: tuple[Path | str, ...]) -> list[tuple[str, str]]:
     """Artifacts older than the newest compiled source: (artifact, source).
@@ -2520,6 +2592,18 @@ def main() -> int:
         print(f"run_checks: FAIL — {exc}", file=sys.stderr)
         return 2
 
+    tested_binaries = (native, release, asan)
+    leaks = pack_leaks(tested_binaries)
+    if leaks:
+        for leak in leaks:
+            print(f"run_checks: CONTENT PACKS IN REACH — {leak}",
+                  file=sys.stderr)
+        print("run_checks: FAIL — a check that scrubs MDKR* would load these "
+              "packs instead of its own empty mods folder. Move them out of "
+              "the checkout (or the build directory) and rerun.",
+              file=sys.stderr)
+        return 2
+
     stale = stale_artifacts((native, release, asan, wasm))
     if stale:
         for artifact, source in stale:
@@ -2606,9 +2690,10 @@ def main() -> int:
         started = time.monotonic()
         timeout = task_timeout(check)
         try:
-            proc = subprocess.run(
-                cmd, cwd=ROOT, env=environment, check=False, timeout=timeout
-            )
+            with task_environment(check, environment) as task_env:
+                proc = subprocess.run(
+                    cmd, cwd=ROOT, env=task_env, check=False, timeout=timeout
+                )
             returncode = proc.returncode
         except subprocess.TimeoutExpired:
             # A wedged task is a failed task. Record it and keep going so the
@@ -2655,8 +2740,8 @@ def main() -> int:
         with tempfile.TemporaryDirectory(
                 prefix=f"mdkr64-save-{check.name}-",
                 ignore_cleanup_errors=True) as task_save, \
-                open(log_path, "wb") as log:
-            task_env = dict(environment)
+                open(log_path, "wb") as log, \
+                task_environment(check, environment) as task_env:
             task_env["MDKR_SAVE_DIR"] = task_save
             task_env["MDKR_TEST_SAVE_DIR"] = task_save
             log.write((shlex.join(cmd) + "\n").encode())
@@ -2788,7 +2873,14 @@ def main() -> int:
     code, lines = final_verdict(results, len(checks), args, total)
     for text, to_stderr in lines:
         print(text, file=sys.stderr if to_stderr else sys.stdout, flush=True)
-    return code
+    # A task that published a pack where later tasks look (an app-shell gate
+    # installing through the launcher with its pin scrubbed, say) taints every
+    # verdict after it, so the run cannot pass with one there.
+    leaks = pack_leaks(tested_binaries)
+    for leak in leaks:
+        print(f"run_checks: FAIL — a task left content packs in reach: {leak}",
+              file=sys.stderr, flush=True)
+    return code or (1 if leaks else 0)
 
 if __name__ == "__main__":
     sys.exit(main())

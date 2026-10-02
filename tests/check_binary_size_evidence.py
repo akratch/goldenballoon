@@ -43,6 +43,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
+
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = Path(__file__).resolve().parent / "binary_size_baseline.json"
 MIB = 1024 * 1024

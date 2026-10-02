@@ -299,6 +299,8 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, frames: int,
         MDKR_EFFECTS_VOLUME="0",
         MDKR_VIDEO_CONFIG_PATH=str(run_dir / "video.ini"),
         MDKR_SAVE_DIR=str(run_dir / "save"),
+        # This arm's own pack folder, whatever a portable marker would say.
+        MDKR_MODS_DIR=str(run_dir / "mods"),
     )
     if arm.hashes:
         env["MDKR_STATE_HASH"] = "3"

@@ -139,6 +139,8 @@ def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
             env.update(extra_env)
         save_env(env, str(save_dir))
         env["MDKR_VIDEO_CONFIG_PATH"] = str(root / "mdkr64.ini")
+        # This arm's own pack folder (absent unless texture_pack was given).
+        env["MDKR_MODS_DIR"] = str(root / "mods")
         command = [
             binary, "--headless-frames", str(frames),
             "--input-script", str(ROOT / fixture), "--rom", rom,

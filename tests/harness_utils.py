@@ -9,14 +9,15 @@ that stale binary on an occupied workstation.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import errno
-import fcntl
 import hashlib
 import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -644,7 +645,72 @@ def save_env(env: dict[str, str], save_dir: str) -> dict[str, str]:
         "MDKR_VIDEO_CONFIG_PATH",
         os.path.join(os.path.abspath(save_dir), "video.ini"),
     )
+    # And the content-pack root, for the same reason: without MDKR_MODS_DIR a
+    # non-packaged build reads mods/ beside the working directory (the repo
+    # root for a test run), where the launcher's "Install pack..." publishes
+    # when the game is started from a checkout. The folder named here is
+    # never created, so the engine finds no packs at all. A check that wants
+    # packs points it at its own fixture folder.
+    env.setdefault("MDKR_MODS_DIR", isolated_mods_dir(save_dir))
     return env
+
+
+def isolated_mods_dir(save_dir: str) -> str:
+    """A content-pack root inside ``save_dir`` that nothing creates."""
+
+    return os.path.join(os.path.abspath(save_dir), "isolated-mods")
+
+
+# What tools/run_checks.py pins for every task, and what a check started by
+# hand gets in their place (see isolate_direct_run below).
+ISOLATED_VARIABLES = ("MDKR_SAVE_DIR", "MDKR_TEST_SAVE_DIR",
+                      "MDKR_VIDEO_CONFIG_PATH", "MDKR_MODS_DIR",
+                      "MDKR_APP_PREFS_DIR")
+
+
+def isolate_direct_run(environ: "dict[str, str] | os._Environ[str]" = os.environ,
+                       script: str | None = None) -> str | None:
+    """Give a check started by hand the isolation the suite gives a task.
+
+    tools/run_checks.py exports a private MDKR_SAVE_DIR (with the video
+    config, mods and app-prefs pins) for every task, and a check that builds
+    its engine environment from ``dict(os.environ)`` inherits it. Run that
+    same check directly and there is nothing to inherit: the engine falls back
+    to the SHARED per-user save directory, the owner's real one, and to a
+    repo-root mods/ (check_camera_projection_fallback_runtime.py and
+    check_camera_probe_invalid_recovery.py wrote the owner's real save that
+    way; test_check_save_dir_hermeticity.py could not see it because it only
+    followed environments that scrub MDKR*).
+
+    So importing this module from a ``check_*.py`` that was started with no
+    MDKR_SAVE_DIR exports the same pins into ``os.environ``, pointing at one
+    private directory that is removed at exit. Anything the caller already
+    set wins, and a suite task (which always has MDKR_SAVE_DIR) is untouched.
+    Returns the directory, or None when nothing was done.
+    """
+
+    script = Path(script if script is not None else (sys.argv[0] or "")).name
+    if environ.get("MDKR_SAVE_DIR") or not script.startswith("check_"):
+        return None
+    root = tempfile.mkdtemp(prefix="mdkr64-direct-run-")
+    atexit.register(shutil.rmtree, root, True)
+    save = environ.get("MDKR_TEST_SAVE_DIR") or os.path.join(root, "save")
+    prefs = os.path.join(root, "prefs")
+    os.makedirs(save, exist_ok=True)
+    os.makedirs(prefs, exist_ok=True)
+    environ["MDKR_SAVE_DIR"] = os.path.abspath(save)
+    environ.setdefault("MDKR_TEST_SAVE_DIR", os.path.abspath(save))
+    environ.setdefault("MDKR_VIDEO_CONFIG_PATH", os.devnull)
+    environ.setdefault("MDKR_MODS_DIR", os.path.join(root, "isolated-mods"))
+    environ.setdefault("MDKR_APP_PREFS_DIR", prefs)
+    if sys.stderr is not None and sys.stderr.isatty():
+        print(f"[harness] {script} started outside tools/run_checks.py: saves, "
+              f"prefs and mods isolated under {root} (removed at exit; export "
+              "MDKR_SAVE_DIR to choose a directory)", file=sys.stderr, flush=True)
+    return root
+
+
+isolate_direct_run()
 
 
 @contextlib.contextmanager
@@ -663,6 +729,8 @@ def exclusive_build_dir(build_dir: str | os.PathLike[str]):
     # trip the clean-tree guards.
     digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
     lock_path = Path(tempfile.gettempdir()) / f"mdkr64-build-{digest}.lock"
+    import fcntl  # POSIX-only; imported here so this module loads on Windows
+
     handle = open(lock_path, "w")
     try:
         try:

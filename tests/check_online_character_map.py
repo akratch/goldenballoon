@@ -20,6 +20,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCES = [
     ROOT / "tests/test_online_character_map.c",

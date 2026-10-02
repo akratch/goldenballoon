@@ -351,6 +351,8 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
         MDKR_RENDERER="gl",
         MDKR64_HIDDEN="1",
         MDKR_SAVE_DIR=str(run_dir / "save"),
+        # This arm's own pack folder, whatever a portable marker would say.
+        MDKR_MODS_DIR=str(run_dir / "mods"),
         # The runtime setter PERSISTS. Without a private path the live arm would
         # rewrite the developer's real settings file.
         MDKR_VIDEO_CONFIG_PATH=str(run_dir / "mdkr64.ini"),

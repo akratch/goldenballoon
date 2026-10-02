@@ -278,6 +278,8 @@ def scrubbed_environment(run_root: Path, renderer: str) -> dict[str, str]:
         "MDKR_RENDERER": renderer,
         "MDKR_APP_PREFS_DIR": str(run_root),
         "MDKR_SAVE_DIR": str(run_root / "save"),
+        # The run's own pack folder (absent on the no-pack arms).
+        "MDKR_MODS_DIR": str(run_root / "mods"),
         # Isolate the video config with the save (see check_door_blocks.py).
         "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
     })

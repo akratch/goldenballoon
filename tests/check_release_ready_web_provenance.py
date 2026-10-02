@@ -10,6 +10,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import harness_utils  # noqa: F401,E402 -- a direct run gets private saves, prefs and mods
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "tools" / "ci" / "check_web_build_provenance.py"

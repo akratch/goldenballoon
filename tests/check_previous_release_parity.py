@@ -324,6 +324,9 @@ def isolation_env(run_dir: Path) -> dict[str, str]:
     return {
         "MDKR_APP_PREFS_DIR": str(run_dir / "prefs"),
         "MDKR_CUSTOM_CHARACTER_DIRECTORY": str(run_dir / "characters"),
+        # The previous release has no MDKR_MODS_DIR; its private cwd is what
+        # keeps it off a checkout's mods/. This build gets both.
+        "MDKR_MODS_DIR": str(run_dir / "mods"),
         "MDKR_SIMULATION_CADENCE": "original",
         "MDKR_PRESENT_RATE": "original",
         "MDKR_TRACE": "1",

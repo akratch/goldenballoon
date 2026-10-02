@@ -76,12 +76,14 @@ def run_arm(binary, rom, route, root, name, *, rate="30", fault=None, disabled=F
     (case / "save").mkdir(parents=True)
     (case / "prefs").mkdir()
     (case / "frames").mkdir()
-    # Non-packaged builds read mods/ beside the working directory.
+    # The case's own pack folder, named outright rather than left to the
+    # working directory a non-packaged build would otherwise read it from.
     family_pack(case / "mods/base", 100, (255, 0, 0), alpha=alpha)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("MDKR", "GE007_"))}
     env.update(MDKR_RENDERER="webgpu", MDKR_AUDIO="0", MDKR64_HIDDEN="1",
                MDKR_APP_PREFS_DIR=str(case / "prefs"), MDKR_SAVE_DIR=str(case / "save"),
                MDKR_VIDEO_CONFIG_PATH=str(case / "video.ini"),
+               MDKR_MODS_DIR=str(case / "mods"),
                MDKR_TEST_SCRIPT_ONLY_INPUT="1", MDKR_PRESENT_RATE=rate,
                MDKR_LOAD_TRACK=TRACK, MDKR_AUTOPILOT="1",
                MDKR_STATE_HASH="3", MDKR_STATE_HASH_FILE=str(case / "hashes.txt"),
