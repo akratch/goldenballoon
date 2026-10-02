@@ -336,10 +336,11 @@ class RealtimeVerdictTests(unittest.TestCase):
     UNLOCKED = (harness_utils.CONSOLE_UNLOCKED, "console unlocked")
     LOCKED = (harness_utils.CONSOLE_UNAVAILABLE, "the console is locked")
 
-    def run_main(self, strict, honest, consoles):
+    def run_main(self, strict, honest, consoles, extra_args=()):
         """strict/honest: one kind per attempt; consoles: the console state
         read before the arms, after each attempt (strict then honest), and
-        after the arms."""
+        after the arms. extra_args is appended to the argv main() parses,
+        so a test can pass the same flags the suite does."""
         plan = {"realtime-display-smoothing": strict,
                 "realtime-display-smoothing-quantum-honest": honest}
         console = iter(consoles)
@@ -374,7 +375,8 @@ class RealtimeVerdictTests(unittest.TestCase):
             binary, rom = Path(temp) / "mdkr64", Path(temp) / "rom.z64"
             binary.touch()
             rom.touch()
-            argv = ["check_pacing_quality.py", "--build", str(binary), "--rom", str(rom)]
+            argv = ["check_pacing_quality.py", "--build", str(binary),
+                    "--rom", str(rom), *extra_args]
             output = io.StringIO()
             with mock.patch.object(pacing.sys, "argv", argv), \
                     mock.patch.object(pacing, "run_arm", side_effect=fake_run_arm), \
@@ -427,6 +429,31 @@ class RealtimeVerdictTests(unittest.TestCase):
         self.assertEqual(code, 1, text)
         self.assertIn("no consumer on an unlocked console", text)
         self.assertNotIn("SKIPPED", text)
+        # tools/run_checks.py always passes this flag. It may quiet a locked
+        # or unreadable host. It must not turn an unlocked never-block into
+        # PASS (REALTIME QUALITY NOT MEASURED).
+        code, text = self.run_main(["blocked-never"] * 3, ["blocked-never"] * 3,
+                                   [self.UNLOCKED] * 8,
+                                   extra_args=("--allow-no-baseline",))
+        self.assertEqual(code, 1, text)
+        self.assertIn("no consumer on an unlocked console", text)
+        self.assertNotIn("REALTIME QUALITY NOT MEASURED", text)
+        self.assertNotIn("SKIPPED", text)
+
+    def test_allow_no_baseline_still_downgrades_a_locked_or_unreadable_host(self):
+        # The suite flag may quiet a host that cannot be judged. It must not
+        # quiet the unlocked case covered above.
+        for consoles in (
+            [self.UNLOCKED] + [self.LOCKED] * 7,
+            [self.UNLOCKED] + [(harness_utils.CONSOLE_UNKNOWN,
+                                "ioreg unavailable")] * 7,
+        ):
+            code, text = self.run_main(
+                ["blocked-never"] * 3, ["blocked-never"] * 3, consoles,
+                extra_args=("--allow-no-baseline",))
+            self.assertEqual(code, 0, text)
+            self.assertIn("REALTIME QUALITY NOT MEASURED", text)
+            self.assertNotIn("check_pacing_quality: FAIL", text)
 
     def test_never_blocking_with_an_unreadable_session_is_not_a_pass(self):
         unknown = (harness_utils.CONSOLE_UNKNOWN, "ioreg unavailable")

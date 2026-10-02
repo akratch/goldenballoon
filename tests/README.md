@@ -3467,7 +3467,9 @@ an unlocked 120 Hz panel measured 2200-2400) as one with no consumer. That is
 the host's doing only while the console is not observably unlocked (locked, no
 session, or unreadable); on an unlocked console it is a failure, "no consumer
 on an unlocked console", which is how an unthrottled never-blocking regression
-shows. The run is SKIPPED (banner, exit 77, named by `tools/run_checks.py`, a
+shows. The suite always passes `--allow-no-baseline`. That flag still
+downgrades a locked or unreadable host to a loud note. It does not downgrade
+an unlocked never-block. The run is SKIPPED (banner, exit 77, named by `tools/run_checks.py`, a
 failure in a release run) only when the console is locked before the arms or
 when every attempt of both arms had no consumer while it was not observably
 unlocked. One refused arm leaves the other arm's verdict standing, quality
