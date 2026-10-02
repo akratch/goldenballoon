@@ -9838,10 +9838,18 @@ separate from the app-shell, quit and lobby-takeover smoke tests.
 `python3 tests/test_source_custody.py` checks the release dependency inventory
 in disposable repositories. Untracked and staged-but-uncommitted source inputs
 must both fail: `git archive HEAD` contains neither. Missing working-tree inputs
-also fail. Source areas are game/platform/tests/tools/cmake/.github/services/lib
-plus the root CMake recipe, including service manifests, lockfiles and vendored
-library inputs; ignored build output and private planning docs are not swept into
-the publication inventory. `python3 tools/ci/check_source_custody.py --json`
+also fail. The inventory covers what the build, the gates and the packages read:
+game/platform/lib/third_party (compiled code and the licences every package
+copies), cmake/tests/tools/.github/.githooks, services (manifests and
+lockfiles), windows (resource and manifest templates, icon), brand (embedded
+launcher art), macos (bundle scripts, Info.plist) and dist (the web shell), plus
+`CMakeLists.txt`, `CMakePresets.json`, `LICENSE`, `README.md`, `.gitignore` and
+`.gitattributes`. Every other tracked top-level entry is named in `NOT_INPUTS`
+with the reason nothing builds or packages it, and the test fails on a tracked
+top-level entry that is in neither list, so a new input cannot go unwatched.
+Ignored build output (the generated web modules and packaged zips under `dist/`
+included) and private planning docs are not swept into the publication
+inventory. `python3 tools/ci/check_source_custody.py --json`
 produces a review list without staging, committing or deleting anything. The
 check runs from the release-readiness guard and its controls are the
 `source_custody` CTest. It checks path custody, not modified-file content
