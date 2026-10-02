@@ -14,6 +14,10 @@
 # Usage:
 #   tools/web/run_emscripten_unit_tests.sh [output-dir]   # default build-web-tests
 #
+# Exits 77 when the pinned Emscripten or node is not available (nothing ran;
+# tests/check_emscripten_units.py reports that as SKIPPED), 1 when a test
+# fails.
+#
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -29,13 +33,13 @@ done
 if ! command -v emcc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
     echo "run_emscripten_unit_tests: emcc and node are required (install emsdk" >&2
     echo "  or set EMSDK_DIR)." >&2
-    exit 2
+    exit 77
 fi
 EMCC_VERSION_LINE="$(emcc --version | head -1)"
 if [[ "$EMCC_VERSION_LINE" != *"$MDKR_EMSCRIPTEN_VERSION"* ]]; then
     echo "run_emscripten_unit_tests: Emscripten $MDKR_EMSCRIPTEN_VERSION is required," >&2
     echo "  but this is: $EMCC_VERSION_LINE" >&2
-    exit 2
+    exit 77
 fi
 
 OUT="${1:-build-web-tests}"

@@ -7685,7 +7685,11 @@ hard links, so that move has an Emscripten arm. CTest does not build for
 Emscripten: `tools/web/run_emscripten_unit_tests.sh` builds `fs_set_aside` and
 `ghost_bank` with the pinned emcc and runs them under node, on the in-memory
 file system the browser's save mount sits on, where the ghost bank also checks
-that each set-aside asks for browser storage to be committed. The Windows
+that each set-aside asks for browser storage to be committed. The suite runs
+it in the web lane as `emscripten_units` (`tests/check_emscripten_units.py`,
+into a private temporary directory); without the pinned Emscripten or node the
+script exits 77 and the task is SKIPPED by name, which a release run counts as
+a failure. The Windows
 executables are built by `tools/mingw_cross_check.sh --intake-tests`; they have
 not yet run on Windows, and the older mutation statement above does not qualify
 them.

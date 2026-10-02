@@ -345,7 +345,14 @@ SKIPPABLE_CHECKS = {
         "frames), so presentation quality could not be judged",
         "a macOS host with an unlocked console and an active display",
         host_condition=True),
+    "emscripten_units": SkipContract(
+        "the pinned Emscripten and node are not available, so the browser "
+        "arms of the save set-aside and ghost bank did not run",
+        "a host with emsdk 4.0.10 and node",
+        host_condition=True),
 }
+# browser_local checks that never read the staged dist/web tree.
+STAGE_INDEPENDENT_WEB_CHECKS = frozenset({"emscripten_units"})
 # Checks that are handed --reference-build when the operator supplies one.
 REFERENCE_BUILD_CHECKS = frozenset(
     name for name, contract in SKIPPABLE_CHECKS.items()
@@ -1308,6 +1315,9 @@ CHECKS = (
           "two complete engine epochs through one wasm module and returned launcher"),
     Check("touch_controls", "check_touch_controls.py", "browser",
           "bounded touch edge transport, overlay gating/persistence, chord and neutral"),
+    Check("emscripten_units", "check_emscripten_units.py", "browser_local",
+          "browser arms of the pak/ghost set-aside move and the ghost bank, "
+          "built with the pinned emcc and run under node (ROM-free)"),
     Check("controller_page", "check_controller_page.py", "browser_local",
           "engine-free phone controller approval, touch and reconnect UX"),
     Check("party_host", "check_party_host.py", "browser_local",
@@ -2357,7 +2367,12 @@ def preflight(
     # The "wasm" role's sole check inspects the linked module in build-web/
     # directly and never touches dist/web/, so demanding a fresh stage from it
     # would fail a lane whose inputs are provably unaffected.
-    if roles & {"browser", "browser_save", "browser_local"}:
+    # Web-lane checks that build and run their own modules and never read the
+    # staged tree (emscripten_units compiles with emcc into a private
+    # directory) do not need a fresh stage.
+    stage_roles = {check.role for check in checks
+                   if check.name not in STAGE_INDEPENDENT_WEB_CHECKS}
+    if stage_roles & {"browser", "browser_save", "browser_local"}:
         # A commit landing mid-suite would otherwise poison every browser
         # task silently except the one check that reads build-info.json —
         # and that one only when its turn comes, deep into the run.
