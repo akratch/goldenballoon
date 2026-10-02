@@ -2409,6 +2409,13 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     endif()
     add_test(NAME level_lighting COMMAND mdkr_level_lighting_test)
 
+    add_executable(mdkr_gfx_texpack_upload_budget_test
+        ${CMAKE_SOURCE_DIR}/tests/test_gfx_texpack_upload_budget.c)
+    target_include_directories(mdkr_gfx_texpack_upload_budget_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/fast3d)
+    add_test(NAME gfx_texpack_upload_budget
+             COMMAND mdkr_gfx_texpack_upload_budget_test)
+
     add_executable(mdkr_shadow_frame_test
         ${CMAKE_SOURCE_DIR}/tests/test_shadow_frame.c
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_shadow_frame.c)

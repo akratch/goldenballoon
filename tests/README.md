@@ -7785,6 +7785,17 @@ observation that **off→on needs no restart**: the registry is scanned and the
 store bound unconditionally by `platform_content_packs_init()`, so the setting
 only decides whether the store answers.
 
+Assertion 4b (T12d) requires the switch back on to show the replacements at
+once, not a few frames later. The packed runs print `[TEXPACK-FRAME]` rows
+(`MDKR_TEXTURE_PACK_TIMING=1`); over the 30 frames from tick 320 the live run
+must re-upload resident replacements outside the per-frame upload budget
+(`unbudgeted` > 0, the warm-load window of
+`platform/fast3d/gfx_texpack_upload_budget.h`) and defer none (`deferred` = 0),
+while the never-toggled pack run shows no such uploads over the same frames.
+The window's rules are unit-tested GPU-free as `gfx_texpack_upload_budget`;
+this is the check that a toggle still reaches them. The plateau gate's
+`--texture-pack` arm checks the same for level loads.
+
 Assertion 5 requires the `[SIMHASH]` v3 stream to be byte-identical across all
 three comparison arms. `Content.PacksEnabled` is content class and toggling it
 mid-run must not move one bit of authoritative state.
@@ -8198,7 +8209,14 @@ caches; the later ones may not grow.
 
 Pass `--texture-pack /path/to/pack.zip` to copy a real pack into the run's
 isolated preferences/mods directory. This arm requires nonzero rendered
-replacement-texture evidence, not merely successful indexing. Use
+replacement-texture evidence, not merely successful indexing: the store's
+`[MODS] N high-resolution textures used this run` line, which a Rice/GLideN64
+pack prints. It also requires every warm race load -- every race after the
+first -- to re-upload resident replacements outside the per-frame upload
+budget (`unbudgeted` > 0 in its `texture_pack_generation` row): the warm-load
+window that keeps a revisited course from showing its original textures for a
+few frames (T12d). Every retained real-pack log from before that window
+existed fails this; every one since passes. Use
 `--artifacts-dir /private/path` to retain logs and the copied pack privately.
 The counters cover engine pools, renderer ownership, and retained decoded
 texture pixels/lookup-table bytes. Decoded pixels must stay within the reported

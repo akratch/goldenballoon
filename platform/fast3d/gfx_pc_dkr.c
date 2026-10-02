@@ -94,6 +94,7 @@
 #include "present_sched.h"   /* presentation-replay arming seam */
 #include "mod_texture_key.h"     /* the digest a pack author names a texture by */
 #include "mod_texture_store.h"
+#include "gfx_texpack_upload_budget.h"  /* replacement uploads per walk */
 #include "host_sched_probe.h"  /* frame-wait rows: was the thread off-core? */
 #include "rice_crc.h"   /* Rice/GLideN64 texture identity */
 #include "gfx_uniforms.h"
@@ -2942,66 +2943,39 @@ static bool dkr_texpack_timing_on(void) {
     return s_texpack_timing != 0;
 }
 
-/* Replacement uploads per frame (issue #66). Installing textures a few per
- * frame bounds the uploads of NEW replacements, but not the re-uploads of
- * resident ones: a level load invalidates this cache's entries (arena reuse),
- * and a warm return to a course re-uploaded every replacement it draws in its
- * first frame -- 124 of them, 33.7 MiB, 4.7 ms on WebGPU and 10.2 ms on GL in
- * the T12a measurement. So replacement uploads share one per-frame time
- * budget; past it a resident replacement is drawn from ROM this frame and its
- * entry is refilled in place on a later one, exactly like a pending one. At
- * least one replacement is uploaded per frame, so nothing starves. The INLINE
- * loader keeps the 1.7 behaviour and has no budget. */
-#define DKR_TEXPACK_UPLOAD_BUDGET_NS UINT64_C(2000000)
-static uint64_t s_texpack_upload_frame_ns;
-static uint32_t s_texpack_upload_frame_count;
-
-/* ...except right after a level load or a pack toggle. Both make this cache
- * forget its entries (arena reuse; the override generation), so the scene's
- * already-decoded replacements are re-uploaded as they are drawn. Deferring
- * those showed the original textures for several frames on every warm level
- * load -- 498/651 deferrals over the T12a route -- for pixels the store
- * already held. So for the first real walks after either event, re-uploads of
- * RESIDENT replacements are not budgeted and do not spend the budget; newly
- * decoded textures (a pending entry's refill) stay budgeted, as do the store's
- * install limits. Measured on the T12a route, the re-uploads after a boundary
- * land on its 2nd-4th presented frames; ten walks covers that with margin. */
-#define DKR_TEXPACK_UNBUDGETED_WALKS 10
-static int      s_texpack_unbudgeted_walks;
-static bool     s_texpack_walk_unbudgeted;
-static uint32_t s_texpack_seen_override_generation;
+/* Replacement uploads per walk (issue #66): one time budget, past which a
+ * replacement is drawn from ROM this walk and refilled in place on a later
+ * one, and the warm-load window after a level load or a pack toggle, in which
+ * replacements the store already holds go up at once. The rules, and why,
+ * are in gfx_texpack_upload_budget.h, which tests/test_gfx_texpack_upload_
+ * budget.c holds to them; this file only drives them. */
+static GfxTexpackUploadBudget s_texpack_budget;
 
 static void dkr_texpack_note_level_boundary(void) {
-    s_texpack_unbudgeted_walks = DKR_TEXPACK_UNBUDGETED_WALKS;
+    gfx_texpack_budget_level_boundary(&s_texpack_budget);
 }
 
+/* Off-frame loaders only: the INLINE loader keeps the 1.7 behaviour. */
 static bool dkr_texpack_upload_budgeted(void) {
     const MdkrModTextureLoader loader = mdkr_mod_texture_store_loader();
     return loader == MDKR_MOD_TEXTURE_LOADER_WORKER ||
            loader == MDKR_MOD_TEXTURE_LOADER_BUDGET;
 }
 
-static bool dkr_texpack_upload_room(void) {
-    return !dkr_texpack_upload_budgeted() ||
-           s_texpack_upload_frame_count == 0 ||
-           s_texpack_upload_frame_ns < DKR_TEXPACK_UPLOAD_BUDGET_NS;
+/* How a replacement goes up now; `resident` as gfx_texpack_budget_decide(). */
+static GfxTexpackUpload dkr_texpack_upload_decide(bool resident) {
+    return gfx_texpack_budget_decide(&s_texpack_budget,
+                                     dkr_texpack_upload_budgeted(), resident);
 }
 
 /* Once per real walk, on this (the owner) thread, before any bind: open a
- * new upload budget, and install the pack textures the loader finished since
- * the last frame, within the store's default per-frame budget. A no-op with
- * no texture pack bound. */
+ * new upload budget (and the warm-load window, after a pack toggle -- Tab or
+ * Content.PacksEnabled -- moved the override generation), and install the
+ * pack textures the loader finished since the last frame, within the store's
+ * default per-frame budget. A no-op with no texture pack bound. */
 static void dkr_texpack_pump(void) {
-    const uint32_t override_generation = mdkr_mod_texture_generation();
-    s_texpack_upload_frame_ns = 0;
-    s_texpack_upload_frame_count = 0;
-    if (override_generation != s_texpack_seen_override_generation) {
-        /* A pack toggle (Tab or Content.PacksEnabled). */
-        s_texpack_seen_override_generation = override_generation;
-        s_texpack_unbudgeted_walks = DKR_TEXPACK_UNBUDGETED_WALKS;
-    }
-    s_texpack_walk_unbudgeted = s_texpack_unbudgeted_walks > 0;
-    if (s_texpack_unbudgeted_walks > 0) s_texpack_unbudgeted_walks--;
+    gfx_texpack_budget_begin_walk(&s_texpack_budget,
+                                  mdkr_mod_texture_generation());
     if (mdkr_mod_texture_store_loader() == MDKR_MOD_TEXTURE_LOADER_AUTO) {
         return;
     }
@@ -3333,7 +3307,7 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
      * entry stops asking and keeps its ROM pixels.
      */
     int refill = -1;
-    bool refill_unbudgeted = false;
+    GfxTexpackUpload refill_upload = GFX_TEXPACK_UPLOAD_DEFER;
     MdkrModTexture refill_over = { NULL, 0, 0, 0 };
     if (hit >= 0 && tex_cache[hit].pack_pending) {
         struct DkrTexCacheEntry *entry = &tex_cache[hit];
@@ -3342,18 +3316,18 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * level load or toggle it goes up outside the budget; otherwise it
          * waits for upload room, not for the store. */
         const bool resident_wait = entry->pack_deferred;
-        const bool unbudgeted = resident_wait && s_texpack_walk_unbudgeted;
-        const bool ask = resident_wait
-                             ? (unbudgeted || dkr_texpack_upload_room())
-                             : entry->pack_serial != serial;
+        const GfxTexpackUpload upload =
+            dkr_texpack_upload_decide(resident_wait);
+        const bool ask = resident_wait ? upload != GFX_TEXPACK_UPLOAD_DEFER
+                                       : entry->pack_serial != serial;
         if (ask) {
             bool still_pending = false;
             entry->pack_serial = serial;
             if (dkr_texpack_reask(entry, fmt, siz, &refill_over,
                                   &still_pending)) {
-                if (unbudgeted || dkr_texpack_upload_room()) {
+                if (upload != GFX_TEXPACK_UPLOAD_DEFER) {
                     refill = hit;
-                    refill_unbudgeted = unbudgeted;
+                    refill_upload = upload;
                     hit = -1;
                 } else {
                     /* Resident, but no upload room left this frame: wait
@@ -3474,12 +3448,12 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         }
         bool pack_deferred = false;
         /* On a miss the store answered from resident pixels; after a level
-         * load or toggle that re-upload is outside the budget. A refill is
-         * outside it only when it was a deferred resident one. */
-        const bool upload_unbudgeted =
-            refill >= 0 ? refill_unbudgeted : s_texpack_walk_unbudgeted;
-        if (over_used && refill < 0 && !upload_unbudgeted &&
-            !dkr_texpack_upload_room()) {
+         * load or toggle that re-upload is outside the budget. A refill was
+         * decided above, outside it only when it was a deferred resident
+         * one. */
+        const GfxTexpackUpload upload =
+            refill >= 0 ? refill_upload : dkr_texpack_upload_decide(true);
+        if (over_used && refill < 0 && upload == GFX_TEXPACK_UPLOAD_DEFER) {
             /* Resident, but this frame's replacement uploads are spent: the
              * original now, the replacement on a later frame. */
             over_used = false;
@@ -3488,9 +3462,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
             if (dkr_texpack_timing_on()) s_texpack.deferred++;
         }
         const uint64_t upload_start = dkr_texpack_now();
-        const bool budgeted = over_used && dkr_texpack_upload_budgeted() &&
-                              !upload_unbudgeted;
-        if (over_used && upload_unbudgeted && dkr_texpack_upload_budgeted() &&
+        const bool budgeted = over_used && upload == GFX_TEXPACK_UPLOAD_SPEND;
+        if (over_used && upload == GFX_TEXPACK_UPLOAD_WARM &&
             dkr_texpack_timing_on()) {
             s_texpack.unbudgeted++;
         }
@@ -3501,10 +3474,9 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                       : dkr_upload_tile_texture(td, cutout, &uw, &uh, &derived);
         if (budgeted) {
             const uint64_t budget_end = dkr_texpack_clock_ns();
-            if (budget_end > budget_start) {
-                s_texpack_upload_frame_ns += budget_end - budget_start;
-            }
-            s_texpack_upload_frame_count++;
+            gfx_texpack_budget_spend(&s_texpack_budget,
+                                     budget_end > budget_start
+                                         ? budget_end - budget_start : 0u);
         }
         if (over_used) {
             dkr_texpack_add(&s_texpack.override_ns, upload_start);

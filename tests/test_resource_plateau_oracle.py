@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 from unittest.mock import patch
 
-from check_resource_plateau import cache_plateau_error, extended_route, run_backend
+from check_resource_plateau import (cache_plateau_error, extended_route,
+                                    run_backend, warm_reupload_error)
 
 
 class CachePlateauTests(unittest.TestCase):
@@ -155,6 +156,23 @@ class CachePlateauTests(unittest.TestCase):
     def test_accounted_rows_still_respect_the_budget(self):
         over = self.accounted(pixels=5000, first_bytes=5000, first=9)
         self.assertIsNotNone(cache_plateau_error([self.ACCOUNTED] * 3 + [over]))
+
+    # T12d: with a pack, a warm race load re-uploads the replacements the
+    # store already holds outside the upload budget. Rows: level, players,
+    # cutscene, deferred, unbudgeted, one per completed generation.
+    def test_warm_race_loads_reupload_at_once(self):
+        rows = [(5, 0, 100, 0, 60)] + [(5, 0, 100, 0, 84)] * 6
+        self.assertIsNone(warm_reupload_error(rows))
+        # The cold first race may have nothing resident yet.
+        self.assertIsNone(warm_reupload_error([(5, 0, 100, 3, 0)] + rows[1:]))
+
+    def test_a_warm_race_load_with_no_reupload_fails(self):
+        rows = [(5, 0, 100, 0, 60)] + [(5, 0, 100, 0, 84)] * 6
+        rows[4] = (5, 0, 100, 9, 0)
+        self.assertIsNotNone(warm_reupload_error(rows))
+        self.assertIsNotNone(warm_reupload_error(rows[:2]))
+        other_scene = [(0, 0, 0, 0, 5)] * 7
+        self.assertIsNotNone(warm_reupload_error(other_scene))
 
     def test_long_route_keeps_retrying(self):
         rows = extended_route(75000).splitlines()

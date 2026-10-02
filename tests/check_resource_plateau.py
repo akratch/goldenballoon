@@ -90,6 +90,14 @@ def cache_window(races: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
     return races[min(CACHE_WARMUP_RACES, max(0, len(races) - 3)):]
 
 
+# The renderer's per-generation pack census (gfx_pc_dkr.c), labelled with the
+# generation that just ended: level, players, cutscene, deferred, unbudgeted.
+TEXPACK_GENERATION_RE = re.compile(
+    r"texture_pack_generation: level=(-?\d+) players=(-?\d+) "
+    r"cutscene=(-?\d+) .*?\bdeferred=(\d+) unbudgeted=(\d+)"
+)
+
+
 def cache_row(match: re.Match) -> tuple[int, ...]:
     return tuple(int(value) for value in match.groups() if value is not None)
 FATAL_MARKERS = (
@@ -203,6 +211,34 @@ def cache_first_use_note(rows: list[tuple[int, ...]]) -> str:
             f"identit{'y' if identities == 1 else 'ies'} "
             f"({window[-1][10] - window[0][10]} bytes) and "
             f"{window[-1][6] - window[0][6]} new lookup entries")
+
+
+def warm_reupload_error(rows: list[tuple[int, ...]]) -> str | None:
+    """With a pack: each warm race load re-uploads its replacements at once.
+
+    A level load makes the renderer forget its texture entries, so the
+    replacements the store already holds go up again as the race draws them.
+    For the first walks after the load they go up outside the per-frame upload
+    budget -- the warm-load window in platform/fast3d/gfx_texpack_upload_
+    budget.h, T12b's fix for warm loads that showed the original textures for
+    several frames. Every race after the first is a warm load of a scene whose
+    replacements are resident, so its generation row must count such uploads
+    (`unbudgeted` > 0); none means the window no longer opens on a level load
+    (T12d). The window's rules are unit-tested; this is the check that a level
+    load still reaches them. Deferrals are not judged here: a texture first
+    drawn after the window is budgeted, as it should be.
+    """
+    races = [row for row in rows if row[:3] == (5, 0, 100)]
+    if len(races) < 3:
+        return (f"only {len(races)} texture-pack race generations were "
+                "reported; need three")
+    cold = [index + 2 for index, row in enumerate(races[1:]) if row[4] == 0]
+    if cold:
+        return ("warm race load(s) " + ", ".join(map(str, cold)) +
+                " re-uploaded no resident replacement outside the upload "
+                "budget: the warm-load window did not open on the level load, "
+                f"so the originals show until the budget allows: {races}")
+    return None
 
 
 def plateau_error(rows: list[tuple[int, ...]]) -> str | None:
@@ -459,6 +495,12 @@ def run_backend(
         error = cache_plateau_error(cache_rows)
         if error is not None:
             return failure(error, output)
+        if texture_pack is not None:
+            error = warm_reupload_error([
+                tuple(map(int, match.groups()))
+                for match in TEXPACK_GENERATION_RE.finditer(output)])
+            if error is not None:
+                return failure(error, output)
         error = plateau_error(rows)
         if error is not None:
             return failure(error + "\n" + "\n".join(
@@ -650,6 +692,18 @@ def main() -> int:
             print(f"check_resource_plateau: FAIL — steady-growth positive "
                   f"control passed: {label}", file=sys.stderr)
             return 1
+    # The warm-load window: a warm race load with no resident re-upload
+    # outside the budget must fail; the shape of a real run must pass.
+    warm = [(5, 0, 100, 0, 60)] + [(5, 0, 100, 0, 84)] * 6
+    if warm_reupload_error(warm) is not None:
+        print("check_resource_plateau: FAIL — warm re-uploads after each race "
+              "load were reported as missing", file=sys.stderr)
+        return 1
+    if warm_reupload_error(warm[:3] + [(5, 0, 100, 9, 0)] + warm[4:]) is None:
+        print("check_resource_plateau: FAIL — warm-load window positive "
+              "control passed: a warm race load with no re-upload at once",
+              file=sys.stderr)
+        return 1
     registry_synthetic = [
         (5, 0, 100, 10, 20, 0, 0, 3),
         (5, 0, 100, 11, 21, 0, 0, 3),

@@ -115,6 +115,20 @@ What is asserted
     generation rather than a rescan. This is the arm that would have had to
     become "the panel says restart-required" had the scan been conditional.
 
+ 4b. AND AT ONCE, NOT A FEW FRAMES LATER (T12d). A pack toggle makes the
+    renderer forget its entries, and the replacements the store already holds
+    must go straight back up -- the warm-load window in
+    platform/fast3d/gfx_texpack_upload_budget.h -- rather than wait behind
+    the per-frame upload budget and show the originals for a few frames. The
+    packed arms print [TEXPACK-FRAME] rows (MDKR_TEXTURE_PACK_TIMING=1): in
+    the live run, the frames from the toggle back on must re-upload resident
+    replacements outside the budget (`unbudgeted` > 0) and defer none
+    (`deferred` = 0). The pack run, never toggled, must show no such uploads
+    over the same frames, which is what makes the first count evidence of the
+    toggle and not of something else. The window's rules are unit-tested
+    without a GPU (`gfx_texpack_upload_budget`); this is the end-to-end check
+    that a toggle still reaches them.
+
  5. IT IS PRESENTATION ONLY. The `[SIMHASH]` v3 stream is byte-identical across
     all three arms, all 380 rows. Content.PacksEnabled is content class
     (`mdkr_video_key_is_content`, folded into `mdkr_video_key_is_player_comfort`)
@@ -174,6 +188,9 @@ SAMPLED = (FRAME_PACK_ON, FRAME_PACK_OFF, FRAME_PACK_BACK)
 # still not move which state a sample belongs to.
 TICK_OFF = 150
 TICK_ON = 320
+# The frames after TICK_ON judged by assertion 4b: the warm-load window is ten
+# walks; thirty frames take in all of it and the frames just after it.
+WARM_FRAMES = 30
 
 PACK_INI = b"[pack]\nname=Texture Test\npriority=100\n"
 PACK_RGBA = (255, 0, 255, 255)     # magenta: nothing the ROM draws looks like it
@@ -293,6 +310,8 @@ class Arm:
         self.rows: list[str] = []
         self.mods: list[str] = []
         self.applied: list[tuple[str, str, int]] = []
+        # tick -> (deferred, unbudgeted) from [TEXPACK-FRAME]; packed arms.
+        self.uploads: dict[int, tuple[int, int]] = {}
 
 
 def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
@@ -328,6 +347,10 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
     if arm.corpus:
         corpus_dir.mkdir()
         env["MDKR_MOD_TEXTURE_DUMP"] = str(corpus_dir)
+    if arm.packed:
+        # Per-frame pack rows for assertion 4b. Diagnostics only: they read
+        # clocks and print, and change nothing that is drawn.
+        env["MDKR_TEXTURE_PACK_TIMING"] = "1"
     if arm.toggles:
         env["MDKR_TEST_SETTINGS_TOGGLE"] = arm.toggles
 
@@ -353,6 +376,11 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
             arm.rows.append(line)
         elif "[MODS]" in line:
             arm.mods.append(line)
+        elif line.startswith("[TEXPACK-FRAME]"):
+            fields = dict(part.split("=", 1) for part in line.split()
+                          if "=" in part)
+            arm.uploads[int(fields["tick"])] = (int(fields["deferred"]),
+                                                int(fields["unbudgeted"]))
         elif line.startswith("[SETTINGS-TOGGLE]"):
             fields = dict(part.split("=", 1) for part in line.split()
                           if "=" in part)
@@ -458,6 +486,34 @@ def main() -> int:
             f"{pack.frames[FRAME_PACK_BACK][:16]})")
     print(f"   ok  frame {FRAME_PACK_BACK} == the pack run again; the registry "
           "survived the switch being off")
+
+    print("4b. and at once: resident replacements go straight back up")
+    window = range(TICK_ON, TICK_ON + WARM_FRAMES)
+    for arm in (pack, live):
+        require(all(tick in arm.uploads for tick in window),
+                f"{arm.label}: no [TEXPACK-FRAME] row for every frame "
+                f"{TICK_ON}..{TICK_ON + WARM_FRAMES - 1}, so the upload "
+                "counts below would be measuring nothing")
+    live_warm = sum(live.uploads[tick][1] for tick in window)
+    live_deferred = sum(live.uploads[tick][0] for tick in window)
+    pack_warm = sum(pack.uploads[tick][1] for tick in window)
+    require(live_warm > 0,
+            f"frames {TICK_ON}..{TICK_ON + WARM_FRAMES - 1}: after "
+            "Content.PacksEnabled=1 no resident replacement was re-uploaded "
+            "outside the upload budget; the warm-load window did not open on "
+            "the toggle, so a toggle shows the originals until the budget "
+            "lets each replacement back up")
+    require(live_deferred == 0,
+            f"frames {TICK_ON}..{TICK_ON + WARM_FRAMES - 1}: {live_deferred} "
+            "replacement(s) deferred to a later frame right after the toggle "
+            "back on; the originals were shown for pixels already decoded")
+    require(pack_warm == 0,
+            f"the never-toggled pack run re-uploaded {pack_warm} "
+            "replacement(s) outside the budget over frames "
+            f"{TICK_ON}..{TICK_ON + WARM_FRAMES - 1}; the live run's count is "
+            "then not evidence of its toggle")
+    print(f"   ok  {live_warm} resident replacement(s) re-uploaded at once "
+          "after the toggle, none deferred; 0 in the untoggled run")
 
     print("5. the WHOLE override image is addressed, not one corner of it")
     # The quadrant is three parts green to one part magenta, and the
