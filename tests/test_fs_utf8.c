@@ -78,6 +78,13 @@ static int make_directory_link(const char *target, const char *link) {
 #endif
 }
 
+#if defined(_WIN32) && defined(MDKR_FS_UTF8_TESTING)
+/* fs_utf8.c's test seam: 1 refuses the listing's attribute query on its
+ * handle, 2 its directory query, as a file system that does not implement
+ * them would (FAT/exFAT and some network redirectors and filter drivers). */
+extern int mdkr_fs_utf8_test_refused_query;
+#endif
+
 typedef struct Listing {
     char names[8][64];
     int kinds[8];
@@ -166,6 +173,24 @@ static void test_path_primitives(const char *root) {
                "listing a directory link lists the directory it leads to");
         expect(mdkr_remove_utf8(through) == 0, "remove the file behind the link");
     }
+#if defined(_WIN32) && defined(MDKR_FS_UTF8_TESTING)
+    /* Such a file system is listed through FindFirstFileW, with the same
+     * entries and kinds; a refused handle query must not fail the listing. */
+    for (int which = 1; which <= 2; ++which) {
+        mdkr_fs_utf8_test_refused_query = which;
+        memset(&listing, 0, sizeof listing);
+        expect(mdkr_directory_list_utf8(root, record_entry, &listing) == 0 &&
+                   listing.count == 4 + have_link &&
+                   listed_kind(&listing, "folder") == MDKR_PATH_DIRECTORY &&
+                   listed_kind(&listing, "file.bin") == MDKR_PATH_FILE &&
+                   listed_kind(&listing, unicode_name) == MDKR_PATH_FILE &&
+                   (!have_link || listed_kind(&listing, "link") == MDKR_PATH_LINK),
+               which == 1
+                   ? "a directory whose attributes the file system will not report on a handle is still listed"
+                   : "a directory the file system will not list on a handle is still listed");
+    }
+    mdkr_fs_utf8_test_refused_query = 0;
+#endif
     memset(&listing, 0, sizeof listing);
     listing.stop_after = 1;
     expect(mdkr_directory_list_utf8(root, record_entry, &listing) == 2 &&

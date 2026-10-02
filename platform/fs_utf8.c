@@ -447,6 +447,28 @@ int mdkr_path_kind_utf8(const char *path) {
     return windows_entry_kind(attributes, tag);
 }
 
+#ifdef MDKR_FS_UTF8_TESTING
+/* Test-only, defined for mdkr_fs_utf8_test alone: 1 makes the listing's
+ * attribute query on its handle, 2 its directory query, answer as a file
+ * system that does not implement that query (ERROR_INVALID_FUNCTION). */
+int mdkr_fs_utf8_test_refused_query;
+#define LISTING_QUERY_REFUSED(which) \
+    (mdkr_fs_utf8_test_refused_query == (which) && \
+     (SetLastError(ERROR_INVALID_FUNCTION), 1))
+#else
+#define LISTING_QUERY_REFUSED(which) 0
+#endif
+
+/* What a file system, redirector or filter driver answers for a query it does
+ * not implement (FAT/exFAT and some network and virtual drives, for some
+ * information classes). */
+static int windows_query_unsupported(DWORD error) {
+    return error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_LEVEL ||
+           error == ERROR_INVALID_FUNCTION || error == ERROR_NOT_SUPPORTED;
+}
+
+enum { LISTING_HANDLE = 0, LISTING_FAILED = 1, LISTING_BY_FIND_FIRST = 2 };
+
 /* The directory is opened by this code, with every sharing mode granted, and
  * listed through that handle. FindFirstFileW opens it with a sharing mode of
  * its own choosing, and where that mode leaves out FILE_SHARE_DELETE (Wine's
@@ -457,45 +479,49 @@ int mdkr_path_kind_utf8(const char *path) {
  * caller chooses a pack root that way. A directory that is itself a reparse
  * point (a link, or a cloud placeholder) is therefore opened again without
  * FILE_FLAG_OPEN_REPARSE_POINT, so the system resolves it as FindFirstFileW
- * did. A file system that does not answer the directory query on a handle is
- * listed through FindFirstFileW, as before. */
-static HANDLE open_directory_for_listing(const wchar_t *wide) {
-    FILE_ATTRIBUTE_TAG_INFO info;
-    HANDLE directory = CreateFileW(
-        wide, FILE_LIST_DIRECTORY | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-        NULL);
-    if (directory == INVALID_HANDLE_VALUE) {
-        fail_windows(GetLastError());
-        return INVALID_HANDLE_VALUE;
-    }
-    for (int resolved = 0;; resolved = 1) {
-        if (!GetFileInformationByHandleEx(directory, FileAttributeTagInfo,
-                                          &info, sizeof info)) {
-            fail_windows(GetLastError());
-            break;
+ * did. The attributes come from GetFileInformationByHandle, which every file
+ * system answers, and FILE_READ_ATTRIBUTES is requested because that query
+ * needs it (it takes no part in sharing). A file system that refuses the open
+ * or the query as unsupported is listed through FindFirstFileW, as before.
+ * Returns LISTING_HANDLE with `*output` set, LISTING_FAILED with errno set, or
+ * LISTING_BY_FIND_FIRST. */
+static int open_directory_for_listing(const wchar_t *wide, HANDLE *output) {
+    DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    *output = INVALID_HANDLE_VALUE;
+    for (;;) {
+        BY_HANDLE_FILE_INFORMATION info;
+        DWORD error;
+        HANDLE directory = CreateFileW(
+            wide, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+            OPEN_EXISTING, flags, NULL);
+        if (directory == INVALID_HANDLE_VALUE) {
+            error = GetLastError();
+            if (windows_query_unsupported(error)) return LISTING_BY_FIND_FIRST;
+            fail_windows(error);
+            return LISTING_FAILED;
         }
-        if (!resolved && (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        if (LISTING_QUERY_REFUSED(1) || !GetFileInformationByHandle(directory, &info)) {
+            error = GetLastError();
             CloseHandle(directory);
-            directory = CreateFileW(
-                wide, FILE_LIST_DIRECTORY | SYNCHRONIZE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-            if (directory == INVALID_HANDLE_VALUE) {
-                fail_windows(GetLastError());
-                return INVALID_HANDLE_VALUE;
-            }
+            if (windows_query_unsupported(error)) return LISTING_BY_FIND_FIRST;
+            fail_windows(error);
+            return LISTING_FAILED;
+        }
+        if ((flags & FILE_FLAG_OPEN_REPARSE_POINT) != 0 &&
+            (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(directory);
+            flags = FILE_FLAG_BACKUP_SEMANTICS;
             continue;
         }
-        if ((info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            CloseHandle(directory);
             errno = ENOTDIR;
-            break;
+            return LISTING_FAILED;
         }
-        return directory;
+        *output = directory;
+        return LISTING_HANDLE;
     }
-    CloseHandle(directory);
-    return INVALID_HANDLE_VALUE;
 }
 
 /* The reparse tag of entry `name` of `directory`, read from the entry itself
@@ -607,8 +633,14 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
     }
     wide = utf8_to_extended_path(path);
     if (wide == NULL) return 1;
-    directory = open_directory_for_listing(wide);
-    if (directory == INVALID_HANDLE_VALUE) {
+    switch (open_directory_for_listing(wide, &directory)) {
+    case LISTING_HANDLE:
+        break;
+    case LISTING_BY_FIND_FIRST:
+        result = list_with_find_first(wide, visit, user);
+        free(wide);
+        return result;
+    default:
         free(wide);
         return 1;
     }
@@ -620,7 +652,8 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
     }
     while (result == 0) {
         const FILE_ID_BOTH_DIR_INFO *entry;
-        if (!GetFileInformationByHandleEx(directory, query, buffer,
+        if (LISTING_QUERY_REFUSED(2) ||
+            !GetFileInformationByHandleEx(directory, query, buffer,
                                           LIST_BUFFER_BYTES)) {
             const DWORD error = GetLastError();
             /* The handle proved the directory exists, so "no such file" from
@@ -632,10 +665,10 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
                 break;
             }
             if (query == FileIdBothDirectoryRestartInfo &&
-                (error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_LEVEL ||
-                 error == ERROR_INVALID_FUNCTION || error == ERROR_NOT_SUPPORTED)) {
+                windows_query_unsupported(error)) {
                 /* Some network and virtual drives do not answer this query
-                 * on a handle; nothing has been visited yet. */
+                 * on a handle; nothing has been visited yet. A refusal of a
+                 * later query cannot fall back: entries were reported. */
                 CloseHandle(directory);
                 directory = INVALID_HANDLE_VALUE;
                 result = list_with_find_first(wide, visit, user);

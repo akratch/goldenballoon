@@ -7635,10 +7635,13 @@ wide API, and read their optional path argument from the UTF-16 command line,
 so a non-ASCII `%TEMP%` or argument works. `fs_utf8` also lists a directory
 while it is held, which is how the installer empties its own stage: Wine's
 `FindFirstFileW` cannot open a directory whose holder has delete access, so
-the Windows listing goes through a handle it opens itself, sharing delete
-(with `FindFirstFileW` kept for a file system that does not answer that query
-on a handle), and lists a directory reached through a link the way `opendir()`
-does. The Windows executables are built by
+the Windows listing goes through a handle it opens itself, sharing delete,
+and lists a directory reached through a link the way `opendir()` does. A file
+system that refuses the handle's attribute or directory query as unsupported
+(FAT/exFAT and some network drives, for some queries) is listed through
+`FindFirstFileW` instead; the Windows `fs_utf8` build forces both refusals
+through a test-only seam (`MDKR_FS_UTF8_TESTING`, defined for that target
+alone) and checks the listing is unchanged. The Windows executables are built by
 `tools/mingw_cross_check.sh --intake-tests`; they have not yet run on
 Windows, and the older mutation statement above does not qualify them.
 

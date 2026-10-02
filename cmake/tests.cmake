@@ -1561,6 +1561,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform/fs_utf8.c)
     target_include_directories(mdkr_fs_utf8_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform)
+    # Compiles fs_utf8.c's test seam into this target's own copy only: it
+    # refuses the Windows listing's handle queries on request, as FAT/exFAT
+    # and some network drives do, so the FindFirstFileW fallback is run.
+    target_compile_definitions(mdkr_fs_utf8_test PRIVATE MDKR_FS_UTF8_TESTING)
     add_test(NAME fs_utf8 COMMAND mdkr_fs_utf8_test)
 
     add_executable(mdkr_app_overlay_hooks_test
