@@ -9849,14 +9849,20 @@ equivalence, transitive build dependencies, licensing or clean-archive build
 success. Those remain separate release requirements. Never bulk-add private
 artifacts simply to make the inventory pass.
 
-`python3 tests/test_clean_room_guard.py` exercises the public Bash entry point
-in disposable Git repositories, without ROMs or windows. It checks clean input,
-failed Git inventory/read commands, malformed metadata, truncated blob streams,
-all three four-byte header signatures (including tiny synthetic files), deleted
+`python3 tests/test_clean_room_guard.py` exercises the guard in disposable Git
+repositories, without ROMs or windows. It checks clean input, failed Git
+inventory/read commands, malformed metadata, truncated blob streams, all three
+four-byte header signatures (including tiny synthetic files), deleted
 historical texture-dump names (including merge-only additions), forced pack
-additions, missing ignore rules,
-oversized untracked files and shell-shaped filenames. The test is also registered
-as `clean_room_guard` in CTest. Scratch repositories are temporary; Git identity
+additions, missing ignore rules, oversized untracked files, shell-shaped
+filenames and untracked symbolic links (reported by name, never followed, so a
+dangling one cannot end the scan). Each refusal must carry its own `FAIL:` line
+and no scan error, so a guard that crashed in the branch under test cannot pass
+for it; each injected Git fault must end in the scan error. Faults are injected
+by running the guard in a child interpreter whose Git command is a Python
+wrapper, which works on Windows; the Bash entry point and the newline filename
+are exercised on POSIX only. The test is also registered as `clean_room_guard`
+in CTest. Scratch repositories are temporary; Git identity
 and configuration are isolated from the maintainer's settings.
 
 The implementation uses NUL-delimited Git paths and checked subprocesses, not

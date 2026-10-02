@@ -14,10 +14,15 @@ EMULATOR = re.compile(rb"(^|/)(ares|mupen|parallel-rdp|angrylion|libretro)/", re
 MAGIC = {bytes.fromhex(value) for value in ("80371240", "37804012", "40123780")}
 IGNORE = ("*.z64", "*.n64", "*.v64", "*.zip", "*.7z", "*.rar", "save/",
           "*.ppm", "mods/", "mod-texture-dump/")
+# The Git command line. tests/test_clean_room_guard.py runs the guard with a
+# fault-injecting wrapper here, in a child interpreter, so the injection works
+# where an extensionless "git" script on PATH would not (Windows resolves
+# git.exe, not a script).
+GIT = ("git",)
 
 
 def git(*args, data=None):
-    return subprocess.run(["git", *args], input=data, stdout=subprocess.PIPE,
+    return subprocess.run([*GIT, *args], input=data, stdout=subprocess.PIPE,
                           check=True).stdout
 
 
@@ -67,7 +72,7 @@ def scan_headers(blobs):
     hits = []
     # File-backed stderr avoids a full stderr pipe deadlocking a content read.
     with tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(["git", "cat-file", "--batch"],
+        process = subprocess.Popen([*GIT, "cat-file", "--batch"],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=errors)
         try:
@@ -143,8 +148,16 @@ def main():
     reject("required ignore patterns missing", [p.encode() for p in IGNORE if p not in ignored])
     large = []
     for raw in nul_fields(git("ls-files", "--others", "--exclude-standard", "-z")):
-        info = os.stat(os.fsdecode(raw))
-        if stat.S_ISREG(info.st_mode) and info.st_size > 4194304:
+        # lstat: Git records a symbolic link as the link, never the bytes it
+        # points at, so a link is not a large file whatever its target is --
+        # and a dangling one must not end the scan with an unrelated error.
+        info = os.lstat(os.fsdecode(raw))
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(os.fsdecode(raw))
+            state = "" if os.path.exists(os.fsdecode(raw)) else " (missing target)"
+            print(f"WARN: untracked symbolic link {os.fsdecode(raw)!r} -> "
+                  f"{target!r}{state}; not followed")
+        elif stat.S_ISREG(info.st_mode) and info.st_size > 4194304:
             large.append(raw)
     reject("unignored untracked files over 4 MiB", large)
     reject("content-pack payload tracked or in history",
@@ -158,7 +171,8 @@ def main():
     return 0
 
 
-if __name__ == "__main__":
+def run():
+    """main() with every scan failure reported, as the command line runs it."""
     try:
         status = main()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -167,4 +181,8 @@ if __name__ == "__main__":
     if status:
         print("check_clean_room: FAIL -- clean-room claim is unproven. DO NOT PUBLISH.",
               file=sys.stderr)
-    sys.exit(status)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(run())
