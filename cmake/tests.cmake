@@ -3204,6 +3204,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_check_save_dir_hermeticity.py)
     add_test(
+        NAME input_script_census
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_input_script_census.py)
+    add_test(
         NAME app_scroll_environment
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_app_scroll_environment.py)

@@ -593,7 +593,11 @@ EM_JS(int, browser_remote_pad_pop,
  * MAXCONTROLLERS entries from platform_pad_buttons(i)); only the script harness
  * was single-port. */
 struct script_entry { int frame; int hold; unsigned int buttons; int stick_x, stick_y; int port; };
-#define MAX_SCRIPT 512
+/* Entries one script may hold; a longer one is refused whole, never cut short.
+ * It was 512, and a generated soak route reached 481: a ceiling that close to
+ * real use turns one more navigation step into an abort. 4096 is 96 KiB here.
+ * tests/check_input_script_capacity.py pins the boundary (CAPACITY there). */
+#define MAX_SCRIPT 4096
 static struct script_entry s_script[MAX_SCRIPT];
 static int s_scriptCount = 0;
 static unsigned int s_scriptPresentMask = 0;

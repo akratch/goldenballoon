@@ -897,7 +897,7 @@ CHECKS = (
           "with a generated texture pack: cache plateau and warm re-uploads",
           timeout=2400),
     Check("input_script_capacity", "check_input_script_capacity.py", "native",
-          "input-script capacity boundary accepts 512 and rejects 513 entries"),
+          "input-script capacity boundary accepts 4096 and rejects 4097 entries"),
     Check("raw16_audio", "check_raw16_audio.py", "native",
           "RAW16 bank census, endian oracle, and fixed/legacy PCM A/B"),
     Check("texture_lineswap", "check_texture_lineswap.py", "native",

@@ -161,8 +161,9 @@ def extended_route(frames: int = DEFAULT_FRAMES) -> str:
         if fields and fields[0].isdigit() and int(fields[0]) < 7650:
             retained.append(line)
     retained.append("# Repeated post-race advances select TRY AGAIN each cycle.")
-    # The native input loader admits 512 entries. Keep a generous navigation
-    # allowance and spread at most 480 retry pulses over the complete soak.
+    # At most 480 retry pulses over the complete soak, however long: sized when
+    # the native loader admitted 512 entries, and kept so the route's cadence
+    # stays the measured one (tests/test_input_script_census.py counts it).
     step = max(24, (max(0, frames - 7650) + 479) // 480)
     retained.extend(f"{frame} A 5" for frame in range(7650, frames, step))
     return "\n".join(retained) + "\n"

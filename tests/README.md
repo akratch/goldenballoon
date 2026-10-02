@@ -8308,13 +8308,19 @@ comparison over the same window. The counters do not measure process RSS,
 registry/ZIP memory, or frame-time spikes, and cannot alone prove that total
 process memory has plateaued.
 
-For a longer cache-warmup check, use `--frames 75000`; generated retry pulses
-remain within the native loader's 512-entry capacity.
+For a longer cache-warmup check, use `--frames 75000`; the route spreads at most
+480 retry pulses over any length, 490 entries in all.
 
 `python3 tests/check_input_script_capacity.py --binary build/mdkr64 --rom
-baserom.us.v80.z64` checks that exactly 512 entries are accepted and 513 fail
-instead of silently truncating. It creates a hidden native window and uses
-isolated temporary preferences; the ROM remains local.
+baserom.us.v80.z64` checks that exactly 4096 entries (`CAPACITY`, the engine's
+`MAX_SCRIPT`) are accepted and 4097 fail instead of silently truncating. The
+loader admitted 512 until 1.8, which the longest generated route came within 22
+entries of. It creates a hidden native window and uses isolated temporary
+preferences; the ROM remains local. `python3 tests/test_input_script_census.py`
+(CTest `input_script_census`, ROM-free) holds every committed script under
+`tests/input_scripts/`, every oracle route's native script, the resource-plateau
+soak at both lengths and the longest inline route (check_taj_challenges, 416) to
+that capacity.
 
 ### Texture-pack transition stalls — `tools/measure_texture_pack_stalls.py`
 

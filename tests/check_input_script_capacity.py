@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Native boundary proof: 512 input entries accepted, 513 rejected, not truncated."""
+"""Native boundary proof: CAPACITY input entries accepted, one more rejected,
+never truncated.
+
+The loader admitted 512 entries until 1.8, and the longest generated route
+(check_resource_plateau.py's retry pulses) reached 481 of them, close enough
+that one more navigation step would turn a passing gate into an overflow
+abort. CAPACITY is the engine's MAX_SCRIPT (platform/platform_sdl_min.c); this
+check is what holds the two together, and test_input_script_census.py holds
+every committed script to it.
+"""
 import argparse
 import os
 from pathlib import Path
@@ -7,6 +16,8 @@ import subprocess
 import tempfile
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, VALIDATION_MARKERS,
                            fatal_re, resolve_binary)
+
+CAPACITY = 4096
 
 
 def main():
@@ -20,7 +31,7 @@ def main():
     rom = args.rom.resolve()
     with tempfile.TemporaryDirectory(prefix="mdkr-input-capacity-") as tmp:
         root = Path(tmp)
-        for count in (512, 513):
+        for count in (CAPACITY, CAPACITY + 1):
             case = root / str(count)
             case.mkdir()
             script = case / "input.txt"
@@ -36,21 +47,22 @@ def main():
                  "--window-size", "320x240", "--input-script", str(script)],
                 env=env, cwd=case, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, timeout=60)
-            expected = 0 if count == 512 else 1
+            expected = 0 if count == CAPACITY else 1
             # Exit 1 is expected for overflow, but an unrelated sanitizer or
             # renderer error must never be mistaken for a valid rejection.
             fatal = fatal_re(*ASSERT_MARKERS, *VALIDATION_MARKERS).search(result.stdout)
             if fatal is not None:
                 raise RuntimeError(f"unexpected native diagnostic: {fatal.group(0)}\n"
                                    + result.stdout[-5000:])
-            marker = ("[input-script] loaded 512 entries" if count == 512 else
-                      "[input-script] too many entries (maximum 512)")
+            marker = (f"[input-script] loaded {CAPACITY} entries" if count == CAPACITY else
+                      f"[input-script] too many entries (maximum {CAPACITY})")
             if result.returncode != expected or marker not in result.stdout:
                 raise RuntimeError(f"{count} entries: exit={result.returncode}\n"
                                    + result.stdout[-5000:])
-            if count == 513 and "input-script] loaded" in result.stdout:
+            if count > CAPACITY and "input-script] loaded" in result.stdout:
                 raise RuntimeError("overflow was reported as a successful partial load")
-    print("check_input_script_capacity: PASS (512 accepted, 513 rejected)")
+    print(f"check_input_script_capacity: PASS ({CAPACITY} accepted, "
+          f"{CAPACITY + 1} rejected)")
 
 
 if __name__ == "__main__":
