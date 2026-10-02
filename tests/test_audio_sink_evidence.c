@@ -3,6 +3,25 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <process.h>
+#define CAPTURE_PID() _getpid()
+#else
+#include <unistd.h>
+#define CAPTURE_PID() getpid()
+#endif
+#define CAPTURE_NAME "audio-sink-evidence"
+
+/* A capture file in the working directory, which CTest sets to this test's
+ * build tree. tmpfile() targets the drive root on Windows and fails outright
+ * for an ordinary non-admin account. */
+static char s_capture_path[64];
+
+static FILE *open_capture_file(void) {
+    (void)snprintf(s_capture_path, sizeof s_capture_path, "%s-%ld.capture",
+                   CAPTURE_NAME, (long)CAPTURE_PID());
+    return fopen(s_capture_path, "w+b");
+}
 
 static int s_failures;
 
@@ -23,7 +42,7 @@ int main(void) {
     const int16_t accepted[] = { 100, -100, 200, -200 };
     const int16_t repaired[] = { 500, -500, 600, -600 };
     unsigned char wav[44u + sizeof(accepted) + sizeof(repaired)];
-    FILE *capture = tmpfile();
+    FILE *capture = open_capture_file();
 
     expect("temporary capture opens", capture != NULL);
     if (capture == NULL) {
@@ -61,5 +80,6 @@ int main(void) {
            memcmp(wav + 44u + sizeof(accepted), repaired,
                   sizeof(repaired)) == 0);
     fclose(capture);
+    (void)remove(s_capture_path);
     return s_failures == 0 ? 0 : 1;
 }

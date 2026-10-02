@@ -13,6 +13,25 @@
 
 #include <stdio.h>
 #include <string.h>
+#if defined(_WIN32)
+#include <process.h>
+#define CAPTURE_PID() _getpid()
+#else
+#include <unistd.h>
+#define CAPTURE_PID() getpid()
+#endif
+#define CAPTURE_NAME "gpu-diagnostics"
+
+/* A capture file in the working directory, which CTest sets to this test's
+ * build tree. tmpfile() targets the drive root on Windows and fails outright
+ * for an ordinary non-admin account. */
+static char s_capture_path[64];
+
+static FILE *open_capture_file(void) {
+    (void)snprintf(s_capture_path, sizeof s_capture_path, "%s-%ld.capture",
+                   CAPTURE_NAME, (long)CAPTURE_PID());
+    return fopen(s_capture_path, "w+b");
+}
 
 #if defined(_WIN32)
 #include <io.h>
@@ -41,7 +60,7 @@ static FILE *s_capture;
 static int   s_saved_stdout = -1;
 
 static int capture_begin(void) {
-    s_capture = tmpfile();
+    s_capture = open_capture_file();
     if (s_capture == NULL) {
         return 0;
     }
@@ -51,6 +70,7 @@ static int capture_begin(void) {
         close_fd(s_saved_stdout);
         s_saved_stdout = -1;
         (void)fclose(s_capture);
+        (void)remove(s_capture_path);
         s_capture = NULL;
         return 0;
     }
@@ -67,6 +87,7 @@ static void capture_end(char *out, size_t out_size) {
     read_bytes = fread(out, 1u, out_size - 1u, s_capture);
     out[read_bytes] = '\0';
     (void)fclose(s_capture);
+    (void)remove(s_capture_path);
     s_capture = NULL;
 }
 
