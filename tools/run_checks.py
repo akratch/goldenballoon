@@ -340,6 +340,11 @@ SKIPPABLE_CHECKS = {
         "is locked or has no user session)",
         "a macOS host with an unlocked console session",
         host_condition=True),
+    "pacing_quality": SkipContract(
+        "the console was locked (or nothing consumed the realtime arms' "
+        "frames), so presentation quality could not be judged",
+        "a macOS host with an unlocked console and an active display",
+        host_condition=True),
 }
 # Checks that are handed --reference-build when the operator supplies one.
 REFERENCE_BUILD_CHECKS = frozenset(

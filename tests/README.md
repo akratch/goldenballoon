@@ -3455,6 +3455,20 @@ covers missing counters and each broken invariant, and checks the integration
 order in both loops. These additional cases await execution; quality thresholds
 and retry budgets are unchanged.
 
+A locked console is not a missing display to the engine: the occlusion shim
+keeps handing out drawables and presents complete, but nothing consumes them,
+so the drawable acquire never blocks, no vblank reaches the pacer, and the
+companion arm used to fail on 10-98 slot re-anchors (T12c, console locked).
+The gate now reads the console session (`ioreg`: `CGSSessionScreenIsLocked`,
+`kCGSSessionOnConsoleKey`) before and after the realtime arms, and treats an
+attempt whose `[PRESENT-DISCIPLINE]` row shows the acquire never waiting
+(`blockp95us` inside the first 100 µs bin over at least 600 acquires; an
+unlocked 120 Hz panel measured 2200-2400) as one with no consumer. When the
+host cannot judge pacing it says so in a SKIPPED banner and exits 77, which
+`tools/run_checks.py` names and a release run counts as a failure; the synthetic
+arms and the realtime integrity assertions must still pass first.
+`pacing_quality_reporting` pins both detectors with the locked rows.
+
 Synthetic arms cover every presentation policy — including the battery-friendly
 `40` cap and `display-margin` — crossed with both smoothing
 settings and assert only structural identities: the census must count the same

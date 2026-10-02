@@ -235,5 +235,59 @@ class PacingReportingTests(unittest.TestCase):
                          ["failures", "baselines", "notes"])
 
 
+# The rows a locked console produced (task T12c, 2026-10-02, console locked
+# from 00:30): presents complete, nothing consumes them, so the drawable acquire
+# never blocks -- p50 and p95 both in the first 100 us bin -- and the pacer
+# free-runs. Its slot re-anchors (10-98 per attempt) then read as a pacing
+# failure. An unlocked run of the same arm on the same machine reports
+# blockp95us=2200-2400.
+LOCKED_DISCIPLINE = ("[PRESENT-DISCIPLINE] active=1 samples=3592 blockp50us=100 "
+                     "blockp95us=100 blockmaxus=180 unavailable=0 slewtotalus=0 "
+                     "periodns=8333333 expiries=0 leads=0 leadmissmeanus=0 "
+                     "leadmissmaxus=0\n")
+UNLOCKED_DISCIPLINE = ("[PRESENT-DISCIPLINE] active=1 samples=3592 blockp50us=100 "
+                       "blockp95us=2200 blockmaxus=10597 unavailable=0 "
+                       "slewtotalus=129936 periodns=8333333 expiries=0 leads=639 "
+                       "leadmissmeanus=759 leadmissmaxus=14559\n")
+LOCKED_IOREG = ('    | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,'
+                '"CGSSessionScreenIsLocked"=Yes,"kCGSessionLoginDoneKey"=Yes})\n')
+UNLOCKED_IOREG = ('    | "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,'
+                  '"kCGSessionLoginDoneKey"=Yes})\n')
+
+
+class LockedConsoleTests(unittest.TestCase):
+    def test_a_locked_console_is_named_not_measured(self):
+        locked = replace(sample_run("realtime", 89),
+                         output=sample_run("realtime", 89).output + LOCKED_DISCIPLINE)
+        cause = pacing.explain_no_display_session(locked)
+        self.assertIsNotNone(cause)
+        self.assertIn("never blocked", cause)
+        unlocked = replace(sample_run("realtime", 0),
+                           output=sample_run("realtime", 0).output + UNLOCKED_DISCIPLINE)
+        self.assertIsNone(pacing.explain_no_display_session(unlocked))
+
+    def test_too_few_acquires_prove_nothing(self):
+        short = LOCKED_DISCIPLINE.replace("samples=3592", "samples=40")
+        run = replace(sample_run("realtime", 0), output=sample_run("realtime", 0).output + short)
+        self.assertIsNone(pacing.explain_no_display_session(run))
+
+    def test_the_console_session_is_read_from_ioreg(self):
+        import harness_utils
+        self.assertEqual(harness_utils.console_lock_reason(LOCKED_IOREG),
+                         "the console is locked")
+        self.assertIsNone(harness_utils.console_lock_reason(UNLOCKED_IOREG))
+        self.assertEqual(harness_utils.console_lock_reason("no session"),
+                         "no user session is on the console")
+
+    def test_a_host_that_cannot_be_judged_is_a_loud_skip(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = pacing.report_skip("the console is locked", ["synthetic arms passed"])
+        self.assertEqual(code, pacing.SKIP_EXIT)
+        self.assertIn("SKIPPED", out.getvalue())
+        self.assertIn("the console is locked", out.getvalue())
+        self.assertNotIn("PASS", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

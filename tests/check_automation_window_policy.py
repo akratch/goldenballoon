@@ -71,11 +71,8 @@ def console_observable() -> tuple[bool, str]:
                               check=False).stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
         return False, f"ioreg unavailable ({exc})"
-    if '"kCGSSessionOnConsoleKey"=Yes' not in text:
-        return False, "no user session on the console"
-    if '"CGSSessionScreenIsLocked"=Yes' in text:
-        return False, "the console is locked"
-    return True, "console unlocked"
+    reason = harness_utils.console_lock_reason(text)
+    return (False, reason) if reason else (True, "console unlocked")
 
 
 def front_pid() -> int | None:

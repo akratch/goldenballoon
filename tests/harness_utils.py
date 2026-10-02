@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -348,6 +349,41 @@ def read_hex_fixture(path: str | os.PathLike[str]) -> bytes:
     if image is None or size is None or len(seen) != size:
         raise ValueError(f"{path}: {len(seen)} of {size} bytes listed")
     return bytes(image)
+
+
+# --------------------------------------------------------------------------- #
+#  The console session
+# --------------------------------------------------------------------------- #
+
+
+def console_lock_reason(ioreg_root: str) -> str | None:
+    """Why nobody can be looking at this Mac's console, from the text of
+    ``ioreg -n Root -d1``; None when a user session is on it, unlocked.
+
+    A locked console is not a missing display to the engine: the occlusion
+    shim keeps handing out drawables and presents still complete, but the
+    compositor consumes nothing, so the drawable acquire never blocks and no
+    vblank reaches the pacer. Anything measured there is a free-running loop.
+    """
+    if '"kCGSSessionOnConsoleKey"=Yes' not in ioreg_root:
+        return "no user session is on the console"
+    if '"CGSSessionScreenIsLocked"=Yes' in ioreg_root:
+        return "the console is locked"
+    return None
+
+
+def console_unavailable() -> str | None:
+    """On macOS, why frames shown on the console right now reach nobody (see
+    console_lock_reason); None when they can, off macOS, or when the session
+    cannot be read (a caller that must know reads ioreg itself)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        text = subprocess.run(["ioreg", "-n", "Root", "-d1"], capture_output=True,
+                              text=True, timeout=10, check=False).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return console_lock_reason(text) if text else None
 
 
 # --------------------------------------------------------------------------- #

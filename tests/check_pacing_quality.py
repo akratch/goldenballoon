@@ -104,9 +104,12 @@ new number rather than keeping the one baked at configuration.
 WHEN THE ENVIRONMENT CANNOT PRODUCE A BASELINE. Two session conditions make the
 realtime numbers meaningless without anything being wrong in the code:
 
-  * no display session at all -- a locked screen or a session with no window
-    server refuses every drawable, and the run measures a pacer nothing is
-    consuming (`explain_no_display_session`);
+  * no display session at all -- a session with no window server refuses every
+    drawable, and a LOCKED console hands drawables out (the occlusion shim) but
+    consumes none, so the acquire never blocks and no vblank reaches the pacer;
+    either way the run measures a pacer nothing is consuming
+    (`explain_no_display_session`). The console session is also read directly
+    (harness_utils.console_unavailable) before and after the realtime arms;
   * a session that accepts presents without vsync-blocking them -- the display
     policy installs no software limiter and relies on FIFO to pace it, so an
     unthrottled surface lets the loop free-run and produces a displayed cadence
@@ -125,7 +128,14 @@ vsync-throttle on one run and free-run on the next, depending on how the
 compositor treats the automation window. Read the printed baseline, or its
 absence, rather than assuming a run produced one.
 
-Exit 0 = pass.
+When every realtime attempt was refused for the first reason, or the console
+was locked around the realtime arms, the quality half cannot be judged on this
+host at all: the gate says so loudly and exits 77 (SKIPPED, named by
+tools/run_checks.py, a failure in a release run) instead of failing on the
+re-anchor counts a free-running loop produces. The synthetic arms and the
+realtime integrity assertions still have to pass first.
+
+Exit 0 = pass, 77 = skipped (host cannot be judged), anything else = fail.
 """
 
 from __future__ import annotations
@@ -140,9 +150,16 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_utils import (ABORT_MARKERS, DEFAULT_BUILD_DIR, find_fatal,
-                           parse_last, parse_rows, resolve_binary,
+from harness_utils import (ABORT_MARKERS, DEFAULT_BUILD_DIR, console_unavailable,
+                           find_fatal, parse_last, parse_rows, resolve_binary,
                            tear_free_presentation)
+
+SKIP_EXIT = 77
+# platform_sdl_min.c's DISCIPLINE_BLOCK_BIN_NS: the acquire-block histogram's
+# first bin. p95 inside it means the acquire (almost) never waited.
+DISCIPLINE_BIN_US = 100
+# Acquires needed before "never blocked" is evidence rather than a short run.
+ACQUIRE_EVIDENCE_SAMPLES = 600
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -434,16 +451,31 @@ def explain_no_display_session(result: Run) -> str | None:
     signature is detected and named here instead.
     """
     pressure = result.pressure
-    if not pressure:
-        return None
-    submitted = pressure.get("submitted", 0)
-    presented = pressure.get("presented", -1)
-    unavailable = pressure.get("unavailable", -1)
-    if submitted > 0 and presented == 0 and unavailable == submitted:
-        return (
-            f"the window server provided no drawables (submitted={submitted} "
-            f"presented=0 unavailable={unavailable}) — an active display "
-            "session is required for this arm; rerun when one is available")
+    if pressure:
+        submitted = pressure.get("submitted", 0)
+        presented = pressure.get("presented", -1)
+        unavailable = pressure.get("unavailable", -1)
+        if submitted > 0 and presented == 0 and unavailable == submitted:
+            return (
+                f"the window server provided no drawables (submitted={submitted} "
+                f"presented=0 unavailable={unavailable}) — an active display "
+                "session is required for this arm; rerun when one is available")
+    # A locked console still hands out drawables, so the row above looks
+    # healthy. What gives it away is that nothing ever waits for one: an
+    # unlocked 120 Hz panel blocks the acquire on a few percent of frames
+    # (blockp95us 2200-2400 measured), a locked one on none (100, T12c).
+    discipline = parse_rows(result.output, "PRESENT-DISCIPLINE")
+    if discipline:
+        row = discipline[-1]
+        samples = row.get("samples", 0)
+        p95 = row.get("blockp95us", -1)
+        if samples >= ACQUIRE_EVIDENCE_SAMPLES and 0 <= p95 <= DISCIPLINE_BIN_US:
+            return (
+                f"the drawable acquire never blocked (blockp50us="
+                f"{row.get('blockp50us')} blockp95us={p95} over {samples} "
+                "acquires), so nothing consumed the frames — a locked console "
+                "or a display that is off; an unlocked console with an active "
+                "display is required for this arm")
     return None
 
 
@@ -1016,6 +1048,18 @@ def baseline_note(result: Run) -> str:
         f"at {latency.get('refreshhz')}Hz")
 
 
+def report_skip(reason: str, notes: list[str]) -> int:
+    """The host cannot show whether pacing is right: say so, loudly, as a skip."""
+    rule = "=" * 72
+    print(f"{rule}\ncheck_pacing_quality: SKIPPED -- {reason}; the realtime "
+          "quality half cannot be judged on this host. Nothing about "
+          "presentation quality was measured. Rerun on an unlocked console "
+          f"with an active display.\n{rule}")
+    for note in notes:
+        print(f"  - {note}")
+    return SKIP_EXIT
+
+
 def report_failure(failures: list[str], baselines: list[str],
                    notes: list[str]) -> int:
     """Keep each retry's evidence attached to its own arm, including failures."""
@@ -1057,6 +1101,8 @@ def main() -> int:
     failures: list[str] = []
     notes: list[str] = []
     baselines: list[str] = []
+    # Why this host cannot judge the realtime half, when it cannot.
+    unjudgeable: str | None = None
 
     workspace: contextlib.AbstractContextManager[str]
     if args.keep_evidence:
@@ -1124,10 +1170,15 @@ def main() -> int:
             notes.append(
                 f"{label}: margin re-derived against {switch_to_hz}Hz")
 
+            unjudgeable = None if args.skip_realtime else console_unavailable()
             if args.skip_realtime:
                 notes.append("realtime arm skipped by --skip-realtime")
+            elif unjudgeable:
+                notes.append(f"realtime arms not run: {unjudgeable}")
             else:
                 cause = None
+                # Attempts refused because nothing consumed their frames.
+                host_refusals = 0
                 quality: list[str] = []
                 paced = 0
                 # Losing the drawable partway through a long automation run is
@@ -1156,9 +1207,10 @@ def main() -> int:
                     # Structural failures survive retries and cannot be
                     # excused by a missing paced baseline.
                     failures.extend(check_realtime_integrity(result))
-                    cause = (explain_no_display_session(result)
-                             or explain_unthrottled_presentation(result))
+                    host_cause = explain_no_display_session(result)
+                    cause = host_cause or explain_unthrottled_presentation(result)
                     if cause:
+                        host_refusals += host_cause is not None
                         notes.append(f"{label}: no valid baseline — {cause}")
                         continue
                     # This session paced, so its distributions describe
@@ -1179,7 +1231,8 @@ def main() -> int:
                     # 5x to 25x the bound on every run -- while a stall on one
                     # busy attempt does not survive being repeated.
                     failures.extend(quality)
-                if paced == 0:
+                strict_host_refused = paced == 0 and host_refusals == REALTIME_ATTEMPTS
+                if paced == 0 and not strict_host_refused:
                     # A run that obtained no paced session measured NOTHING
                     # about presentation quality -- and this is the only arm
                     # anywhere that exercises the alpha-grid projection at
@@ -1217,6 +1270,7 @@ def main() -> int:
                 # new path (measured variance is well above the 2500ppm
                 # threshold there).
                 honest_paced = False
+                honest_host_refusals = 0
                 honest_quality: list[str] = []
                 for attempt in range(1, REALTIME_ATTEMPTS + 1):
                     label = "realtime-display-smoothing-quantum-honest"
@@ -1227,10 +1281,12 @@ def main() -> int:
                         REALTIME_TICKS, args.timeout, args.verbose,
                         realtime=True)
                     failures.extend(check_realtime_integrity(honest_result))
+                    honest_host = explain_no_display_session(honest_result)
                     honest_cause = (
-                        explain_no_display_session(honest_result)
+                        honest_host
                         or explain_unthrottled_presentation(honest_result))
                     if honest_cause:
+                        honest_host_refusals += honest_host is not None
                         notes.append(
                             f"{label}: no valid measurement — {honest_cause}")
                         continue
@@ -1257,7 +1313,9 @@ def main() -> int:
                         f"{len(honest_quality)} bound(s); retrying")
                 if honest_quality:
                     failures.extend(honest_quality)
-                if not honest_paced:
+                honest_host_refused = (not honest_paced and
+                                       honest_host_refusals == REALTIME_ATTEMPTS)
+                if not honest_paced and not honest_host_refused:
                     honest_message = (
                         "quantum-honest companion arm: NO PACED SESSION "
                         f"after {REALTIME_ATTEMPTS} attempts — the "
@@ -1267,12 +1325,30 @@ def main() -> int:
                                      " (allowed by --allow-no-baseline)")
                     else:
                         failures.append(honest_message)
+                # A console locked during the arms, or one whose every attempt
+                # was refused for want of a consumer, cannot judge quality:
+                # what it measured is a free-running loop. The integrity
+                # assertions above still count.
+                locked_after = console_unavailable()
+                if locked_after:
+                    unjudgeable = f"{locked_after} (read after the realtime arms)"
+                elif strict_host_refused or honest_host_refused:
+                    unjudgeable = ("no realtime attempt had a consumer for its "
+                                   "frames (see the notes)")
+                if unjudgeable:
+                    failures = [failure for failure in failures
+                                if failure not in quality + honest_quality]
         except (RuntimeError, OSError) as error:
             failures.append(str(error))
 
     if failures:
         return report_failure(failures, baselines, notes)
-    if not baselines:
+    if unjudgeable and not args.allow_no_baseline:
+        return report_skip(unjudgeable, notes)
+    if unjudgeable:
+        notes.append(f"realtime quality not judged: {unjudgeable} (allowed by "
+                     "--allow-no-baseline)")
+    if not baselines or unjudgeable:
         print("check_pacing_quality: PASS (REALTIME QUALITY NOT MEASURED) -- "
               "the synthetic arms, no-tearing and no-underrun assertions "
               "held, but no paced session was obtained, so nothing here "
