@@ -954,6 +954,51 @@ int main(int argc, char **argv) {
         REQUIRE(noResidue(unsafeMods));
     }
 #endif
+    // A file whose name has no UTF-8 spelling (Windows: not valid UTF-16;
+    // elsewhere: not valid UTF-8). The pathname installer Windows ships cannot
+    // name it in staging, so it refuses the pack rather than leave the file
+    // out. macOS and Linux copy names byte for byte and install it. macOS file
+    // systems refuse such names outright: SKIP there.
+    {
+        const auto unnamed = input / "UnnamedFilePack";
+        REQUIRE(fs::create_directories(unnamed));
+        std::ofstream(unnamed / "pack.ini") << "[pack]\nname=Unnamed\n";
+#ifdef _WIN32
+        const fs::path badName = unnamed / std::wstring(L"bad\xD800name.bin");
+        const HANDLE file = CreateFileW(badName.c_str(), GENERIC_WRITE, 0, nullptr,
+                                        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const bool created = file != INVALID_HANDLE_VALUE;
+        if (created) CloseHandle(file);
+#else
+        const fs::path badName = unnamed / std::string("bad\xff" "name.bin");
+        const bool created = static_cast<bool>(std::ofstream(badName) << "bytes");
+#endif
+        if (!created) {
+            std::puts("SKIP: this file system cannot hold a name with no UTF-8 spelling");
+        } else {
+            const auto unnamedMods = root.path / "unnamed-mods";
+            {
+                auto prepared = PreparedPackInstall::copyPack(unnamed, unnamedMods);
+                const auto result = prepared.finalize();
+                if (result.installed == static_cast<bool>(MDKR_PACK_BY_PATH))
+                    std::fprintf(stderr, "unnamed file: %s\n", result.message.c_str());
+#if MDKR_PACK_BY_PATH
+                REQUIRE(!result.installed);
+                REQUIRE(result.message.find("not valid Unicode") != std::string::npos);
+#else
+                REQUIRE(result.installed);
+#endif
+            }
+#if MDKR_PACK_BY_PATH
+            REQUIRE(noResidue(unnamedMods));
+#endif
+#ifdef _WIN32
+            REQUIRE(DeleteFileW(badName.c_str()) != 0);
+#else
+            REQUIRE(fs::remove(badName));
+#endif
+        }
+    }
     // A mods folder that is itself a link (packs moved to another drive, a
     // linked portable folder) works: the installer resolves it once and stays
     // inside the folder it names.

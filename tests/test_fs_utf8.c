@@ -233,6 +233,55 @@ static void test_path_primitives(const char *root) {
            "remove primitive fixtures");
 }
 
+/* A name with no UTF-8 spelling -- on Windows a name that is not valid UTF-16
+ * (an unpaired surrogate), elsewhere one that is not valid UTF-8 -- is listed
+ * as MDKR_PATH_BAD_NAME, never skipped, so a caller copying a folder can
+ * refuse instead of silently leaving the entry out. macOS file systems refuse
+ * such names outright, so there the case prints a SKIP line. */
+static void test_names_without_utf8(const char *root) {
+    char folder[1024];
+    Listing listing;
+    int created = 0;
+    join(folder, sizeof folder, root, "names");
+    expect(mdkr_mkdir_utf8(folder) == 0, "create the name fixture folder");
+#ifdef _WIN32
+    wchar_t wide[1100];
+    const int length = MultiByteToWideChar(CP_UTF8, 0, folder, -1, wide, 1000);
+    if (length > 0) {
+        HANDLE file;
+        wcscat(wide, L"\\bad\xD800name.bin");
+        file = CreateFileW(wide, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+        created = file != INVALID_HANDLE_VALUE;
+        if (created) CloseHandle(file);
+    }
+#else
+    char bad[1100];
+    FILE *file;
+    join(bad, sizeof bad, folder, "bad\xff" "name.bin");
+    file = fopen(bad, "wb");
+    created = file != NULL;
+    if (file != NULL) fclose(file);
+#endif
+    if (!created) {
+        printf("SKIP: this file system cannot hold a name with no UTF-8 spelling (errno=%d)\n",
+               errno);
+    } else {
+        memset(&listing, 0, sizeof listing);
+        expect(mdkr_directory_list_utf8(folder, record_entry, &listing) == 0 &&
+                   listing.count == 1 && listing.kinds[0] == MDKR_PATH_BAD_NAME,
+               "a name with no UTF-8 spelling is listed as such, not skipped");
+#ifdef _WIN32
+        expect(strstr(listing.names[0], "\xEF\xBF\xBD") != NULL,
+               "its stand-in name marks what could not convert");
+        expect(DeleteFileW(wide) != 0, "remove the unnamed fixture");
+#else
+        expect(unlink(bad) == 0, "remove the unnamed fixture");
+#endif
+    }
+    expect(mdkr_rmdir_utf8(folder) == 0, "remove the name fixture folder");
+}
+
 int main(void) {
     char temp[1024];
     char root[1200];
@@ -403,6 +452,7 @@ int main(void) {
     join(primitives, sizeof primitives, root, "primitives");
     expect(mdkr_mkdir_utf8(primitives) == 0, "create the primitive fixture root");
     test_path_primitives(primitives);
+    test_names_without_utf8(primitives);
     expect(mdkr_rmdir_utf8(primitives) == 0, "remove the primitive fixture root");
 
     while (depth > 0) {

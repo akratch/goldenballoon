@@ -203,7 +203,9 @@ static wchar_t *utf8_to_extended_path(const char *path) {
     return extended;
 }
 
-static int wide_to_utf8_alloc(const wchar_t *wide, char **output) {
+/* `flags` is WC_ERR_INVALID_CHARS to refuse a name that is not valid UTF-16,
+ * or 0 to replace what cannot convert with U+FFFD. */
+static int wide_to_utf8_convert(const wchar_t *wide, char **output, DWORD flags) {
     int needed;
     char *converted;
     if (wide == NULL || output == NULL) {
@@ -211,15 +213,14 @@ static int wide_to_utf8_alloc(const wchar_t *wide, char **output) {
         return -1;
     }
     *output = NULL;
-    needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
-                                 NULL, 0, NULL, NULL);
+    needed = WideCharToMultiByte(CP_UTF8, flags, wide, -1, NULL, 0, NULL, NULL);
     if (needed <= 0) {
         errno = EIO;
         return -1;
     }
     converted = (char *)malloc((size_t)needed);
     if (converted == NULL) return -1;
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, -1,
+    if (WideCharToMultiByte(CP_UTF8, flags, wide, -1,
                             converted, needed, NULL, NULL) <= 0) {
         free(converted);
         errno = EIO;
@@ -227,6 +228,10 @@ static int wide_to_utf8_alloc(const wchar_t *wide, char **output) {
     }
     *output = converted;
     return 0;
+}
+
+static int wide_to_utf8_alloc(const wchar_t *wide, char **output) {
+    return wide_to_utf8_convert(wide, output, WC_ERR_INVALID_CHARS);
 }
 
 static int ascii_mode(const char *mode, wchar_t output[16]) {
@@ -474,14 +479,21 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
     }
     do {
         char *name = NULL;
+        int kind = windows_entry_kind(data.dwFileAttributes, data.dwReserved0);
         if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) {
             continue;
         }
-        if (wide_to_utf8_alloc(data.cFileName, &name) != 0) continue;
-        if (visit(name, windows_entry_kind(data.dwFileAttributes, data.dwReserved0),
-                  user) != 0) {
-            result = 2;
+        if (wide_to_utf8_alloc(data.cFileName, &name) != 0) {
+            /* Not valid UTF-16 (an unpaired surrogate): report it under a
+             * stand-in rather than skip it, so a caller copying a folder can
+             * refuse instead of silently leaving the entry out. */
+            if (wide_to_utf8_convert(data.cFileName, &name, 0) != 0) {
+                result = 1;
+                break;
+            }
+            kind = MDKR_PATH_BAD_NAME;
         }
+        if (visit(name, kind, user) != 0) result = 2;
         free(name);
     } while (result == 0 && FindNextFileW(find, &data));
     if (result == 0 && GetLastError() != ERROR_NO_MORE_FILES) {
@@ -879,6 +891,45 @@ int mdkr_path_is_link_or_reparse_utf8(const char *path) {
     if (path == NULL || lstat(path, &status) != 0) return -1;
     return S_ISLNK(status.st_mode) ? 1 : 0;
 }
+/* 1 when `text` is well-formed UTF-8: no stray continuation byte, no
+ * truncated or overlong sequence, no UTF-16 surrogate, nothing past
+ * U+10FFFF. */
+static int utf8_well_formed(const char *text) {
+    const unsigned char *cursor = (const unsigned char *)text;
+    while (*cursor != 0u) {
+        const unsigned lead = *cursor;
+        unsigned long point;
+        size_t extra;
+        size_t index;
+        if (lead < 0x80u) {
+            ++cursor;
+            continue;
+        }
+        if (lead >= 0xC2u && lead <= 0xDFu) {
+            extra = 1u;
+            point = lead & 0x1Fu;
+        } else if (lead >= 0xE0u && lead <= 0xEFu) {
+            extra = 2u;
+            point = lead & 0x0Fu;
+        } else if (lead >= 0xF0u && lead <= 0xF4u) {
+            extra = 3u;
+            point = lead & 0x07u;
+        } else {
+            return 0;
+        }
+        for (index = 1u; index <= extra; ++index) {
+            /* A NUL is not a continuation byte, so this never reads past it. */
+            if ((cursor[index] & 0xC0u) != 0x80u) return 0;
+            point = point * 64u + (cursor[index] & 0x3Fu);
+        }
+        if ((extra == 2u && point < 0x800u) || (extra == 3u && point < 0x10000u) ||
+            point > 0x10FFFFu || (point >= 0xD800u && point <= 0xDFFFu)) {
+            return 0;
+        }
+        cursor += extra + 1u;
+    }
+    return 1;
+}
 static int posix_entry_kind(const struct stat *status) {
     if (S_ISLNK(status->st_mode)) return MDKR_PATH_LINK;
     if (S_ISDIR(status->st_mode)) return MDKR_PATH_DIRECTORY;
@@ -924,7 +975,14 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
             result = 1;
             break;
         }
-        if (visit(entry->d_name, posix_entry_kind(&status), user) != 0) result = 2;
+        /* Every path inside the game is UTF-8: a name that is not has no
+         * spelling there, and is reported as such, as on Windows. */
+        if (visit(entry->d_name,
+                  utf8_well_formed(entry->d_name) ? posix_entry_kind(&status)
+                                                  : MDKR_PATH_BAD_NAME,
+                  user) != 0) {
+            result = 2;
+        }
     }
     closedir(directory);
     return result;

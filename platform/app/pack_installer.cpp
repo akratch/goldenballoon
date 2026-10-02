@@ -265,6 +265,12 @@ int clearEntry(const char *name, int kind, void *opaque) {
         pass.okay = false;
         return 1;
     }
+    // A name with no UTF-8 spelling arrives as a stand-in that may name
+    // something else: leave the entry rather than act on the stand-in.
+    if (kind == MDKR_PATH_BAD_NAME) {
+        pass.okay = false;
+        return 0;
+    }
     char *child = joinPath(pass.directory, name);
     if (!child) {
         pass.okay = false;
@@ -978,6 +984,15 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             for (const auto &entry : listed) {
                 if (stop()) return false;
                 if (!takeEntry()) return false;
+                // The listing reports a name with no UTF-8 spelling, under a
+                // stand-in, rather than skip it. Staging cannot be given that
+                // name, so refuse: never install the pack without the entry.
+                if (entry.kind == MDKR_PATH_BAD_NAME) {
+                    prepared.error_ = "This pack folder contains a file or folder whose "
+                                      "name is not valid Unicode, so it cannot be copied. "
+                                      "Rename it and try again.";
+                    return false;
+                }
                 const fs::path child = relative / fs::u8path(entry.name);
                 if (const char *problem = folderProblem(
                         entry.kind == MDKR_PATH_DIRECTORY || entry.kind == MDKR_PATH_FILE,

@@ -52,7 +52,13 @@ typedef enum MdkrPathKind {
      * the kind of data they hold. */
     MDKR_PATH_LINK = 3,
     /* FIFO, socket, device. */
-    MDKR_PATH_OTHER = 4
+    MDKR_PATH_OTHER = 4,
+    /* Listings only: an entry whose name has no UTF-8 spelling -- on Windows
+     * a name that is not valid UTF-16 (an unpaired surrogate), elsewhere one
+     * that is not valid UTF-8. The name handed to the visitor is a stand-in
+     * (Windows replaces what cannot convert with U+FFFD; elsewhere the bytes
+     * are passed as they are) and must never be used to reach the entry. */
+    MDKR_PATH_BAD_NAME = 5
 } MdkrPathKind;
 
 /** What `path` itself is, never following a final link. Returns an
@@ -62,7 +68,8 @@ int mdkr_path_kind_utf8(const char *path);
 
 /** Visit every entry of directory `path` except "." and "..", with its kind as
  * mdkr_path_kind_utf8 reports it. A non-zero visitor return stops the listing.
- * Names that are not valid Unicode are skipped. Returns 0 when the listing
+ * A name that is not valid Unicode is not skipped: it is reported as
+ * MDKR_PATH_BAD_NAME under a stand-in name. Returns 0 when the listing
  * completed, 1 when the directory could not be listed, 2 when the visitor
  * stopped it. */
 typedef int (*MdkrDirectoryVisit)(const char *name, int kind, void *user);

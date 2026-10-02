@@ -478,11 +478,13 @@ How files are reached differs by platform:
   open without delete sharing, so nothing can rename or replace it during the
   install. Files are created CREATE_NEW. Symbolic links, junctions and mount
   points are refused inside a folder pack and removed as links during cleanup;
-  cloud-file placeholders are ordinary files. Publication is a same-volume
-  MoveFileExW without MOVEFILE_REPLACE_EXISTING, retried briefly while a
-  security scanner holds a new file. A program with write access to the mods
-  folder could still swap a file inside the staging folder between admission
-  and the move.
+  cloud-file placeholders are ordinary files. A file or folder whose name is
+  not valid Unicode (an unpaired surrogate) refuses the pack: staging cannot
+  be given that name, and the pack is never installed without it. Publication
+  is a same-volume MoveFileExW without MOVEFILE_REPLACE_EXISTING, retried
+  briefly while a security scanner holds a new file. A program with write
+  access to the mods folder could still swap a file inside the staging folder
+  between admission and the move.
 
 Folder packs are read the same way at runtime: never through a link below the
 pack root (the root itself may be a link); relative to a pinned descriptor on
