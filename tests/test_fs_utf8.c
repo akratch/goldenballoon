@@ -108,7 +108,7 @@ static int listed_kind(const Listing *listing, const char *name) {
 static void test_path_primitives(const char *root) {
     char folder[1024], file[1024], unicode[1024], link[1024], moved[1024];
     char renamed_folder[1024], nested[1024], empty[1024], missing[1024];
-    char inside[1100];
+    char inside[1100], through[1100];
     const char *unicode_name = "pack-\xc3\xa9\xe5\x90\x8d.bin";
     Listing listing;
     MdkrFileLock first = {-1}, second = {-1};
@@ -154,6 +154,17 @@ static void test_path_primitives(const char *root) {
     if (have_link) {
         expect(listed_kind(&listing, "link") == MDKR_PATH_LINK,
                "listing reports a directory link as a link");
+        /* Only the entries are never followed. The directory being listed
+         * may itself be reached through a link, as opendir() allows: a
+         * caller chooses a pack root that way (see mod_source.c). */
+        join(through, sizeof through, folder, "through-link.bin");
+        expect(write_bytes(through, "through"), "create a file behind the link");
+        memset(&listing, 0, sizeof listing);
+        expect(mdkr_directory_list_utf8(link, record_entry, &listing) == 0 &&
+                   listing.count == 1 &&
+                   listed_kind(&listing, "through-link.bin") == MDKR_PATH_FILE,
+               "listing a directory link lists the directory it leads to");
+        expect(mdkr_remove_utf8(through) == 0, "remove the file behind the link");
     }
     memset(&listing, 0, sizeof listing);
     listing.stop_after = 1;
@@ -204,8 +215,17 @@ static void test_path_primitives(const char *root) {
                second.handle == -1,
            "a second hold on a held directory reports it busy");
     join(inside, sizeof inside, renamed_folder, "inside.bin");
-    expect(write_bytes(inside, "still writable") && mdkr_remove_utf8(inside) == 0,
-           "a held directory's contents stay writable and removable");
+    expect(write_bytes(inside, "still writable"),
+           "a held directory's contents stay writable");
+    /* The installer empties the stage it holds, which takes a listing of it
+     * while the hold is in place. */
+    memset(&listing, 0, sizeof listing);
+    expect(mdkr_directory_list_utf8(renamed_folder, record_entry, &listing) == 0 &&
+               listing.count == 1 &&
+               listed_kind(&listing, "inside.bin") == MDKR_PATH_FILE,
+           "a held directory can be listed");
+    expect(mdkr_remove_utf8(inside) == 0,
+           "a held directory's contents stay removable");
 #ifdef _WIN32
     expect(mdkr_rename_exclusive_utf8(renamed_folder, folder) == -1 &&
                mdkr_path_kind_utf8(renamed_folder) == MDKR_PATH_DIRECTORY,

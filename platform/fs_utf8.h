@@ -67,7 +67,8 @@ typedef enum MdkrPathKind {
 int mdkr_path_kind_utf8(const char *path);
 
 /** Visit every entry of directory `path` except "." and "..", with its kind as
- * mdkr_path_kind_utf8 reports it. A non-zero visitor return stops the listing.
+ * mdkr_path_kind_utf8 reports it. `path` itself may be reached through a link;
+ * the entries are never followed. A non-zero visitor return stops the listing.
  * A name that is not valid Unicode is not skipped: it is reported as
  * MDKR_PATH_BAD_NAME under a stand-in name. Returns 0 when the listing
  * completed, 1 when the directory could not be listed, 2 when the visitor

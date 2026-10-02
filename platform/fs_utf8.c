@@ -447,28 +447,126 @@ int mdkr_path_kind_utf8(const char *path) {
     return windows_entry_kind(attributes, tag);
 }
 
-int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
-                             void *user) {
-    wchar_t *base;
-    wchar_t *pattern;
-    size_t length;
-    HANDLE find;
+/* The directory is opened by this code, with every sharing mode granted, and
+ * listed through that handle. FindFirstFileW opens it with a sharing mode of
+ * its own choosing, and where that mode leaves out FILE_SHARE_DELETE (Wine's
+ * does) a directory held by mdkr_directory_hold_utf8 -- whose handle has DELETE
+ * access -- cannot be listed at all, so the installer could not empty the
+ * stage it holds. Only the entries are never followed: the directory itself
+ * may be reached through a link, as opendir() allows on POSIX, because a
+ * caller chooses a pack root that way. A directory that is itself a reparse
+ * point (a link, or a cloud placeholder) is therefore opened again without
+ * FILE_FLAG_OPEN_REPARSE_POINT, so the system resolves it as FindFirstFileW
+ * did. A file system that does not answer the directory query on a handle is
+ * listed through FindFirstFileW, as before. */
+static HANDLE open_directory_for_listing(const wchar_t *wide) {
+    FILE_ATTRIBUTE_TAG_INFO info;
+    HANDLE directory = CreateFileW(
+        wide, FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    if (directory == INVALID_HANDLE_VALUE) {
+        fail_windows(GetLastError());
+        return INVALID_HANDLE_VALUE;
+    }
+    for (int resolved = 0;; resolved = 1) {
+        if (!GetFileInformationByHandleEx(directory, FileAttributeTagInfo,
+                                          &info, sizeof info)) {
+            fail_windows(GetLastError());
+            break;
+        }
+        if (!resolved && (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            CloseHandle(directory);
+            directory = CreateFileW(
+                wide, FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+            if (directory == INVALID_HANDLE_VALUE) {
+                fail_windows(GetLastError());
+                return INVALID_HANDLE_VALUE;
+            }
+            continue;
+        }
+        if ((info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            errno = ENOTDIR;
+            break;
+        }
+        return directory;
+    }
+    CloseHandle(directory);
+    return INVALID_HANDLE_VALUE;
+}
+
+/* The reparse tag of entry `name` of `directory`, read from the entry itself
+ * and never from what it points at; 0 when it cannot be read. A listing
+ * entry carries the tag in EaSize ([MS-FSCC] FileIdBothDirectoryInformation,
+ * and Windows' own FindFirstFileExW reads it there), but Wine leaves EaSize 0,
+ * which is not a valid tag. */
+static DWORD listed_reparse_tag(const wchar_t *directory, const wchar_t *name) {
+    const size_t length = wcslen(directory);
+    wchar_t *child = (wchar_t *)calloc(length + wcslen(name) + 2u, sizeof(*child));
+    FILE_ATTRIBUTE_TAG_INFO info;
+    HANDLE entry;
+    DWORD tag = 0;
+    if (child == NULL) return 0;
+    wcscpy(child, directory);
+    if (length == 0 || child[length - 1] != L'\\') wcscat(child, L"\\");
+    wcscat(child, name);
+    entry = CreateFileW(child, FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL, OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                        NULL);
+    free(child);
+    if (entry == INVALID_HANDLE_VALUE) return 0;
+    if (GetFileInformationByHandleEx(entry, FileAttributeTagInfo, &info, sizeof info) &&
+        (info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        tag = info.ReparseTag;
+    }
+    CloseHandle(entry);
+    return tag;
+}
+
+/* Report one listed entry; `name` is NUL-terminated. Returns 0 to go on, 1
+ * when the listing failed, 2 when the visitor stopped it. */
+static int visit_listed_entry(const wchar_t *directory, const wchar_t *name,
+                              DWORD attributes, DWORD tag,
+                              MdkrDirectoryVisit visit, void *user) {
+    const int reparse = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    char *converted = NULL;
+    int kind;
+    int stopped;
+    if (wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0) return 0;
+    if (!reparse) tag = 0;
+    else if (tag == 0) tag = listed_reparse_tag(directory, name);
+    /* A point whose tag cannot be read is a link, never followed, as in
+     * mdkr_path_kind_utf8. */
+    kind = reparse && tag == 0 ? MDKR_PATH_LINK : windows_entry_kind(attributes, tag);
+    if (wide_to_utf8_alloc(name, &converted) != 0) {
+        /* Not valid UTF-16 (an unpaired surrogate): report it under a
+         * stand-in rather than skip it, so a caller copying a folder can
+         * refuse instead of silently leaving the entry out. */
+        if (wide_to_utf8_convert(name, &converted, 0) != 0) return 1;
+        kind = MDKR_PATH_BAD_NAME;
+    }
+    stopped = visit(converted, kind, user) != 0;
+    free(converted);
+    return stopped ? 2 : 0;
+}
+
+/* The listing FindFirstFileW gives, for a file system that does not answer
+ * the directory query on a handle. Its own handle's sharing mode decides
+ * whether a held directory can be listed. */
+static int list_with_find_first(const wchar_t *wide, MdkrDirectoryVisit visit,
+                                void *user) {
+    const size_t length = wcslen(wide);
+    wchar_t *pattern = (wchar_t *)calloc(length + 3u, sizeof(*pattern));
     WIN32_FIND_DATAW data;
+    HANDLE find;
     int result = 0;
-    if (visit == NULL) {
-        errno = EINVAL;
-        return 1;
-    }
-    base = utf8_to_extended_path(path);
-    if (base == NULL) return 1;
-    length = wcslen(base);
-    pattern = (wchar_t *)calloc(length + 3u, sizeof(*pattern));
-    if (pattern == NULL) {
-        free(base);
-        return 1;
-    }
-    wcscpy(pattern, base);
-    free(base);
+    if (pattern == NULL) return 1;
+    wcscpy(pattern, wide);
     if (length == 0 || pattern[length - 1] != L'\\') wcscat(pattern, L"\\");
     wcscat(pattern, L"*");
     find = FindFirstFileW(pattern, &data);
@@ -481,29 +579,92 @@ int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
         return 1;
     }
     do {
-        char *name = NULL;
-        int kind = windows_entry_kind(data.dwFileAttributes, data.dwReserved0);
-        if (wcscmp(data.cFileName, L".") == 0 || wcscmp(data.cFileName, L"..") == 0) {
-            continue;
-        }
-        if (wide_to_utf8_alloc(data.cFileName, &name) != 0) {
-            /* Not valid UTF-16 (an unpaired surrogate): report it under a
-             * stand-in rather than skip it, so a caller copying a folder can
-             * refuse instead of silently leaving the entry out. */
-            if (wide_to_utf8_convert(data.cFileName, &name, 0) != 0) {
-                result = 1;
-                break;
-            }
-            kind = MDKR_PATH_BAD_NAME;
-        }
-        if (visit(name, kind, user) != 0) result = 2;
-        free(name);
+        result = visit_listed_entry(wide, data.cFileName, data.dwFileAttributes,
+                                    data.dwReserved0, visit, user);
     } while (result == 0 && FindNextFileW(find, &data));
     if (result == 0 && GetLastError() != ERROR_NO_MORE_FILES) {
         fail_windows(GetLastError());
         result = 1;
     }
     FindClose(find);
+    return result;
+}
+
+int mdkr_directory_list_utf8(const char *path, MdkrDirectoryVisit visit,
+                             void *user) {
+    /* FILE_ID_BOTH_DIR_INFO is DWORD/LARGE_INTEGER aligned; malloc's alignment
+     * covers it. One query fills as many whole entries as fit. */
+    enum { LIST_BUFFER_BYTES = 64 * 1024 };
+    wchar_t *wide;
+    wchar_t *name = NULL;
+    unsigned char *buffer = NULL;
+    HANDLE directory;
+    FILE_INFO_BY_HANDLE_CLASS query = FileIdBothDirectoryRestartInfo;
+    int result = 0;
+    if (visit == NULL) {
+        errno = EINVAL;
+        return 1;
+    }
+    wide = utf8_to_extended_path(path);
+    if (wide == NULL) return 1;
+    directory = open_directory_for_listing(wide);
+    if (directory == INVALID_HANDLE_VALUE) {
+        free(wide);
+        return 1;
+    }
+    buffer = (unsigned char *)malloc(LIST_BUFFER_BYTES);
+    name = (wchar_t *)malloc(LIST_BUFFER_BYTES + sizeof(wchar_t));
+    if (buffer == NULL || name == NULL) {
+        result = 1;
+        goto done;
+    }
+    while (result == 0) {
+        const FILE_ID_BOTH_DIR_INFO *entry;
+        if (!GetFileInformationByHandleEx(directory, query, buffer,
+                                          LIST_BUFFER_BYTES)) {
+            const DWORD error = GetLastError();
+            /* The handle proved the directory exists, so "no such file" from
+             * the first query is an empty volume root (it has no "." or
+             * ".."), not a missing directory. */
+            if (error == ERROR_NO_MORE_FILES ||
+                (error == ERROR_FILE_NOT_FOUND &&
+                 query == FileIdBothDirectoryRestartInfo)) {
+                break;
+            }
+            if (query == FileIdBothDirectoryRestartInfo &&
+                (error == ERROR_INVALID_PARAMETER || error == ERROR_INVALID_LEVEL ||
+                 error == ERROR_INVALID_FUNCTION || error == ERROR_NOT_SUPPORTED)) {
+                /* Some network and virtual drives do not answer this query
+                 * on a handle; nothing has been visited yet. */
+                CloseHandle(directory);
+                directory = INVALID_HANDLE_VALUE;
+                result = list_with_find_first(wide, visit, user);
+                break;
+            }
+            fail_windows(error);
+            result = 1;
+            break;
+        }
+        query = FileIdBothDirectoryInfo;
+        entry = (const FILE_ID_BOTH_DIR_INFO *)buffer;
+        for (;;) {
+            /* FileNameLength is in bytes and the name is not terminated. For
+             * a reparse point EaSize holds its reparse tag. */
+            const size_t units = entry->FileNameLength / sizeof(WCHAR);
+            memcpy(name, entry->FileName, units * sizeof(WCHAR));
+            name[units] = L'\0';
+            result = visit_listed_entry(wide, name, entry->FileAttributes,
+                                        entry->EaSize, visit, user);
+            if (result != 0 || entry->NextEntryOffset == 0) break;
+            entry = (const FILE_ID_BOTH_DIR_INFO *)((const unsigned char *)entry +
+                                                    entry->NextEntryOffset);
+        }
+    }
+done:
+    free(buffer);
+    free(name);
+    free(wide);
+    if (directory != INVALID_HANDLE_VALUE) CloseHandle(directory);
     return result;
 }
 
