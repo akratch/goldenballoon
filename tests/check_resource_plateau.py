@@ -2,10 +2,11 @@
 """Require repeated CPU/audio/GPU resource generations to reach a plateau.
 
 The base Time Trial fixture enters Ancient Lake once. This check extends its
-post-race A-button pulses so the original Try Again path loads the same race four
-times in one process. The route reaches four loads and therefore three
-completed renderer generations. The first generations may warm persistent
-caches; the last three equivalent CPU/audio snapshots must be identical, while
+post-race A-button pulses so the original Try Again path loads the same race
+again and again in one process: twelve loads, and eleven completed renderer
+generations, in the default 35,000 frames, and the gate needs eleven loads.
+The first generations may warm persistent caches; the last three equivalent
+CPU/audio snapshots must be identical, while
 completed renderer generations must have coherent, bounded, non-growing
 ownership. Renderer counts are intentionally not required to be byte-for-byte
 equal because the production post-race/ghost state changes the asset mix.
@@ -18,6 +19,13 @@ snapshot walks the allocator's linked live-slot model rather than inspecting its
 backing array, so stale/unlinked metadata cannot masquerade as ownership. The
 renderer emits a generation only when the next level is fully initialized; this
 includes teardown and prevents a mid-frame sample from hiding deferred release.
+
+By default the runs install a texture pack generated at startup: one short
+headless run dumps the digests of the textures the route draws
+(MDKR_MOD_TEXTURE_DUMP), and every one becomes a synthetic replacement in a
+zipped digest pack. So the pack-texture cache is always judged, and every warm
+race load must re-upload resident replacements at once (warm_reupload_error).
+`--texture-pack` installs a given pack instead; `--no-pack` installs none.
 """
 
 from __future__ import annotations
@@ -29,14 +37,28 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
+from check_mod_texture_override import quadrant_png
 from harness_utils import DEFAULT_BUILD_DIR, present_mode_rows, resolve_binary
 
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE_SCRIPT = ROOT / "tests" / "input_scripts" / "race_full_3lap_tt.txt"
-DEFAULT_FRAMES = 25_000
+# Eleven race samples or more (the eleventh near frame 31,000, the twelfth near
+# 33,700), which the texture-cache window needs (CACHE_RACES_REQUIRED).
+DEFAULT_FRAMES = 35_000
+# Per child run. Measured under the suite runner's background policy
+# (`taskpolicy -b`) on a loaded M3 Max: GL 260-266 s, WebGPU 109-111 s, the
+# dump about 35 s. 240 s had become a contention red, and at 25,000 frames GL
+# already took 168-206 s. 720 s is 2.7x the worst measured, and the dump plus
+# two runs at the ceiling still fit inside run_checks' 1,800 s task budget.
+DEFAULT_RUN_TIMEOUT = 720.0
+# The generated pack's dump run: through the first race's start (it loads near
+# frame 2,000), which draws every texture a warm race load re-uploads.
+GENERATED_PACK_FRAMES = 4_500
+GENERATED_PACK_INI = "[pack]\nname=Plateau Fixture\npriority=100\n"
 
 RESOURCE_RE = re.compile(
     r"resource_state: level=(-?\d+) players=(-?\d+) cutscene=(-?\d+) "
@@ -68,10 +90,11 @@ CACHE_RE = re.compile(
 # when the census carries them, inflight, pending, firstResident,
 # firstResidentBytes, reloads, evictions.
 CACHE_ACCOUNTED_FIELDS = 13
-# New lookup entries the warmed window may add by first use. Every one of 24
-# runs of this route (both renderers, the 1.8 pack) adds exactly 4 entries --
-# 2 resident identities -- from the second race to the third, the largest late
-# first use seen; T12a's flake was a single texture. Twice the largest seen.
+# New lookup entries the warmed window's one changed step may add by first use.
+# Across the 30 retained real-pack runs of this route the largest change inside
+# the window is 0 entries. The only late first use ever seen there is T12a's
+# flake: one texture, one identity, which is two entries with a Rice pack (its
+# digest and its Rice key). 8 allows four such identities in that one step.
 # Slots are never released, so this bounds the table, not a tolerance on it.
 CACHE_LATE_ENTRIES_MAX = 8
 # Races that may still warm the cache. On this route first use grows from the
@@ -79,6 +102,12 @@ CACHE_LATE_ENTRIES_MAX = 8
 # and is flat from the third on, so every race from the third is judged
 # (T12d). A short run keeps at least its last three samples in the window.
 CACHE_WARMUP_RACES = 2
+# Race samples the gate requires. The window is every sample after warm-up,
+# and at most one of its steps may change, so growth that recurs every P races
+# shows two changed steps in every phase only when the window has 2P steps.
+# Eleven samples leave nine in the window, eight steps: growth recurring every
+# race, or every 2nd, 3rd or 4th race, fails whatever race it starts on.
+CACHE_RACES_REQUIRED = 11
 
 
 def cache_window(races: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
@@ -196,6 +225,94 @@ def cache_plateau_error(rows: list[tuple[int, ...]]) -> str | None:
                 f"warmed step, more than the {CACHE_LATE_ENTRIES_MAX} a late "
                 f"first use accounts for: {window}")
     return None
+
+
+def cache_gate_error(rows: list[tuple[int, ...]]) -> str | None:
+    """cache_plateau_error() on a run long enough for it to mean what it says.
+
+    With fewer than CACHE_RACES_REQUIRED race samples the window is too short
+    to see two changed steps of growth recurring every 3rd or 4th race in some
+    phases, so such a run is refused rather than passed (T12d).
+    """
+    races = [row for row in rows if row[:3] == (5, 0, 100)]
+    if len(races) < CACHE_RACES_REQUIRED:
+        return (f"only {len(races)} texture-cache race samples; the window "
+                f"needs {CACHE_RACES_REQUIRED} to catch growth that recurs "
+                "every 4th race")
+    return cache_plateau_error(rows)
+
+
+def pack_used(output: str, cache_races: list[tuple[int, ...]]) -> bool:
+    """Evidence that the installed pack's textures were drawn: identities
+    resident in the cache census (any pack), or the store's own line (a Rice
+    pack prints it at exit)."""
+    if (cache_races and len(cache_races[-1]) >= CACHE_ACCOUNTED_FIELDS and
+            cache_races[-1][9] > 0):
+        return True
+    return re.search(r"\[MODS\] [1-9][0-9]* high-resolution textures? used "
+                     r"this run", output) is not None
+
+
+def scrubbed_environment(run_root: Path, renderer: str) -> dict[str, str]:
+    """A child environment with no inherited game controls, and its save,
+    preferences and video config under `run_root`."""
+    env = {
+        key: value for key, value in os.environ.items()
+        if not key.startswith(("MDKR", "GE007_"))
+    }
+    env.update({
+        "MDKR_AUDIO": "0",
+        "MDKR_AUTOPILOT": "1",
+        "MDKR_RESOURCE_STATS": "1",
+        "MDKR_RENDERER": renderer,
+        "MDKR_APP_PREFS_DIR": str(run_root),
+        "MDKR_SAVE_DIR": str(run_root / "save"),
+        # Isolate the video config with the save (see check_door_blocks.py).
+        "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
+    })
+    return env
+
+
+def generate_pack(binary: Path, rom: Path, root: Path, timeout: float,
+                  verbose: bool) -> Path:
+    """A digest pack replacing every texture the route's first race draws.
+
+    One headless GL run over the start of the same route with
+    MDKR_MOD_TEXTURE_DUMP names the textures; each becomes textures/<digest>.png
+    holding the same 16x16 two-colour PNG check_mod_texture_override.py
+    builds, zipped as an installed pack would be. Nothing ROM-derived is kept:
+    the dump is deleted as soon as its names are read. Raises RuntimeError.
+    """
+    corpus = root / "corpus"
+    corpus.mkdir(parents=True)
+    script = root / "dump_route.txt"
+    script.write_text(extended_route(DEFAULT_FRAMES), encoding="utf-8")
+    env = scrubbed_environment(root, "gl")
+    env["MDKR_MOD_TEXTURE_DUMP"] = str(corpus)
+    command = [str(binary), "--headless-frames", str(GENERATED_PACK_FRAMES),
+               "--input-script", str(script), "--rom", str(rom)]
+    if verbose:
+        print("$ MDKR_MOD_TEXTURE_DUMP=... " + " ".join(command))
+    try:
+        process = subprocess.run(command, cwd=root, env=env,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True,
+                                 timeout=timeout, check=False)
+        digests = sorted(entry.stem for entry in corpus.glob("*.png"))
+    finally:
+        shutil.rmtree(corpus, ignore_errors=True)
+    if process.returncode != 0 or not digests:
+        raise RuntimeError(
+            f"the dump run for the generated pack exited {process.returncode} "
+            f"with {len(digests)} texture(s):\n{process.stdout[-3000:]}")
+    pack = root / "generated-pack.zip"
+    image = quadrant_png(16)
+    with zipfile.ZipFile(pack, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("pack.ini", GENERATED_PACK_INI)
+        for digest in digests:
+            archive.writestr(f"textures/{digest}.png", image)
+    print(f"  generated pack: {len(digests)} replacement textures")
+    return pack
 
 
 def cache_first_use_note(rows: list[tuple[int, ...]]) -> str:
@@ -411,20 +528,7 @@ def run_backend(
             shutil.copyfile(texture_pack, mods / "resource-fixture.zip")
         script = run_root / "resource_plateau.txt"
         script.write_text(extended_route(frames), encoding="utf-8")
-        env = {
-            key: value for key, value in os.environ.items()
-            if not key.startswith(("MDKR", "GE007_"))
-        }
-        env.update({
-            "MDKR_AUDIO": "0",
-            "MDKR_AUTOPILOT": "1",
-            "MDKR_RESOURCE_STATS": "1",
-            "MDKR_RENDERER": renderer,
-            "MDKR_APP_PREFS_DIR": str(run_root),
-            "MDKR_SAVE_DIR": str(run_root / "save"),
-            # Isolate the video config with the save (see check_door_blocks.py).
-            "MDKR_VIDEO_CONFIG_PATH": str(run_root / "save" / "video.ini"),
-        })
+        env = scrubbed_environment(run_root, renderer)
         command = [
             str(binary),
             "--headless-frames", str(frames),
@@ -451,10 +555,6 @@ def run_backend(
         output = log_path.read_text(encoding="utf-8", errors="replace")
         if process.returncode != 0:
             return failure(f"exit code {process.returncode}", output)
-        if texture_pack is not None and not re.search(
-                r"\[MODS\] [1-9][0-9]* high-resolution textures? used this run",
-                output):
-            return failure("requested pack supplied no rendered texture evidence", output)
         for marker in FATAL_MARKERS:
             if marker in output:
                 line = next(
@@ -492,7 +592,9 @@ def run_backend(
         rows = [tuple(map(int, match.groups())) for match in RESOURCE_RE.finditer(output)]
         cache_rows = [cache_row(match) for match in CACHE_RE.finditer(output)]
         cache_races = [row for row in cache_rows if row[:3] == (5, 0, 100)]
-        error = cache_plateau_error(cache_rows)
+        if texture_pack is not None and not pack_used(output, cache_races):
+            return failure("requested pack supplied no rendered texture evidence", output)
+        error = cache_gate_error(cache_rows)
         if error is not None:
             return failure(error, output)
         if texture_pack is not None:
@@ -576,9 +678,14 @@ def main() -> int:
     parser.add_argument(
         "--renderer", choices=("gl", "webgpu", "both"), default="both")
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
-    parser.add_argument("--timeout", type=float, default=240.0)
-    parser.add_argument("--texture-pack", type=Path,
-                        help="copy a local ZIP into isolated mods; require actual texture use")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_RUN_TIMEOUT,
+                        help="seconds per child run (the dump, each backend)")
+    packs = parser.add_mutually_exclusive_group()
+    packs.add_argument("--texture-pack", type=Path,
+                       help="copy a local ZIP into isolated mods instead of "
+                            "the generated pack; require actual texture use")
+    packs.add_argument("--no-pack", action="store_true",
+                       help="run without any texture pack")
     parser.add_argument(
         "--artifacts-dir", type=Path,
         help="retain each backend route and complete child log here")
@@ -664,20 +771,35 @@ def main() -> int:
                   f"passed: {label}", file=sys.stderr)
             return 1
     # Steady growth, accounted exactly as first use every race, must fail.
-    # So must growth that recurs every second or third race over the eight
-    # races this route records: only one of its steps falls inside any three
-    # samples (T12d).
-    def periodic(period: int) -> list[tuple[int, ...]]:
-        return [(5, 0, 100, 1000 + 100 * (race // period), 1 << 30, 320,
-                 4 + race // period, 0, 0, 4 + race // period,
-                 1000 + 100 * (race // period), 0, 0) for race in range(8)]
-    for label, rows in (
-            ("first use every second race", periodic(2)),
-            ("first use every third race", periodic(3))):
-        if cache_plateau_error(rows) is None:
-            print(f"check_resource_plateau: FAIL — periodic-growth positive "
-                  f"control passed: {label}", file=sys.stderr)
-            return 1
+    # So must growth that recurs every 2nd, 3rd or 4th race, starting on any
+    # race after warm-up, over the races the gate requires; and a run with
+    # fewer races is refused, because its window could miss some phases
+    # (T12d).
+    def periodic(period: int, phase: int,
+                 races: int = CACHE_RACES_REQUIRED) -> list[tuple[int, ...]]:
+        entries = [4] * races
+        for race in range(CACHE_WARMUP_RACES + 1, races):
+            step = race - CACHE_WARMUP_RACES - 1
+            entries[race] = entries[race - 1] + (step % period == phase)
+        return [(5, 0, 100, 1000 + 100 * (value - 4), 1 << 30, 320, value, 0,
+                 0, value, 1000 + 100 * (value - 4), 0, 0)
+                for value in entries]
+    for period in (2, 3, 4):
+        for phase in range(period):
+            if cache_gate_error(periodic(period, phase)) is None:
+                print(f"check_resource_plateau: FAIL — periodic-growth "
+                      f"positive control passed: first use every {period} "
+                      f"races, from step {phase}", file=sys.stderr)
+                return 1
+    if (cache_gate_error(periodic(1, 1)) is not None or
+            cache_gate_error(periodic(9, 0)) is not None):
+        print("check_resource_plateau: FAIL — a flat run, or one late first "
+              "use, was reported as cache growth", file=sys.stderr)
+        return 1
+    if cache_gate_error(periodic(1, 1, CACHE_RACES_REQUIRED - 1)) is None:
+        print("check_resource_plateau: FAIL — a run too short for the cache "
+              "window was accepted", file=sys.stderr)
+        return 1
     for label, rows in (
             ("new entries every race",
              [(5, 0, 100, 1000, 4096, 320, 4 + 5 * race, 0, 0, 4, 1000, 0, 0)
@@ -718,14 +840,36 @@ def main() -> int:
         )
         return 1
 
+    # The pack: given, none, or generated now from this build's own dump.
+    pack = args.texture_pack
+    pack_root: Path | None = None
+    if pack is None and not args.no_pack:
+        if args.artifacts_dir is not None:
+            args.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        pack_root = Path(tempfile.mkdtemp(prefix="generated-pack-",
+                                          dir=args.artifacts_dir))
+        try:
+            pack = generate_pack(binary, rom, pack_root, args.timeout,
+                                 args.verbose)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            print(f"check_resource_plateau: FAIL — could not generate the "
+                  f"texture pack: {error}", file=sys.stderr)
+            if args.artifacts_dir is None:
+                shutil.rmtree(pack_root, ignore_errors=True)
+            return 1
+
     renderers = ("gl", "webgpu") if args.renderer == "both" else (args.renderer,)
-    failures = [
-        error
-        for renderer in renderers
-        if (error := run_backend(
-            binary, rom, renderer, args.frames, args.timeout, args.verbose,
-            args.artifacts_dir, args.texture_pack))
-    ]
+    try:
+        failures = [
+            error
+            for renderer in renderers
+            if (error := run_backend(
+                binary, rom, renderer, args.frames, args.timeout,
+                args.verbose, args.artifacts_dir, pack))
+        ]
+    finally:
+        if pack_root is not None and args.artifacts_dir is None:
+            shutil.rmtree(pack_root, ignore_errors=True)
     if failures:
         print("check_resource_plateau: FAIL", file=sys.stderr)
         for failure in failures:

@@ -7793,8 +7793,10 @@ must re-upload resident replacements outside the per-frame upload budget
 `platform/fast3d/gfx_texpack_upload_budget.h`) and defer none (`deferred` = 0),
 while the never-toggled pack run shows no such uploads over the same frames.
 The window's rules are unit-tested GPU-free as `gfx_texpack_upload_budget`;
-this is the check that a toggle still reaches them. The plateau gate's
-`--texture-pack` arm checks the same for level loads.
+this is the check that a toggle still reaches them. The plateau gate, whose
+runs install a generated pack by default, checks the same for level loads.
+Assertion 4b sums the rows of a tick, so a second row for the same tick cannot
+hide the first one's deferral.
 
 Assertion 5 requires the `[SIMHASH]` v3 stream to be byte-identical across all
 three comparison arms. `Content.PacksEnabled` is content class and toggling it
@@ -8202,30 +8204,46 @@ python3 tests/check_resource_plateau.py --build build \
   --rom baserom.us.v80.z64
 ```
 
-Loads the same race at least four times in one process through the original
-Try Again path and requires CPU pool, audio, GPU, and pointer-registry
-generations to reach a plateau. The first generations may warm persistent
-caches; the later ones may not grow.
+Loads the same race eleven times or more in one process (the default 35,000
+frames record eleven or twelve race samples) through the original Try Again
+path and requires CPU pool, audio, GPU, and pointer-registry generations to
+reach a plateau. The first generations may warm persistent caches; the later
+ones may not grow.
 
-Pass `--texture-pack /path/to/pack.zip` to copy a real pack into the run's
-isolated preferences/mods directory. This arm requires nonzero rendered
-replacement-texture evidence, not merely successful indexing: the store's
-`[MODS] N high-resolution textures used this run` line, which a Rice/GLideN64
-pack prints. It also requires every warm race load -- every race after the
-first -- to re-upload resident replacements outside the per-frame upload
-budget (`unbudgeted` > 0 in its `texture_pack_generation` row): the warm-load
+**A texture pack is installed by default.** Before the two backend runs, one
+short headless GL run over the start of the same route (4,500 frames) dumps the
+digest of every texture it draws (`MDKR_MOD_TEXTURE_DUMP`). Each becomes
+`textures/<digest>.png` in a zipped digest pack holding one synthetic 16×16
+two-colour PNG, the image `check_mod_texture_override.py` uses, and the dump is
+deleted at once. On this route that is about 600 replacements. So the
+pack-texture cache is judged in every suite run, and so is the warm-load window
+below. Pass `--texture-pack /path/to/pack.zip` to install a real pack instead
+(copied into the run's isolated preferences/mods directory), or `--no-pack` to
+run with none. Use `--artifacts-dir /private/path` to retain logs and the pack
+privately. Under the suite runner's background policy on a loaded host the task
+measured 404-412 s (it was 245-283 s at 25,000 frames with no pack). Each child
+run times out at 720 s (`--timeout`), 2.7x the slowest backend measured.
+
+With a pack, a run must show that the pack was drawn, not merely indexed: the
+last race's census must hold resident pack identities (`firstResident` > 0), or
+a Rice/GLideN64 pack must print its `[MODS] N high-resolution textures used
+this run` line. Every warm race load, meaning every race after the first, must
+also re-upload resident replacements outside the per-frame upload budget
+(`unbudgeted` > 0 in its `texture_pack_generation` row). That is the warm-load
 window that keeps a revisited course from showing its original textures for a
-few frames (T12d). Every retained real-pack log from before that window
-existed fails this; every one since passes. Use
-`--artifacts-dir /private/path` to retain logs and the copied pack privately.
+few frames (T12d). Dropping the call that opens it on a level load fails this
+task on both renderers. Every retained real-pack log from before that window
+existed also fails it, and every one since passes.
+
 The counters cover engine pools, renderer ownership, and retained decoded
 texture pixels/lookup-table bytes. Decoded pixels must stay within the reported
 budget in every sample. The texture cache is then judged over its warmed
-window: every race sample after the first two (`CACHE_WARMUP_RACES`), which is
-six of the eight this route records, and never fewer than the last three. On
-this route first use grows from the first race to the second (about 113
-identities) and from the second to the third (2), and is flat from the third
-on. Within the window:
+window: every race sample after the first two (`CACHE_WARMUP_RACES`). On this
+route, first use grows from the first race to the second (about 113 identities
+with the 1.8 pack) and from the second to the third (2), and is flat from the
+third on. The gate requires `CACHE_RACES_REQUIRED` = 11 race samples and fails
+a run with fewer, so the window always holds at least nine samples and eight
+steps. Within the window:
 
 - every byte the cache gains must belong to an identity resident for the first
   time (`firstResidentBytes`);
@@ -8233,30 +8251,45 @@ on. Within the window:
 - the lookup table may grow only with new entries;
 - at most **one** step of the whole window may change at all. Store slots are
   never released, so first use that recurs is unbounded growth however exactly
-  it is accounted, whether it recurs every race or every second or third race.
-  Growth every second or third race shows only one changed step inside any
-  three samples, so the window is every race after warm-up, not the last three;
+  it is accounted;
 - that one step may add at most `CACHE_LATE_ENTRIES_MAX` = 8 lookup entries.
-  Every one of 24 real-pack runs (both renderers, the 1.8 pack) adds exactly 4
-  entries, 2 resident identities, from the second race to the third; that is
-  the largest late first use seen, and T12a's flake was a single texture. 8 is
-  twice the largest seen, and because slots are never released it bounds the
-  table rather than loosening the comparison.
+  Across the 30 retained real-pack runs (both renderers, the 1.8 pack) the
+  largest change inside the window is 0 entries. The only late first use ever
+  seen there is T12a's flake: one texture, a single identity, which is two
+  entries with a Rice pack (its digest and its Rice key). 8 allows four such
+  identities in that one step, and because slots are never released it bounds
+  the table rather than loosening the comparison.
+
+What that detects, exactly: any growth that changes two or more steps of the
+window fails. That includes first use in every race, and first use that
+recurs every 2nd, 3rd or 4th race starting on any race after warm-up. A period
+P needs 2P steps to show two changed steps in every phase, and the window has
+at least 8. Growth that recurs less often than every 4th race can show only
+one changed step in the window, and it then passes, as a single late first use
+does.
 
 One late first use is allowed because the races are not identical scenes: the
 post-race and ghost state changes what each one draws, and on WebGPU the set
 of textures drawn varies a little from run to run, so a texture can be first
 drawn in a late race however long the route. T12a saw exactly that fail the old
 byte-for-byte comparison about one WebGPU run in six. The PASS line reports any
-such late first use. Positive controls, run at startup by the gate and as
-`resource_plateau_oracle` in CTest, must fail: pixel growth without a first use,
-a reload, a table that grows without entries, a burst of more than 8 entries,
-first use in every race, first use every second race and every third race over
-eight races, and a table doubling with its entries. T12a's single late texture
-must pass. Logs from builds whose census lacks the counters are still held to
-the byte-for-byte comparison over the same window. The counters do not measure
-process RSS, registry/ZIP memory, or frame-time spikes and cannot alone prove
-that total process memory has plateaued.
+such late first use. These positive controls must fail; they run at startup in
+the gate and as `resource_plateau_oracle` in CTest:
+
+- pixel growth without a first use;
+- a reload;
+- a table that grows without entries;
+- a burst of more than 8 entries;
+- first use in every race;
+- first use every 2nd, 3rd and 4th race, in every phase;
+- a table doubling with its entries;
+- a run with fewer than 11 race samples.
+
+T12a's single late texture must pass, at any race after warm-up. Logs from
+builds whose census lacks the counters are still held to the byte-for-byte
+comparison over the same window. The counters do not measure process RSS,
+registry/ZIP memory, or frame-time spikes, and cannot alone prove that total
+process memory has plateaued.
 
 For a longer cache-warmup check, use `--frames 75000`; generated retry pulses
 remain within the native loader's 512-entry capacity.

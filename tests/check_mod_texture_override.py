@@ -310,8 +310,22 @@ class Arm:
         self.rows: list[str] = []
         self.mods: list[str] = []
         self.applied: list[tuple[str, str, int]] = []
-        # tick -> (deferred, unbudgeted) from [TEXPACK-FRAME]; packed arms.
+        # tick -> (deferred, unbudgeted) from [TEXPACK-FRAME], summed over
+        # every row of that tick; packed arms.
         self.uploads: dict[int, tuple[int, int]] = {}
+
+
+def add_frame_row(uploads: dict[int, tuple[int, int]], line: str) -> None:
+    """Adds one [TEXPACK-FRAME] row's (deferred, unbudgeted) to its tick.
+
+    Summed, not stored: a tick can present more than once (a held frame, a
+    replay), and a later row must not hide an earlier row's deferral.
+    """
+    fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+    tick = int(fields["tick"])
+    deferred, unbudgeted = uploads.get(tick, (0, 0))
+    uploads[tick] = (deferred + int(fields["deferred"]),
+                     unbudgeted + int(fields["unbudgeted"]))
 
 
 def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
@@ -377,10 +391,7 @@ def run_arm(binary: Path, rom: Path, root: Path, arm: Arm, digests: list[str],
         elif "[MODS]" in line:
             arm.mods.append(line)
         elif line.startswith("[TEXPACK-FRAME]"):
-            fields = dict(part.split("=", 1) for part in line.split()
-                          if "=" in part)
-            arm.uploads[int(fields["tick"])] = (int(fields["deferred"]),
-                                                int(fields["unbudgeted"]))
+            add_frame_row(arm.uploads, line)
         elif line.startswith("[SETTINGS-TOGGLE]"):
             fields = dict(part.split("=", 1) for part in line.split()
                           if "=" in part)

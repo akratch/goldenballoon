@@ -5,8 +5,10 @@ import subprocess
 import tempfile
 from unittest.mock import patch
 
-from check_resource_plateau import (cache_plateau_error, extended_route,
-                                    run_backend, warm_reupload_error)
+from check_resource_plateau import (CACHE_RACES_REQUIRED, CACHE_WARMUP_RACES,
+                                    cache_gate_error, cache_plateau_error,
+                                    extended_route, run_backend,
+                                    warm_reupload_error)
 
 
 class CachePlateauTests(unittest.TestCase):
@@ -129,29 +131,51 @@ class CachePlateauTests(unittest.TestCase):
                                first_bytes=1000 + 100 * (value - 4))
                 for value in entries]
 
+    def periodic(self, period, phase, races=None):
+        """`races` samples whose entries grow by one on every `period`-th
+        step after warm-up, the first growth on step `phase`."""
+        races = CACHE_RACES_REQUIRED if races is None else races
+        entries = [4] * races
+        for race in range(CACHE_WARMUP_RACES + 1, races):
+            step = race - CACHE_WARMUP_RACES - 1
+            entries[race] = entries[race - 1] + (step % period == phase)
+        return self.races(entries)
+
     def test_periodic_growth_is_growth(self):
-        # T12d: growth that recurs every second or third race is unbounded
-        # growth too. The last three samples alone hold only one changed
-        # step of it, so the rule must see every race after warm-up -- the
-        # route records eight.
-        period_2 = self.races(4 + race // 2 for race in range(8))
-        period_3 = self.races(4 + race // 3 for race in range(8))
-        self.assertEqual([row[6] for row in period_2], [4, 4, 5, 5, 6, 6, 7, 7])
-        self.assertIsNotNone(cache_plateau_error(period_2), "period 2")
-        self.assertIsNotNone(cache_plateau_error(period_3), "period 3")
+        # T12d: growth that recurs every second, third or fourth race is
+        # unbounded growth too, in whatever phase it starts. The window holds
+        # every race after warm-up, and the gate requires enough races
+        # (CACHE_RACES_REQUIRED) for it to show two changed steps of any of
+        # those periods.
+        for period in (2, 3, 4):
+            for phase in range(period):
+                rows = self.periodic(period, phase)
+                self.assertIsNotNone(cache_gate_error(rows), (period, phase))
+        # The review's two shapes, on the route it had: they pass the oracle
+        # over eight races, which is why the gate refuses so short a run.
+        for entries in ([4, 4, 5, 5, 5, 6, 6, 6], [4, 4, 5, 5, 5, 5, 6, 6]):
+            rows = self.races(entries)
+            self.assertIsNone(cache_plateau_error(rows), entries)
+            self.assertIsNotNone(cache_gate_error(rows), entries)
+
+    def test_the_gate_needs_its_races(self):
+        flat = self.races([4] * CACHE_RACES_REQUIRED)
+        self.assertIsNone(cache_gate_error(flat))
+        self.assertIsNotNone(cache_gate_error(flat[1:]))
 
     def test_one_late_first_use_after_warm_up_passes(self):
         # A single late texture anywhere after warm-up, then flat: T12a's
-        # flake, on the full eight-race route.
-        for late in range(2, 8):
-            entries = [4] * late + [5] * (8 - late)
-            self.assertIsNone(cache_plateau_error(self.races(entries)), late)
+        # flake, on the full route.
+        races = CACHE_RACES_REQUIRED
+        for late in range(2, races):
+            entries = [4] * late + [5] * (races - late)
+            self.assertIsNone(cache_gate_error(self.races(entries)), late)
 
     def test_warm_up_growth_is_not_judged(self):
         # The real route: races 1->2 add ~113 identities, 2->3 a few, then
         # flat. Only the races after warm-up are held to the plateau rule.
-        entries = [4, 117, 119] + [119] * 5
-        self.assertIsNone(cache_plateau_error(self.races(entries)))
+        entries = [4, 117, 119] + [119] * (CACHE_RACES_REQUIRED - 3)
+        self.assertIsNone(cache_gate_error(self.races(entries)))
 
     def test_accounted_rows_still_respect_the_budget(self):
         over = self.accounted(pixels=5000, first_bytes=5000, first=9)
