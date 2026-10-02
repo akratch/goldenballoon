@@ -14,7 +14,7 @@
  * forwarders defer to the sine oracle each test already defines. The
  * MDKR_CAMERA_PRODUCTION_MATH variant instead links the real native provider:
  * its trig functions, tables, RNG seeds and interrupt flag are not replaced.
- * Only its unused RNG-draw counter/cadence dependency is supplied here.
+ * Only its unused cadence dependency is supplied here.
  * If a camera
  * test ever starts depending on one of these, that dependency belongs in the
  * test, not here.
@@ -41,8 +41,9 @@ f32 coss_f(s16 angle) {
     return (f32) coss_s16(angle) * (1.0f / 65536.0f);
 }
 #else
-/* Unused RNG/cadence dependencies of the real trig provider. */
-u64 gAuthoritativeRNGDraws;
+/* Unused cadence dependency of the real trig provider. Its RNG-draw counter
+ * is defined by math_util.c itself; a second definition here only linked
+ * where tentative definitions merge (-fcommon), not under GCC's default. */
 int platform_sim_tick_fields(void) { return 2; }
 #endif
 

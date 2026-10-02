@@ -123,6 +123,11 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_rom_browser_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform/app)
     target_compile_features(mdkr_rom_browser_test PRIVATE cxx_std_17)
+    # Built as C++17 like the app that ships rom_browser.cpp: cxx_std_17 is
+    # only a minimum, and GCC 16 defaults to C++20, where path::u8string()
+    # returns std::u8string (see mdkr_pack_installer_test below).
+    set_target_properties(mdkr_rom_browser_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     add_test(NAME rom_browser COMMAND mdkr_rom_browser_test)
 
     add_executable(mdkr_file_browser_ui_test
@@ -136,6 +141,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_file_browser_ui_test PRIVATE
         ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
     target_compile_features(mdkr_file_browser_ui_test PRIVATE cxx_std_17)
+    set_target_properties(mdkr_file_browser_ui_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     add_test(NAME file_browser_ui COMMAND mdkr_file_browser_ui_test)
 
     add_executable(mdkr_pack_installer_test
@@ -2873,6 +2880,17 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         if(CMAKE_C_COMPILER_ID MATCHES "Clang")
             target_compile_options(${target} PRIVATE
                 -Wno-everything -fms-extensions -Wno-c23-extensions)
+        endif()
+        # These tests compile engine sources, so on Windows they take the
+        # engine's struct packing (see "Struct layout" in CMakeLists.txt).
+        # Under MinGW's default MSVC bitfield packing the display-list
+        # structs have another size, which textures_sprites.c refuses to
+        # compile.
+        if(WIN32)
+            target_compile_options(${target} PRIVATE -mno-ms-bitfields)
+            if(CMAKE_C_COMPILER_ID MATCHES "GNU")
+                target_compile_options(${target} PRIVATE -fms-extensions)
+            endif()
         endif()
         if(APPLE)
             target_link_options(${target} PRIVATE -Wl,-dead_strip)

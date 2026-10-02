@@ -2965,23 +2965,8 @@ if(WIN32)
         endif()
     endforeach()
 
-    # The content-pack intake tests (fs_utf8, mod_source_zip, pack_installer,
-    # pack_install_job) are handed to a Windows PC as standalone executables:
-    # link the GCC runtimes statically, as the game does, so each runs from
-    # any folder with only stock Windows DLLs. tools/mingw_cross_check.sh
-    # --intake-tests builds and checks them.
-    foreach(_mdkr_intake_test
-            mdkr_fs_utf8_test
-            mdkr_mod_source_zip_test
-            mdkr_pack_installer_test
-            mdkr_pack_install_job_test)
-        if(TARGET ${_mdkr_intake_test})
-            target_link_options(${_mdkr_intake_test} PRIVATE
-                -static-libgcc -static-libstdc++)
-            target_link_libraries(${_mdkr_intake_test} PRIVATE
-                "-Wl,-Bstatic" winpthread "-Wl,-Bdynamic")
-        endif()
-    endforeach()
+    # The ROM-free test executables are self-contained like the game; see
+    # "Self-contained test executables" below.
 
     # --- Test link dead-strip (MOVED OUT of if(WIN32)) ---------------------
     # The online/transport test-link dead-strip + no-speculative-devirt flags
@@ -3036,6 +3021,38 @@ if(WIN32)
     target_link_options(${MDKR_TARGET} PRIVATE -static-libgcc -static-libstdc++)
     target_link_libraries(${MDKR_TARGET} PRIVATE
         "-Wl,-Bstatic" winpthread "-Wl,-Bdynamic")
+
+    # --- Self-contained test executables -----------------------------------
+    # The ROM-free unit tests are handed to a Windows PC as standalone
+    # executables (tools/package_windows_test_bundle.sh; the intake subset via
+    # tools/mingw_cross_check.sh --intake-tests), so every mdkr_*_test imports
+    # only stock Windows DLLs and the UCRT, as the game does. A whole -static
+    # link is used rather than the game's bracket: libstdc++ reaches
+    # winpthread through libraries the driver appends after every
+    # target_link_libraries item, where a bracketed archive no longer
+    # applies, and the import lib then wins. Under -static the system and CRT
+    # libraries still resolve to their import libraries, and SDL2 to its
+    # static archive, which needs its system-lib tail. The MSYS2 SDL2.dll is
+    # not an option to ship beside them: it imports msvcrt.dll, the legacy CRT
+    # the import guard refuses (see tools/check_windows_imports.sh). Every
+    # test target is declared by now (tests.cmake and the app/online tests
+    # above), so the rule reaches the ones added later too.
+    if(BUILD_TESTING)
+        get_property(_mdkr_targets DIRECTORY "${CMAKE_SOURCE_DIR}"
+            PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(_mdkr_test IN LISTS _mdkr_targets)
+            get_target_property(_mdkr_type ${_mdkr_test} TYPE)
+            if(NOT _mdkr_type STREQUAL "EXECUTABLE" OR
+               NOT _mdkr_test MATCHES "^mdkr_.*_test$")
+                continue()
+            endif()
+            target_link_options(${_mdkr_test} PRIVATE -static)
+            get_target_property(_mdkr_libs ${_mdkr_test} LINK_LIBRARIES)
+            if(_mdkr_libs AND "SDL2" IN_LIST _mdkr_libs)
+                target_link_libraries(${_mdkr_test} PRIVATE ${MDKR_SDL2_STATIC_TAIL})
+            endif()
+        endforeach()
+    endif()
 
     # --- Icon + version resource (PK-6) ------------------------------------
     # windows/mdkr64.rc embeds the app icon and a VERSIONINFO block (what
