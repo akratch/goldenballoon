@@ -406,7 +406,9 @@ the time you quit.
   cannot be deleted or replaced until you close the game.
 - Decoded pack textures are capped at **512 MiB** in total, textures still
   being decoded included; past that the least recently used are dropped and
-  re-decoded on demand.
+  re-decoded on demand. One exception: a Rice texture split into `_rgb` and
+  `_a` halves is decoded as a pair, and while a pair larger than 64 MiB (two
+  4096×4096 halves) is being decoded, the total can briefly reach 576 MiB.
 - PNG only, and only what stb_image's PNG decoder accepts. A file that will not
   decode is reported once, with the decoder's own reason, and then treated as
   absent.

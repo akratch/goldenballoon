@@ -1554,6 +1554,147 @@ static void test_every_spelling_pack_is_a_candidate(const char *scratch) {
     unbind_store(&registry);
 }
 
+/* 20. A Rice _rgb + _a pair is one request for two images, and it reserves
+ * both before decoding either (T12d). Reserving them one at a time let the
+ * worker decode the _rgb half, then sit holding those pixels while it waited
+ * for room for the _a half -- room only the owner can free. With the 2 KiB
+ * cache seam the in-flight share is 256 bytes: three 64-byte completions
+ * leave room for one 4x4 half but not for the pair, so the pair must wait
+ * holding nothing. A pair larger than the share (two 8x8 halves, 512 bytes)
+ * proceeds only once nothing else is in flight, and is then the one request
+ * that may exceed the share: the documented bound. */
+#define DIGEST_ROOM1 "e1000000000000000000000000000001"
+#define DIGEST_ROOM2 "e1000000000000000000000000000002"
+#define DIGEST_ROOM3 "e1000000000000000000000000000003"
+#define DIGEST_ROOM4 "e1000000000000000000000000000004"
+#define RICE_SMALL_PAIR_CRC 0x0000a11cu
+#define RICE_LARGE_PAIR_CRC 0x0000b16cu
+static void test_rice_pair_reserves_both_halves(const char *scratch) {
+    char            mods[1024];
+    char            rice[256];
+    char            relative[64];
+    MdkrModRegistry registry;
+    MdkrModTexture  texture;
+    const char     *fills[4] = { DIGEST_ROOM1, DIGEST_ROOM2, DIGEST_ROOM3,
+                                 DIGEST_ROOM4 };
+    int             index;
+    int             ok = 1;
+
+    path2(mods, sizeof mods, scratch, "pairroom");
+    write_pack_text(mods, "fill", "pack.ini", "[pack]\nname=Fill\n");
+    for (index = 0; index < 4; index++) {
+        snprintf(relative, sizeof relative, "textures/%s.png", fills[index]);
+        write_png_file(mods, "fill", relative, 4, pixel_gradient, 0x10u);
+    }
+    rice_name(rice, sizeof rice, RICE_SMALL_PAIR_CRC, "rgb");
+    write_png_file(mods, "ricepair", rice, 4, pixel_gradient, 0x21u);
+    rice_name(rice, sizeof rice, RICE_SMALL_PAIR_CRC, "a");
+    write_png_file(mods, "ricepair", rice, 4, pixel_alpha_half, 0x07u);
+    rice_name(rice, sizeof rice, RICE_LARGE_PAIR_CRC, "rgb");
+    write_png_file(mods, "ricepair", rice, 8, pixel_gradient, 0x22u);
+    rice_name(rice, sizeof rice, RICE_LARGE_PAIR_CRC, "a");
+    write_png_file(mods, "ricepair", rice, 8, pixel_alpha_half, 0x07u);
+
+    mdkr_mod_texture_store_test_set_cache_limit(2048u);
+    bind_store(&registry, mods);
+    for (index = 0; index < 3; index++) {
+        ok &= mdkr_mod_texture_lookup(fills[index], &texture) == 0 &&
+              texture.pending == 1;
+    }
+    expect(ok && mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           memory_now().inflight_bytes == 3u * 4u * 4u * 4u,
+           "three decoded 4x4 textures wait to install: 192 of 256 bytes");
+    expect(mdkr_mod_texture_lookup_rice(RICE_SMALL_PAIR_CRC, 0, 2,
+                                        &texture) == 0 &&
+           texture.pending == 1 &&
+           mdkr_mod_texture_store_test_wait_room_blocked(5000) == 1,
+           "a 4x4 Rice pair (128 bytes) waits for room");
+    expect(memory_now().inflight_bytes == 3u * 4u * 4u * 4u,
+           "holding none of it: neither half was claimed or decoded alone");
+    mdkr_mod_texture_store_pump(NULL, NULL);
+    expect(lookup_rice_settled(RICE_SMALL_PAIR_CRC, &texture) == 1 &&
+           texture.width == 4 && texture.rgba != NULL &&
+           texture.rgba[(0 * 4 + 1) * 4 + 3] == alpha_key(1, 0) &&
+           texture.rgba[(0 * 4 + 1) * 4 + 2] == 0x21u,
+           "once the owner drains, the pair decodes and merges as before");
+    expect(mdkr_mod_texture_store_test_inflight_peak() <= 2048u / 8u,
+           "and in flight never passed the share");
+
+    expect(mdkr_mod_texture_lookup(DIGEST_ROOM4, &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           memory_now().inflight_bytes == 4u * 4u * 4u,
+           "one 4x4 completion is in flight");
+    expect(mdkr_mod_texture_lookup_rice(RICE_LARGE_PAIR_CRC, 0, 2,
+                                        &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_room_blocked(5000) == 1 &&
+           memory_now().inflight_bytes == 4u * 4u * 4u,
+           "an 8x8 pair, larger than the share, waits holding nothing");
+    mdkr_mod_texture_store_pump(NULL, NULL);
+    expect(mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           mdkr_mod_texture_store_test_inflight_peak() == 2u * 8u * 8u * 4u,
+           "and proceeds only alone: one request, both halves, is the most "
+           "ever in flight past the share");
+    expect(memory_now().inflight_bytes == 8u * 8u * 4u,
+           "the _a half is released once merged; the result holds one image");
+    expect(lookup_rice_settled(RICE_LARGE_PAIR_CRC, &texture) == 1 &&
+           texture.width == 8 && memory_now().inflight_bytes == 0,
+           "then installs, releasing it all");
+    unbind_store(&registry);
+    mdkr_mod_texture_store_test_set_cache_limit(0);
+}
+
+/* 21. The worker blocked on in-flight room -- the share full of completions
+ * the owner has not drained -- must come back promptly when the owner toggles
+ * packs and when the store stops (T12d: the wait path had no case). Each wait
+ * here has a timeout, so a worker that never wakes fails the case; a stop
+ * that does not return exits the test rather than joining a thread that
+ * never will. */
+#define DIGEST_CAP0 "e2000000000000000000000000000000"
+#define DIGEST_CAP1 "e2000000000000000000000000000001"
+static void test_room_wait_releases_on_toggle_and_stop(const char *scratch) {
+    char                      mods[1024];
+    MdkrModRegistry           registry;
+    MdkrModTexture            texture;
+    MdkrModTextureMemoryStats stats;
+
+    path2(mods, sizeof mods, scratch, "capwait");
+    write_pack_text(mods, "cap", "pack.ini", "[pack]\nname=Cap\n");
+    write_small_rgba_png(mods, "cap", DIGEST_CAP0, 0x60u);
+    write_small_rgba_png(mods, "cap", DIGEST_CAP1, 0x61u);
+
+    mdkr_mod_texture_store_test_set_cache_limit(2048u);
+    bind_store(&registry, mods);
+    expect(mdkr_mod_texture_lookup(DIGEST_CAP0, &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           memory_now().inflight_bytes == 8u * 8u * 4u,
+           "one undrained 8x8 completion fills the 256-byte share");
+    expect(mdkr_mod_texture_lookup(DIGEST_CAP1, &texture) == 0 &&
+           mdkr_mod_texture_store_test_wait_room_blocked(5000) == 1,
+           "the next request blocks the worker on room");
+
+    mdkr_mod_texture_set_enabled(false);
+    expect(mdkr_mod_texture_store_test_wait_idle_for(5000) == 1,
+           "a toggle releases the blocked worker promptly");
+    mdkr_mod_texture_set_enabled(true);
+    expect(mdkr_mod_texture_lookup(DIGEST_CAP1, &texture) == 0 &&
+           texture.pending == 1 &&
+           mdkr_mod_texture_store_test_wait_room_blocked(5000) == 1,
+           "asked again, it blocks again: the stale completion still holds "
+           "the share");
+
+    if (mdkr_mod_texture_store_test_stop_worker(5000) != 1) {
+        expect(0, "a stop releases the blocked worker promptly");
+        fatal("the worker did not stop", "joining it would hang");
+    }
+    expect(1, "a stop releases the blocked worker promptly");
+    unbind_store(&registry);
+    mdkr_mod_texture_memory_stats(&stats);
+    expect(stats.pending == 0 && stats.inflight_bytes == 0 &&
+           stats.entries == 0,
+           "and shutdown frees the stale completion and the cancelled request");
+    mdkr_mod_texture_store_test_set_cache_limit(0);
+}
+
 /* ------------------------------------------------------- the author dump */
 
 /* Reads a whole scratch file into `out`, returning its length, or -1 when the
@@ -1707,7 +1848,9 @@ int main(int argc, char **argv) {
         strlen(DIGEST_CASE_FOLDER) != 32 || strlen(DIGEST_CASE_ZIP) != 32 ||
         strlen(DIGEST_BOMB) != 32 || strlen(DIGEST_DUP_A) != 32 ||
         strlen(DIGEST_DUP_B) != 32 || strlen(DIGEST_DUP_C) != 32 ||
-        strlen(DIGEST_SPELLED) != 32 || strlen(DIGEST_SPELLED2) != 32) {
+        strlen(DIGEST_SPELLED) != 32 || strlen(DIGEST_SPELLED2) != 32 ||
+        strlen(DIGEST_ROOM1) != 32 || strlen(DIGEST_ROOM4) != 32 ||
+        strlen(DIGEST_CAP0) != 32 || strlen(DIGEST_CAP1) != 32) {
         fatal("a fixture digest is not 32 characters", "the store would refuse "
               "it before reaching a pack");
     }
@@ -1801,6 +1944,8 @@ int main(int argc, char **argv) {
     test_digest_names_ignore_case(&registry);
     test_case_duplicates_read_the_lowercase_file(scratch);
     test_every_spelling_pack_is_a_candidate(scratch);
+    test_rice_pair_reserves_both_halves(scratch);
+    test_room_wait_releases_on_toggle_and_stop(scratch);
     test_dump_record_carries_the_source_span(scratch);
 
     mdkr_mod_texture_store_shutdown();

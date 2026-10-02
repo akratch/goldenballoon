@@ -193,7 +193,10 @@ typedef struct MdkrModTextureMemoryStats {
     size_t entries;
     /* Decoded pixels the worker holds that are not installed yet. Counted
      * against pixel_limit: with a worker running, residents are kept to
-     * pixel_limit minus the in-flight cap. */
+     * pixel_limit minus the in-flight cap (one eighth). In flight stays
+     * within that cap except for one request alone, which may be a Rice
+     * _rgb + _a pair of up to twice it (mod_texture_store.c gives the exact
+     * bound). */
     size_t inflight_bytes;
     size_t pending;         /* textures queued or being decoded */
     /* Identities that became resident for the first time this store
@@ -388,6 +391,19 @@ int  mdkr_mod_texture_store_test_wait_parked(void);
  * installing what it finished: completions stay queued for the next pump.
  * Returns 0 when no worker is running. */
 int  mdkr_mod_texture_store_test_wait_idle(void);
+/* The same, giving up after `timeout_ms`: 1 idle, 0 not (or no worker), so a
+ * worker that never comes back fails a case instead of hanging it. */
+int  mdkr_mod_texture_store_test_wait_idle_for(uint32_t timeout_ms);
+/* Waits up to `timeout_ms` for the worker to be blocked on in-flight room
+ * (its reservation does not fit until the owner drains completions). 1 when
+ * it is, 0 on timeout or with no worker. */
+int  mdkr_mod_texture_store_test_wait_room_blocked(uint32_t timeout_ms);
+/* Tells the worker to stop and waits up to `timeout_ms` for its thread to
+ * return. 1 when it has; shutdown still joins it and frees everything. 0 when
+ * it is still running (a case then exits rather than join and hang). */
+int  mdkr_mod_texture_store_test_stop_worker(uint32_t timeout_ms);
+/* The most in-flight bytes held at once since the worker started. */
+size_t mdkr_mod_texture_store_test_inflight_peak(void);
 #endif
 
 #ifdef __cplusplus

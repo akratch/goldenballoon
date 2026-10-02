@@ -126,8 +126,17 @@
 /* The share of that budget the worker may hold as decoded-but-not-installed
  * pixels: one eighth, 64 MiB, which is also the largest single texture the
  * admission rules below accept (4096 x 4096 x 4). While a worker runs,
- * residents are evicted down to the budget minus this, so resident plus
- * in-flight never exceeds the budget. */
+ * residents are evicted down to the budget minus this.
+ *
+ * The bound, exactly (T12d): a request claims its whole decoded size before
+ * decoding anything (exec_reserve), and waits while that would overfill the
+ * share unless nothing else is in flight. So in flight never exceeds
+ * max(share, one request), where a request is one image -- at most 64 MiB,
+ * the share itself -- or a Rice `_rgb` + `_a` pair, claimed together: at most
+ * 2 x 64 MiB, of which the `_a` half is released once merged. Resident plus
+ * in flight therefore stays within the budget, except while a pair larger
+ * than the share is decoded alone: then by at most one more share (576 MiB
+ * for two 4096 x 4096 halves). The decoder's own scratch is not counted. */
 #define MDKR_MOD_TEXTURE_INFLIGHT_SHARE 8u
 
 /* Requests handed to the worker and not yet drained back. Bounds the shared
@@ -287,6 +296,11 @@ struct LoaderShared {
     size_t      inflight_limit;
     int         hold;           /* test seam: park after taking a request */
     int         parked;
+    /* Observed by test seams only: the worker is blocked waiting for room,
+     * the high-water of `inflight`, and the thread has returned. */
+    int         room_blocked;
+    size_t      inflight_peak;
+    int         exited;
     Executor    exec;
 };
 #endif
@@ -665,8 +679,11 @@ static unsigned char *read_entry(MdkrModSource *source, const char *relative,
  * them, waiting for the owner to drain completions when the share is full.
  * Never waits on its own request's reservations -- only other requests' can
  * be drained -- so one request may exceed the share when nothing else is in
- * flight. Returns 0, with the request marked cancelled, when the generation
- * moves or the store stops: the phase boundary at which work is abandoned. */
+ * flight. Each request calls this once, for everything it will decode (a Rice
+ * pair claims both halves together), so it never holds pixels while it waits.
+ * Returns 0, with the request marked cancelled, when the generation moves or
+ * the store stops: the phase boundary at which work is abandoned. A toggle
+ * and a stop both broadcast wake_worker, so a wait here ends promptly. */
 static int exec_reserve(Executor *ex, TexRequest *req, size_t bytes) {
     LoaderShared *shared = ex->shared;
     int           live;
@@ -676,12 +693,18 @@ static int exec_reserve(Executor *ex, TexRequest *req, size_t bytes) {
     while (!shared->stop && req->generation == shared->generation &&
            shared->inflight + bytes > shared->inflight_limit &&
            shared->inflight > req->reserved) {
+        shared->room_blocked = 1;
+        SDL_CondBroadcast(shared->wake_owner);
         SDL_CondWait(shared->wake_worker, shared->lock);
     }
+    shared->room_blocked = 0;
     live = !shared->stop && req->generation == shared->generation;
     if (live) {
         shared->inflight += bytes;
         req->reserved += bytes;
+        if (shared->inflight > shared->inflight_peak) {
+            shared->inflight_peak = shared->inflight;
+        }
     }
     SDL_UnlockMutex(shared->lock);
     if (!live) req->status = RESULT_CANCELLED;
@@ -709,53 +732,63 @@ static void exec_release(Executor *ex, TexRequest *req, size_t bytes) {
 
 /* ------------------------------------------------------------- resolution */
 
-/* Load one pack PNG into RGBA. Executing thread.
+/* One pack PNG, located, read and admitted by its header, not yet decoded:
+ * the file's bytes and the RGBA size the header declares. */
+typedef struct PngAdmitted {
+    unsigned char *file;       /* malloc'd; NULL once decoded or dropped */
+    size_t         file_size;
+    int            width;      /* as the header declares */
+    int            height;
+    int            channels;
+    size_t         bytes;      /* width * height * 4: what a decode costs */
+} PngAdmitted;
+
+static void png_admitted_drop(PngAdmitted *png) {
+    free(png->file);
+    png->file = NULL;
+}
+
+/* Locate, read and admit one part of a request by its header. Executing
+ * thread.
  *
- * Every admission rule a replacement texture has to pass lives here and only
- * here: the cap on the file, the header inspection that establishes the decode
- * budget BEFORE the pixels are allocated, the dimension ceiling, and the
- * requirement that the decoded size match the admitted header. Rice textures go
- * through the identical checks -- a pack from a stranger is a pack from a
- * stranger whichever convention names its files -- and so does every loader:
- * the worker runs exactly this code.
+ * Every admission rule a replacement texture has to pass lives here and in
+ * exec_decode_png() below and only there: the cap on the file, the header
+ * inspection that establishes the decode budget BEFORE the pixels are
+ * allocated, the dimension ceiling, and the requirement that the decoded size
+ * match the admitted header. Rice textures go through the identical checks --
+ * a pack from a stranger is a pack from a stranger whichever convention names
+ * its files -- and so does every loader: the worker runs exactly this code.
  *
- * Returns stbi-owned pixels whose size is held as an in-flight reservation on
- * the request, or NULL. `out_absent`, when given, separates the ordinary "no
- * candidate pack holds this path" from a rejection whose reason has been
- * recorded on the request. A cancelled request returns NULL with
- * req->status == RESULT_CANCELLED. */
-static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
-                                    int *out_width, int *out_height,
-                                    int *out_absent) {
+ * Returns 1 with the file held in `out`. 0 otherwise: `out_absent`, when
+ * given, separates the ordinary "no candidate pack holds this path" from a
+ * rejection whose reason has been recorded on the request. */
+static int exec_admit_png(Executor *ex, TexRequest *req, int part,
+                          PngAdmitted *out, int *out_absent) {
     const TexCandidate *found;
     MdkrModSource *source = NULL;
     const char    *reason = NULL;
     unsigned char *file_bytes;
     size_t         size = 0;
     size_t         file_size = 0;
-    size_t         declared_bytes;
-    unsigned char *pixels;
     int            declared_width = 0;
     int            declared_height = 0;
     int            declared_channels = 0;
-    int            width = 0;
-    int            height = 0;
-    int            channels = 0;
-    /* Phase boundaries: locating and reading the entry, then decoding it. */
+    /* Phase boundaries: locating and reading the entry, then its header. */
     uint64_t       phase_mark = req->clock != NULL ? req->clock() : 0u;
 
+    memset(out, 0, sizeof *out);
     if (out_absent != NULL) *out_absent = 0;
     found = exec_locate(ex, req, part, &source, &size);
     if (found == NULL) {
         if (out_absent != NULL) *out_absent = 1;
         request_lap(req, &req->read_ns, &phase_mark);
-        return NULL;
+        return 0;
     }
     file_bytes = read_entry(source, found->path, size, &file_size, &reason);
     request_lap(req, &req->read_ns, &phase_mark);
     if (file_bytes == NULL) {
         request_reason(req, reason);
-        return NULL;
+        return 0;
     }
     req->files++;
     req->file_bytes += file_size;
@@ -764,7 +797,7 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
     if (file_size > (size_t)INT_MAX) {
         free(file_bytes);
         request_reason(req, "the file is too large to decode");
-        return NULL;
+        return 0;
     }
 
     /* The header before the pixels. stbi_info_from_memory() parses the PNG
@@ -793,12 +826,12 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
                               &declared_height, &declared_channels) == 0) {
         free(file_bytes);
         request_reason(req, stbi_failure_reason());
-        return NULL;
+        return 0;
     }
     if (declared_width <= 0 || declared_height <= 0) {
         free(file_bytes);
         request_reason(req, "the image has no pixels");
-        return NULL;
+        return 0;
     }
     if (declared_width > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
         declared_height > MDKR_MOD_TEXTURE_DIMENSION_MAX) {
@@ -814,7 +847,7 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
                  MDKR_MOD_TEXTURE_DIMENSION_MAX);
         free(file_bytes);
         request_reason(req, too_wide);
-        return NULL;
+        return 0;
     }
     {
         uint64_t declared = (uint64_t)declared_width *
@@ -826,17 +859,34 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
                      "cache", declared_width, declared_height);
             free(file_bytes);
             request_reason(req, too_big);
-            return NULL;
+            return 0;
         }
-        declared_bytes = (size_t)declared;
+        out->bytes = (size_t)declared;
     }
+    /* Header inspection. A file refused from its header alone above cost
+     * microseconds and is left to the request's whole time. */
+    request_lap(req, &req->decode_ns, &phase_mark);
+    out->file = file_bytes;
+    out->file_size = file_size;
+    out->width = declared_width;
+    out->height = declared_height;
+    out->channels = declared_channels;
+    return 1;
+}
 
-    /* Admitted. Claim its decoded size before the decoder allocates it; this
-     * is also where a request the owner has since retired is abandoned. */
-    if (!exec_reserve(ex, req, declared_bytes)) {
-        free(file_bytes);
-        return NULL;
-    }
+/* Decodes an admitted file whose `bytes` the caller has already reserved, and
+ * drops the file. Returns stbi-owned pixels, still held by that reservation,
+ * or NULL with the reason recorded and the reservation released. Executing
+ * thread. */
+static unsigned char *exec_decode_png(Executor *ex, TexRequest *req,
+                                      PngAdmitted *png, int *out_width,
+                                      int *out_height) {
+    unsigned char *pixels;
+    int            width = 0;
+    int            height = 0;
+    int            channels = 0;
+    uint64_t       phase_mark = req->clock != NULL ? req->clock() : 0u;
+
     /* The header bounds the decode as well as the result: the zlib stage
      * otherwise grows its buffer until the IDAT stream ends, so a few
      * megabytes of crafted data could claim gigabytes on the way to a
@@ -844,20 +894,18 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
      * around this one decode. */
     {
         const size_t decode_bound = mdkr_stbi_png_allocation_bound(
-            declared_width, declared_height, declared_channels,
-            stbi_is_16_bit_from_memory(file_bytes, (int)file_size), 4,
-            file_size);
+            png->width, png->height, png->channels,
+            stbi_is_16_bit_from_memory(png->file, (int)png->file_size), 4,
+            png->file_size);
         const size_t previous_bound =
             mdkr_stbi_set_allocation_limit(decode_bound);
         pixels = decode_bound != 0u
-                     ? stbi_load_from_memory(file_bytes, (int)file_size,
+                     ? stbi_load_from_memory(png->file, (int)png->file_size,
                                              &width, &height, &channels, 4)
                      : NULL;
         (void)mdkr_stbi_set_allocation_limit(previous_bound);
     }
-    free(file_bytes);
-    /* Header inspection plus the decode. A file refused from its header alone
-     * above cost microseconds and is left to the request's whole time. */
+    png_admitted_drop(png);
     request_lap(req, &req->decode_ns, &phase_mark);
     if (pixels != NULL && width > 0 && height > 0) {
         req->decoded_bytes += (uint64_t)width * (uint64_t)height * 4u;
@@ -865,25 +913,118 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
     if (pixels == NULL) {
         /* stb's own wording, so the log names the actual defect in the PNG
          * rather than this module's guess at it. */
-        exec_release(ex, req, declared_bytes);
+        exec_release(ex, req, png->bytes);
         request_reason(req, stbi_failure_reason());
         return NULL;
     }
     if (width <= 0 || height <= 0) {
         stbi_image_free(pixels);
-        exec_release(ex, req, declared_bytes);
+        exec_release(ex, req, png->bytes);
         request_reason(req, "the image has no pixels");
         return NULL;
     }
 
-    if (width != declared_width || height != declared_height) {
+    if (width != png->width || height != png->height) {
         stbi_image_free(pixels);
-        exec_release(ex, req, declared_bytes);
+        exec_release(ex, req, png->bytes);
         request_reason(req,
                        "the image changed dimensions during bounded decode");
         return NULL;
     }
 
+    *out_width = width;
+    *out_height = height;
+    return pixels;
+}
+
+/* Load one pack PNG into RGBA: admit, reserve its decoded size, decode.
+ *
+ * Returns stbi-owned pixels whose size is held as an in-flight reservation on
+ * the request, or NULL. `out_absent` as exec_admit_png(). A cancelled request
+ * returns NULL with req->status == RESULT_CANCELLED. */
+static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
+                                    int *out_width, int *out_height,
+                                    int *out_absent) {
+    PngAdmitted png;
+
+    if (!exec_admit_png(ex, req, part, &png, out_absent)) return NULL;
+    /* Admitted. Claim its decoded size before the decoder allocates it; this
+     * is also where a request the owner has since retired is abandoned. */
+    if (!exec_reserve(ex, req, png.bytes)) {
+        png_admitted_drop(&png);
+        return NULL;
+    }
+    return exec_decode_png(ex, req, &png, out_width, out_height);
+}
+
+/* A Rice `_rgb` + `_a` pair: both admitted by their headers, then BOTH
+ * decoded sizes reserved in one claim, then both decoded (T12d). Claiming
+ * them one at a time let the worker decode `_rgb` and then wait for room for
+ * `_a` while holding those pixels -- room only the owner's drain can free.
+ * One claim never holds part of a pair while it waits. The pair is one
+ * request, so it is also what may exceed the share when nothing else is in
+ * flight (see the in-flight bound above MDKR_MOD_TEXTURE_INFLIGHT_SHARE).
+ *
+ * Returns the `_rgb` pixels with alpha merged in, still reserved, or NULL
+ * (cancelled, or a rejection recorded). Without a usable `_a` the picture is
+ * opaque, as before: absent, refused by its header, failing to decode, or a
+ * different size, the last two reported. The `_a` half's reservation is
+ * released as soon as it is merged or dropped. */
+static unsigned char *exec_load_rice_pair(Executor *ex, TexRequest *req,
+                                          int *out_width, int *out_height) {
+    PngAdmitted    rgb;
+    PngAdmitted    alpha;
+    int            have_alpha;
+    unsigned char *pixels;
+    unsigned char *alpha_pixels = NULL;
+    int            width = 0;
+    int            height = 0;
+    int            alpha_width = 0;
+    int            alpha_height = 0;
+    size_t         count;
+    size_t         i;
+
+    if (!exec_admit_png(ex, req, 1, &rgb, NULL)) return NULL;
+    have_alpha = req->part_count[2] != 0 &&
+                 exec_admit_png(ex, req, 2, &alpha, NULL);
+    if (!exec_reserve(ex, req, rgb.bytes + (have_alpha ? alpha.bytes : 0u))) {
+        png_admitted_drop(&rgb);
+        if (have_alpha) png_admitted_drop(&alpha);
+        return NULL;
+    }
+    pixels = exec_decode_png(ex, req, &rgb, &width, &height);
+    if (pixels == NULL) {
+        if (have_alpha) {
+            png_admitted_drop(&alpha);
+            exec_release(ex, req, alpha.bytes);
+        }
+        return NULL;
+    }
+    if (have_alpha) {
+        alpha_pixels = exec_decode_png(ex, req, &alpha, &alpha_width,
+                                       &alpha_height);
+    }
+    count = (size_t)width * (size_t)height;
+    if (alpha_pixels != NULL && alpha_width == width &&
+        alpha_height == height) {
+        for (i = 0; i < count; ++i) {
+            pixels[i * 4u + 3u] = alpha_pixels[i * 4u];  /* RED is alpha */
+        }
+    } else {
+        /* No partner, or one that does not line up pixel for pixel. Opaque
+         * is the honest reading; a mismatched half is not alpha for THIS
+         * image and guessing would be worse. */
+        for (i = 0; i < count; ++i) pixels[i * 4u + 3u] = 255u;
+        if (alpha_pixels != NULL) {
+            request_reason(req,
+                           "its _a half is a different size from its _rgb "
+                           "half; the texture is opaque");
+        }
+    }
+    if (alpha_pixels != NULL) {
+        stbi_image_free(alpha_pixels);
+        exec_release(ex, req, alpha.bytes);
+    }
     *out_width = width;
     *out_height = height;
     return pixels;
@@ -919,43 +1060,7 @@ static void request_execute(Executor *ex, TexRequest *req) {
         if (req->rice_all) {
             pixels = exec_load_png(ex, req, 0, &width, &height, NULL);
         } else {
-            pixels = exec_load_png(ex, req, 1, &width, &height, NULL);
-            if (pixels != NULL) {
-                const size_t   count = (size_t)width * (size_t)height;
-                const size_t   own = count * 4u;
-                int            alpha_width = 0;
-                int            alpha_height = 0;
-                unsigned char *alpha = req->part_count[2] == 0 ? NULL :
-                    exec_load_png(ex, req, 2, &alpha_width, &alpha_height,
-                                  NULL);
-                size_t         i;
-                if (req->status == RESULT_CANCELLED) {
-                    stbi_image_free(pixels);
-                    exec_release(ex, req, own);
-                    pixels = NULL;
-                } else if (alpha != NULL && alpha_width == width &&
-                           alpha_height == height) {
-                    for (i = 0; i < count; ++i) {
-                        pixels[i * 4u + 3u] = alpha[i * 4u];  /* RED is alpha */
-                    }
-                } else {
-                    /* No partner, or one that does not line up pixel for
-                     * pixel. Opaque is the honest reading; a mismatched half
-                     * is not alpha for THIS image and guessing would be
-                     * worse. */
-                    for (i = 0; i < count; ++i) pixels[i * 4u + 3u] = 255u;
-                    if (alpha != NULL) {
-                        request_reason(req,
-                                       "its _a half is a different size from "
-                                       "its _rgb half; the texture is opaque");
-                    }
-                }
-                if (alpha != NULL) {
-                    stbi_image_free(alpha);
-                    exec_release(ex, req,
-                                 (size_t)alpha_width * (size_t)alpha_height * 4u);
-                }
-            }
+            pixels = exec_load_rice_pair(ex, req, &width, &height);
         }
         if (pixels == NULL && req->status != RESULT_CANCELLED) {
             /* A file that vanished between indexing and use reports nothing
@@ -1237,6 +1342,8 @@ static int SDLCALL worker_main(void *opaque) {
         shared->busy = 0;
         SDL_CondBroadcast(shared->wake_owner);
     }
+    shared->exited = 1;
+    SDL_CondBroadcast(shared->wake_owner);
     SDL_UnlockMutex(shared->lock);
     return 0;
 }
@@ -1964,6 +2071,88 @@ int mdkr_mod_texture_store_test_wait_idle(void) {
     }
     SDL_UnlockMutex(s_shared->lock);
     return 1;
+#else
+    return 0;
+#endif
+}
+
+#if STORE_HAS_WORKER
+/* Waits on wake_owner, under the lock, until `done` says so or `timeout_ms`
+ * passes. Every change these seams watch is broadcast on wake_owner. */
+typedef int (*SharedTest)(const LoaderShared *shared);
+
+static int shared_wait_for(SharedTest done, uint32_t timeout_ms) {
+    const Uint32 start = SDL_GetTicks();
+    int          result;
+
+    if (s_shared == NULL) return 0;
+    SDL_LockMutex(s_shared->lock);
+    for (;;) {
+        const Uint32 spent = SDL_GetTicks() - start;
+        result = done(s_shared);
+        if (result || spent >= timeout_ms) break;
+        (void)SDL_CondWaitTimeout(s_shared->wake_owner, s_shared->lock,
+                                  timeout_ms - spent);
+    }
+    SDL_UnlockMutex(s_shared->lock);
+    return result;
+}
+
+static int shared_is_idle(const LoaderShared *shared) {
+    return !shared->busy && shared->req_head == NULL;
+}
+
+static int shared_is_room_blocked(const LoaderShared *shared) {
+    return shared->room_blocked;
+}
+
+static int shared_has_exited(const LoaderShared *shared) {
+    return shared->exited;
+}
+#endif
+
+int mdkr_mod_texture_store_test_wait_idle_for(uint32_t timeout_ms) {
+#if STORE_HAS_WORKER
+    if (s_shared == NULL) return 0;
+    loader_submit();
+    return shared_wait_for(shared_is_idle, timeout_ms);
+#else
+    (void)timeout_ms;
+    return 0;
+#endif
+}
+
+int mdkr_mod_texture_store_test_wait_room_blocked(uint32_t timeout_ms) {
+#if STORE_HAS_WORKER
+    return shared_wait_for(shared_is_room_blocked, timeout_ms);
+#else
+    (void)timeout_ms;
+    return 0;
+#endif
+}
+
+int mdkr_mod_texture_store_test_stop_worker(uint32_t timeout_ms) {
+#if STORE_HAS_WORKER
+    if (s_shared == NULL) return 0;
+    SDL_LockMutex(s_shared->lock);
+    s_shared->stop = 1;
+    SDL_CondBroadcast(s_shared->wake_worker);
+    SDL_UnlockMutex(s_shared->lock);
+    return shared_wait_for(shared_has_exited, timeout_ms);
+#else
+    (void)timeout_ms;
+    return 0;
+#endif
+}
+
+size_t mdkr_mod_texture_store_test_inflight_peak(void) {
+#if STORE_HAS_WORKER
+    size_t peak;
+    if (s_shared == NULL) return 0;
+    SDL_LockMutex(s_shared->lock);
+    peak = s_shared->inflight_peak;
+    SDL_UnlockMutex(s_shared->lock);
+    return peak;
 #else
     return 0;
 #endif
