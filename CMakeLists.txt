@@ -521,6 +521,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/gpu_diagnostics.c # exact Workshop comparison device identity
     ${CMAKE_SOURCE_DIR}/platform/input_consumption_trace.c # tick-consumed pad trace
     ${CMAKE_SOURCE_DIR}/platform/input_latency_census.c # input -> commit -> present budget (M4)
+    ${CMAKE_SOURCE_DIR}/platform/host_sched_probe.c # host scheduling evidence for frame-wait rows
     ${CMAKE_SOURCE_DIR}/platform/session/session_core.c # shared launcher/session reducer
     ${CMAKE_SOURCE_DIR}/platform/session/session_bridge.c # versioned engine session ABI
     ${CMAKE_SOURCE_DIR}/platform/online/lobby_core.c # launcher-owned private-room reducer

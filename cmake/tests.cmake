@@ -2496,6 +2496,15 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform)
     add_test(NAME audio_sink_evidence COMMAND mdkr_audio_sink_evidence_test)
 
+    # Frame-wait attribution's host counters (T12c): running totals in
+    # nanoseconds, with the Mach-unit conversion pinned both ways.
+    add_executable(mdkr_host_sched_probe_test
+        ${CMAKE_SOURCE_DIR}/tests/test_host_sched_probe.c
+        ${CMAKE_SOURCE_DIR}/platform/host_sched_probe.c)
+    target_include_directories(mdkr_host_sched_probe_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    add_test(NAME host_sched_probe COMMAND mdkr_host_sched_probe_test)
+
     add_executable(mdkr_audio_volume_test
         ${CMAKE_SOURCE_DIR}/tests/test_audio_volume.c
         ${CMAKE_SOURCE_DIR}/platform/audio_volume.c)

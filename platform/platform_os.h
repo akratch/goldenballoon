@@ -233,6 +233,10 @@ int  platform_present_occlusion_visible_bit(void);
  * uses it to keep a covered-window drawable timeout off the fatal recovery
  * counter so a window left covered recovers when shown instead of exiting. */
 int  platform_present_occlusion_visible_bit_honest(void);
+/* -[NSApplication isActive]: 1 when this app is the frontmost application, 0
+ * when it is not, -1 unknown/other-OS. Diagnostic rows only (frame-wait
+ * attribution, gfx_pc_dkr.c), which compare frontmost and background runs. */
+int  platform_app_active_honest(void);
 void platform_present_occlusion_kick(void);
 /* Install the process-global NSWindow.occlusionState shim (macOS; no-op
  * elsewhere). Idempotent. The app shell must call it after ITS SDL_Init:

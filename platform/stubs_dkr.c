@@ -524,6 +524,9 @@ static s32          s_viFieldsPending  = 0;   /* retrace fields available to dra
  * audio time is credited only when the resulting fixed game ticket completes.
  * Carry the rebase to that ticket exactly once. */
 static bool         s_audioRebasePending = false;
+/* Frame-wait attribution (gfx_dkr_wait_*): when the game pass that follows
+ * the host boundary began. 0 whenever the diagnostic rows are off. */
+static uint64_t     s_waitGameStart = 0;
 
 static bool test_delayed_endpoint_replay(void) {
     if (s_testDelayedEndpointReplay < 0) {
@@ -691,6 +694,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             unsigned ticks_due;
             unsigned trace_fields = 0;
             int oracle_update_fields = 0;
+            /* The game pass ends where the host boundary begins. */
+            gfx_dkr_wait_end(GFX_DKR_WAIT_GAME, s_waitGameStart);
+            s_waitGameStart = 0;
             const bool oracle_variable_ticket =
                 platform_oracle_update_fields(
                     (uint64_t)g_simTickCounter, &oracle_update_fields) != 0;
@@ -1005,13 +1011,17 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * a real hitch does. Inert unless MDKR_TEST_MAINLOOP_STALL_NS is
              * set; it moves host wall time only, never simulation state. */
             dkr_audio_test_mainloop_stall();
-            dkr_audio_advance_fields(
-                oracle_variable_ticket
-                    ? (unsigned)oracle_update_fields
-                    : present_sched_tick_fields(),
-                s_audioRebasePending);
-            s_audioRebasePending = false;
-            dkr_audio_service_tick();
+            {
+                const uint64_t wait_audio = gfx_dkr_wait_begin();
+                dkr_audio_advance_fields(
+                    oracle_variable_ticket
+                        ? (unsigned)oracle_update_fields
+                        : present_sched_tick_fields(),
+                    s_audioRebasePending);
+                s_audioRebasePending = false;
+                dkr_audio_service_tick();
+                gfx_dkr_wait_end(GFX_DKR_WAIT_AUDIO, wait_audio);
+            }
 
             /* THE LAST MOMENT INPUT CAN STILL REACH THIS TICK.
              *
@@ -1029,7 +1039,11 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
              * one published pad sample per authored tick. The diagnostic
              * MDKR_INPUT_JIT=0 opt-out is the only path that skips it.
              */
-            platform_input_sample_late();
+            {
+                const uint64_t wait_events = gfx_dkr_wait_begin();
+                platform_input_sample_late();
+                gfx_dkr_wait_end(GFX_DKR_WAIT_EVENTS, wait_events);
+            }
 
             const bool exit_requested = platform_exit_requested();
             bool ticket_issued = false;
@@ -1063,6 +1077,8 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             s_viFieldsPending = mdkr_pacing_queue_refill(
                 s_viFieldsPending, 1, 8);
             present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
+            /* The next game pass starts as the boundary returns. */
+            s_waitGameStart = gfx_dkr_wait_begin();
         }
         s_viFieldsPending--;
         if (msg) *msg = (OSMesg)(intptr_t)OS_SC_RETRACE_MSG;

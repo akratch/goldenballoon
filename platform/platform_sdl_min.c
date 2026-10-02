@@ -903,7 +903,15 @@ static void sdl_gl_backpressure_shutdown(void) {
 static void sdl_apply_gl_present_policy(void) {
     const bool automation = g_headlessFrames >= 0;
     const bool tearing = !automation && present_sched_allow_tearing();
-    const int requested = automation ? 0 : (tearing ? -1 : 1);
+    /* MDKR_TEST_GL_SWAP_INTERVAL=0|1: a bounded measurement run may ask for
+     * the player's vsync'd swap (1) instead of automation's uncapped one, so
+     * the frame-wait attribution can compare the two. Test-only. */
+    const char *swap_test = getenv("MDKR_TEST_GL_SWAP_INTERVAL");
+    const int requested =
+        swap_test != NULL && (strcmp(swap_test, "0") == 0 ||
+                              strcmp(swap_test, "1") == 0)
+            ? atoi(swap_test)
+            : (automation ? 0 : (tearing ? -1 : 1));
     int result;
     int effective;
 
@@ -997,7 +1005,25 @@ static void platform_macos_install_occlusion_shim(void);
 static int platform_macos_app_is_hidden(void);
 #endif
 
+/* MDKR_TEST_FOREGROUND=1, together with MDKR_TEST_VISIBLE_HEADLESS=1: a
+ * bounded run whose window behaves like a Finder launch -- a regular,
+ * activated, frontmost application -- instead of the no-focus-steal
+ * background app every other automation run is. It exists for the frame-wait
+ * attribution's frontmost arm (tools/measure_texture_pack_stalls.py), which
+ * has to tell host effects on a background test window apart from what a
+ * player's frontmost window sees. It DOES take keyboard focus for the run. */
+static int sdl_test_foreground_requested(void) {
+    const char *foreground = getenv("MDKR_TEST_FOREGROUND");
+    const char *visible = getenv("MDKR_TEST_VISIBLE_HEADLESS");
+    return foreground != NULL && strcmp(foreground, "1") == 0 &&
+           visible != NULL && strcmp(visible, "1") == 0 &&
+           getenv("MDKR64_HIDDEN") == NULL;
+}
+
 static int sdl_automation_surface_requested(void) {
+    if (sdl_test_foreground_requested()) {
+        return 0;
+    }
     return g_headlessFrames >= 0 || g_headlessTicks >= 0 ||
            getenv("MDKR64_HIDDEN") != NULL;
 }
@@ -1249,7 +1275,17 @@ int platform_sdl_init(void) {
     }
 #endif /* MDKR_WEBGPU_BACKEND */
 
-    return sdl_init_gl(base_flags);
+    {
+        const int result = sdl_init_gl(base_flags);
+#if defined(__APPLE__)
+        /* The WebGPU branch activates at window creation; GL did not need
+         * to until the frontmost test arm asked for it. */
+        if (result == 0 && sdl_test_foreground_requested()) {
+            platform_macos_activate_app("test foreground run (GL)");
+        }
+#endif
+        return result;
+    }
 #endif /* __EMSCRIPTEN__ */
 }
 
@@ -4053,10 +4089,18 @@ void platform_sdl_present(void) {
         (void)platformOverlayRender();
 #endif
         sdl_gl_resource_heartbeat("before-swap", 0);
-        SDL_GL_SwapWindow(s_window);
+        {
+            const uint64_t wait_start = gfx_dkr_wait_begin();
+            SDL_GL_SwapWindow(s_window);
+            gfx_dkr_wait_end(GFX_DKR_WAIT_SWAP, wait_start);
+        }
         g_surfaceFrameCounter++;
 #ifndef __EMSCRIPTEN__
-        sdl_gl_backpressure_after_swap();
+        {
+            const uint64_t wait_start = gfx_dkr_wait_begin();
+            sdl_gl_backpressure_after_swap();
+            gfx_dkr_wait_end(GFX_DKR_WAIT_FENCE, wait_start);
+        }
 #endif
         sdl_gl_resource_heartbeat("after-swap", 0);
     }
@@ -4607,7 +4651,25 @@ static HANDLE pace_win_timer(void) {
 }
 #endif /* _WIN32 && !__EMSCRIPTEN__ */
 
+static uint64_t pace_sleep_until_impl(uint64_t target_ns);
+
+/* Frame-wait attribution (gfx_dkr_wait_*): one cached flag test when the
+ * diagnostic rows are off. When on, it records how long the pacer slept, what
+ * it asked for, and how late past its target it woke -- the oversleep that
+ * would say the host timer, not the frame, ate the time. */
 static uint64_t pace_sleep_until(uint64_t target_ns) {
+    const uint64_t wait_start = gfx_dkr_wait_begin();
+    const uint64_t entry = wait_start != 0u ? pace_host_ns() : 0u;
+    const uint64_t woke = pace_sleep_until_impl(target_ns);
+    if (wait_start != 0u) {
+        gfx_dkr_wait_note_pace(
+            wait_start, target_ns > entry ? target_ns - entry : 0u,
+            woke > target_ns ? woke - target_ns : 0u);
+    }
+    return woke;
+}
+
+static uint64_t pace_sleep_until_impl(uint64_t target_ns) {
     uint64_t now = pace_host_ns();
 #ifdef __EMSCRIPTEN__
     /* The browser cannot block a thread; suspend to requestAnimationFrame (via
@@ -5079,6 +5141,21 @@ static void platform_macos_activate_app(const char *why) {
     fprintf(stderr, "[MACOS-ACTIVATE] %s\n", why);
 }
 
+int platform_app_active_honest(void) {
+    Class cls = objc_getClass("NSApplication");
+    void *app;
+    if (cls == NULL) {
+        return -1;
+    }
+    app = ((void *(*)(Class, SEL))objc_msgSend)(
+        cls, sel_registerName("sharedApplication"));
+    if (app == NULL) {
+        return -1;
+    }
+    return ((signed char (*)(void *, SEL))objc_msgSend)(
+               app, sel_registerName("isActive")) != 0 ? 1 : 0;
+}
+
 void platform_present_occlusion_kick(void) {
     static int activated;
     SDL_PumpEvents();
@@ -5095,6 +5172,9 @@ int platform_present_occlusion_visible_bit(void) {
     return -1;
 }
 int platform_present_occlusion_visible_bit_honest(void) {
+    return -1;
+}
+int platform_app_active_honest(void) {
     return -1;
 }
 void platform_present_occlusion_kick(void) {
@@ -6266,7 +6346,13 @@ void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int 
  */
 static void platform_frame_sync_impl(int swap, int count_present) {
     int renderer_recovered = 0;
-    platform_input_pump();   /* pump events + build pad state before retrace */
+    {
+        /* Timed for the frame-wait rows (gfx_dkr_wait_*); a flag test when
+         * they are off. */
+        const uint64_t wait_events = gfx_dkr_wait_begin();
+        platform_input_pump();   /* pump events + build pad state before retrace */
+        gfx_dkr_wait_end(GFX_DKR_WAIT_EVENTS, wait_events);
+    }
     if (platform_exit_requested()) {
         return;
     }

@@ -94,6 +94,7 @@
 #include "present_sched.h"   /* presentation-replay arming seam */
 #include "mod_texture_key.h"     /* the digest a pack author names a texture by */
 #include "mod_texture_store.h"
+#include "host_sched_probe.h"  /* frame-wait rows: was the thread off-core? */
 #include "rice_crc.h"   /* Rice/GLideN64 texture identity */
 #include "gfx_uniforms.h"
 #include "gfx_pc_dkr.h"
@@ -2867,6 +2868,10 @@ typedef struct DkrTexpackTotals {
                                  * frame because the upload budget was spent */
     uint64_t unbudgeted;        /* resident replacements re-uploaded outside
                                  * the budget, after a level load or toggle */
+    /* Frame-wait attribution (gfx_dkr_wait_*), rows only. */
+    uint64_t wait_ns[GFX_DKR_WAIT_COUNT];
+    uint64_t pace_calls;
+    uint64_t pace_requested_ns; /* what the pacer asked to sleep */
 } DkrTexpackTotals;
 
 static int s_texpack_timing = -1;   /* -1 until first asked */
@@ -2880,6 +2885,10 @@ static uint64_t s_texpack_last_present_ns;
 static uint64_t s_texpack_last_cpu_ns;
 static uint64_t s_texpack_gen_frames;
 static uint64_t s_texpack_gen_worst_ns;
+/* Frame-wait attribution: per-row state that is not a running total. */
+static uint64_t s_texpack_pace_late_max_ns; /* latest wake past target */
+static uint64_t s_texpack_row_ns;           /* the previous row's own print */
+static MdkrHostSchedSample s_texpack_host_base;
 
 static uint64_t dkr_texpack_clock_ns(void) {
     struct timespec ts;
@@ -2999,6 +3008,44 @@ static void dkr_texpack_pump(void) {
     mdkr_mod_texture_store_pump(NULL, dkr_texpack_clock_ns);
 }
 
+/* ---- Frame-wait attribution --------------------------------------------- *
+ *
+ * T12a found 35-75 ms frames, with and without a pack, on both renderers and
+ * only under real-time pacing, whose thread ran for a few milliseconds: the
+ * frame WAITED. These brackets put a number on every place the real-time loop
+ * can wait (gfx_pc_dkr.h lists them), so a long frame can be read as "the
+ * pacer overslept by 40 ms" or "the swap blocked" or "nothing we called
+ * blocked: the thread was off-core", the last told apart by the host counters
+ * the row also carries (host_sched_probe.h). Rows only: the census does not
+ * need them, and an ordinary run pays one cached flag test per site. */
+static inline bool dkr_wait_timing_on(void) {
+    return dkr_texpack_timing_on() && s_texpack_rows;
+}
+
+uint64_t gfx_dkr_wait_begin(void) {
+    return dkr_wait_timing_on() ? dkr_texpack_clock_ns() : 0u;
+}
+
+void gfx_dkr_wait_end(GfxDkrWait which, uint64_t start) {
+    uint64_t now;
+    if (start == 0u || (unsigned)which >= (unsigned)GFX_DKR_WAIT_COUNT) {
+        return;
+    }
+    now = dkr_texpack_clock_ns();
+    if (now > start) s_texpack.wait_ns[which] += now - start;
+}
+
+void gfx_dkr_wait_note_pace(uint64_t start, uint64_t requested_ns,
+                            uint64_t late_ns) {
+    if (start == 0u) return;
+    gfx_dkr_wait_end(GFX_DKR_WAIT_PACE, start);
+    s_texpack.pace_calls++;
+    s_texpack.pace_requested_ns += requested_ns;
+    if (late_ns > s_texpack_pace_late_max_ns) {
+        s_texpack_pace_late_max_ns = late_ns;
+    }
+}
+
 /* 0 when off; hand it to dkr_texpack_add(), which reads no clock either. */
 static inline uint64_t dkr_texpack_now(void) {
     return dkr_texpack_timing_on() ? dkr_texpack_clock_ns() : 0u;
@@ -3019,6 +3066,14 @@ static inline void dkr_texpack_add(uint64_t *bucket, uint64_t start) {
     (unsigned long long)((store.field - store_base->field) / 1000u)
 #define DKR_TEXPACK_US(field) \
     (unsigned long long)((s_texpack.field - base->field) / 1000u)
+#define DKR_WAIT_US(which) DKR_TEXPACK_US(wait_ns[GFX_DKR_WAIT_##which])
+#define DKR_HOST_DIFF(field) \
+    (unsigned long long)(host.field >= s_texpack_host_base.field \
+                             ? host.field - s_texpack_host_base.field : 0u)
+#define DKR_HOST_US(field) \
+    (unsigned long long)((host.field >= s_texpack_host_base.field \
+                              ? host.field - s_texpack_host_base.field : 0u) / \
+                         1000u)
 
 void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
     MdkrModTextureResolveTiming store;
@@ -3030,6 +3085,8 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
     uint64_t dt;
     uint64_t cpu_now;
     uint64_t cpu;
+    MdkrHostSchedSample host;
+    uint64_t row_start;
 
     if (!dkr_texpack_timing_on()) return;
     now = dkr_texpack_clock_ns();
@@ -3046,13 +3103,26 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
     s_texpack_last_cpu_ns = cpu_now;
     mdkr_mod_texture_timing_totals(&store);
     mdkr_mod_texture_memory_stats(&memory);
+    mdkr_host_sched_sample(&host);
     /* dtUs is present-to-present wall time, so this row's work is the work
      * that delayed this present; cpuUs is how much of it this thread spent
      * running. walkUs contains hashUs, resolveUs and both upload terms.
      * readUs and decodeUs are charged when a texture is installed, wherever
      * it was decoded: inside resolveUs under the INLINE loader, inside pumpUs
      * under BUDGET, and on the worker (workerUs, not this thread) otherwise.
-     * pending is the number queued or decoding at the end of the frame. */
+     * pending is the number queued or decoding at the end of the frame.
+     *
+     * The wait split (gfx_dkr_wait_*) follows. gameUs is the game pass and
+     * contains walkUs, endUs, startUs, acquireUs, submitUs and presentUs;
+     * paceUs, eventsUs, swapUs, fenceUs and audioUs are the host boundary's,
+     * and rowUs is the previous row's own print. paceReqUs is what the pacer
+     * asked to sleep and paceLateUs the latest it woke past its target. The
+     * host counters are process-wide deltas (host_sched_probe.h): procCpuUs
+     * against runnableUs says whether a thread was ready and not given a
+     * core; prio is this thread's priority now, visible/active the window's
+     * honest occlusion bit and whether the app is frontmost (-1 unknown).
+     * tUs is CLOCK_MONOTONIC, for lining rows up with an outside sampler. */
+    row_start = dkr_texpack_clock_ns();
     fprintf(stderr,
             "[TEXPACK-FRAME] frame=%d tick=%d swap=%d dtUs=%llu cpuUs=%llu "
             "walkUs=%llu endUs=%llu misses=%llu hashUs=%llu resolves=%llu "
@@ -3062,7 +3132,12 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             "overrideBytes=%llu overrideUploadUs=%llu romUploads=%llu "
             "romUploadUs=%llu pumpUs=%llu workerUs=%llu queued=%llu "
             "installed=%llu discarded=%llu refills=%llu deferred=%llu "
-            "unbudgeted=%llu pending=%llu\n",
+            "unbudgeted=%llu pending=%llu tUs=%llu gameUs=%llu startUs=%llu "
+            "acquireUs=%llu submitUs=%llu presentUs=%llu paceUs=%llu "
+            "paceReqUs=%llu paceLateUs=%llu paceCalls=%llu eventsUs=%llu "
+            "swapUs=%llu fenceUs=%llu audioUs=%llu rowUs=%llu "
+            "procCpuUs=%llu runnableUs=%llu lowQosUs=%llu pageins=%llu "
+            "vcsw=%llu ivcsw=%llu prio=%d visible=%d active=%d\n",
             frame, tick, swapped ? 1 : 0, (unsigned long long)(dt / 1000u),
             (unsigned long long)(cpu / 1000u), DKR_TEXPACK_US(walk_ns),
             DKR_TEXPACK_US(end_ns),
@@ -3081,9 +3156,30 @@ void gfx_dkr_texture_pack_timing_frame(int frame, int tick, int swapped) {
             DKR_TEXPACK_STORE_DIFF(queued), DKR_TEXPACK_STORE_DIFF(installed),
             DKR_TEXPACK_STORE_DIFF(discarded), DKR_TEXPACK_DIFF(refills),
             DKR_TEXPACK_DIFF(deferred), DKR_TEXPACK_DIFF(unbudgeted),
-            (unsigned long long)memory.pending);
+            (unsigned long long)memory.pending,
+            (unsigned long long)(now / 1000u), DKR_WAIT_US(GAME),
+            DKR_WAIT_US(START), DKR_WAIT_US(ACQUIRE), DKR_WAIT_US(SUBMIT),
+            DKR_WAIT_US(PRESENT), DKR_WAIT_US(PACE),
+            DKR_TEXPACK_US(pace_requested_ns),
+            (unsigned long long)(s_texpack_pace_late_max_ns / 1000u),
+            DKR_TEXPACK_DIFF(pace_calls), DKR_WAIT_US(EVENTS),
+            DKR_WAIT_US(SWAP), DKR_WAIT_US(FENCE), DKR_WAIT_US(AUDIO),
+            (unsigned long long)(s_texpack_row_ns / 1000u),
+            DKR_HOST_US(cpu_ns), DKR_HOST_US(runnable_ns),
+            DKR_HOST_US(low_qos_cpu_ns), DKR_HOST_DIFF(pageins),
+            DKR_HOST_DIFF(voluntary_switches),
+            DKR_HOST_DIFF(involuntary_switches), host.thread_priority,
+            platform_present_occlusion_visible_bit_honest(),
+            platform_app_active_honest());
     s_texpack_frame_base = s_texpack;
     s_texpack_store_frame_base = store;
+    s_texpack_host_base = host;
+    s_texpack_pace_late_max_ns = 0u;
+    /* Charged to the next row: it is wall time that row's interval holds. */
+    {
+        const uint64_t row_end = dkr_texpack_clock_ns();
+        s_texpack_row_ns = row_end > row_start ? row_end - row_start : 0u;
+    }
 }
 
 /* The census half: one row per completed level generation, labelled like
@@ -3135,6 +3231,9 @@ static void dkr_texpack_generation_report(bool emit, int level, int players,
 #undef DKR_TEXPACK_STORE_DIFF
 #undef DKR_TEXPACK_STORE_US
 #undef DKR_TEXPACK_US
+#undef DKR_WAIT_US
+#undef DKR_HOST_DIFF
+#undef DKR_HOST_US
 
 /* Asks the store again for a texture an entry was told was still loading, in
  * the miss path's order: the digest first, and the Rice identity only once the
@@ -9067,12 +9166,15 @@ void gfx_finish_modern_character_gpu_timing(
 }
 
 bool gfx_start_frame(uint64_t authored_tick) {
+    const uint64_t wait_start = gfx_dkr_wait_begin();
     mdkr_web_startup_phase("gfx-backend-before");
     if (gfx_rapi == NULL || gfx_rapi->start_frame == NULL ||
         !gfx_rapi->start_frame()) {
+        gfx_dkr_wait_end(GFX_DKR_WAIT_START, wait_start);
         mdkr_web_startup_phase("gfx-backend-refused");
         return false;
     }
+    gfx_dkr_wait_end(GFX_DKR_WAIT_START, wait_start);
     mdkr_web_startup_phase("gfx-backend-after");
     /* Pack textures finished off the frame are installed here, once per
      * real walk and before any bind can ask for them (issue #66). */

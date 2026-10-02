@@ -29,6 +29,7 @@
 #include "modern_character_gpu_timing.h"
 #include "gfx_font_registry.h"
 #include "gfx_shadow_frame.h" /* GfxShadowReplayViewProjection */
+#include "gfx_frame_wait.h"  /* gfx_dkr_wait_*: the rest of the [TEXPACK-FRAME] row */
 
 #ifdef __cplusplus
 extern "C" {

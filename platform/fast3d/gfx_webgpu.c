@@ -49,6 +49,7 @@
 #endif
 #include "present_sched.h"
 #include "viewport_route_cache.h"
+#include "gfx_frame_wait.h"      /* acquire/submit/present in the frame-wait rows */
 
 /* platform/fast3d/gfx_pc_dkr.c — declared rather than included: gfx_pc_dkr.h
  * pulls in the F3DDKR/gbi headers, which redefine this file's GfxDimensions. */
@@ -4489,6 +4490,7 @@ static void wgpu_end_frame(void) {
     bool acquire_attempted = false;
     if (!hold_present) {
         const uint64_t acquire_begin_ns = wgpu_monotonic_ns();
+        const uint64_t wait_acquire = gfx_dkr_wait_begin();
         if (!platform_sdl_surface_presentable()) {
             /*
              * OCCLUSION-HANG GUARD (Part A). platform_macos_install_occlusion_
@@ -4565,6 +4567,7 @@ static void wgpu_end_frame(void) {
             }
         }
         acquire_block_ns = wgpu_monotonic_ns() - acquire_begin_ns;
+        gfx_dkr_wait_end(GFX_DKR_WAIT_ACQUIRE, wait_acquire);
         acquire_attempted = true;
         WGPUSurfaceGetCurrentTextureStatus actual_status = st.status;
         WGPUSurfaceGetCurrentTextureStatus injected_status = st.status;
@@ -5144,7 +5147,9 @@ static void wgpu_end_frame(void) {
             "to continue from the last persisted save.");
         return;
     }
+    const uint64_t wait_submit = gfx_dkr_wait_begin();
     bool submitted = wgpu_submit_commands(s_queue, 1, &cmd);
+    gfx_dkr_wait_end(GFX_DKR_WAIT_SUBMIT, wait_submit);
     wgpu_character_gpu_timing_submitted(submitted);
     wgpu_skinned_visibility_submitted(submitted);
     if (submitted) {
@@ -5188,7 +5193,11 @@ static void wgpu_end_frame(void) {
          * wgpuSurfacePresent; the browser canvas auto-presents when the frame's
          * JS task yields (requestAnimationFrame), and emscripten's binding
          * aborts on an explicit present — so the browser side is a no-op. */
-        WGPU_COMPAT_PRESENT(s_surface);
+        {
+            const uint64_t wait_present = gfx_dkr_wait_begin();
+            WGPU_COMPAT_PRESENT(s_surface);
+            gfx_dkr_wait_end(GFX_DKR_WAIT_PRESENT, wait_present);
+        }
         s_gpu_surface_presents++;
         g_surfaceFrameCounter++;
         /* Queue-depth latency proxy: the admission counter this backend already
