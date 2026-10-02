@@ -975,6 +975,9 @@ int main(int argc, char **argv) {
         }
         REQUIRE(noResidue(pickMods));
 #ifndef _WIN32
+        // Its own mods folder: where access is not denied (root), these
+        // picks install, which proves nothing either way.
+        const auto lockedMods = root.path / "locked-mods";
         const auto locked = input / "locked";
         REQUIRE(fs::create_directories(locked / "LockedFolder"));
         REQUIRE(writeZip(locked / "Locked.zip", "pack.ini", "[pack]\nname=Locked\n"));
@@ -983,9 +986,9 @@ int main(int argc, char **argv) {
         (void)fs::symlink_status(locked / "Locked.zip", denied);
         PackInstallResult zipResult, folderResult;
         {
-            auto zip = PreparedPackInstall::copyPack(locked / "Locked.zip", pickMods);
+            auto zip = PreparedPackInstall::copyPack(locked / "Locked.zip", lockedMods);
             zipResult = zip.finalize();
-            auto folder = PreparedPackInstall::copyPack(locked / "LockedFolder", pickMods);
+            auto folder = PreparedPackInstall::copyPack(locked / "LockedFolder", lockedMods);
             folderResult = folder.finalize();
         }
         fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
@@ -999,8 +1002,8 @@ int main(int argc, char **argv) {
             REQUIRE(zipResult.message.find("Cannot read the selected pack") != std::string::npos);
             REQUIRE(folderResult.message.find("Cannot read the selected pack") !=
                     std::string::npos);
+            REQUIRE(noResidue(lockedMods));
         }
-        REQUIRE(noResidue(pickMods));
 #endif
     }
     // A file whose name has no UTF-8 spelling (Windows: not valid UTF-16;
