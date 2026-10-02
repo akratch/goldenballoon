@@ -61,6 +61,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # tests/check_array_bounds_sweep.py's SHAPE_TRIAGE exactly like game/src's.
 SCAN_DIRS = ["game/src", "platform"]
 
+# Scope: every C file, sources and headers alike. Static inline helpers and
+# parsers live in headers too (bounded_json.h, custom_track_table.h), and a
+# filename exception for one of them left the rest unswept. C++ is out of
+# scope: this is a C brace matcher, and namespaces, classes, lambdas and
+# `noexcept` bodies defeat its function boundaries, so .cpp/.mm sources and C++
+# headers (recognised by content, since the two share directories) are not
+# read. The C++ app shell they make up has its own unit tests and runs under
+# the sanitizer lanes. SELFTEST pins a header instance, so dropping headers
+# from the walk fails it.
+CXX_HEADER = re.compile(
+    r"\bnamespace\b|\btemplate\s*<|\bnoexcept\b|\bstd::|^\s*class\s+\w|"
+    r"#\s*include\s*<(?:c[a-z]+|string|string_view|vector|array|memory|atomic|"
+    r"mutex|functional|optional|utility|algorithm|chrono|thread|map|"
+    r"unordered_map|span|limits|type_traits)>", re.M)
+
 # The parser must keep finding these. Each is a triaged instance documented in
 # docs/OPEN_ITEMS.md; if the enumeration stops producing one, the sweep is broken.
 SELFTEST = [
@@ -82,6 +97,9 @@ SELFTEST = [
     # Both are triaged in tests/check_array_bounds_sweep.py's SHAPE_TRIAGE.
     ("bare-pointer", "platform/stubs_dkr.c", "osContGetReadData:pad"),
     ("shift-count", "platform/fast3d/gfx_pc_dkr.c", "dkr_generate_cc:MIPS-MASK-IDIOM"),
+    # Header pins: C headers are in scope by content, not by filename.
+    ("bare-pointer", "platform/bounded_json.h", "json_parse_string:output"),
+    ("bare-pointer", "platform/custom_track_table.h", "mdkr_custom_track_extend_table:output"),
 ]
 
 IDENT = r"[A-Za-z_]\w*"
@@ -440,18 +458,37 @@ SWEEPS = {
 PARSE_ERRORS = 0
 
 
+def in_scope(name, raw):
+    """A C source, or a header that is not C++ (see CXX_HEADER)."""
+    if name.endswith(".c"):
+        return True
+    return name.endswith(".h") and not CXX_HEADER.search(strip_comments(raw))
+
+
+def directive_lines(text):
+    """Indices of the lines that belong to a preprocessor directive, including
+    a #define's backslash-continued body: a macro body's closing brace in
+    column 0 is not a function's."""
+    inside, out = False, set()
+    for index, line in enumerate(text.split("\n")):
+        if inside or line.lstrip().startswith("#"):
+            out.add(index)
+            inside = line.rstrip().endswith("\\")
+    return out
+
+
 def collect(which):
     out = []
     for d in SCAN_DIRS:
         for dirpath, _dirs, files in os.walk(os.path.join(ROOT, d)):
             for f in sorted(files):
-                # The shared JSON reader moved from save_container.c into a
-                # header; retain its existing bounds coverage after extraction.
-                if not f.endswith(".c") and f != "bounded_json.h":
+                if not f.endswith((".c", ".h")):
                     continue
                 path = os.path.join(dirpath, f)
                 rel = os.path.relpath(path, ROOT)
                 raw = open(path, errors="replace").read()
+                if not in_scope(f, raw):
+                    continue
                 text = select_arms(strip_comments(raw))
                 # FAILS CLOSED. Every top-level definition ends at a `}` in column
                 # 0, so the count of those lines is an upper bound on the number of
@@ -462,7 +499,9 @@ def collect(which):
                 # reported error and not an "all clear".
                 # A function's closer is a line that is exactly `}`; a struct or
                 # array initialiser's is `} Name;` or `};`.
-                closers = sum(1 for ln in text.split("\n") if ln.rstrip() == "}")
+                skip = directive_lines(text)
+                closers = sum(1 for index, ln in enumerate(text.split("\n"))
+                              if ln.rstrip() == "}" and index not in skip)
                 found = sum(1 for _ in functions(text))
                 if found < closers:
                     print("PARSE SHORTFALL: %s -- %d definition(s) parsed but %d "

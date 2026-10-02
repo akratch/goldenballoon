@@ -730,8 +730,33 @@ SHAPE_TRIAGE = {
         "BOUNDED BY PARAMETER: every write path tests output_capacity first -- "
         "the single-byte path, append_utf8's `count > capacity - *length`, and "
         "the terminating NUL. Self-bounded regardless of caller correctness; all "
-        "schema call sites pass their actual field capacity. The shared reader "
-        "is explicitly included in the source sweep even though it is a header.",
+        "schema call sites pass their actual field capacity. Every C header is "
+        "in the source sweep (tools/sweep_bug_shapes.py, CXX_HEADER).",
+    ("bare-pointer", "platform/mod_registry.c", "mdkr_mod_registry_name_hits:out"):
+        "BOUNDED BY PARAMETER: max <= 0 returns before any write, hits.count "
+        "is clamped to max before the copy loop, and the loop writes "
+        "out[0 .. hits.count - 1]. hits.all is MDKR_MOD_MAX_PACKS long and "
+        "name_hits_visit stops at that count. The one caller "
+        "(mod_texture_store.c slot_candidates) passes "
+        "hits[MDKR_MOD_MAX_PACKS] with max = MDKR_MOD_MAX_PACKS. (Added by "
+        "889b857f after the 2683fbdf measurement; the gate was red on it.)",
+    ("bare-pointer", "platform/custom_track_table.h", "mdkr_custom_track_extend_table:output"):
+        "BOUNDED BY PARAMETER: refused unless capacity >= retail_words + count "
+        "(after overflow checks on both terms). The writes are the memcpy of "
+        "retail_words - 1 words, output[retail_words - 1 + i] for i < count, and "
+        "the terminator at retail_words - 1 + count, so the highest index is "
+        "capacity - 1 at most. Its one caller (custom_track_section.c) passes "
+        "a table malloc'd at exactly that many words. Swept since headers were "
+        "brought into scope.",
+    ("bare-pointer", "platform/modern_character_sort.h", "mdkr_modern_character_order_primitive_rows:output_rows"):
+        "COUNT-SIZED OUTPUT: output_rows receives each index below `count` "
+        "exactly once (opaque/masked rows, then blend rows at opaque_count + "
+        "transparent_count, the two totalling count), and the insertion sort "
+        "only permutes inside that range, so every write is below count. Its "
+        "one caller (modern_character_runtime.c) passes assembly_count, which "
+        "is refused at MDKR_MODERN_CHARACTER_MAX_PRIMITIVES before each "
+        "increment, against ordered_rows[MDKR_MODERN_CHARACTER_MAX_PRIMITIVES]. "
+        "Swept since headers were brought into scope.",
     ("bare-pointer", "platform/stubs_dkr.c", "controller_query:data"):
         "BOUNDED BY LITERAL: `i < MAXCONTROLLERS` writing data[i], and the only "
         "backing store is joypad.c's OSContStatus gControllerStatus"
@@ -1187,7 +1212,20 @@ SHAPE_INFO_MAX = {
     #     with bucket = ... & 255u is 0..7 inside uint32_t phases[8].
     #   * save_inventory_selftest.c save_compat_fixture -- `1 << v` in
     #     `for (v = 0; v < 3; ++v)`: an int shifted by 0..2.
-    "shift-count": 560,
+    #
+    # 560 -> 561: mod_registry.c name_hit_rank (889b857f), measured after
+    # 2683fbdf so the gate was red on it -- `UINT64_C(1) << pack` with pack
+    # starting at MDKR_MOD_MAX_PACKS - 1 (63, static_assert <= 64) and only
+    # decrementing to 0: a uint64_t shifted by 0..63.
+    # 561 -> 566 when the sweep took in every C header (it had read only .c
+    # files plus bounded_json.h by name). All five are in
+    # platform/modern_character_lod.h and shift 1u (32 bits) by an LOD index
+    # held below MDKR_MODERN_CHARACTER_LOD_LEVELS (4): resolve_lod's
+    # `maximum` starts at 3 and only decrements, `selected` is refused at >= 4
+    # on entry and then clamped to 0..maximum, and both hysteretic selectors
+    # test `previous_lod >= MDKR_MODERN_CHARACTER_LOD_LEVELS` before their
+    # `1u << previous_lod` in the same || chain. Counts 0..3.
+    "shift-count": 566,
 }
 
 # Only array-bounds is load-bearing for this class. pointer-overflow is kept
