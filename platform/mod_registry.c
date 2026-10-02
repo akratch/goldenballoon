@@ -217,13 +217,20 @@ static int is_digest_texture_name(const char *rel) {
     return digest_name_fold(rel, NULL);
 }
 
-/* A .png under textures/ (any case) that is NOT digest-shaped: a file a
- * digest pack ships that no lookup can ever reach. */
+/* A file under textures/ (any case) that is NOT digest-shaped -- another name,
+ * another image format, a subfolder: a file a digest pack ships that no
+ * lookup can ever reach. Hidden names (any component starting with a dot) are
+ * left out: those are what editors and archivers leave behind, not the
+ * author's, and the folder walk never lists them anyway. */
 static int is_unusable_texture_name(const char *rel) {
-    const size_t length = strlen(rel);
-    if (length < 9 + 4 + 1) return 0;
+    const char *component;
+    if (strlen(rel) <= 9) return 0;
     if (ascii_ncasecmp(rel, "textures/", 9) != 0) return 0;
-    if (ascii_ncasecmp(rel + length - 4, ".png", 4) != 0) return 0;
+    for (component = rel + 9; component != NULL;
+         component = strchr(component, '/')) {
+        if (*component == '/') component++;
+        if (*component == '.') return 0;
+    }
     return !is_digest_texture_name(rel);
 }
 

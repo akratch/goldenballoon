@@ -898,6 +898,49 @@ static void test_name_hits_keep_the_winning_pack(const char *scratch) {
     mdkr_mod_registry_shutdown(&reg);
 }
 
+/* 17. Every file under textures/ that no lookup can reach is counted and
+ * named at scan (T12d), whatever its extension: a .jpg or a readme there is a
+ * texture the author expected to see and never will. Hidden names (a dot
+ * first, as editors and archivers leave behind) are not the author's and are
+ * not counted, in a folder or a zip. */
+static void test_unusable_texture_files_are_named(const char *scratch) {
+    static const char *zipped_names[] = {
+        "textures/0123456789abcdef0123456789abcdef.png",
+        "textures/.DS_Store",
+        "textures/notes.txt",
+    };
+    char            mods[1024];
+    MdkrModRegistry reg;
+    int             folder = -1, zipped = -1, index;
+
+    path2(mods, sizeof mods, scratch, "unusable");
+    write_pack_file(mods, "loose", "pack.ini", "[pack]\nname=Loose\n");
+    write_pack_file(mods, "loose",
+                    "textures/0123456789abcdef0123456789abcdef.png", "P");
+    write_pack_file(mods, "loose",
+                    "textures/0123456789abcdef0123456789abcdef.jpg", "J");
+    write_pack_file(mods, "loose", "textures/.hidden.png", "H");
+    write_pack_file(mods, "loose", "music/readme.txt", "M");
+    write_zip_names(mods, "loosezip.zip", "[pack]\nname=LooseZip\n",
+                    zipped_names, 3);
+    expect(mdkr_mod_registry_init(&reg, mods) == 0,
+           "unusable-file fixture initialises");
+    for (index = 0; index < mdkr_mod_registry_count(&reg); index++) {
+        if (strcmp(reg.entries[index].manifest.name, "Loose") == 0) folder = index;
+        if (strcmp(reg.entries[index].manifest.name, "LooseZip") == 0) zipped = index;
+    }
+    expect(folder >= 0 && reg.entries[folder].textures_skipped == 1 &&
+           strcmp(reg.entries[folder].textures_skipped_first,
+                  "textures/0123456789abcdef0123456789abcdef.jpg") == 0,
+           "a digest-named .jpg is counted and named; a hidden file and a "
+           "file outside textures/ are not");
+    expect(zipped >= 0 && reg.entries[zipped].textures_skipped == 1 &&
+           strcmp(reg.entries[zipped].textures_skipped_first,
+                  "textures/notes.txt") == 0,
+           "a zip's textures/notes.txt is counted, its .DS_Store is not");
+    mdkr_mod_registry_shutdown(&reg);
+}
+
 #ifdef MDKR_FS_UTF8_TESTING
 /* fs_utf8.c's test seam: at 0 or more a collected listing stops with EIO once
  * it holds that many names, as a read error part-way through would. */
@@ -1016,6 +1059,7 @@ int main(int argc, char **argv) {
     test_digest_names_ignore_case(scratch);
     test_case_duplicates_prefer_lowercase(scratch);
     test_name_hits_keep_the_winning_pack(scratch);
+    test_unusable_texture_files_are_named(scratch);
     test_listing_failure_keeps_what_was_read(scratch);
     test_name_without_utf8_is_reported(scratch);
 

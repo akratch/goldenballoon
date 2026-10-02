@@ -64,10 +64,12 @@ typedef struct MdkrModEntry {
      * lookup can match. Zero lets the texture store skip that probe for this
      * pack entirely, which for a Rice pack is every probe it would make. */
     int  digest_textures;
-    /* Files under textures/ (any case) ending in .png that are NOT named by a
-     * content digest, so no lookup can ever reach them -- counted at scan,
-     * with the first one's name, so the player can be told why. Zero for a
-     * Rice pack, whose own convention names its files. */
+    /* Files under textures/ (any case) that are NOT named by a content
+     * digest -- another name, another image format, anything in a subfolder
+     * -- so no lookup can ever reach them, counted at scan with the first
+     * one's name, so the player can be told why. Hidden names (a component
+     * starting with a dot) are not counted. Zero for a Rice pack, whose own
+     * convention names its files. */
     int  textures_skipped;
     char textures_skipped_first[128];
     /* Digest-named textures this pack holds twice, spelled differently only
