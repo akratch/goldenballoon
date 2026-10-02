@@ -136,7 +136,10 @@
  * 2 x 64 MiB, of which the `_a` half is released once merged. Resident plus
  * in flight therefore stays within the budget, except while a pair larger
  * than the share is decoded alone: then by at most one more share (576 MiB
- * for two 4096 x 4096 halves). The decoder's own scratch is not counted. */
+ * for two 4096 x 4096 halves). The decoder's own scratch is not counted, and
+ * neither are the compressed files: a request holds its PNG file (at most
+ * MDKR_MOD_TEXTURE_FILE_BYTES_MAX, 64 MiB) while it waits for room, and a
+ * Rice pair holds both of its files, up to 2 x 64 MiB, while it waits. */
 #define MDKR_MOD_TEXTURE_INFLIGHT_SHARE 8u
 
 /* Requests handed to the worker and not yet drained back. Bounds the shared
@@ -961,9 +964,11 @@ static unsigned char *exec_load_png(Executor *ex, TexRequest *req, int part,
  * decoded sizes reserved in one claim, then both decoded (T12d). Claiming
  * them one at a time let the worker decode `_rgb` and then wait for room for
  * `_a` while holding those pixels -- room only the owner's drain can free.
- * One claim never holds part of a pair while it waits. The pair is one
- * request, so it is also what may exceed the share when nothing else is in
- * flight (see the in-flight bound above MDKR_MOD_TEXTURE_INFLIGHT_SHARE).
+ * One claim never holds part of a pair's pixels while it waits; it does
+ * hold both compressed files, up to 2 x 64 MiB, which the budget does not
+ * count. The pair is one request, so it is also what may exceed the share
+ * when nothing else is in flight (see the in-flight bound above
+ * MDKR_MOD_TEXTURE_INFLIGHT_SHARE).
  *
  * Returns the `_rgb` pixels with alpha merged in, still reserved, or NULL
  * (cancelled, or a rejection recorded). Without a usable `_a` the picture is

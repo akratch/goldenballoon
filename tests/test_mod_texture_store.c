@@ -1456,8 +1456,8 @@ static void unbind_store(MdkrModRegistry *registry) {
 /* 18. One pack holding a digest twice, spelled differently only in case: the
  * picture drawn is the lowercase file's, whichever order the pack lists them
  * in (T12d). It used to be whichever spelling the index probed first. A
- * folder can hold both only on a case-sensitive file system; elsewhere that
- * arm prints a SKIP. */
+ * folder can hold both only on a case-sensitive file system: Linux must, so
+ * there the arm FAILS if it cannot; elsewhere it prints a SKIP. */
 #define DIGEST_DUP_A "a6000000000000000000000000000001"
 #define DIGEST_DUP_B "a6000000000000000000000000000002"
 #define DIGEST_DUP_C "a6000000000000000000000000000003"
@@ -1488,8 +1488,13 @@ static void test_case_duplicates_read_the_lowercase_file(const char *scratch) {
     if (folder_arm) {
         write_png_file(mods, "dupfolder", lower_c, 8, pixel_gradient, 0xA6u);
     } else {
+#ifdef __linux__
+        expect(0, "a Linux scratch folder holds two names that differ only "
+                  "in case");
+#else
         printf("SKIP this file system ignores case, so a folder cannot hold "
                "both spellings\n");
+#endif
     }
 
     bind_store(&registry, mods);
@@ -1554,6 +1559,19 @@ static void test_every_spelling_pack_is_a_candidate(const char *scratch) {
     unbind_store(&registry);
 }
 
+/* lookup_rice_settled() with every wait bounded. The cases below fill the
+ * in-flight share on purpose, so a worker that never finishes must fail them,
+ * not hang the test: settle() and wait_idle() wait for as long as it takes. */
+static int lookup_rice_bounded(uint32_t crc, MdkrModTexture *texture) {
+    int found = mdkr_mod_texture_lookup_rice(crc, 0, 2, texture);
+    if (!found && texture->pending) {
+        if (mdkr_mod_texture_store_test_wait_idle_for(5000) != 1) return 0;
+        mdkr_mod_texture_store_pump(NULL, NULL);
+        found = mdkr_mod_texture_lookup_rice(crc, 0, 2, texture);
+    }
+    return found;
+}
+
 /* 20. A Rice _rgb + _a pair is one request for two images, and it reserves
  * both before decoding either (T12d). Reserving them one at a time let the
  * worker decode the _rgb half, then sit holding those pixels while it waited
@@ -1601,7 +1619,7 @@ static void test_rice_pair_reserves_both_halves(const char *scratch) {
         ok &= mdkr_mod_texture_lookup(fills[index], &texture) == 0 &&
               texture.pending == 1;
     }
-    expect(ok && mdkr_mod_texture_store_test_wait_idle() == 1 &&
+    expect(ok && mdkr_mod_texture_store_test_wait_idle_for(5000) == 1 &&
            memory_now().inflight_bytes == 3u * 4u * 4u * 4u,
            "three decoded 4x4 textures wait to install: 192 of 256 bytes");
     expect(mdkr_mod_texture_lookup_rice(RICE_SMALL_PAIR_CRC, 0, 2,
@@ -1612,7 +1630,7 @@ static void test_rice_pair_reserves_both_halves(const char *scratch) {
     expect(memory_now().inflight_bytes == 3u * 4u * 4u * 4u,
            "holding none of it: neither half was claimed or decoded alone");
     mdkr_mod_texture_store_pump(NULL, NULL);
-    expect(lookup_rice_settled(RICE_SMALL_PAIR_CRC, &texture) == 1 &&
+    expect(lookup_rice_bounded(RICE_SMALL_PAIR_CRC, &texture) == 1 &&
            texture.width == 4 && texture.rgba != NULL &&
            texture.rgba[(0 * 4 + 1) * 4 + 3] == alpha_key(1, 0) &&
            texture.rgba[(0 * 4 + 1) * 4 + 2] == 0x21u,
@@ -1621,7 +1639,7 @@ static void test_rice_pair_reserves_both_halves(const char *scratch) {
            "and in flight never passed the share");
 
     expect(mdkr_mod_texture_lookup(DIGEST_ROOM4, &texture) == 0 &&
-           mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           mdkr_mod_texture_store_test_wait_idle_for(5000) == 1 &&
            memory_now().inflight_bytes == 4u * 4u * 4u,
            "one 4x4 completion is in flight");
     expect(mdkr_mod_texture_lookup_rice(RICE_LARGE_PAIR_CRC, 0, 2,
@@ -1630,13 +1648,13 @@ static void test_rice_pair_reserves_both_halves(const char *scratch) {
            memory_now().inflight_bytes == 4u * 4u * 4u,
            "an 8x8 pair, larger than the share, waits holding nothing");
     mdkr_mod_texture_store_pump(NULL, NULL);
-    expect(mdkr_mod_texture_store_test_wait_idle() == 1 &&
+    expect(mdkr_mod_texture_store_test_wait_idle_for(5000) == 1 &&
            mdkr_mod_texture_store_test_inflight_peak() == 2u * 8u * 8u * 4u,
            "and proceeds only alone: one request, both halves, is the most "
            "ever in flight past the share");
     expect(memory_now().inflight_bytes == 8u * 8u * 4u,
            "the _a half is released once merged; the result holds one image");
-    expect(lookup_rice_settled(RICE_LARGE_PAIR_CRC, &texture) == 1 &&
+    expect(lookup_rice_bounded(RICE_LARGE_PAIR_CRC, &texture) == 1 &&
            texture.width == 8 && memory_now().inflight_bytes == 0,
            "then installs, releasing it all");
     unbind_store(&registry);
@@ -1665,7 +1683,7 @@ static void test_room_wait_releases_on_toggle_and_stop(const char *scratch) {
     mdkr_mod_texture_store_test_set_cache_limit(2048u);
     bind_store(&registry, mods);
     expect(mdkr_mod_texture_lookup(DIGEST_CAP0, &texture) == 0 &&
-           mdkr_mod_texture_store_test_wait_idle() == 1 &&
+           mdkr_mod_texture_store_test_wait_idle_for(5000) == 1 &&
            memory_now().inflight_bytes == 8u * 8u * 4u,
            "one undrained 8x8 completion fills the 256-byte share");
     expect(mdkr_mod_texture_lookup(DIGEST_CAP1, &texture) == 0 &&
