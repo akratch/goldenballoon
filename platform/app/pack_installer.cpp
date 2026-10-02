@@ -646,7 +646,10 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             return mdkr_mod_source_open_directory_file(sourceRoot.get(),
                                                        relative.generic_u8string().c_str());
         }
-        // A private stream on the pinned ZIP; each reader starts at byte zero.
+        // A stream on a duplicate of the pinned ZIP's descriptor, rewound to
+        // byte zero. Duplicates share one file offset, so these streams are
+        // not independent: each is closed before the next is opened (the
+        // directory check, then the admission probe, then the copy).
         const int duplicate = fcntl(zipFd.value, F_DUPFD_CLOEXEC, 0);
         FILE *stream = duplicate >= 0 ? fdopen(duplicate, "rb") : nullptr;
         if (!stream) {
@@ -717,6 +720,8 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                 prepared.error_ = problem;
                 return prepared;
             }
+            // Streams from openSource share one offset: close this one first.
+            listing.reset();
             archive.reset(mdkr_mod_source_from_zip_stream(openSource(prepared.filename_)));
         }
         // A pick with no pack.ini is walked to see whether it is a texture
