@@ -3155,6 +3155,31 @@ static void mdkr_objmap_admission_selftest(void) {
         ++maps; records_total += records;
     }
     free(decoded); mempool_free(table);
+    /* asset_object_behavior_catalog() stands in for this resolver before the
+     * object pools exist, and pre-boot admission decides with it. Every slot
+     * must resolve the same way here as it does in the engine. A header ID
+     * outside the header table is one the engine refuses outright (it aborts
+     * on use), so the catalog must not resolve it either. */
+    size_t catalog_slots = 0, catalog_resolved = 0;
+    s16 *catalog = asset_object_behavior_catalog(&catalog_slots);
+    MAP_CHECK(catalog != NULL && catalog_slots == gAssetsLvlObjTranslationTableCapacity);
+    for (size_t slot = 0; slot < catalog_slots; ++slot) {
+        const s16 header = gAssetsLvlObjTranslationTable[slot];
+        s16 engine = -1;
+        if (header >= 0 && header < gAssetsObjectHeadersTableLength) {
+            engine = mdkr_obj_behavior_of(header);
+            if (engine < 0) engine = -1;
+        }
+        if (catalog[slot] != engine) {
+            fprintf(stderr, "[FATAL] pre-boot behavior catalog slot=%zu header=%d "
+                    "catalog=%d engine=%d\n", slot, header, catalog[slot], engine);
+            abort();
+        }
+        catalog_resolved += engine >= 0;
+    }
+    free(catalog);
+    fprintf(stderr, "[CUSTOM_TRACK_BEHAVIOR_CATALOG] slots=%zu resolved=%zu engine_match=1 PASS\n",
+            catalog_slots, catalog_resolved);
     for (s32 i = 0; i < gAssetsObjectHeadersTableLength; ++i) {
         MAP_CHECK((*gObjectHeaderReferences)[i] == 0);
     }

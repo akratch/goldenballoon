@@ -105,7 +105,24 @@ def main():
                 print('\n'.join(line for line in result.stdout.splitlines()
                                 if '[CUSTOM_TRACK' in line or '[FATAL]' in line))
                 return 1
+            # The pre-boot behavior catalog (what 1.9 admission decides with,
+            # before the object pools exist) against the engine's own
+            # resolver, slot by slot, once the pools exist.
+            preboot = re.findall(r'\[CUSTOM_TRACK_PREBOOT_BEHAVIORS\] slots=(\d+) PASS', result.stdout)
+            catalog = re.findall(r'\[CUSTOM_TRACK_BEHAVIOR_CATALOG\] slots=(\d+) '
+                                 r'resolved=(\d+) engine_match=1 PASS', result.stdout)
+            catalog_ok = (len(preboot) == 1 and len(catalog) == 1 and
+                          catalog[0][0] == preboot[0] and
+                          0 < int(catalog[0][1]) <= int(catalog[0][0])) if enabled else (
+                              not preboot and not catalog)
+            if not catalog_ok:
+                print('FAIL pre-boot behavior catalog does not match the engine resolver')
+                print('\n'.join(line for line in result.stdout.splitlines()
+                                if 'BEHAVIOR' in line or '[FATAL]' in line))
+                return 1
             if enabled:
+                print(f'PASS pre-boot behavior catalog matches the engine slots={catalog[0][0]} '
+                      f'resolved={catalog[0][1]}')
                 print(f'PASS initialized behavior corpus maps={behaviors[0][0]} records={behaviors[0][1]}')
                 print(f'PASS AI inventory corpus nodes={inventories[0]} duplicate/capacity controls')
             names = re.findall(r'\[LEVEL_NAMES\] PASS entries=(\d+) languages=4', result.stdout)
