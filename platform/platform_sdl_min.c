@@ -1003,6 +1003,7 @@ static int sdl_should_hide_window(void) {
 static void platform_macos_activate_app(const char *why);
 static void platform_macos_install_occlusion_shim(void);
 static int platform_macos_app_is_hidden(void);
+static void platform_macos_visible_automation_policy(void);
 #endif
 
 /* MDKR_TEST_FOREGROUND=1, together with MDKR_TEST_VISIBLE_HEADLESS=1: a
@@ -1112,6 +1113,9 @@ int platform_sdl_init(void) {
      * measured a 100% Occluded refusal storm — a never-activated background
      * bundle never receives the visible bit at all. */
     platform_macos_install_occlusion_shim();
+    if (sdl_automation_surface_requested() && !sdl_should_hide_window()) {
+        platform_macos_visible_automation_policy();
+    }
 #endif
 
 #ifdef MDKR_APP
@@ -5139,6 +5143,34 @@ static void platform_macos_activate_app(const char *why) {
         }
     }
     fprintf(stderr, "[MACOS-ACTIVATE] %s\n", why);
+}
+
+/*
+ * A VISIBLE automation window (MDKR_TEST_VISIBLE_HEADLESS=1) belongs to an
+ * accessory application: no Dock icon, never activated, but a UI application
+ * all the same -- the policy the app shell already gives its own automation
+ * (AppActivation_prepareProcess). SDL_HINT_MAC_BACKGROUND_APP alone leaves
+ * the process at the default "prohibited" policy, which macOS registers as
+ * BackgroundOnly and runs at default priority 31 instead of an application's
+ * 46/47. A real-time pacing measurement taken there is not measuring what a
+ * player's window gets: T12c traced pacer oversleeps, preempted event pumps
+ * and blocked swaps to exactly that difference (frame-wait rows, prio=31
+ * against prio=46). Accessory changes the scheduling class, never the focus.
+ */
+static void platform_macos_visible_automation_policy(void) {
+    Class cls = objc_getClass("NSApplication");
+    void *app;
+    if (cls == NULL) {
+        return;
+    }
+    app = ((void *(*)(Class, SEL))objc_msgSend)(
+        cls, sel_registerName("sharedApplication"));
+    if (app == NULL) {
+        return;
+    }
+    /* NSApplicationActivationPolicyAccessory == 1 */
+    (void)((signed char (*)(void *, SEL, long))objc_msgSend)(
+        app, sel_registerName("setActivationPolicy:"), 1L);
 }
 
 int platform_app_active_honest(void) {
