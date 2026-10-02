@@ -3,21 +3,26 @@
 #include "custom_track_package_admission.h"
 #include "custom_track_decode.h"
 #include "mod_source_stream.h"
+#include "fs_utf8.h"
 #include "miniz.h"
 #include "waves.h"
 #include "f3ddkr.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#include <process.h>
 #define make_dir(p) _mkdir(p)
 #define remove_dir(p) _rmdir(p)
+#define process_id() ((long)_getpid())
 #else
 #include <unistd.h>
 #define make_dir(p) mkdir(p, 0700)
 #define remove_dir(p) rmdir(p)
+#define process_id() ((long)getpid())
 #endif
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "package line %d\n", __LINE__); return 1; } } while (0)
 static unsigned allocations, fail_allocation, live_allocations;
@@ -283,6 +288,86 @@ static int write_file(const char *root, const char *name, const char *bytes) {
     int okay = fwrite(bytes, 1, strlen(bytes), f) == strlen(bytes);
     return fclose(f) == 0 && okay;
 }
+/* A scratch directory of this run's own beside CTest's base path. A fixed
+ * name that one failed or killed run left behind would fail every later run
+ * at its mkdir, and two runs sharing a build tree would race on it. */
+static int make_unique_dir(const char *base, char *out, size_t size) {
+    for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+        if (snprintf(out, size, "%s.%ld.%u", base, process_id(), attempt) >= (int)size) return 0;
+        if (make_dir(out) == 0) return 1;
+        if (errno != EEXIST) return 0;
+    }
+    return 0;
+}
+static const char *const scratch_files[] = {"manifest.json", "header.bin", "texture.bin", "package.zip"};
+/* Removes what the source cases may have written, then the directory itself;
+ * runs whether they passed or not. */
+static int remove_scratch(const char *dir) {
+    for (unsigned i = 0; i < sizeof scratch_files / sizeof scratch_files[0]; ++i) {
+        char path[2048];
+        if (snprintf(path, sizeof path, "%s/%s", dir, scratch_files[i]) < (int)sizeof path)
+            (void)remove(path);
+    }
+    return remove_dir(dir) == 0;
+}
+/* Real ZIP and directory sources, all inside `dir`. The archive is a file
+ * there rather than tmpfile(), which on Windows targets the drive root and
+ * fails outright for an ordinary non-admin account. */
+static int source_cases(const char *dir, MdkrTrackPackageLimits limits,
+                        const unsigned char digest[32]) {
+    MdkrTrackPackageError error;
+    MdkrCustomTrackPayload payload = {0};
+    unsigned char compared[32];
+    MdkrTrackPackage *p;
+
+    /* Real ZIP source: CRC-checked payload reads, then source closure. */
+    mz_zip_archive zip = {0};
+    CHECK(mz_zip_writer_init_heap(&zip, 0, 0));
+    CHECK(mz_zip_writer_add_mem(&zip, "manifest.json", manifest, strlen(manifest), MZ_BEST_COMPRESSION));
+    CHECK(mz_zip_writer_add_mem(&zip, "header.bin", "HEAD", 4, MZ_BEST_COMPRESSION));
+    CHECK(mz_zip_writer_add_mem(&zip, "texture.bin", "TEX", 3, MZ_NO_COMPRESSION));
+    void *archive = NULL;
+    size_t archive_size = 0;
+    CHECK(mz_zip_writer_finalize_heap_archive(&zip, &archive, &archive_size));
+    CHECK(mz_zip_writer_end(&zip));
+    char archive_path[2048];
+    CHECK(snprintf(archive_path, sizeof archive_path, "%s/package.zip", dir) < (int)sizeof archive_path);
+    FILE *stream = mdkr_fopen_utf8(archive_path, "w+b");
+    int written = stream && fwrite(archive, 1, archive_size, stream) == archive_size;
+    mz_free(archive);
+    if (!written && stream) fclose(stream);
+    CHECK(written);
+    rewind(stream);
+    MdkrModSource *source = mdkr_mod_source_from_zip_stream(stream);
+    CHECK(source);
+    p = mdkr_track_package_from_source(source, limits, &error);
+    mdkr_mod_source_close(source);
+    CHECK(p && mdkr_track_package_payload(p, 1, &payload) && payload.size == 3 && !memcmp(payload.bytes, "TEX", 3));
+    CHECK(mdkr_track_package_digest(p, compared) && !memcmp(digest, compared, 32));
+    mdkr_track_package_destroy(p);
+
+    /* Real directory source. */
+    CHECK(write_file(dir, "manifest.json", manifest));
+    CHECK(write_file(dir, "header.bin", "HEAD"));
+    CHECK(write_file(dir, "texture.bin", "TEX"));
+    source = mdkr_mod_source_open(dir, 0);
+    CHECK(source);
+    p = mdkr_track_package_from_source(source, limits, &error);
+    mdkr_mod_source_close(source);
+    CHECK(p);
+    CHECK(write_file(dir, "header.bin", "CHANGED"));
+    CHECK(mdkr_track_package_payload(p, 0, &payload) && payload.size == 4 && !memcmp(payload.bytes, "HEAD", 4));
+    CHECK(mdkr_track_package_digest(p, compared) && !memcmp(digest, compared, 32));
+    mdkr_track_package_destroy(p);
+    CHECK(write_file(dir, "header.bin", "HEAd"));
+    source = mdkr_mod_source_open(dir, 0);
+    CHECK(source);
+    p = mdkr_track_package_from_source(source, limits, &error);
+    mdkr_mod_source_close(source);
+    CHECK(p && mdkr_track_package_digest(p, compared) && memcmp(digest, compared, 32));
+    mdkr_track_package_destroy(p);
+    return 0;
+}
 typedef struct MapCheck { unsigned calls, fail_call; } MapCheck;
 typedef struct CourseMapRead { unsigned calls, fail_call; uint32_t ids[2]; } CourseMapRead;
 static int course_map_read(void *context, uint32_t id, MdkrCustomTrackPayload *out) {
@@ -394,56 +479,13 @@ int main(int argc, char **argv) {
     CHECK(mdkr_track_package_manifest(NULL) == NULL);
     mdkr_track_package_destroy(NULL);
 
-    /* Real ZIP source: CRC-checked payload reads, then source closure. */
-    mz_zip_archive zip = {0};
-    CHECK(mz_zip_writer_init_heap(&zip, 0, 0));
-    CHECK(mz_zip_writer_add_mem(&zip, "manifest.json", manifest, strlen(manifest), MZ_BEST_COMPRESSION));
-    CHECK(mz_zip_writer_add_mem(&zip, "header.bin", "HEAD", 4, MZ_BEST_COMPRESSION));
-    CHECK(mz_zip_writer_add_mem(&zip, "texture.bin", "TEX", 3, MZ_NO_COMPRESSION));
-    void *archive = NULL;
-    size_t archive_size = 0;
-    CHECK(mz_zip_writer_finalize_heap_archive(&zip, &archive, &archive_size));
-    CHECK(mz_zip_writer_end(&zip));
-    FILE *stream = tmpfile();
-    CHECK(stream && fwrite(archive, 1, archive_size, stream) == archive_size);
-    mz_free(archive);
-    rewind(stream);
-    MdkrModSource *source = mdkr_mod_source_from_zip_stream(stream);
-    CHECK(source);
-    p = mdkr_track_package_from_source(source, limits, &error);
-    mdkr_mod_source_close(source);
-    CHECK(p && mdkr_track_package_payload(p, 1, &payload) && payload.size == 3 && !memcmp(payload.bytes, "TEX", 3));
-    CHECK(mdkr_track_package_digest(p, compared) && !memcmp(digest, compared, 32));
-    mdkr_track_package_destroy(p);
-
-    /* Real directory source. CTest supplies a dedicated scratch directory. */
-    CHECK(argc == 2 && make_dir(argv[1]) == 0);
-    CHECK(write_file(argv[1], "manifest.json", manifest));
-    CHECK(write_file(argv[1], "header.bin", "HEAD"));
-    CHECK(write_file(argv[1], "texture.bin", "TEX"));
-    source = mdkr_mod_source_open(argv[1], 0);
-    CHECK(source);
-    p = mdkr_track_package_from_source(source, limits, &error);
-    mdkr_mod_source_close(source);
-    CHECK(p);
-    CHECK(write_file(argv[1], "header.bin", "CHANGED"));
-    CHECK(mdkr_track_package_payload(p, 0, &payload) && payload.size == 4 && !memcmp(payload.bytes, "HEAD", 4));
-    CHECK(mdkr_track_package_digest(p, compared) && !memcmp(digest, compared, 32));
-    mdkr_track_package_destroy(p);
-    CHECK(write_file(argv[1], "header.bin", "HEAd"));
-    source = mdkr_mod_source_open(argv[1], 0);
-    CHECK(source);
-    p = mdkr_track_package_from_source(source, limits, &error);
-    mdkr_mod_source_close(source);
-    CHECK(p && mdkr_track_package_digest(p, compared) && memcmp(digest, compared, 32));
-    mdkr_track_package_destroy(p);
-    const char *files[] = {"manifest.json", "header.bin", "texture.bin"};
-    for (unsigned i = 0; i < 3; ++i) {
-        char path[2048];
-        CHECK(snprintf(path, sizeof path, "%s/%s", argv[1], files[i]) < (int)sizeof path);
-        CHECK(remove(path) == 0);
-    }
-    CHECK(remove_dir(argv[1]) == 0);
+    /* CTest names a base path; the run works in its own directory beside it. */
+    char scratch[2048];
+    CHECK(argc == 2 && make_unique_dir(argv[1], scratch, sizeof scratch));
+    const int sources_failed = source_cases(scratch, limits, digest);
+    const int scratch_removed = remove_scratch(scratch);
+    CHECK(!sources_failed);
+    CHECK(scratch_removed);
     CHECK(live_allocations == 0);
     for (unsigned mode = 5; mode <= 6; ++mode) {
         Fixture artwork = {.mode = mode};
