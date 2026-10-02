@@ -54,7 +54,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, find_fatal, resolve_binary
 
 SCRIPT = "tests/input_scripts/adventure_hub_drive.txt"
 FRAMES = 9000
@@ -125,10 +125,12 @@ def run(binary: str, rom: str, save_dir: str, legacy: bool, verbose: bool):
 def check_crash(tag: str, rc: int, out: str, failures: list):
     if rc != 0:
         failures.append(f"[{tag}] exit code {rc}")
-    for marker in ("[CRASH]", "[FATAL]"):
-        if marker in out:
-            line = next((l for l in out.splitlines() if marker in l), marker)
-            failures.append(f"[{tag}] {marker}: {line.strip()}")
+    # Sanitizer reports too: this check also runs in the asan lane, whose
+    # UndefinedBehaviorSanitizer reports and carries on unless told to halt.
+    marker = find_fatal(out)
+    if marker:
+        line = next((l for l in out.splitlines() if marker in l), marker)
+        failures.append(f"[{tag}] {marker}: {line.strip()}")
 
 
 def main() -> int:

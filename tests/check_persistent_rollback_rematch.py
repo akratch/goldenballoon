@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, find_fatal, resolve_binary
 
 
 FRAMES = 8200
@@ -146,6 +146,11 @@ def main() -> int:
     for marker in forbidden:
         if marker in output:
             return fail(f"observed forbidden diagnostic {marker!r}", output)
+    # This check runs in the asan lane: a sanitizer report or a crash marker
+    # fails it even when the process went on to exit 0.
+    fatal = find_fatal(output)
+    if fatal:
+        return fail(f"observed fatal or sanitizer diagnostic {fatal!r}", output)
     if args.verbose:
         print(output, end="" if output.endswith("\n") else "\n")
     print(

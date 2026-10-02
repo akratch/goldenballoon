@@ -7,7 +7,27 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary
+from harness_utils import ASSERT_MARKERS, DEFAULT_BUILD_DIR, find_fatal, resolve_binary
+
+# The asan lane's build reports UndefinedBehaviorSanitizer findings and keeps
+# going unless told to halt, so a run that tripped UB would still print every
+# PASS marker and exit 0. Halt on the first report, and scan for one anyway:
+# the scan is what still holds when someone runs this with their own options.
+HALTING_UBSAN = 'halt_on_error=1:print_stacktrace=1'
+# The object-map fixture provokes exactly these [FATAL]-tagged rejections on
+# purpose (objects.c logs them for any caller); nothing else may print one.
+SHORT_BLOCK = re.compile(r'\[CUSTOM_TRACK_BEHAVIOR_SHORT\] BEGIN\n.*?'
+                         r'\[CUSTOM_TRACK_BEHAVIOR_SHORT\] END\n?', re.S)
+
+
+def unexpected_fatal(output, refusal=None):
+    """The first crash, fatal, assertion or sanitizer report a run printed
+    outside the lines its own arm provokes on purpose, or None."""
+    text = SHORT_BLOCK.sub('', output)
+    if refusal is not None:
+        text = '\n'.join(line for line in text.splitlines()
+                         if not line.startswith(refusal))
+    return find_fatal(text, *ASSERT_MARKERS)
 
 
 def main():
@@ -23,7 +43,8 @@ def main():
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(('MDKR', 'GE007_'))}
             env.update(MDKR_AUDIO='0', MDKR_SAVE_DIR=str(Path(temp) / 'save'),
-                       MDKR_VIDEO_CONFIG_PATH=str(Path(temp) / 'missing.ini'))
+                       MDKR_VIDEO_CONFIG_PATH=str(Path(temp) / 'missing.ini'),
+                       UBSAN_OPTIONS=HALTING_UBSAN)
             if enabled:
                 env['MDKR_CUSTOM_TRACK_LOADER_SELFTEST'] = '1'
                 env['MDKR_LEVEL_NAMES_SELFTEST'] = '1'
@@ -38,6 +59,12 @@ def main():
                 print('\n'.join(line for line in result.stdout.splitlines()
                                 if '[CUSTOM_TRACK' in line or '[FATAL]' in line or '[CRASHSCREEN]' in line))
                 print('\n'.join(result.stdout.splitlines()[-10:]))
+                return 1
+            fatal = unexpected_fatal(result.stdout)
+            if fatal:
+                print(f'FAIL native loader process enabled={enabled} printed {fatal!r}')
+                print('\n'.join(line for line in result.stdout.splitlines()
+                                if fatal in line or 'runtime error' in line)[:4000])
                 return 1
             ai_marker = '[CUSTOM_TRACK_AI_NODE] repeated_id_objects=129 stale_link=1 invalid_roots=6 cyclic_search=1 start_target=1 wide_cost=1 PASS'
             if result.stdout.count(ai_marker) != int(enabled):
@@ -154,7 +181,8 @@ def main():
             env = {k: v for k, v in os.environ.items()
                    if not k.startswith(('MDKR', 'GE007_'))}
             env.update(MDKR_AUDIO='0', MDKR_SAVE_DIR=str(Path(temp) / 'save'),
-                       MDKR_VIDEO_CONFIG_PATH=str(Path(temp) / 'missing.ini'))
+                       MDKR_VIDEO_CONFIG_PATH=str(Path(temp) / 'missing.ini'),
+                       UBSAN_OPTIONS=HALTING_UBSAN)
             env[variable] = value
             result = subprocess.run(
                 [str(binary), '--headless-frames', '30', '--rom', str(rom)], env=env,
@@ -162,6 +190,14 @@ def main():
                 timeout=90, check=False)
             if result.returncode == 0 or refusal not in result.stdout:
                 print(f'FAIL {label} was not rejected by its own guard')
+                print('\n'.join(result.stdout.splitlines()[-30:]))
+                return 1
+            # Refused for the right reason, and for that reason alone: a
+            # sanitizer report or a second fatal ahead of the refusal is a
+            # different failure that happened to end the same way.
+            fatal = unexpected_fatal(result.stdout, refusal)
+            if fatal:
+                print(f'FAIL {label} printed {fatal!r} besides its own refusal')
                 print('\n'.join(result.stdout.splitlines()[-30:]))
                 return 1
             print(f'PASS {label} rejected by its own guard')
