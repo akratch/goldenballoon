@@ -98,6 +98,9 @@ import tempfile
 
 from harness_utils import (DEFAULT_BUILD_DIR, resolve_binary, save_env,
                            test_save_dir)
+from harness_utils import ROM_CRCS as harness_ROM_CRCS
+from harness_utils import resolve_roms as harness_resolve_roms
+from harness_utils import rom_crcs as harness_rom_crcs
 
 # Product scope is deliberately frozen to the two revision-1 asset layouts.
 # Keep this declaration separate from the per-ROM metadata below: the check must
@@ -132,66 +135,15 @@ if set(SUPPORTED_ROM_ENDS) != SUPPORTED_REVISIONS:
 # byte-identical to us.v80's, so a divergence here means that claim is wrong.
 PARITY_REVISIONS = ["pal.v80"]
 
-# CRC1/CRC2 from each revision's header, so a ROM is located by CONTENT rather than
-# by filename. Requiring build/roms/<build>.z64 meant a correctly-dumped ROM under
-# its release name -- "Diddy Kong Racing (Europe) (En,Fr,De) (Rev 1).z64", which is
-# what a real dump is actually called -- was silently SKIPped, and the check then
-# failed for finding nothing. Identify the way platform/rom_id.c does: read the
-# header. (These 8 bytes per revision are identification, not game content.)
-ROM_CRCS = {
-    (0x53D440E7, 0x7519B011): "us.v77",
-    (0xFD73F775, 0x9724755A): "pal.v77",
-    (0x7435C9BB, 0x39763CF4): "jpn.v79",
-    (0xE402430D, 0xD2FCFC9D): "us.v80",
-    (0x596E145B, 0xF7D9879F): "pal.v80",
-}
-
-
-def rom_crcs(path):
-    """(crc1, crc2) from an N64 header, normalising the two swapped byte orders."""
-    try:
-        with open(path, "rb") as f:
-            head = f.read(0x18)
-    except OSError:
-        return None
-    if len(head) < 0x18:
-        return None
-    magic = head[:4]
-    if magic == b"\x80\x37\x12\x40":
-        pass
-    elif magic == b"\x37\x80\x40\x12":                       # .v64, 16-bit swapped
-        head = bytes(b for i in range(0, len(head), 2) for b in (head[i + 1], head[i]))
-    elif magic == b"\x40\x12\x37\x80":                       # .n64, 32-bit swapped
-        head = bytes(b for i in range(0, len(head), 4)
-                     for b in reversed(head[i:i + 4]))
-    else:
-        return None
-    return (int.from_bytes(head[0x10:0x14], "big"),
-            int.from_bytes(head[0x14:0x18], "big"))
-
-
-def resolve_roms(*dirs):
-    """{build_name: path} for every DKR revision found in `dirs`, by header CRC.
-    First match wins, so an explicitly named ROM takes precedence."""
-    found = {}
-    for d in dirs:
-        if not d:
-            continue
-        if os.path.isfile(d):
-            entries = [d]
-        elif os.path.isdir(d):
-            entries = [os.path.join(d, n) for n in sorted(os.listdir(d))]
-        else:
-            continue
-        for path in entries:
-            if not os.path.isfile(path):
-                continue
-            if os.path.getsize(path) != 12 * 1024 * 1024:
-                continue
-            name = ROM_CRCS.get(rom_crcs(path) or ())
-            if name and name not in found:
-                found[name] = path
-    return found
+# A ROM is located by CONTENT rather than by filename. Requiring
+# build/roms/<build>.z64 meant a correctly-dumped ROM under its release name --
+# "Diddy Kong Racing (Europe) (En,Fr,De) (Rev 1).z64", which is what a real dump
+# is actually called -- was silently SKIPped, and the check then failed for
+# finding nothing. Identify the way platform/rom_id.c does: read the header
+# (harness_utils.resolve_roms, shared by every ROM-directory scan).
+ROM_CRCS = harness_ROM_CRCS
+rom_crcs = harness_rom_crcs
+resolve_roms = harness_resolve_roms
 
 
 # The race route is the one with real forward progress; at 4300 frames the clock

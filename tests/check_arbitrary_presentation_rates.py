@@ -27,8 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness_utils import (completed_tick_conservation, DEFAULT_BUILD_DIR,
-                           parse_last, present_mode_rows, resolve_binary,
-                           tear_free_presentation)
+                           find_revision_rom, parse_last, present_mode_rows,
+                           resolve_binary, tear_free_presentation)
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "tests" / "input_scripts" / "nav_to_time_trial_race.txt"
@@ -64,13 +64,8 @@ def stream(output: str, marker: str) -> list[str]:
 
 
 def find_pal_rom(directory: Path) -> Path | None:
-    if not directory.is_dir():
-        return None
-    for path in sorted(directory.iterdir()):
-        name = path.name.lower()
-        if ("europe" in name or "pal" in name) and name.endswith(".z64"):
-            return path
-    return None
+    """The pal.v80 image in ``directory``, identified by its header."""
+    return find_revision_rom(directory, "pal.v80")
 
 
 def run(binary: Path, rom: Path, root: Path, label: str,

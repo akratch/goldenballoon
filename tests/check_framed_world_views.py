@@ -42,8 +42,8 @@ from pathlib import Path
 
 from check_adventure_two import eeprom_image
 from harness_utils import (ASSERT_MARKERS, DEFAULT_BUILD_DIR, fatal_re,
-                           read_ppm as read_ppm_bytes, resolve_binary,
-                           VALIDATION_MARKERS)
+                           find_revision_rom, read_ppm as read_ppm_bytes,
+                           resolve_binary, VALIDATION_MARKERS)
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -983,13 +983,8 @@ def run_wide_hud_banner_arm(
 
 
 def find_pal_rom(directory: Path) -> Path | None:
-    if not directory.is_dir():
-        return None
-    for path in sorted(directory.iterdir()):
-        name = path.name.lower()
-        if ("europe" in name or "pal" in name) and name.endswith(".z64"):
-            return path
-    return None
+    """The pal.v80 image in ``directory``, identified by its header."""
+    return find_revision_rom(directory, "pal.v80")
 
 
 def menu_ink_rows(image: Image) -> tuple[int, int]:

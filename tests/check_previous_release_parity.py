@@ -88,7 +88,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
 
-from harness_utils import DEFAULT_BUILD_DIR, find_fatal, resolve_binary
+from harness_utils import DEFAULT_BUILD_DIR, find_fatal, find_revision_rom, resolve_binary
 from simhash_streams import (HashedRun, SimHashRow, configuration_problems,
                              control_problem, divergence_report,
                              first_divergence, newest_source_mtime,
@@ -502,15 +502,10 @@ def saves_arm(reference: Path, current: Path, rom: Path, root: Path, tag: str,
 
 
 def find_pal_rom(directory: Path) -> Path | None:
-    """The PAL v80 image in ``directory``; macOS "._" sidecars are not ROMs."""
+    """The PAL v80 image in ``directory``, identified by its header, so a macOS
+    "._" sidecar or a renamed file can never be taken for it."""
 
-    for candidate in sorted(directory.glob("*.z64")):
-        name = candidate.name.lower()
-        if name.startswith("._") or candidate.stat().st_size != ROM_BYTES:
-            continue
-        if ("europe" in name or "pal" in name) and ("rev 1" in name or "v80" in name):
-            return candidate.resolve()
-    return None
+    return find_revision_rom(directory, "pal.v80")
 
 
 # --------------------------------------------------------------------------- #

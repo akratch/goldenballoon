@@ -351,6 +351,90 @@ def read_hex_fixture(path: str | os.PathLike[str]) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
+#  ROM identification
+# --------------------------------------------------------------------------- #
+
+# A ROM is found by CONTENT, never by filename. A directory of real dumps holds
+# more than ROMs: macOS writes a 4 KiB AppleDouble "._<name>" sidecar beside a
+# file copied to a non-HFS volume, which carries the ROM's name and extension
+# and sorts first, and a scanner matching "europe"/".z64" picked it up. Platform
+# rom_id.c identifies a ROM by its header; so does this. CRC1/CRC2 from each
+# revision's header (identification, not game content).
+ROM_BYTES = 12 * 1024 * 1024
+ROM_CRCS = {
+    (0x53D440E7, 0x7519B011): "us.v77",
+    (0xFD73F775, 0x9724755A): "pal.v77",
+    (0x7435C9BB, 0x39763CF4): "jpn.v79",
+    (0xE402430D, 0xD2FCFC9D): "us.v80",
+    (0x596E145B, 0xF7D9879F): "pal.v80",
+}
+
+
+def rom_crcs(path: str | os.PathLike[str]) -> tuple[int, int] | None:
+    """(crc1, crc2) from an N64 header in any of the three byte orders."""
+
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(0x18)
+    except OSError:
+        return None
+    if len(head) < 0x18:
+        return None
+    magic = head[:4]
+    if magic == b"\x37\x80\x40\x12":                     # .v64, 16-bit swapped
+        head = bytes(b for i in range(0, len(head), 2) for b in (head[i + 1], head[i]))
+    elif magic == b"\x40\x12\x37\x80":                   # .n64, 32-bit swapped
+        head = bytes(b for i in range(0, len(head), 4) for b in reversed(head[i:i + 4]))
+    elif magic != b"\x80\x37\x12\x40":
+        return None
+    return (int.from_bytes(head[0x10:0x14], "big"),
+            int.from_bytes(head[0x14:0x18], "big"))
+
+
+def rom_revision(path: str | os.PathLike[str]) -> str | None:
+    """The DKR revision a file is (``"pal.v80"``...), or None for anything else."""
+
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) != ROM_BYTES:
+            return None
+    except OSError:
+        return None
+    return ROM_CRCS.get(rom_crcs(path) or ())
+
+
+def resolve_roms(*sources: str | os.PathLike[str] | None) -> dict[str, str]:
+    """{revision: path} for every DKR revision among ``sources``.
+
+    Each source is a ROM file or a directory to list. The first match for a
+    revision wins, so an explicitly named file takes precedence over a scan.
+    """
+
+    found: dict[str, str] = {}
+    for source in sources:
+        if not source:
+            continue
+        if os.path.isfile(source):
+            entries = [os.fspath(source)]
+        elif os.path.isdir(source):
+            entries = [os.path.join(source, name) for name in sorted(os.listdir(source))]
+        else:
+            continue
+        for path in entries:
+            revision = rom_revision(path)
+            if revision and revision not in found:
+                found[revision] = path
+    return found
+
+
+def find_revision_rom(directory: str | os.PathLike[str] | None,
+                      revision: str) -> Path | None:
+    """The ``revision`` image in ``directory`` (resolved), found by header."""
+
+    path = resolve_roms(directory).get(revision)
+    return Path(path).resolve() if path else None
+
+
+# --------------------------------------------------------------------------- #
 #  Fatal markers
 # --------------------------------------------------------------------------- #
 

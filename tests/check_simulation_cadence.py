@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from harness_utils import DEFAULT_BUILD_DIR, resolve_binary, save_env
+from harness_utils import DEFAULT_BUILD_DIR, find_revision_rom, resolve_binary, save_env
 
 
 PACE_INIT_RE = re.compile(
@@ -86,13 +86,10 @@ def run_probe(
 
 
 def find_pal_rom(directory: Path) -> Path:
-    candidates = sorted(directory.glob("*.z64"))
-    for candidate in candidates:
-        name = candidate.name.lower()
-        if ("europe" in name or "pal" in name) and (
-            "rev 1" in name or "v80" in name
-        ):
-            return candidate.resolve()
+    """The pal.v80 image in ``directory``, identified by its header."""
+    found = find_revision_rom(directory, "pal.v80")
+    if found is not None:
+        return found
     raise AssertionError(
         f"no supported PAL v80 ROM found below {directory}; "
         "the release cadence gate requires both source clocks"

@@ -126,13 +126,23 @@ class SavesArmParsingTests(unittest.TestCase):
         self.assertEqual(gate.ghost_events(output, "save"), [(5, 0, 0, 172, 9, 4568)])
         self.assertEqual(gate.ghost_events(output, "load"), [(5, 0, 5, 0, -1, -1)])
 
-    def test_a_macos_sidecar_is_not_taken_for_the_pal_rom(self):
+    def test_the_pal_rom_is_found_by_its_header_not_its_name(self):
+        # Only the identifying header: magic and the pal.v80 CRC pair.
+        header = bytearray(gate.ROM_BYTES)
+        header[0:4] = bytes.fromhex("80371240")
+        header[0x10:0x18] = bytes.fromhex("596E145BF7D9879F")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "._Diddy Kong Racing (Europe) (Rev 1).z64").write_bytes(b"\0" * 4096)
+            # A macOS AppleDouble sidecar carries the ROM's name and sorts first.
+            sidecar = root / "._Diddy Kong Racing (Europe) (Rev 1).z64"
+            sidecar.write_bytes(bytes.fromhex("00051607") + b"\0" * 4092)
             self.assertIsNone(gate.find_pal_rom(root))
-            rom = root / "Diddy Kong Racing (Europe) (Rev 1).z64"
-            rom.write_bytes(b"\0" * gate.ROM_BYTES)
+            named = root / "Diddy Kong Racing (Europe) (Rev 1).z64"
+            named.write_bytes(b"\0" * gate.ROM_BYTES)
+            self.assertIsNone(gate.find_pal_rom(root),
+                              "a right-sized file with the right name but no header")
+            rom = root / "renamed.bin"
+            rom.write_bytes(bytes(header))
             self.assertEqual(gate.find_pal_rom(root), rom.resolve())
 
 
