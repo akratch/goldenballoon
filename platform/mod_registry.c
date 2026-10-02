@@ -908,9 +908,9 @@ int mdkr_mod_registry_init(MdkrModRegistry *reg, const char *mods_dir) {
         reg->listing_incomplete = 1;
         fprintf(stderr,
                 "[MODS] the mods folder %s could not be read completely (%s); "
-                "using the %u entr%s read before that. Pack order may differ "
-                "from a full read: a pack that was not read cannot supply "
-                "its files, so a lower-priority pack may be used instead\n",
+                "using the %u entr%s read before that. Some packs may be "
+                "missing, so a texture or other file may come from a "
+                "lower-priority pack than usual\n",
                 mods_dir, strerror(listing_error), (unsigned)names.count,
                 names.count == 1u ? "y" : "ies");
     }
