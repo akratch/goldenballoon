@@ -3455,6 +3455,17 @@ covers missing counters and each broken invariant, and checks the integration
 order in both loops. These additional cases await execution; quality thresholds
 and retry budgets are unchanged.
 
+The strict arm's vblank check requires the median phase on the display grid.
+On a two-slot grid — the second quantum is the tick, a 60 Hz display against
+the 30 Hz tick — the 95th percentile may instead be the legacy quantizer's
+end-of-tick raw phase, when the histogram bin lies entirely in (one tick -
+half a quantum, one tick]. That is the phase `mdkr_present_quantize_phase`
+returns when rounding would cross the tick, and the strict arm forces that
+quantizer. A phase in the gap below that zone still fails, and a four-slot
+grid (120 Hz) still requires the 95th percentile on a grid point. The
+shipping companion arm projects by slot and is not given this exception; its
+re-anchor budget is unchanged.
+
 A locked console is not a missing display to the engine: the occlusion shim
 keeps handing out drawables and presents complete, but nothing consumes them,
 so the drawable acquire never blocks, no vblank reaches the pacer, and the
@@ -3463,8 +3474,9 @@ The gate now reads the console session (`ioreg`: `CGSSessionScreenIsLocked`,
 `kCGSSessionOnConsoleKey`) before the realtime arms and after every attempt,
 and treats an attempt whose `[PRESENT-DISCIPLINE]` row shows the acquire never
 waiting (`blockp95us` inside the first 100 µs bin over at least 600 acquires;
-an unlocked 120 Hz panel measured 2200-2400) as one with no consumer. That is
-the host's doing only while the console is not observably unlocked (locked, no
+an unlocked 120 Hz panel measured 2200-2400, and a frontmost 60 Hz panel
+measured 200, still above that bin) as one with no consumer. That is the
+host's doing only while the console is not observably unlocked (locked, no
 session, or unreadable); on an unlocked console it is a failure, "no consumer
 on an unlocked console", which is how an unthrottled never-blocking regression
 shows, when the gate is run without `--allow-no-baseline`. The suite always

@@ -84,6 +84,16 @@ reported `mode` matches what its own `variance_ppm` implies -- `free` above
 the threshold, `grid` at or below it -- so it is a real assertion on any
 machine rather than a hardcoded expectation tied to this one.
 
+On a two-slot grid the second quantum is the tick (60 Hz display, 30 Hz
+tick). The strict arm's p95 may then be the raw phase
+`mdkr_present_quantize_phase` returns when rounding would cross the tick,
+provided that histogram bin lies entirely in (one tick - half a quantum,
+one tick]. The median still has to be the midpoint. A phase in the gap
+below that zone still fails, and a four-slot grid (120 Hz, quantum
+250000 ppm) still requires both percentiles on a grid point. Players do
+not set `MDKR_PRESENT_QUANTUM_STRICT`; the shipping companion arm projects
+by slot and is the quality bar. Its re-anchor budget is unchanged.
+
 THE DISPLAY-CHANGE ARM (M3 slice 2) covers a window moving to a monitor with a
 different refresh. What can be automated is everything downstream of the event:
 MDKR_TEST_DISPLAY_RATE_SWITCH=<hz>@<tick> makes the host report a different
@@ -579,6 +589,34 @@ def grid_locked(reported: int, grid: int, binwidth: int) -> bool:
     return False
 
 
+def two_slot_display_grid(grid: int, binwidth: int) -> bool:
+    """The second quantum is the tick: a 60 Hz display against a 30 Hz tick.
+
+    Twice a 120 Hz quantum is the midpoint, not the tick, so that grid is not
+    two-slot. One histogram bin of slack covers a quantum the histogram
+    rounded; it does not turn 250000 into 500000.
+    """
+    if grid <= 0:
+        return False
+    return abs(grid * 2 - ONE_TICK_PPM) <= max(binwidth, 0)
+
+
+def raw_phase_at_tick_boundary(reported: int, grid: int, binwidth: int) -> bool:
+    """The sample bin lies wholly in the quantizer's end-of-tick fallback.
+
+    ``mdkr_present_quantize_phase`` returns the measured phase when rounding
+    would land on or past the tick. On a two-point grid that phase lives in
+    ``(one tick - half a quantum, one tick]``. The histogram reports the bin's
+    upper edge, so the whole bin ``(reported - binwidth, reported]`` has to
+    sit inside that zone. A smear through the gap below the zone is still a
+    miss.
+    """
+    if grid <= 0 or reported <= 0 or binwidth < 0:
+        return False
+    zone_start = ONE_TICK_PPM - grid // 2
+    return reported - binwidth > zone_start and reported <= ONE_TICK_PPM
+
+
 def check_vblank_projection(result: Run) -> list[str]:
     """The displayed phases really are points on the display's own grid.
 
@@ -586,6 +624,13 @@ def check_vblank_projection(result: Run) -> list[str]:
     caller decides that. A count-based check cannot see this: a build that
     stopped projecting would still present the right NUMBER of images at the
     right phases-on-average, and only stop being even.
+
+    The strict arm forces the legacy quantizer. On a two-slot grid its p95 may
+    be the raw phase that quantizer emits when rounding would cross the tick;
+    that bin is the documented answer, not a third slot. p50 still has to be
+    the midpoint, and a four-slot grid keeps both percentiles on a grid point.
+    The shipping slot arm is judged by ``check_slot_quality`` and is not given
+    this exception.
     """
     label = result.label
     alpha = result.hist["alpha-delta"]
@@ -598,14 +643,19 @@ def check_vblank_projection(result: Run) -> list[str]:
             "own refresh, so the interpolation phase must be projected onto "
             "its grid; the projection declined"]
     binwidth = alpha.get("binwidth", 0)
+    two_slot = two_slot_display_grid(grid, binwidth)
     for percentile in ("p50", "p95"):
         reported = alpha.get(percentile, 0)
-        if not grid_locked(reported, grid, binwidth):
-            failures.append(
-                f"{label}: alpha-delta {percentile}={reported}ppm is not a "
-                f"multiple of the {grid}ppm display grid (binwidth "
-                f"{binwidth}ppm) — displayed phases are not landing on "
-                "projected vblanks")
+        if grid_locked(reported, grid, binwidth):
+            continue
+        if (percentile == "p95" and two_slot and
+                raw_phase_at_tick_boundary(reported, grid, binwidth)):
+            continue
+        failures.append(
+            f"{label}: alpha-delta {percentile}={reported}ppm is not a "
+            f"multiple of the {grid}ppm display grid (binwidth "
+            f"{binwidth}ppm) — displayed phases are not landing on "
+            "projected vblanks")
     return failures
 
 
@@ -1296,9 +1346,9 @@ def main() -> int:
                     # returns 0 unless the pacer is real and every other
                     # smoothing gate is headless (s_paceMode =
                     # g_headlessFrames < 0 ? PACE_REALTIME : PACE_SYNTH).
-                    # Reporting that as a note let the summary below claim
-                    # "displayed phases land on the projected display grid"
-                    # about a run that never projected one. It is a failure
+                    # Reporting that as a note let the summary below claim the
+                    # median phase landed on the projected display grid about
+                    # a run that never projected one. It is a failure
                     # unless the suite flag is set. That flag covers an
                     # occluded automation window: no consumer on an unlocked
                     # console, an unthrottled present, or a host refusal all
@@ -1432,7 +1482,8 @@ def main() -> int:
     print("check_pacing_quality: PASS -- displayed-interval, interpolation-"
           "phase and present-queue-latency census consistent across every "
           "policy/smoothing arm, with no phase regression and no audio "
-          "underrun; displayed phases land on the projected display grid, the "
+          "underrun; the median phase lands on the projected display grid "
+          "(a two-slot strict-arm p95 may be the end-of-tick raw phase), the "
           "refresh re-derives live, and the paced tails are within the M3 "
           "bounds")
     for note in notes:

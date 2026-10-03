@@ -277,6 +277,56 @@ class PacingReportingTests(unittest.TestCase):
                                        realtime=True)
                 self.assertEqual(captured["env"].get("MDKR_TEST_FOREGROUND"), "1")
 
+    def test_two_slot_boundary_fallback_is_the_end_of_tick_phase(self):
+        # 60 Hz display, 30 Hz tick: two grid points. The legacy quantizer
+        # returns the raw phase when rounding would cross the tick, and that
+        # bin sits just below one tick (measured p95 upper edge 958464,
+        # binwidth 4096). The midpoint p50 stays on the grid.
+        result = sample_run("strict", 0)
+        alpha = result.hist["alpha-delta"]
+        alpha["p50"] = 503808
+        alpha["p95"] = 958464
+        alpha["gridppm"] = 500000
+        alpha["binwidth"] = 4096
+        self.assertEqual(pacing.check_vblank_projection(result), [])
+
+    def test_a_mid_gap_phase_still_fails_on_a_two_slot_grid(self):
+        result = sample_run("strict", 0)
+        alpha = result.hist["alpha-delta"]
+        alpha["p50"] = 503808
+        alpha["p95"] = 700416
+        alpha["gridppm"] = 500000
+        alpha["binwidth"] = 4096
+        problems = pacing.check_vblank_projection(result)
+        self.assertTrue(any("p95=700416ppm" in item for item in problems),
+                        problems)
+
+    def test_a_four_slot_grid_still_rejects_an_off_grid_p95(self):
+        # 120 Hz: four slots. An end-of-tick-looking bin is not a free pass.
+        result = sample_run("strict", 0)
+        alpha = result.hist["alpha-delta"]
+        alpha["p50"] = 253952
+        alpha["p95"] = 958464
+        alpha["gridppm"] = 250000
+        alpha["binwidth"] = 4096
+        problems = pacing.check_vblank_projection(result)
+        self.assertTrue(any("p95=958464ppm" in item for item in problems),
+                        problems)
+
+    def test_two_slot_midpoint_p50_stays_on_the_grid(self):
+        # The end-of-tick allowance is the tail only. A median that has left
+        # the midpoint is the projection failing, even when p95 is the raw
+        # phase the quantizer is allowed to emit.
+        result = sample_run("strict", 0)
+        alpha = result.hist["alpha-delta"]
+        alpha["p50"] = 700416
+        alpha["p95"] = 958464
+        alpha["gridppm"] = 500000
+        alpha["binwidth"] = 4096
+        problems = pacing.check_vblank_projection(result)
+        self.assertTrue(any("p50=700416ppm" in item for item in problems),
+                        problems)
+
 
 # The rows a locked console produced (task T12c, 2026-10-02, console locked
 # from 00:30): presents complete, nothing consumes them, so the drawable acquire
