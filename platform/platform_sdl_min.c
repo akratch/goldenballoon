@@ -1176,7 +1176,17 @@ int platform_sdl_init(void) {
 #endif
 
     Uint32 base_flags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
+    /* A visible automation window is still born hidden. SDL shows a
+     * non-hidden window with makeKeyAndOrderFront, and that activates an
+     * accessory app for the moment before we can order the window behind.
+     * Only an automation surface takes this path: a player's launch and the
+     * foreground test arm (MDKR_TEST_FOREGROUND) are not automation, so they
+     * keep a normal shown window. */
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+    if (sdl_should_hide_window() || sdl_automation_surface_requested()) {
+#else
     if (sdl_should_hide_window()) {
+#endif
         base_flags |= SDL_WINDOW_HIDDEN;
     } else if (sdl_should_start_fullscreen()) {
         /* Desktop fullscreen preserves the monitor's current mode while
@@ -1275,17 +1285,17 @@ int platform_sdl_init(void) {
         }
 #endif
         if (getenv("MDKR_TEST_VISIBLE_HEADLESS") != NULL) {
-            SDL_ShowWindow(s_window);
 #if defined(__APPLE__)
-            /* Never SDL_RaiseWindow an automation window: SDL's raise
-             * activates the application, and an accessory application (the
-             * policy every visible automation window now has) CAN be
-             * activated. Order it behind instead, as the app shell does. */
+            /* SDL_ShowWindow is makeKeyAndOrderFront. On an accessory app
+             * that activates the process, which ordering behind afterwards
+             * does not undo. Show the automation window by ordering it
+             * behind, the same way the app shell does. */
             if (sdl_automation_surface_requested()) {
                 platform_macos_order_automation_window();
             } else
 #endif
             {
+                SDL_ShowWindow(s_window);
                 SDL_RaiseWindow(s_window);
             }
             SDL_PumpEvents();
@@ -1298,8 +1308,8 @@ int platform_sdl_init(void) {
     {
         const int result = sdl_init_gl(base_flags);
 #if defined(__APPLE__)
-        /* The WebGPU branch activates at window creation; GL did not need
-         * to until the frontmost test arm asked for it. */
+        /* Visible automation was created hidden, so this is what shows it.
+         * The foreground test arm was not created hidden and still activates. */
         if (result == 0 && sdl_test_foreground_requested()) {
             platform_macos_activate_app("test foreground run (GL)");
         } else if (result == 0 && sdl_automation_surface_requested() &&
