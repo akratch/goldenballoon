@@ -15,7 +15,8 @@
  *      still round-trips its own output, so only these facts can see it.
  *   2. Re-encoding the decoded fields reproduces the image byte for byte, both
  *      through a no-op slot patch and through a patch that rewrites every slot
- *      field with its decoded value.
+ *      field with its decoded value. mdkr_save_encode only copies the stored
+ *      image, so that call is not this check.
  *   3. 1.7.0's container decodes to the same payload and metadata, and encoding
  *      that payload and metadata reproduces 1.7.0's file byte for byte.
  */
@@ -175,8 +176,12 @@ static void test_fields_reencode_byte_identically(const uint8_t image[MDKR_SAVE_
     uint8_t encoded[MDKR_SAVE_IMAGE_SIZE];
 
     CHECK(mdkr_save_decode(image, MDKR_SAVE_IMAGE_SIZE, &document) == MDKR_SAVE_OK);
+    /* encode copies doc->bytes, which decode filled from the input. A field
+     * edit must not move those bytes. The apply() checks below re-serialise. */
+    document.slots[0].taj_flags ^= 1u;
     CHECK(mdkr_save_encode(&document, encoded, sizeof(encoded)) == MDKR_SAVE_OK);
     CHECK(memcmp(encoded, image, sizeof(encoded)) == 0);
+    document.slots[0].taj_flags ^= 1u;
 
     /* A selected slot with no field changes is re-serialised from its decoded
      * fields by write_slot(), checksum included. */

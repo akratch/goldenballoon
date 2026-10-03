@@ -4513,8 +4513,8 @@ the same retail routes and requires their `[SIMHASH]` v3 streams to be
 byte-identical for 6,600 ticks, at least 3,000 of them racing: Ancient Lake and
 Whale Bay (two worlds, car and hovercraft), Tricky's boss race, and all four
 challenge arenas (Fire Mountain has no AI nodes; the other three are where the
-AI plans routes through the node graph), on the US ROM and on the PAL ROM when
-`--roms` holds one. Each arm has its own save directory, preferences and working directory
+AI plans routes through the node graph), on the US ROM and on the PAL ROM.
+`--roms` without a PAL v80 image fails the gate. Each arm has its own save directory, preferences and working directory
 (no content packs) and runs at Original cadence. A red route prints the first
 divergent tick with both rows; bisect it over `v1.7.0..HEAD` and decide whether
 the change is intended. A `MDKR_RNGSEED=legacy` arm must diverge, the reference
@@ -4588,9 +4588,9 @@ own codec in `game/src/save_data.c`, which is what a player's save actually
 goes through: `MDKR_SAVE_COMPAT_FIXTURE` hands it the image after level-table
 init, and every fact 1.7.0 reported must come back, with Ancient Lake cleared at
 save index 3 and the slot re-encoded byte for byte. A copy with the slot shifted
-one bit (checksum resealed) must be rejected, which is what proves the
-comparison can see a layout change; a checksum-valid settings word must
-round-trip and a wrong one must be refused. It runs in the native and ASan
+one bit (checksum resealed) must still decode as a valid file and differ in at
+least one fact. A refusal of the image is not that control. A checksum-valid
+settings word must round-trip and a wrong one must be refused. It runs in the native and ASan
 lanes.
 
 ## Authored state/RNG compatibility — `tests/check_authored_rng_compat.py`

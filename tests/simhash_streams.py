@@ -92,18 +92,22 @@ def configuration_problems(first_cache: dict[str, str],
                                "The two trees must be configured identically "
                                "apart from the architecture, or this gate "
                                "measures the configuration difference"),
-                           ignore: tuple[str, ...] = ()) -> list[str]:
+                           ignore: tuple[str, ...] = (),
+                           also: tuple[str, ...] = ()) -> list[str]:
     """Configuration differences that would confound the comparison.
 
     Compares the shared keys above plus every ``MDKR_*`` project option, so a
     new option is covered the day it is added rather than the day someone
     remembers to list it here. Keys that are supposed to differ (the
     architecture selection) are simply never compared; ``ignore`` names any
-    project option a caller has a documented reason to let differ.
+    project option a caller has a documented reason to let differ. ``also``
+    names extra keys for a caller that must compare them. The
+    cross-architecture gate leaves it empty.
     """
 
     problems: list[str] = []
     keys = set(SHARED_CACHE_KEYS)
+    keys.update(also)
     keys.update(k for k in first_cache if k.startswith("MDKR_"))
     keys.update(k for k in second_cache if k.startswith("MDKR_"))
     for key in sorted(keys - set(ignore)):

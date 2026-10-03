@@ -3200,6 +3200,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_previous_release_parity.py)
     add_test(
+        NAME save_v170_compat_control
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_save_v170_compat.py)
+    add_test(
         NAME check_save_dir_hermeticity
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_check_save_dir_hermeticity.py)

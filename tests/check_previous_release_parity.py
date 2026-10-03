@@ -34,9 +34,10 @@ What it asserts
    ``MDKR_RNGSEED=legacy`` must DIVERGE from its own base stream. Without it
    an empty capture or a comparator that always says "identical" passes.
 4. **The reference is what it claims to be.** Its source tree is a clean
-   checkout of ``--reference-tag``, both builds share build type and every
-   project option they both have, the two are not the same executable, and
-   neither is older than its own source.
+   checkout of ``--reference-tag``, and an untracked file counts. Both builds
+   share build type, architecture, C and C++ compilers, the SDL pkg-config
+   path or ``SDL2_DIR``, and every project option they both have. The two are
+   not the same executable, and neither is older than its own source.
 5. **Saves cross the boundary.** From a fresh save directory, the reference
    drives a Time Trial on Ancient Lake in the car and saves its ghost. This
    build then decodes that EEPROM with the game's own codec
@@ -53,7 +54,8 @@ Smokey Castle, Darkwater Beach and Icicle Pyramid; Fire Mountain has none --
 are where the AI plans routes through the node graph (func_8001CD28) rather
 than following the racing line. Each route is a single Tracks race retargeted
 by MDKR_LOAD_TRACK from the one menu route every state-hash gate shares, on
-the US ROM and, when ``--roms`` holds a PAL v80 image, on the PAL ROM too.
+the US ROM and on the PAL ROM. Passing ``--roms`` without a PAL v80 image
+fails the gate; the release run compares both regions.
 
 A divergence is a finding, not noise: both builds are deterministic run to run
 (check_state_hash.py), so a red route means the two releases play that route
@@ -110,6 +112,19 @@ WINDOW = "320x240"
 
 # Project options that legitimately differ between two releases' builds.
 RELEASE_IDENTITY_KEYS = ("MDKR_VERSION", "MDKR_BUILD_STAMP")
+# The cross-architecture gate leaves these out of the shared set: that gate
+# is supposed to differ by architecture and may use another compiler. This
+# gate is one release against the next, so the toolchain and the SDL that was
+# actually linked have to match. SDL2_LIBDIR is the directory pkg-config
+# reported; SDL2_DIR is the explicit find hint. A build uses one of them.
+PARITY_TOOLCHAIN_KEYS = (
+    "CMAKE_OSX_ARCHITECTURES",
+    "CMAKE_C_COMPILER",
+    "CMAKE_CXX_COMPILER",
+    "PKG_CONFIG_EXECUTABLE",
+    "SDL2_LIBDIR",
+    "SDL2_DIR",
+)
 
 
 class Route(NamedTuple):
@@ -281,7 +296,8 @@ def reference_problems(reference: Path, current: Path, tag: str,
         ref_cache, cur_cache, labels=(tag, "this build"),
         consequence="Build the reference exactly as this build was configured, or "
                     "this gate measures the configuration difference",
-        ignore=tuple(one_sided) + RELEASE_IDENTITY_KEYS)
+        ignore=tuple(one_sided) + RELEASE_IDENTITY_KEYS,
+        also=PARITY_TOOLCHAIN_KEYS)
 
     source = Path(ref_cache.get("CMAKE_HOME_DIRECTORY", ""))
     if not source.is_dir():
@@ -290,7 +306,9 @@ def reference_problems(reference: Path, current: Path, tag: str,
     else:
         head = git(source, "rev-parse", "HEAD")
         want = git(source, "rev-parse", f"{tag}^{{commit}}")
-        dirty = git(source, "status", "--porcelain", "--untracked-files=no")
+        # Untracked files are local changes. Hiding them let a stray source
+        # file sit in the reference tree and still count as the published tag.
+        dirty = git(source, "status", "--porcelain")
         if head.returncode != 0 or want.returncode != 0:
             problems.append(f"cannot resolve HEAD and {tag} in the reference source "
                             f"{source}: {(head.stderr or want.stderr).strip()}")
@@ -526,7 +544,7 @@ def main() -> int:
     parser.add_argument("--reference-tag", default=DEFAULT_REFERENCE_TAG)
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--roms", default=None,
-                        help="ROM directory; its PAL v80 image adds the PAL routes")
+                        help="ROM directory; the gate fails unless it holds a PAL v80 image")
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAMES)
     parser.add_argument("--route", action="append", dest="routes",
                         help="run only these route names (iteration only)")

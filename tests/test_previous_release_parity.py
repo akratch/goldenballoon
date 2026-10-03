@@ -7,12 +7,13 @@ having raced the route, the skip contract, the release-to-release wording of
 the shared divergence report, and the facts the saves arm reads out of a run.
 """
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 import check_previous_release_parity as gate
-from simhash_streams import SimHashRow, divergence_report
+from simhash_streams import SimHashRow, configuration_problems, divergence_report
 
 ANCIENT_LAKE = gate.ROUTES[0]
 WHALE_BAY = next(r for r in gate.ROUTES if r.name == "whale-bay")
@@ -150,6 +151,94 @@ class SavesArmParsingTests(unittest.TestCase):
             rom = root / "renamed.bin"
             rom.write_bytes(bytes(header))
             self.assertEqual(gate.find_pal_rom(root), rom.resolve())
+
+
+class ToolchainParityTests(unittest.TestCase):
+    def test_a_compiler_or_sdl_difference_fails_the_parity_gate(self):
+        base = {key: "same" for key in gate.PARITY_TOOLCHAIN_KEYS}
+        for key in gate.PARITY_TOOLCHAIN_KEYS:
+            other = dict(base)
+            other[key] = "different"
+            problems = configuration_problems(
+                base, other, also=gate.PARITY_TOOLCHAIN_KEYS)
+            self.assertTrue(any(key in item for item in problems), key)
+
+    def test_the_shared_comparator_still_ignores_architecture(self):
+        arm = {"CMAKE_OSX_ARCHITECTURES": "arm64",
+               "CMAKE_C_COMPILER": "/usr/bin/cc"}
+        x86 = {"CMAKE_OSX_ARCHITECTURES": "x86_64",
+               "CMAKE_C_COMPILER": "/usr/bin/cc"}
+        self.assertEqual(configuration_problems(arm, x86), [])
+
+
+class PalWordingTests(unittest.TestCase):
+    def test_missing_pal_is_described_as_a_failure(self):
+        self.assertNotIn("when ``--roms`` holds a PAL v80 image", gate.__doc__)
+        self.assertIn("fails", gate.__doc__)
+        source = Path(gate.__file__).read_text(encoding="utf-8")
+        self.assertIn("the gate fails unless it holds a PAL v80 image", source)
+        readme = Path(gate.__file__).resolve().parent / "README.md"
+        section = readme.read_text(encoding="utf-8").split(
+            "## Previous-release parity", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("when `--roms` holds one", section)
+        self.assertIn("fails", section)
+
+
+def git_repo(source: Path) -> None:
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(source), *args], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    run("init")
+    run("config", "user.email", "akratch@users.noreply.github.com")
+    run("config", "user.name", "akratch")
+    run("config", "commit.gpgsign", "false")
+    run("add", "tracked.c")
+    run("commit", "-m", "base")
+    run("tag", "v1.7.0")
+
+
+def reference_pair(root: Path, source: Path):
+    ref_dir = root / "ref"
+    cur_dir = root / "cur"
+    ref_dir.mkdir()
+    cur_dir.mkdir()
+    (ref_dir / "mdkr64").write_bytes(b"reference-binary")
+    (cur_dir / "mdkr64").write_bytes(b"candidate-binary")
+    cache = (f"CMAKE_HOME_DIRECTORY:INTERNAL={source}\n"
+             "CMAKE_BUILD_TYPE:STRING=Release\n")
+    (ref_dir / "CMakeCache.txt").write_text(cache)
+    (cur_dir / "CMakeCache.txt").write_text(cache)
+    return ref_dir / "mdkr64", cur_dir / "mdkr64"
+
+
+class ReferenceSourceTests(unittest.TestCase):
+    def test_an_untracked_file_is_local_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "tracked.c").write_text("int x;\n")
+            git_repo(source)
+            (source / "stray.c").write_text("int stray;\n")
+            reference, current = reference_pair(root, source)
+            problems, _notes = gate.reference_problems(
+                reference, current, "v1.7.0", True)
+        self.assertTrue(any("local changes" in item for item in problems),
+                        problems)
+
+    def test_a_clean_checkout_is_not_local_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "tracked.c").write_text("int x;\n")
+            git_repo(source)
+            reference, current = reference_pair(root, source)
+            problems, _notes = gate.reference_problems(
+                reference, current, "v1.7.0", True)
+        self.assertFalse(any("local changes" in item for item in problems),
+                         problems)
 
 
 if __name__ == "__main__":

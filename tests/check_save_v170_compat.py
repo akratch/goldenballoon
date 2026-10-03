@@ -23,8 +23,9 @@ re-encodes it. This check asserts:
 3. **Byte-identical re-encode** of the slot, and the blocks 1.7.0 left empty
    read as empty.
 4. **A mis-laid-out save is caught.** The same image with the slot's fields
-   shifted one bit (checksum resealed, so the game still accepts it) must fail
-   assertion 1. Without that arm, a comparison that read nothing would pass.
+   shifted one bit (checksum resealed, so the game still accepts it) must
+   decode as a valid slot 0 and disagree on at least one fact. A game that
+   only refuses the image does not prove the facts were compared.
 5. **The settings word the route never wrote still round-trips.** 1.7.0 left
    it empty, so the image is re-run with a checksum-valid settings word
    (subtitles on, Adventure Two unlocked) in its place: the game must accept
@@ -153,6 +154,25 @@ def fact_differences(expected: dict, output: str) -> list[str]:
     return found
 
 
+def shifted_control_problems(expected: dict, output: str) -> list[str]:
+    """The shifted slot must decode as slot 0 and disagree on a real fact.
+
+    fact_differences reports a missing decode as a difference. Treating any
+    non-empty list as success let a game that refused the image pass.
+    """
+
+    decoded = next((match for match in SLOT_RE.finditer(output)
+                    if match.group(1) == "0"), None)
+    if decoded is None:
+        return ["positive control failed: the shifted slot was not decoded as "
+                "a valid slot 0, so a rejection cannot show that the facts "
+                "were compared"]
+    if not fact_differences(expected, output):
+        return ["positive control failed: a slot shifted by one bit decoded to the "
+                "same facts, so the comparison above cannot see a layout change"]
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -223,10 +243,8 @@ def main() -> int:
         failures.append("bad settings control: a settings word with a wrong checksum was "
                         "not reported INVALID")
 
+    failures += shifted_control_problems(expected, control)
     control_found = fact_differences(expected, control)
-    if not control_found:
-        failures.append("positive control failed: a slot shifted by one bit decoded to the "
-                        "same facts, so the comparison above cannot see a layout change")
 
     if failures:
         print("check_save_v170_compat: FAIL")
@@ -237,8 +255,9 @@ def main() -> int:
         return 1
     print("check_save_v170_compat: PASS -- the game decodes the 1.7.0 save to every fact "
           "1.7.0 reported (Ancient Lake cleared at save index 3) and re-encodes the slot "
-          f"byte for byte; the one-bit-shifted control is rejected ({len(control_found)} "
-          "differing facts); a settings word round-trips and a bad one is refused")
+          f"byte for byte; the one-bit-shifted control decodes and differs "
+          f"({len(control_found)} facts); a settings word round-trips and a bad "
+          "one is refused")
     return 0
 
 
