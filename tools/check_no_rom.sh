@@ -20,7 +20,9 @@
 #
 # Why not just grep for the game's name: the engine legitimately contains ROM
 # validation strings, so a plain string search false-positives. The header magic is
-# structural, so it does not.
+# normally distinguishes data from validation strings. A PE64 relocated code
+# pointer can coincidentally contain those four bytes; that exception requires
+# a complete pointer/section/relocation proof, never a filename allowlist.
 #
 # Usage:
 #   tools/check_no_rom.sh dist/web            # scan a directory (recursively)
@@ -81,9 +83,13 @@ for f in "${files[@]}"; do
     LC_ALL=C grep -qF "$be_magic" "$f" 2>/dev/null || scan_status=$?
     case "$scan_status" in
         0)
-            echo "check_no_rom: FAIL — N64 ROM magic sequence embedded in: $f" >&2
-            bad=1
-            continue
+            if python3 "$script_dir/check_pe_rom_magic.py" "$f"; then
+                : # The narrow exception was structurally verified.
+            else
+                echo "check_no_rom: FAIL — N64 ROM magic sequence embedded in: $f" >&2
+                bad=1
+                continue
+            fi
             ;;
         1) ;;
         *)

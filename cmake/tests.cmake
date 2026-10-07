@@ -3222,6 +3222,10 @@ if(BUILD_TESTING)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_clean_room_guard.py)
     add_test(
+        NAME pe_rom_magic_guard
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_pe_rom_magic.py)
+    add_test(
         NAME source_custody
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_source_custody.py)
