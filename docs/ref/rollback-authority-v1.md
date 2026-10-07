@@ -280,7 +280,7 @@ reader and writer. It prevents a declaration from silently bypassing that
 decision. Local automatic variables and heap fields remain covered by the v3
 family audit and the engine range registry.
 
-The reviewed baseline is now 1,824 declarations. The row added since 1,823 is
+The earlier reviewed baseline was 1,824 declarations. The row added since 1,823 is
 `s_bonus_roster_allowed` in `taj_mod.c`, classified presentation-local in the
 exclusions table above. Its seventy-six-row delta (no
 removals) is classified: zero rows are simulation authority, twenty-six are
@@ -483,3 +483,27 @@ grammar.
 - Run native/wasm and NTSC/PAL cross-process convergence before opening online
   races. Until every row passes, private-room UI may prototype but cannot start
   an online race.
+
+
+### 1.8 release qualification: 1,824 to 1,846
+
+The reviewed baseline is now **1,846 declarations**. The exact delta from the
+1,824-row baseline is 22 additions and no removals. Classification follows the
+actual readers and writers; none adds mutable race authority requiring a new
+snapshot range:
+
+| File and declarations | Classification and lifetime evidence |
+|---|---|
+| `camera.c`: `sSpriteModelAttachments`, `sSpriteModelBarkVertices`, `sSpriteModelBarkLevel` (3) | Presentation cache. `sprite_model_attachment()` derives canopy attachment positions from level-model vertices for replacement sprite drawing. It writes the draw pose/replay owner, not the racer or object simulation. `mdkr_sprite_model_reset_attachments()` frees/clears it at track load/unload. The cache's size/count/cursor companions are likewise presentation state, although their types are outside this lexical census. |
+| `camera_obstruction_runtime.c`: `sCameraHeldBoundsParsed`, `sCameraHeldMaxDwellSeconds`, `sCameraHeldMaxDivergenceDegrees`, `sCameraHeldSoftDivergenceDegrees` (4) | Presentation configuration. Read only by held-shot camera bound selection; initialized from constants and optionally parsed once from `MDKR_TEST_CAMERA_HELD_BOUNDS`. They govern view recovery, not authored racer state. |
+| Same file: `sCameraHeldFault`, `sCameraSoftStaticExtent`, `sCameraSoftStaticParsed` (3) | Camera test seams. The held-fault seam is inert without its opt-in environment setting; the soft-static override is zero unless explicitly configured by `MDKR_TEST_CAMERA_SOFT_STATIC`. Their mutations affect camera proof/query/projection controls only. They are not race authority. |
+| `game.c`: `sRetailLevelCount`, `sRetailWorldCount`, `sLevelNameSizes` (3) | ROM-derived metadata, fixed after asset initialization. The first two preserve retail save-record dimensions through `level_count_for_save()` even when the loaded table has appended content; they are not per-tick counters. The size array shares the `gLevelNames` allocation and bounds language/name reads. Restoring a race cannot change these asset facts. Save writes retain their separate confirmed-only boundary. |
+| `menu.c`: `sCharselectMusicOwner`, `sCharselectMusicSequence`, `sCharselectMusicObserved`, `sCharselectMusicActive`, `sCharselectMusicIndex`, `sCharselectMusicCustom` (6) | Menu audio presentation. `charselect_music_observe()` reads player/custom selections and chooses the menu tune; it never writes those selections. The setter changes music channels/menu fader state. Entry resets observation, and exit restores the retail tune. These are outside the race rollback window. |
+| `objects.c`: `sObjectBehaviorCache` (1) | Rebuildable asset-derived cache. `allocate_object_pools()` fills it with the unknown sentinel; `mdkr_obj_behavior_of()` memoizes the immutable object-header behavior used for object-map admission, balances header references, and does not cache transient load failure. It contains no evolving object/racer state. The admission self-test saves/restores it. |
+| `objects.c`: `sAiRouteBudgetHits` (1) | Diagnostic observation counter. Incremented only when the bounded AI search exhausts its pop budget; its value limits stderr repetition and is read by the route unit-test accessor. It does not choose the route result or enter simulation/hash/wire state. The search's budget behavior is separately covered by route and previous-release parity gates. |
+| `textures_sprites.c`: `sPulseRingImageValid` (1) | Presentation texture validation cache. CRC checks over the ring and neighboring texture bytes set it when source pointers change; it controls whether the assembled image is returned to rendering, and texture reset clears it. It is not a gameplay condition. |
+
+The fingerprint and inventory move together. The omitted-authority negative
+control and local-declaration control remain unchanged; a subsequent source
+declaration delta must still fail this gate. This classification does not
+replace runtime state-hash/restore validation or close existing open audit items.
