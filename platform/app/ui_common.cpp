@@ -1,6 +1,8 @@
 // ui_common.cpp — see ui_common.h.
 #include "ui_common.h"
 #include "app_theme.h"
+#include "app_ui_policy.h"
+#include "imgui_internal.h"
 
 #include "a11y_model.h"
 #include "video_config.h"
@@ -427,9 +429,21 @@ bool SpeechEnabled() {
            config->values[MDKR_A11Y_SPEECH].number != 0.0f;
 }
 
+static char g_smokeFocusedItem[256] = {};
+void ResetSmokeFocusedItem() { g_smokeFocusedItem[0] = '\0'; }
+const char *SmokeFocusedItem() { return g_smokeFocusedItem; }
+
 void SpeakFocusedItem(const char *name, const char *value, const char *help) {
     // Focus first: it is the cheapest test and it is false for all but one row.
     if (!ImGui::IsItemFocused()) return;
+    if (AppUi_a11yWalkArmed() && name != nullptr) {
+        std::snprintf(g_smokeFocusedItem, sizeof(g_smokeFocusedItem), "%s", name);
+        const ImGuiWindow *window = ImGui::GetCurrentWindow();
+        const ImRect item(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        const bool visible = window->ClipRect.Contains(item);
+        std::printf("[app-focus-geometry] visible=%d scroll=%.1f name=%s\n",
+                    visible ? 1 : 0, window->Scroll.y, name);
+    }
     if (!SpeechEnabled()) return;
     if (name == nullptr || name[0] == '\0') return;
     // Compose the identity exactly as mdkr_a11y_focus() will compose the

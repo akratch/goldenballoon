@@ -140,6 +140,9 @@ void ConfirmModalSize();
 // that item holds keyboard/gamepad focus, and only when what it would say has
 // changed. Call it directly after the widget: any text drawn in between
 // becomes "the last item" and the focus test then reads the wrong thing.
+// Read-only input-test observation; reset before the tested launcher frame.
+void ResetSmokeFocusedItem();
+const char *SmokeFocusedItem();
 void SpeakFocusedItem(const char *name, const char *value, const char *help);
 // "You are now in <name>." Repeats are dropped, so calling it every frame from
 // a header that draws every frame is correct and silent.

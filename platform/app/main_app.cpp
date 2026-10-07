@@ -5,6 +5,7 @@
 // main() body, renamed under -DMDKR_APP), so every scripted invocation behaves
 // exactly as it did before this shell existed. See arg_triage.h for why the rule
 // is deny-by-default rather than mgb64's automation allow-list.
+#include "ui_common.h"
 #include "app_brand.h"
 #include "app_activation.h"
 #include "app_config.h"
@@ -3271,6 +3272,15 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * that a player's input can reach them.
      */
     const bool smokeA11yWalk = AppUi_a11yWalkArmed();
+    const char *smokeOpenLocal = std::getenv("MDKR_APP_SMOKE_OPEN_LOCAL");
+    const bool smokeOpenLocalArmed = smokeA11yWalk && smokeUsesGamepad &&
+        smokeOpenLocal && std::strcmp(smokeOpenLocal, "mdkr64-open-local-v1") == 0;
+    if (smokeOpenLocal && !smokeOpenLocalArmed) {
+        std::fprintf(stderr, "[app-ui-test] invalid open-local contract\n");
+        shutdownLauncherHost(host, launcher);
+        return 2;
+    }
+    bool smokeOpenLocalQueued = false;
     const char *smokeCharacterImportFocus =
         std::getenv("MDKR_APP_SMOKE_CHARACTER_IMPORT_FOCUS");
     const char *smokeCharacterImportFocusToken =
@@ -3678,6 +3688,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             launcher.requestQuit();
         }
         host.beginFrame();
+        ui::ResetSmokeFocusedItem();
         const LauncherAction action = launcher.draw(host);
         observeSmokePlay(action);
         observeSmokeQuit(action);
@@ -4163,10 +4174,13 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
              * linear Tab pass before arrow navigation. Gamepad gets a forward
              * right/down spatial sweep before its reverse left/up sample. The
              * boundary lets each gate distinguish its primary coverage from
-             * the shorter directional-reversal phase.
+             * the return sweep. Closed gamepad panels get a full reverse pass
+             * so the first column of each responsive row is also visited.
              */
             const int tabFrames =
-                smokeA11yKeyArmed ? frames : frames - frames / 4;
+                smokeA11yKeyArmed ? frames
+                : (smokeUsesGamepad && !smokeOpenLocalArmed) ? frames / 2
+                : frames - frames / 4;
             const int importFocusFrame = 16;
             const int workshopReturnFrame = 24;
             const bool shortcutSettle =
@@ -4204,7 +4218,11 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     "[app-ui-test] character Workshop return shortcut queued input=%s\n",
                     smokeUsesGamepad ? "gamepad" : "keyboard");
             }
-            if (shortcutSettle) {
+            if (smokeOpenLocalArmed && !smokeOpenLocalQueued &&
+                std::strcmp(ui::SmokeFocusedItem(), "Start Local Play") == 0) {
+                renderOk = host.queueGamepadPressForSmoke(SDL_CONTROLLER_BUTTON_A) && renderOk;
+                smokeOpenLocalQueued = true;
+            } else if (shortcutSettle) {
                 // Leave one complete post-shortcut frame free of navigation
                 // input so the newly focused source control is both rendered
                 // and announced before the ordinary traversal resumes.
@@ -4242,7 +4260,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                     }
                     std::fflush(stdout);
                 }
-                const bool forward =
+                const bool forward = (!smokeUsesGamepad || smokeOpenLocalArmed) &&
                     ((smokeA11yWalkFrame - tabFrames) % 8) < 6;
                 if (smokeUsesGamepad) {
                     const bool vertical =

@@ -101,6 +101,9 @@ ROSTER_RE = re.compile(r"aparty_roster: n=(\d+) mask=0x([0-9a-fA-F]+)((?: c\d+=\
 LAYOUT_RE = re.compile(r"aparty_layout: viewports=(\d+) layout=(\d+)")
 TRANS_RE = re.compile(r"aparty_transition: seat=(\d+) tick=(\d+)")
 SOUND_RE = re.compile(r"aparty_taj_sound: seat=(\d+) reinit=1")
+DRAW_RE = re.compile(
+    r"aparty_draw: tick=(\d+) seat=(\d+) view=(\d+) vehicle=(\d+) "
+    r"alpha=(\d+) transparency=(\d+) triangles=(\d+) state=(\w+)")
 VISIBILITY_RE = re.compile(
     r"aparty_taj_visibility: seat=(\d+) character=(\d+) vehicle=(\d+) "
     r"transparency=(\d+) hidden=(\d+)")
@@ -134,6 +137,7 @@ def run_arm(binary, rom, fixture, seat_route, frames=6000, verbose=False,
                if not k.startswith(("MDKR", "GE007_"))}
         env.update(LC_ALL="C", MDKR_AUDIO="0", MDKR_TRACE="1",
                    MDKR_RACER_INPUT_TRACE="1", MDKR_AP_SEAT_ROUTE=seat_route,
+                   MDKR_TEST_AP_TAJ_DRAW="1",
                    MDKR_APP_PREFS_DIR=str(root), MDKR64_HIDDEN="1")
         if extra_env:
             env.update(extra_env)
@@ -283,6 +287,31 @@ def assert_transform_scene(out, players, label, expected_vehicle=HOVERCRAFT):
     return f, ti
 
 
+def assert_draws(out, players, label, expected_vehicle=HOVERCRAFT):
+    """Require actual mesh submissions in each racer's own viewport.
+
+    Retail intentionally fades bodies out for the vehicle swap. Require opaque
+    samples before/after and nonzero samples of both vehicles during dialogue,
+    rather than outlawing that animation. State-only restore logs cannot satisfy
+    this witness: the trace is emitted after gSPPolygon, with submitted triangles.
+    """
+    seen = {phase: set() for phase in ("before", "during-car", "during-new", "after")}
+    for match in DRAW_RE.finditer(out):
+        tick, seat, view, vehicle, alpha, transparency, triangles = map(int, match.groups()[:7])
+        state = match.group(8)
+        if seat != view or triangles <= 0 or alpha <= 0 or transparency <= 0:
+            continue
+        phase = None
+        if state == "ACTIVE_LOBBY" and alpha == transparency == 255:
+            phase = "before" if vehicle == 0 else "after" if vehicle == expected_vehicle else None
+        elif state == "SHARED_DIALOGUE":
+            phase = "during-car" if vehicle == 0 else "during-new" if vehicle == expected_vehicle else None
+        if phase is not None:
+            seen[phase].add(seat)
+    return [f"{label}: {phase} missing own-viewport racer draw for seats {sorted(set(range(players)) - seats)}"
+            for phase, seats in seen.items() if not set(range(players)).issubset(seats)]
+
+
 def assert_identity(lines, players, transform_line_idx, label):
     """Post-transform: distinct racerIndex 0..N-1 drive, port == player == racer."""
     f = []
@@ -377,6 +406,8 @@ def main():
             print(f"check_adventure_party_taj: FAIL -- missing {p}", file=sys.stderr)
         return 1
 
+    if args.texture_pack is None:
+        print("SKIP: replacement-texture matrix requires --texture-pack PATH; running isolated no-pack matrix", flush=True)
     failures = []
 
     # --- 3P main scene: non-host summon + host-owned whole-party transform ----
@@ -384,6 +415,7 @@ def main():
                    texture_pack=args.texture_pack)
     f3, ti3 = assert_transform_scene(out3, 3, "3P transform")
     failures += f3
+    failures += assert_draws(out3, 3, "3P hovercraft")
     if ti3 >= 0:
         failures += assert_identity(out3.splitlines(), 3, ti3, "3P identity")
 
@@ -392,6 +424,7 @@ def main():
                    texture_pack=args.texture_pack)
     f2, ti2 = assert_transform_scene(out2, 2, "2P transform")
     failures += f2
+    failures += assert_draws(out2, 2, "2P hovercraft")
     if ti2 >= 0:
         failures += assert_identity(out2.splitlines(), 2, ti2, "2P identity")
     for players, fixture in ((2, plane2), (3, plane3)):
@@ -401,6 +434,7 @@ def main():
         found, transform_index = assert_transform_scene(output, players, label,
                                                        expected_vehicle=2)
         failures += found
+        failures += assert_draws(output, players, label, expected_vehicle=2)
         if transform_index >= 0:
             failures += assert_identity(output.splitlines(), players, transform_index, label)
 
@@ -458,6 +492,15 @@ def main():
     if not assert_transform_scene(missing_visibility, 3, "PC-no-visibility")[0]:
         failures.append("positive control: missing visibility evidence PASSED")
 
+    # Skip a real body draw without changing the authoritative opacity fields.
+    hidden = run_arm(binary, rom, taj3, TAJ_SEAT_ROUTE, verbose=args.verbose,
+                     extra_env={"MDKR_TEST_AP_TAJ_HIDE_SEAT": "0"},
+                     texture_pack=args.texture_pack)
+    if assert_transform_scene(hidden, 3, "draw-control state")[0]:
+        failures.append("draw control unexpectedly changed the state-only oracle")
+    if not assert_draws(hidden, 3, "draw-control"):
+        failures.append("draw control: skipped host body PASSED the draw witness")
+
     # --- OFF arm: retail JOINTVENTURE 2P Taj is untouched --------------------
     off_proc = subprocess.run(
         [sys.executable, str(off), "--build", args.build, "--rom", args.rom],
@@ -483,7 +526,8 @@ def main():
           "firing during it; a host CHALLENGE-row selection during the party dialogue "
           "is fail-closed refused (R27: aparty_taj_challenge refused, no '[TAJ] "
           "phase=accept', no extra racer, party intact, transform still works after); "
-          "all seats restored opaque/unhidden; six positive controls fired")
+          "all seats drawn in their own viewports before/during/after the transform; "
+          "six trace controls and the real skipped-body control fired")
     print("  Party matrix: 2P/3P car->hovercraft and car->plane; " +
           ("replacement textures used in every party arm" if args.texture_pack else
            "isolated no-pack baseline"))

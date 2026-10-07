@@ -37,6 +37,9 @@
 # FetchContent at an already-fetched <name>-src tree (e.g. another build's
 # _deps) to skip the libdatachannel clone; the tree is used read-only.
 #
+# MDKR_MINGW_PARTY_ORIGIN overrides the online profile origin; an explicitly
+# empty value selects the canonical partyless release profile (LAN stays on).
+#
 # --intake-tests additionally builds the content-pack intake test executables
 # (fs_utf8, mod_source_zip, pack_installer, pack_install_job) in a separate
 # BUILD_TESTING=ON build dir (build-mingw-intake) and checks that each is a
@@ -198,12 +201,16 @@ CONFIGURE_ARGS=(
     -DCMAKE_PREFIX_PATH="$PREFIX"
     -DCMAKE_BUILD_TYPE=Release
     -DMDKR_WEBGPU_BACKEND=$WEBGPU
+    # WebGPU is a platform-specific prebuilt, never a reusable source tree.
+    -UFETCHCONTENT_SOURCE_DIR_WGPU_NATIVE
 )
 if [ "$ONLINE" = "1" ]; then
     CONFIGURE_ARGS+=(
         -DMDKR_ENABLE_ONLINE_BETA=ON
         -DMDKR_NATIVE_PHONE_PARTY=ON
-        -DMDKR_PARTY_ORIGIN=https://party.goldenballoon.net
+        -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF
+        -DMDKR_CHARACTER_KTX2=ON
+        "-DMDKR_PARTY_ORIGIN=${MDKR_MINGW_PARTY_ORIGIN-https://party.goldenballoon.net}"
         -DBUILD_TESTING=ON
     )
     # Optional: reuse an already-fetched deps tree (read-only) to skip the
@@ -212,8 +219,7 @@ if [ "$ONLINE" = "1" ]; then
     if [ -n "$DEPS_REUSE_DIR" ]; then
         for pair in \
             "MDKR_MBEDTLS:mdkr_mbedtls-src" \
-            "MDKR_LIBDATACHANNEL:mdkr_libdatachannel-src" \
-            "WGPU_NATIVE:wgpu_native-src"; do
+            "MDKR_LIBDATACHANNEL:mdkr_libdatachannel-src"; do
             _name="${pair%%:*}"; _sub="${pair#*:}"
             if [ -d "$DEPS_REUSE_DIR/$_sub" ]; then
                 CONFIGURE_ARGS+=("-DFETCHCONTENT_SOURCE_DIR_${_name}=$DEPS_REUSE_DIR/$_sub")

@@ -442,8 +442,8 @@ CHECKS = (
           "a natural-scroll FLIPPED wheel (scrolls the right way), and a "
           "touchscreen drag all advance ScrollY"),
     Check("phone_panel_focus", "check_phone_panel_focus.py", "native",
-          "keyboard and gamepad reach Start Local Play in the closed phone "
-          "surface at 640x480; no room is opened"),
+          "controller focus visibly reaches the keyboard inventory in Settings, "
+          "long Content, and closed/open Local Play at 640x480"),
     Check("audio_options_persistence", "check_audio_options_persistence.py", "native",
           "original Audio Options durable exit, visible save failure, retry, "
           "and explicit session-only state"),
@@ -1108,8 +1108,9 @@ CHECKS = (
           "to 1); the dialogue releases to ACTIVE_LOBBY in the same generation (R10); "
           "a host CHALLENGE-row selection during the party dialogue is fail-closed "
           "refused (R27: no TAJ_MODE_RACE, no extra racer, transform still works "
-          "after); per-seat visibility/input/sound restoration and six positive "
-          "controls are checked, and retail 2P Taj "
+          "after); every seat submits visible triangles in its viewport before, "
+          "during and after each transform; six trace controls plus a real "
+          "skipped-body control, input/sound restoration, and retail 2P Taj "
           "(check_taj_p2_adventure) is untouched"),
     Check("adventure_party_progress", "check_adventure_party_progress.py",
           "native",

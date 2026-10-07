@@ -7966,6 +7966,17 @@ static void mdkr_anim_lod_witness(const Object *obj) {
  * Computes the view matrix for the model, and calls a function to draw meshes.
  * Loops through racers to find vehicle parts, which are wheels and propellers.
  */
+#ifdef NATIVE_PORT
+static s32 adventure_party_draw_witness_enabled(void) {
+    static s32 enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("MDKR_TEST_AP_TAJ_DRAW");
+        enabled = value != NULL && strcmp(value, "1") == 0;
+    }
+    return enabled;
+}
+#endif
+
 void render_3d_model(Object *obj) {
     s32 i;
     s32 intensity;
@@ -7996,6 +8007,17 @@ void render_3d_model(Object *obj) {
     sModernCharacterReplacementObject = NULL;
     sModernCharacterReplacementModel = NULL;
     sModernCharacterReplacementSelect = FALSE;
+    /* A presentation-only negative control: no authoritative racer fields
+     * change, and a missing body must fail the per-seat draw witness. */
+    if (adventure_party_draw_witness_enabled() &&
+        adventure_party_runtime_is_active() && obj->behaviorId == BHV_RACER &&
+        obj->racer != NULL) {
+        const char *hiddenSeat = getenv("MDKR_TEST_AP_TAJ_HIDE_SEAT");
+        if (hiddenSeat != NULL && hiddenSeat[0] >= '0' && hiddenSeat[0] <= '3' &&
+            hiddenSeat[1] == '\0' && obj->racer->playerIndex == hiddenSeat[0] - '0') {
+            return;
+        }
+    }
     workshopOccluderTarget = FALSE;
     modernModelIndex = object_render_model_index(obj);
     modInst = obj->modelInstances[modernModelIndex];
@@ -9753,6 +9775,7 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
     s32 doorDigitPlace;
     s32 charSelectTexIndex;
     static s32 sDoorTexTrace = -1;
+    s32 partyDrawTriangles = 0;
 #endif
 
     dList = gObjectCurrDisplayList;
@@ -9944,6 +9967,9 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
                     gSPSelectMatrixDKR(dList++, G_MTX_DKR_INDEX_1);
                 }
                 gSPPolygon(dList++, OS_K0_TO_PHYSICAL(tris), numTris, texEnabled);
+#ifdef NATIVE_PORT
+                if (adventure_party_draw_witness_enabled()) partyDrawTriangles += numTris;
+#endif
             }
             i++;
         } else {
@@ -9954,6 +9980,19 @@ s32 render_mesh(ObjectModel *objModel, Object *obj, s32 startIndex, s32 flags, s
         i = -1;
     }
     gObjectCurrDisplayList = dList;
+#ifdef NATIVE_PORT
+    if (adventure_party_draw_witness_enabled() && partyDrawTriangles > 0 &&
+        adventure_party_runtime_is_active() && obj->behaviorId == BHV_RACER &&
+        obj->racer != NULL && obj->racer->playerIndex >= 0) {
+        const AdventurePartySession *session = adventure_party_runtime_session();
+        extern int g_simTickCounter;
+        mdkr_trace("aparty_draw: tick=%d seat=%d view=%d vehicle=%d alpha=%d transparency=%d triangles=%d state=%s",
+                   g_simTickCounter, obj->racer->playerIndex, get_current_viewport(),
+                   obj->racer->vehicleID, scene_object_render_opacity(obj),
+                   obj->racer->transparency, partyDrawTriangles,
+                   session != NULL ? adventure_party_state_name(session->state) : "NONE");
+    }
+#endif
     return i;
 }
 
