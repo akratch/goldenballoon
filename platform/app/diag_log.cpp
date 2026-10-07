@@ -182,25 +182,26 @@ void ensureStandardDescriptors() {
 }
 
 #if defined(_WIN32)
-/* MSYS2 UCRT64 (mingw-w64's modern CRT, distinct from the classic msvcrt this
- * file was originally validated against) binds a GUI-subsystem process's
- * stdout/stderr FILE objects to the sentinel _NO_CONSOLE_FILENO (-2) at CRT
- * startup when no console was inherited. A FILE bound to that sentinel is a
- * permanent no-op: fprintf/fwrite through it return "success" without
- * consulting the live per-process fd table at all, so the dup2() swaps below
- * -- which only repoint fd 1/2 at the OS level -- would never be observed by
- * stdout/stderr on that CRT, and the tee would silently discard everything
- * while still reporting a successful install. msvcrt does not have this
- * failure mode, but freopen()'ing here is harmless there too (it just closes
- * and reopens the same target), so it is done unconditionally on Windows
- * rather than trying to detect the CRT flavor at runtime. This must run after
- * ensureStandardDescriptors() so fd 0/1/2 are already valid: freopen's
- * internal close+open then reuses fd 1/2 (the lowest free descriptor),
- * instead of drifting onto some other number the rest of this file never
- * looks at. */
-void rebindStandardStreams() {
-    std::freopen("NUL", "wb", stdout);
-    std::freopen("NUL", "wb", stderr);
+/* A GUI process may start with stdout/stderr FILE objects bound to the
+ * UCRT no-console sentinel instead of fd 1/2. Rebind only those streams.
+ * Reopening a valid inherited stream to NUL discards its caller's pipe before
+ * the tee can save it, and shutdown then has no real stream to restore. */
+bool rebindStandardStream(std::FILE *stream, int descriptor) {
+    if (_fileno(stream) == descriptor) return true;
+    const int saved = duplicateFd(descriptor);
+    if (saved < 0) return false;
+    // ensureStandardDescriptors filled every standard slot. Free this one so
+    // freopen binds the FILE to its expected descriptor even from -2.
+    closeFd(descriptor);
+    const bool rebound = std::freopen("NUL", "wb", stream) != nullptr &&
+                         _fileno(stream) == descriptor;
+    const bool restored = replaceFd(saved, descriptor) == 0;
+    closeFd(saved);
+    return rebound && restored;
+}
+
+bool rebindStandardStreams() {
+    return rebindStandardStream(stdout, 1) && rebindStandardStream(stderr, 2);
 }
 #endif
 
@@ -254,7 +255,7 @@ bool DiagLog_install() {
 
     ensureStandardDescriptors();
 #if defined(_WIN32)
-    rebindStandardStreams();
+    if (!rebindStandardStreams()) return false;
 #endif
     g_realOut = duplicateFd(1);
     g_realErr = duplicateFd(2);

@@ -529,7 +529,8 @@ static void test_names_without_utf8(const char *root) {
     expect(mdkr_rmdir_utf8(folder) == 0, "remove the name fixture folder");
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--spawn-exit-seven") == 0) return 7;
     char temp[1024];
     char root[1200];
     char primitives[1300];
@@ -565,8 +566,9 @@ int main(void) {
 #endif
 #if defined(_WIN32)
     {
-        const char *const arguments[] = {"/D", "/C", "exit 7", NULL};
-        expect(mdkr_spawn_wait_utf8("cmd.exe", arguments, &child_exit) == 0 &&
+        const char *const arguments[] = {"--spawn-exit-seven", NULL};
+        expect(running_executable != NULL &&
+                   mdkr_spawn_wait_utf8(running_executable, arguments, &child_exit) == 0 &&
                    child_exit == 7,
                "spawn and reap a child with an exact nonzero exit status");
     }
