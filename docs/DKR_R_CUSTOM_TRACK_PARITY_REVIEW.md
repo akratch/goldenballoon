@@ -281,6 +281,16 @@ boot lifetime ownership, format validation, relocation, importer/UI and gameplay
 qualification remain open. Earlier dated foundation notes below describe the
 incremental path and are superseded by this status where they say no hooks exist.
 
+## 1.9 integration blockers
+
+Before a custom-track importer can become a shipping feature:
+
+- Package object maps and textures admitted through miniz must also satisfy the
+  engine decoder’s `OBJECT_MAP_SIZE` and in-place decompression bounds. ZIP
+  admission alone does not bound the later engine decode.
+- Admission budgets must share the engine’s size formulas or be checked against
+  them mechanically. Hand-copied formulas can drift as the engine changes.
+
 ## Pinned evidence
 
 Local CT2 session follow-up: the immutable section foundation now supports
@@ -316,25 +326,22 @@ The elliotttate fork's sprite-model loader consumes separately supplied
 candidate implements that path for the enumerated sprite families. It neither
 creates additional courses nor implements `.dkrmap`.
 
-The maintainer has no additional artwork archive. Earlier local searches found
-none, and the supplied SR.GU V0.2.1 pack contains texture replacements, not this
-geometry. Additional read-only checks found:
+SR.GU V0.2.1 contains texture replacements, not this geometry. No separate
+model archive was found in these upstream distributions:
 
 - No releases returned from `elliotttate/goldenballoon`.
 - The DKR-R beta.11 recursive tree has no separate replacement-model artwork.
 - Downloaded and listed all 50 entries in the beta.10 Windows release ZIP;
   there are no separately bundled model meshes. No downloaded binary was run.
   SHA-256 `b7392fdebae29b9bdf1a5f12155bdba644e813bfcfcb901783797893a5822aa9`
-  matches upstream `SHA256SUMS.txt`. Private inspection copy:
-  `/tmp/mdkr-upstream-artwork.L59wDp/beta10-windows.zip`.
+  matches upstream `SHA256SUMS.txt`.
 - [Upstream README](https://github.com/ThatGuyMcd/DKR-R/blob/4ddfa1405eb76e8c073ea02603c5d557725376cf/README.md)
   points to Discord for the community texture pack, not a downloadable model
   archive. These checks do not prove that artwork never existed or that no
   other distribution contains it.
 
-Keep actual-art visual acceptance open. Do not repeatedly ask the maintainer
-for an archive they have already said they do not possess. Synthetic loader,
-GPU and resource tests remain useful but cannot replace that acceptance.
+Real model artwork still needs visual testing. Synthetic loader, GPU and
+resource tests cannot establish compatibility with an unavailable art pack.
 
 ## Findings that block copying the upstream importer unchanged
 

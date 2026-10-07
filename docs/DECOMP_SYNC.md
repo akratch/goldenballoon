@@ -128,8 +128,8 @@ Then:
 3. Rebuild and run the **muted, headless** validation suite (below).
 4. Record the new baseline and commit:
    ```bash
-   ( cd ../Diddy-Kong-Racing && git rev-parse HEAD ) > /tmp/h
-   printf '%s  # decomp commit synced YYYY-MM-DD\n' "$(cat /tmp/h)" > .decomp-baseline
+   MDKR_DECOMP_REV="$(git -C ../Diddy-Kong-Racing rev-parse HEAD)"
+   printf '%s  # decomp commit synced YYYY-MM-DD\n' "$MDKR_DECOMP_REV" > .decomp-baseline
    ```
 
 ## Validation after any sync (all MUTED + HEADLESS)
@@ -163,16 +163,17 @@ code, where the racer probe says nothing), save the pre-merge binary first, then
 compare sampled frames:
 
 ```bash
-git stash push -u && cmake --build build -j && cp build/mdkr64 /tmp/mdkr64_pre
+MDKR_TEST_TMP="$(mktemp -d)"
+git stash push -u && cmake --build build -j && cp build/mdkr64 "$MDKR_TEST_TMP"/mdkr64_pre
 git stash pop     && cmake --build build -j
-for d in pre post; do mkdir -p /tmp/f_$d; done
-MDKR_AUDIO=0 MDKR_DUMP_EVERY=100 /tmp/mdkr64_pre  --headless-frames 2300 \
+for d in pre post; do mkdir -p "$MDKR_TEST_TMP"/f_$d; done
+MDKR_AUDIO=0 MDKR_DUMP_EVERY=100 "$MDKR_TEST_TMP"/mdkr64_pre  --headless-frames 2300 \
   --input-script tests/input_scripts/nav_to_track_select.txt \
-  --rom baserom.us.v80.z64 --dump-frames /tmp/f_pre  >/dev/null 2>&1
+  --rom baserom.us.v80.z64 --dump-frames "$MDKR_TEST_TMP"/f_pre  >/dev/null 2>&1
 MDKR_AUDIO=0 MDKR_DUMP_EVERY=100 ./build/mdkr64    --headless-frames 2300 \
   --input-script tests/input_scripts/nav_to_track_select.txt \
-  --rom baserom.us.v80.z64 --dump-frames /tmp/f_post >/dev/null 2>&1
-diff -rq /tmp/f_pre /tmp/f_post
+  --rom baserom.us.v80.z64 --dump-frames "$MDKR_TEST_TMP"/f_post >/dev/null 2>&1
+diff -rq "$MDKR_TEST_TMP"/f_pre "$MDKR_TEST_TMP"/f_post
 ```
 
 **`MDKR_DUMP_EVERY` is not an optimisation, it is the difference between a valid

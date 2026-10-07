@@ -476,7 +476,9 @@ How files are reached differs by platform:
   same file or folder that was admitted. A live installation holds an
   advisory lock on its staging folder. If the staging folder or pack is
   replaced mid-install, both are kept and nothing is published; the leftover
-  staging is reclaimed at a later launch.
+  staging is reclaimed at a later launch. Concurrent tampering by another
+  local process with write access to the user’s mods folder is outside this
+  protection boundary.
 - **Windows.** Pathnames through the wide-character API, with the
   extended-length prefix. Staging is created with CreateDirectoryW and held
   open without delete sharing, so nothing can rename or replace it during the

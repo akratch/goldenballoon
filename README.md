@@ -107,7 +107,7 @@ What online does not do yet:
 | Platform | Status |
 |---|---|
 | Windows (x64) | Portable zip, no install. Tested on real hardware each release |
-| macOS (Apple silicon) | DMG. WebGPU with the Restored presentation is the qualified visual path; OpenGL is diagnostic-only |
+| macOS (Apple silicon) | DMG. WebGPU with the Restored presentation is the recommended visual path; OpenGL is diagnostic-only |
 | Linux (x86-64) | AppImage and tarball, SDL2 bundled. Best effort — GPU/desktop breadth varies |
 | Browser | Current Chrome/Edge with WebGPU. Runs the same engine compiled to wasm |
 
@@ -186,7 +186,7 @@ first-party code under [`platform/`](platform/). Start here:
 - [docs/DEVELOPER_HANDBOOK.md](docs/DEVELOPER_HANDBOOK.md) — architecture and
   the 64-bit/endianness bug shapes behind most defects here
 - [docs/README.md](docs/README.md) — full documentation index
-- [tests/README.md](tests/README.md) — the regression suite (200+ gates)
+- [tests/README.md](tests/README.md) — build and testing instructions
 - [ROADMAP.md](ROADMAP.md) — deferred work and what would close it
 
 The browser build publishes to

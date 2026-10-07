@@ -7,9 +7,8 @@ not merely another working invite screen or an expanded feature list.
 
 This program adds an explicit improvement backlog; it does not declare the
 existing release gates complete, enable gated capabilities, authorize paid
-infrastructure or permit deployment. The immediate release-cut work remains
-in [RELEASE_WORK_PLAN.md](../RELEASE_WORK_PLAN.md). No silent scope reduction:
-larger capabilities below remain visible work even if not approved for 1.7.0.
+infrastructure or permit deployment. Release requirements are listed in the [release checklist](../RELEASE_CHECKLIST.md).
+The larger capabilities below remain future work until implemented and tested.
 
 ## Evidence-backed current assessment
 

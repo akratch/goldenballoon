@@ -32,7 +32,6 @@ today; these two runs are reported unchanged, at their original size:
 
 | | run 1 | run 2 |
 |---|---|---|
-| log | `/tmp/m9-full-suite.log` | `/tmp/final-suite.log` |
 | wall clock | 193m53s | 135m07s |
 | verdict | `FAIL — 5/135` | `FAIL — 2/135` |
 | finished | 2026-08-05 22:58 | 2026-08-06 01:58 |

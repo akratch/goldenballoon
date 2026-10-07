@@ -458,13 +458,12 @@ track materials and re-measure. (3) CADisplayLink timestamp rate
 reference for the PLL (slew was ~10 ms/s against the ~119.83 Hz panel;
 vblank-derived timestamps respect the no-compositor-noise doctrine).
 (4) Panel-side discriminators: external display / 240 fps slow-mo.
-Analysis artifacts: /tmp/interp-evidence/f9/{png,*.py}.
 
 ## SEVENTH WAVE (2026-08-18): root cause found and fixed — walk-order
 ## mispaired WORLD_STATIC vertex blends
 
-The owner's F9 bracket (session /tmp/mdkr-f9-falls, drive STRAIGHT at the
-twin-falls door, no pan) finally captured the defect inside the dumps:
+A frame bracket driving straight at the twin-falls door without panning
+captured the defect in the dumps:
 whole falls sheets strobing. The decisive measurement was the per-frame
 presence timeline of one falls column against the [PRESENTSCHED] tick
 boundaries: **ON at every endpoint slot, ABSENT for exactly the three
@@ -497,8 +496,7 @@ Machine repro + verification (all headless, hub falls corridor route
 "0:200,500:896,928:1534,1693:897,2258:386,1556:897,2258:386,1556:210,623",
 MDKR_DUMP_FROM=11200, --headless-ticks 3500; detector =
 motion-compensated top-half residual, flash pair > max(8, 4*median);
-scripts /tmp/mdkr-t1ab/flash_detect.py, recipe reproducible from this
-section):
+recipe reproducible from this section):
   baseline                          21 flashes / energy 805 / max 69.9
   MDKR_TEST_UV_SCROLL_INTERPOLATION=off   22 / 840  (exonerated)
   MDKR_TEST_DEFORMATION_INTERPOLATION=off  3 /  70  (kills it)

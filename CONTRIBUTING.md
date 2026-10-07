@@ -14,6 +14,12 @@ ground truth is in the tree. See the "gridmask" and "hasmaudit" waves in
 
 Then [docs/README.md](docs/README.md) is the map of everything else.
 
+## Reporting problems and requesting features
+
+Use the bug report template for broken existing behavior. Use the feature
+request template for new capabilities or improvements; it applies the
+`enhancement` label. Search existing issues before opening another report.
+
 ## Public repository boundary
 
 This repository keeps normal public Git history. Do not commit temporary plans,

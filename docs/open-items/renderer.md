@@ -2875,3 +2875,10 @@ around the camera rather than a flat quad, so it has no equivalent shortfall.
 The authored constants are themselves ~0.45% short of the exact frustum
 (`200` vs `200.9`); the widening is proportional to them, so that authored
 margin is preserved rather than "corrected" — changing it would move 4:3 output.
+
+## Widescreen HUD non-first finish banner placement
+
+At 16:9, a non-first-place finish banner differs by approximately 2,207 pixels
+between Widescreen HUD on and off. Its rectangle pre-shift lands at a slightly
+different subpixel position. This predates the picture-frame clipping report
+(#67) and remains a separate renderer follow-up.

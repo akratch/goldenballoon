@@ -51,13 +51,6 @@ arm's). Every arm compares its simulation-hash stream with the healthy one;
 validation and device markers fail any arm. Real replacement artwork and the
 banana's spin direction against the retail sprite still need a pack to check.
 
-Follow the maintainer's current local validation authorization in `AGENTS.md`.
-The maintainer authorized this workstation for behavioral validation on
-2026-09-06, including native, GPU, browser, ROM, and compiled tests. That
-standing authorization permits the existing test-environment flags without
-another confirmation each turn. Other workstations need their own authorization;
-hidden-window settings alone do not establish it.
-
 Input scripts for `--input-script` headless verification of menu navigation.
 Run e.g.:
 ```
@@ -2118,10 +2111,7 @@ The pure `online_lobby_browser_wasm` test compiles the Emscripten-facing C ABI
 as an ordinary native process. It enumerates all 43 authoritative cases, all 10
 view kinds, 18 failures and 27 enabled actions; drives every action; proves
 timeout ownership and both explicit phrase decisions; and verifies invalid
-gallery/live projections are fail-atomic. This is ROM-, renderer-, provider-,
-SDL- and browser-free, but it is still a compiled executable and is therefore
-queued—not run—under the maintainer workstation's current no-executable-test
-policy.
+gallery/live projections are fail-atomic. This is ROM-, renderer-, provider-, SDL- and browser-free.
 
 `online_room_presenter_js` asks that same executable for a bounded JSON dump of
 all 43 projections, then runs the exact pure presenter loaded by the published
@@ -2158,9 +2148,7 @@ invite custody and room/service phase correlation are checked without DOM,
 network, Wasm or a game process. The browser transaction restores prior state
 on projection/render failure but never resurrects an expired secret. A successful
 guest leave is terminal because the service revokes that credential in the same
-commit; it is not followed by a predictably unauthorized refresh. This gate is
-registered but must be executed with the deferred executable-validation batch
-while the maintainer's workstation is occupied.
+commit; it is not followed by a predictably unauthorized refresh. This gate is registered in the executable test lane.
 
 The executable also publishes a versioned 43-case gallery built only through
 fake-adapter commands/callbacks/reducers. `app_online_room_gallery` renders each
@@ -3007,9 +2995,7 @@ reload for protocol mismatch, BFCache clean reload and fail-closed History API
 denial. The host gate also authors pagehide secret/pad cleanup plus persisted
 room-authority recovery. The service
 security gate separately covers canonical HTTPS and loopback-only origin
-configuration. These latest arms are
-authored and syntax-valid but are deliberately unexecuted on the occupied
-workstation; they require the dedicated browser desktop.
+configuration. Run these arms in the browser test lane.
 `check_persistent_browser_session.py` separately proves
 two complete engine loans return through one wasm module without surrendering
 launcher or mounted-storage ownership.
@@ -4414,8 +4400,9 @@ about physical controller binding.
 
 Positive control for the render half of the check:
 ```bash
-MDKR_AUDIO=0 python3 tests/check_race_2p_split.py --keep-frames /tmp/2p
-python3 tests/check_race_2p_split.py --blank-half-control /tmp/2p
+MDKR_TEST_TMP="$(mktemp -d)"
+MDKR_AUDIO=0 python3 tests/check_race_2p_split.py --keep-frames "$MDKR_TEST_TMP"/2p
+python3 tests/check_race_2p_split.py --blank-half-control "$MDKR_TEST_TMP"/2p
 ```
 which flat-fills one half of each real frame and requires the per-half metric to
 **reject** it (measured: 1 colour / sigma 0.0). Without that, "both halves scored
@@ -4696,9 +4683,10 @@ This command regenerates and validates that witness; the CSV is ROM-derived and
 must never be committed:
 
 ```bash
+MDKR_TEST_TMP="$(mktemp -d)"
 tools/prepare_ares_oracle.sh
 tools/run_oracle.sh race_state_oracle --skip-native \
-  --vehicle-rng-trace /tmp/mdkr-ares-car-rng.csv \
+  --vehicle-rng-trace "$MDKR_TEST_TMP"/mdkr-ares-car-rng.csv \
   --rom /path/to/owned-us-v11.z64
 ```
 
@@ -4707,24 +4695,25 @@ commit with this method (use an empty path for the worktree and your own
 supported ROM):
 
 ```bash
+MDKR_TEST_TMP="$(mktemp -d)"
 set -o pipefail
-git worktree add --detach /tmp/mdkr-authored-reference \
+git worktree add --detach "$MDKR_TEST_TMP"/mdkr-authored-reference \
   64936e36b4c9ef7ecdce5beb93cd662d4318548d
-cmake -S /tmp/mdkr-authored-reference \
-  -B /tmp/mdkr-authored-reference/build-reference \
+cmake -S "$MDKR_TEST_TMP"/mdkr-authored-reference \
+  -B "$MDKR_TEST_TMP"/mdkr-authored-reference/build-reference \
   -DCMAKE_BUILD_TYPE=Release -DMDKR_WEBGPU_BACKEND=OFF -DBUILD_TESTING=OFF
-cmake --build /tmp/mdkr-authored-reference/build-reference -j
-cd /tmp/mdkr-authored-reference
+cmake --build "$MDKR_TEST_TMP"/mdkr-authored-reference/build-reference -j
+cd "$MDKR_TEST_TMP"/mdkr-authored-reference
 env -i PATH="$PATH" LC_ALL=C MDKR_AUDIO=0 \
   MDKR_SIMULATION_CADENCE=original MDKR_SYNTH_FIELDS=2 MDKR_TRACE=1 \
   MDKR_ORACLE_STATE=1 MDKR_RENDERER=gl \
-  MDKR_SAVE_DIR=/tmp/mdkr-authored-reference/reference-save \
+  MDKR_SAVE_DIR="$MDKR_TEST_TMP"/mdkr-authored-reference/reference-save \
   ./build-reference/mdkr64 --headless-frames 4800 \
   --input-script <(python3 tools/dkr_oracle_route.py native-script \
     race_state_oracle --arm original) --rom /path/to/owned-us-v11.z64 2>&1 | \
   python3 -c "import hashlib,sys; r=[x for x in sys.stdin.buffer if b'[ORACLE]' in x]; print(len(r), hashlib.sha256(b''.join(r)).hexdigest())"
 cd -
-git worktree remove --force /tmp/mdkr-authored-reference
+git worktree remove --force "$MDKR_TEST_TMP"/mdkr-authored-reference
 ```
 
 That command independently reproduced exactly 27,840 rows and the pinned
@@ -6103,9 +6092,10 @@ also the per-revision failure taxonomy.
 
 Never open a window to look at something — dump and convert:
 ```
+MDKR_TEST_TMP="$(mktemp -d)"
 MDKR_AUDIO=0 MDKR_DUMP_FROM=1240 ./build/mdkr64 --headless-frames 1252 \
-  --dump-frames /tmp/shot --rom baserom.us.v80.z64
-sips -s format png /tmp/shot/frame_1250.ppm --out /tmp/shot/shot.png
+  --dump-frames "$MDKR_TEST_TMP"/shot --rom baserom.us.v80.z64
+sips -s format png "$MDKR_TEST_TMP"/shot/frame_1250.ppm --out "$MDKR_TEST_TMP"/shot/shot.png
 ```
 `MDKR_DUMP_FROM` keeps a late-scene capture from writing thousands of early PPMs.
 `MDKR_DUMP_EVERY=N` adds a stride on top of it, so sampling ~10 frames across a
@@ -6123,11 +6113,12 @@ is guaranteed to contain rendered boost flames. It is a no-op unless the variabl
 is set (`objects.c dkr_force_boost_hook`).
 
 ```
+MDKR_TEST_TMP="$(mktemp -d)"
 MDKR_AUDIO=0 MDKR_DUMP_FROM=2810 MDKR_FORCE_BOOST=2830:120 ./build/mdkr64 \
-  --headless-frames 2960 --dump-frames /tmp/boost \
+  --headless-frames 2960 --dump-frames "$MDKR_TEST_TMP"/boost \
   --input-script tests/input_scripts/race_drive_time_trial.txt \
   --rom baserom.us.v80.z64
-sips -s format png /tmp/boost/frame_2910.ppm --out /tmp/boost/boost.png
+sips -s format png "$MDKR_TEST_TMP"/boost/frame_2910.ppm --out "$MDKR_TEST_TMP"/boost/boost.png
 ```
 Expect a bright, character-tinted exhaust plume out the back of every kart
 (player white/yellow, Banjo green-yellow, Krunch magenta) at frames 2850..2950,
@@ -9760,7 +9751,7 @@ MDKR_BASISU_LOCAL_CACHE=/path/to/pinned-basisu-mirror \
     -DCMAKE_CXX_COMPILER=$(brew --prefix llvm)/bin/clang++
 nice -n 15 cmake --build build-fuzz \
   --target mdkr_modern_character_asset_fuzzer --parallel 2
-CHARACTER_FUZZ_ROOT="$(mktemp -d /tmp/mdkr-character-fuzz.XXXXXX)"
+CHARACTER_FUZZ_ROOT="$(mktemp -d)"
 cp -R tests/fuzz_corpus/modern_character_asset "$CHARACTER_FUZZ_ROOT/corpus"
 nice -n 15 ./build-fuzz/mdkr_modern_character_asset_fuzzer \
   -max_total_time=600 -artifact_prefix="$CHARACTER_FUZZ_ROOT/" \

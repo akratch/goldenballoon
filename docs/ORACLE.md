@@ -154,8 +154,9 @@ overlap. Like every other oracle output the capture is ROM-derived and
 The repeatable capture command is:
 
 ```bash
+MDKR_TEST_TMP="$(mktemp -d)"
 tools/run_oracle.sh race_state_oracle --skip-native \
-  --audio-dump /tmp/mdkr64-console.raw
+  --audio-dump "$MDKR_TEST_TMP"/mdkr64-console.raw
 ```
 
 The runner keeps the host silent, validates the raw stereo frame boundary and
@@ -200,9 +201,10 @@ its texture. Run it through the runner on a route that declares
 `"rdram_capture": true`:
 
 ```bash
-mkdir -p /tmp/mdkr64-rdram   # the lane writes files; it does not create directories
+MDKR_TEST_TMP="$(mktemp -d)"
+mkdir -p "$MDKR_TEST_TMP"/mdkr64-rdram   # the lane writes files; it does not create directories
 tools/run_oracle.sh spaceport_pulse_ring --skip-native \
-  --rom baserom.us.v80.z64 --rdram-dump 3800:/tmp/mdkr64-rdram/us_tracks
+  --rom baserom.us.v80.z64 --rdram-dump 3800:"$MDKR_TEST_TMP"/mdkr64-rdram/us_tracks
 ```
 
 The runner refuses `--rdram-dump` on any other route, and an rdram route
