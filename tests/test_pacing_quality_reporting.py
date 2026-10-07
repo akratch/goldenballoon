@@ -327,6 +327,13 @@ class PacingReportingTests(unittest.TestCase):
         self.assertTrue(any("p50=700416ppm" in item for item in problems),
                         problems)
 
+    def test_two_slot_endpoint_median_is_not_the_midpoint(self):
+        result = sample_run("strict", 0)
+        result.hist["alpha-delta"].update(
+            p50=1003520, p95=1003520, gridppm=500000, binwidth=4096)
+        problems = pacing.check_vblank_projection(result)
+        self.assertTrue(any("midpoint" in item for item in problems), problems)
+
 
 # The rows a locked console produced (task T12c, 2026-10-02, console locked
 # from 00:30): presents complete, nothing consumes them, so the drawable acquire

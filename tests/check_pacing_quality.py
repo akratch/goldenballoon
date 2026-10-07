@@ -646,6 +646,12 @@ def check_vblank_projection(result: Run) -> list[str]:
     two_slot = two_slot_display_grid(grid, binwidth)
     for percentile in ("p50", "p95"):
         reported = alpha.get(percentile, 0)
+        if (two_slot and percentile == "p50" and
+                not reported - binwidth < grid <= reported):
+            failures.append(
+                f"{label}: alpha-delta p50={reported}ppm does not contain "
+                f"the {grid}ppm midpoint (binwidth {binwidth}ppm)")
+            continue
         if grid_locked(reported, grid, binwidth):
             continue
         if (percentile == "p95" and two_slot and

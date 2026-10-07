@@ -930,8 +930,10 @@ actually present:
    returns the measured phase when rounding would cross the tick, so that
    arm's p95 may sit in the end-of-tick bin rather than on a grid point.
    The median must still be the midpoint. A 120 Hz four-slot grid still
-   requires both percentiles on a grid point. The shipping path is the
-   companion slot arm; that arm is the quality bar and does not get the
+   requires both percentiles on a grid point. Native WebGPU's disciplined
+   shipping path uses the companion slot arm regardless of the interval
+   classifier's fixed/variable state; the classifier controls the legacy
+   path. The companion arm is the quality bar and does not get the
    end-of-tick exception. The command above is still a full PASS, and it
    still omits `--allow-no-baseline`.
 
