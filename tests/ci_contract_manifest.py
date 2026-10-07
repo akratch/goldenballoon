@@ -1247,7 +1247,7 @@ PIN_GROUPS: dict[str, PinGroup] = {
             Pin("checklist", "manual release-asset collision preflight",
                 must_contain='echo "release asset already exists; refusing upload: $upload_name" >&2\n    exit 1'),
             Pin("checklist", "downloaded Linux set requires both artifacts",
-                must_contain="--require-asset Golden-Balloon-1.7.0-linux-x86_64.tar.gz"),
+                must_contain="--require-asset Golden-Balloon-1.8.0-linux-x86_64.tar.gz"),
             Pin("checklist", "manual upload rejects missing local files",
                 must_contain='echo "required local release file is missing; refusing upload: $upload_path" >&2\n    exit 1'),
             Pin("checklist", "draft asset inventory",
@@ -3675,8 +3675,8 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
             Control(
                 "downloaded Linux complete-set requirement",
                 "checklist",
-                "--require-asset Golden-Balloon-1.7.0-linux-x86_64.tar.gz",
-                "--optional-asset Golden-Balloon-1.7.0-linux-x86_64.tar.gz",
+                "--require-asset Golden-Balloon-1.8.0-linux-x86_64.tar.gz",
+                "--optional-asset Golden-Balloon-1.8.0-linux-x86_64.tar.gz",
                 count=1,
             ),
             Control(

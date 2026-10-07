@@ -1,3 +1,55 @@
+# Golden Balloon 1.8.0
+
+*Released 2026-10-07. Online multiplayer is still a beta.*
+
+This update makes texture packs smoother to play with, brings controller file
+picking to Linux and Steam Deck, and fixes music, finish banners and menu navigation.
+
+- **Texture packs load in the background.** Moving into a new area no longer
+  makes the game wait for each replacement image to be read and decoded. The
+  original texture may appear briefly while its replacement loads. This reduces
+  the pauses caused by texture loading; it does not remove every possible source
+  of uneven motion.
+- **Enhanced 60 keeps the music together.** Busy scenes no longer run out of
+  room for the extra audio updates and drop instruments. Taj’s selection music
+  stays on Character Select, and playable Wizpig uses his own voice and horn.
+- **Finish banners stay inside the picture frame.** With Widescreen HUD on,
+  banners are no longer cut off incorrectly when the race zooms out. OpenGL also
+  keeps the HUD inside its picture-frame and split-screen views at higher render scales.
+- **Pick files with a controller on Linux and Steam Deck.** Choose your ROM or
+  a pack ZIP inside the game window, navigate folders with the D-pad, select
+  with A and go back with B. Content’s Open mods folder button works on Linux too.
+- **Pack installation is more reliable.** Windows handles folder packs and
+  non-English filenames correctly. macOS can install a ZIP from Downloads,
+  Desktop or Documents without asking to open the containing folder. A wrong
+  pick is refused before copying, and an existing pack is never overwritten.
+- **Menus keep their place.** Escape, B and closing a panel no longer leave
+  keyboard navigation stuck. Confirmations start on Cancel and speak their
+  question when menu speech is enabled. The exact Character Studio controls
+  now speak their names and values too.
+- **Supported packs can replace plants and items with 3D models.** Palms,
+  trees, balloons and bananas can use a pack’s models on WebGPU. OpenGL shows
+  the original sprites. No model artwork is included.
+- **Modern camera** holds steadier shots near walls and scenery. “Keep the
+  camera out of walls” remains an optional, experimental camera mode. Authored,
+  the default camera, is unaffected.
+- Windows Character Workshop drafts save on a fresh installation. In the
+  browser, damaged controller-pak and ghost files are set aside so they do not
+  keep returning at startup.
+
+You still need your own supported ROM, and any replacement art you want to use.
+The recommended starting point remains WebGPU, Restored presentation, Original
+gameplay tick rate and the Authored camera. Interpolated draws presentation-only
+in-between images from adjacent game ticks; inputs and simulation retain the
+selected gameplay tick rate.
+
+Online Room ships in native desktop packages. The published browser build remains
+local-only. Both players need the same version of the game. Both players must be
+on the room screen before the race can start; it will not launch just because
+you’re both connected.
+
+---
+
 # Golden Balloon 1.7.0
 
 *Online multiplayer is still a beta; Adventure Party and custom characters are

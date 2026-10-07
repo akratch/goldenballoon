@@ -8,9 +8,19 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [Unreleased]
+## [1.8.0] — 2026-10-07
 
 ### Added
+
+- Controller-operated ROM and ZIP file browsers on Linux, packaged SDL controller
+  mappings, and isolated controller intake tests through AppRun and AppImage.
+- Per-seat Adventure Party Taj draw-list checks before, during and after vehicle
+  changes, including a real skipped-body negative control and optional pack arms.
+- Small-window controller focus/scroll coverage for Settings, Content and open
+  and closed Local Play; rendered Character Studio keyboard and speech coverage.
+- Standalone Windows ROM-free test bundles and a supplementary Wine runner.
+- Dormant custom-track package admission primitives; no shipping importer or
+  authored-course launch path is enabled.
 
 - Content packs can replace the camera-facing sprites of the palms, the beach,
   blueberry and rubber trees, the weapon and collectible balloons and the
@@ -27,6 +37,17 @@ save formats). Everything below 1.0.0 predates that commitment.
   a mesh file share one parsed copy and one GPU buffer.
 
 ### Changed
+
+- Content-pack filename indexes and asynchronous image reads/decodes keep disk
+  work off the game frame. Resident replacement textures are fully uploaded after
+  level loads; admission reserves both halves of a Rice texture pair.
+- Modern camera recovery uses bounded held views, release hysteresis and measured
+  return rates. Observe remains the default policy outside the opt-in treatment.
+- Pack installation uses bounded, cancellable admission and publication without
+  replacement. Abandoned staging cleanup runs off the launcher thread.
+- Release qualification requires matching previous-release simulation/save
+  comparisons, isolated saves/mods/preferences, source custody for every build
+  input, and honest reporting of unmeasured presentation timing.
 
 - Spaceport Alpha's pulsing floor ring (track model 18, texture 211, a 16x32
   RGBA16 image) is drawn as the console draws it, without reading past any
@@ -57,6 +78,22 @@ save formats). Everything below 1.0.0 predates that commitment.
   file is now refused within its header's budget.
 
 ### Fixed
+
+- Enhanced 60 audio update-pool exhaustion and voice-steal cleanup; playable
+  Wizpig’s reaction bank and horn, Terry’s horn cheat, and Taj’s selection theme ownership.
+- Widescreen HUD finish-banner clipping and the OpenGL output-pass scissor at
+  larger render scales and split-screen layouts.
+- Challenge-arena AI route-search parity and deterministic Time Trial record
+  encoding. Retail level-header, name, lighting and AI-node consumers are bounded.
+- Adventure Party racer opacity and sound restoration after Taj changes.
+- Pack filename case matching, Windows UTF-8 enumeration and fresh-directory
+  writes, linked mods folders, macOS chosen-file access, and refused-name reporting.
+- Keyboard/controller focus after unclaimed Escape, disappearing or disabled
+  controls, and collapsed cards. Confirmations default to Cancel, announce their
+  question once, and restore spoken focus when closed.
+- Character Studio confirmation back navigation and spoken fit controls.
+- Native DMA host-pointer handling, input-script overflow rejection, nested audio
+  bank bounds, and sprite-model resource sharing and allocation-failure fallback.
 
 - In the browser, a damaged controller-pak image or ghost file is now set
   aside as it is on the desktop: renamed to the next free `.bad.N` name, never

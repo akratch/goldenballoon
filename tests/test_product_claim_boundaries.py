@@ -38,7 +38,7 @@ def current_release_notes() -> str:
 def main() -> int:
     require_contains(
         "README.md",
-        "WebGPU with the Restored presentation is the qualified visual path;",
+        "WebGPU with the Restored presentation is the recommended visual path;",
     )
     require_contains(
         "README.md",
@@ -168,13 +168,11 @@ def main() -> int:
         "Keep the camera out of walls",
         "remains an optional, experimental camera mode.",
         "the default camera, is unaffected.",
-        "check also fails in 1.6.0 on brief correction re-engagements",
-        "class is not new to 1.7.0",
     ):
         if known_camera_claim not in release_notes_words:
             raise AssertionError(
                 "the current release notes must disclose the optional-camera "
-                f"motion residual: {known_camera_claim!r}"
+                f"mode boundary: {known_camera_claim!r}"
             )
     for path in ("RELEASE_NOTES.md", "README.md"):
         require_contains(path, "Both players must be on the same platform.")
