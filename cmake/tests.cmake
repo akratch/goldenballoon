@@ -73,8 +73,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         MDKR_TRACK_PACKAGE_TEST_ALLOCATOR=1 MDKR_CUSTOM_TRACK_TEST_ALLOCATOR=1
         VERSION_us_v80 _LANGUAGE_C MODERN_CC NON_MATCHING=1 AVOID_UB=1 NATIVE_PORT=1)
     target_include_directories(mdkr_custom_track_package_test PRIVATE
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio)
+    mdkr_add_legacy_game_quote_includes(mdkr_custom_track_package_test)
     if(NOT MSVC)
         target_link_libraries(mdkr_custom_track_package_test PRIVATE m)
     endif()
@@ -107,8 +107,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_dma_destination_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_dma_destination_test)
     target_compile_definitions(mdkr_dma_destination_test PRIVATE
         VERSION_us_v80 _LANGUAGE_C MODERN_CC NON_MATCHING=1 AVOID_UB=1 NATIVE_PORT=1)
     add_test(NAME dma_destination COMMAND mdkr_dma_destination_test)
@@ -307,11 +307,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_camera_object_bvh_test)
     target_compile_definitions(mdkr_camera_object_bvh_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -344,11 +343,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_camera_dynamic_temporal_test)
     target_compile_definitions(mdkr_camera_dynamic_temporal_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -381,11 +379,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_camera_dynamic_precedence_test)
     target_compile_definitions(mdkr_camera_dynamic_precedence_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -450,10 +447,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
-        ${CMAKE_SOURCE_DIR}/game/include/sys
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_camera_lens_pose_test)
     target_compile_definitions(mdkr_camera_lens_pose_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C=1
@@ -1324,10 +1320,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_object_layout_test)
     target_compile_definitions(mdkr_object_layout_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -1359,10 +1355,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_memory_allocator_test)
     target_compile_definitions(mdkr_memory_allocator_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -1395,8 +1391,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/platform/fast3d
         ${CMAKE_SOURCE_DIR}/game
-        ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR)
+        ${CMAKE_SOURCE_DIR}/game/include)
+    mdkr_add_legacy_game_quote_includes(mdkr_fast3d_dl_guards_test)
     target_compile_definitions(mdkr_fast3d_dl_guards_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -1409,8 +1405,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_runtime_contracts_test PRIVATE
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
-        ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR)
+        ${CMAKE_SOURCE_DIR}/game/include)
+    mdkr_add_legacy_game_quote_includes(mdkr_runtime_contracts_test)
     target_compile_definitions(mdkr_runtime_contracts_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -1430,8 +1426,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_taj_physics_test)
     target_compile_definitions(mdkr_taj_physics_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2152,8 +2148,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra)
+    mdkr_add_legacy_game_quote_includes(mdkr_joypad_rollback_test)
     target_compile_definitions(mdkr_joypad_rollback_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2279,8 +2275,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/platform
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra)
+    mdkr_add_legacy_game_quote_includes(mdkr_rollback_game_runtime_test)
     target_compile_definitions(mdkr_rollback_game_runtime_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2300,9 +2296,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_rollback_game_authority_test)
     target_compile_definitions(mdkr_rollback_game_authority_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2371,10 +2367,10 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         ${CMAKE_SOURCE_DIR}/game
         ${CMAKE_SOURCE_DIR}/game/src
         ${CMAKE_SOURCE_DIR}/game/include
-        ${CMAKE_SOURCE_DIR}/game/include/PR
         ${CMAKE_SOURCE_DIR}/game/libultra
         ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
         ${CMAKE_SOURCE_DIR}/platform)
+    mdkr_add_legacy_game_quote_includes(mdkr_sprite_layout_test)
     target_compile_definitions(mdkr_sprite_layout_test PRIVATE
         VERSION_us_v80
         _LANGUAGE_C
@@ -2818,13 +2814,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/game
             ${CMAKE_SOURCE_DIR}/game/src
             ${CMAKE_SOURCE_DIR}/game/include
-            ${CMAKE_SOURCE_DIR}/game/include/PR
-            ${CMAKE_SOURCE_DIR}/game/include/sys
             ${CMAKE_SOURCE_DIR}/game/libultra
             ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/fast3d
             ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        mdkr_add_legacy_game_quote_includes(mdkr_void_pairs_test)
         target_compile_definitions(mdkr_void_pairs_test PRIVATE
             VERSION_us_v80
             _LANGUAGE_C
@@ -2891,13 +2886,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/game
             ${CMAKE_SOURCE_DIR}/game/src
             ${CMAKE_SOURCE_DIR}/game/include
-            ${CMAKE_SOURCE_DIR}/game/include/PR
-            ${CMAKE_SOURCE_DIR}/game/include/sys
             ${CMAKE_SOURCE_DIR}/game/libultra
             ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/fast3d
             ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        mdkr_add_legacy_game_quote_includes(${target})
         target_compile_definitions(${target} PRIVATE
             VERSION_us_v80
             _LANGUAGE_C
@@ -3011,13 +3005,12 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
             ${CMAKE_SOURCE_DIR}/game
             ${CMAKE_SOURCE_DIR}/game/src
             ${CMAKE_SOURCE_DIR}/game/include
-            ${CMAKE_SOURCE_DIR}/game/include/PR
-            ${CMAKE_SOURCE_DIR}/game/include/sys
             ${CMAKE_SOURCE_DIR}/game/libultra
             ${CMAKE_SOURCE_DIR}/game/libultra/src/audio
             ${CMAKE_SOURCE_DIR}/platform
             ${CMAKE_SOURCE_DIR}/platform/fast3d
             ${CMAKE_SOURCE_DIR}/platform/fast3d_shim)
+        mdkr_add_legacy_game_quote_includes(mdkr_video_mode_table_test)
         target_compile_definitions(mdkr_video_mode_table_test PRIVATE
             VERSION_us_v80
             _LANGUAGE_C

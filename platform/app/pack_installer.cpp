@@ -1208,8 +1208,9 @@ std::size_t PreparedPackInstall::reclaimAbandonedStaging(
     std::vector<std::string> names;
     {
         const int scan = openat(mods.value, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        std::unique_ptr<DIR, decltype(&closedir)> dir(scan >= 0 ? fdopendir(scan) : nullptr,
-                                                      closedir);
+        const auto closeDirectory = [](DIR *directory) { (void)closedir(directory); };
+        std::unique_ptr<DIR, decltype(closeDirectory)> dir(
+            scan >= 0 ? fdopendir(scan) : nullptr, closeDirectory);
         if (!dir) {
             if (scan >= 0) close(scan);
             return 0;

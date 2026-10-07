@@ -63,6 +63,12 @@ static void tracked_free(void *pointer) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
+#if defined(__GNUC__) && !defined(__clang__)
+/* GCC 11 at -O3 cannot connect has_trans with the tRNS branch that fills
+ * tc16 before compute_transparency16 reads it. Keep this upstream-header
+ * exception inside the diagnostic scope; our ownership checks stay strict. */
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 #include "stb_image.h"
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
