@@ -140,8 +140,8 @@ bool AppUi_applyDpiTransition(AppUiDpiState *state, float framebufferScale) {
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
     const char *token, const char *pace, const char *walk,
-    const char *onlineAction) {
-    // Exactly one scripted selection, and it must be one of the three the
+    const char *onlineAction, const char *browser, const char *packBrowser) {
+    // Exactly one scripted selection, and it must be one of the selections the
     // launcher has scripts for. Naming them explicitly is what keeps an
     // inherited variable from attaching synthetic input to a normal session,
     // and requiring exactly one keeps two scripts from sharing a run.
@@ -149,9 +149,12 @@ AppUiSmokeInputMode AppUi_validateSmokeInput(
     const bool selectsPace = pace && pace[0];
     const bool selectsWalk = walk && walk[0];
     const bool selectsOnlineAction = onlineAction && onlineAction[0];
+    const bool selectsBrowser = browser && browser[0];
+    const bool selectsPackBrowser = packBrowser && packBrowser[0];
     const int scripts = (selectsFrameLimit ? 1 : 0) + (selectsPace ? 1 : 0) +
                         (selectsWalk ? 1 : 0) +
-                        (selectsOnlineAction ? 1 : 0);
+                        (selectsOnlineAction ? 1 : 0) +
+                        (selectsBrowser ? 1 : 0) + (selectsPackBrowser ? 1 : 0);
     const bool anyInputContract =
         scripts > 0 || (input && input[0]) || (token && token[0]);
     if (!anyInputContract) return AppUiSmokeInputMode::Disabled;
@@ -160,6 +163,7 @@ AppUiSmokeInputMode AppUi_validateSmokeInput(
         (selectsPace && std::strcmp(pace, "original") != 0 &&
          std::strcmp(pace, "smooth") != 0) ||
         (selectsWalk && std::strcmp(walk, "1") != 0) ||
+        ((selectsBrowser || selectsPackBrowser) && std::strcmp(input, "gamepad") != 0) ||
         std::strcmp(token, "mdkr64-app-ui-input-v1") != 0) {
         return AppUiSmokeInputMode::Invalid;
     }
@@ -185,7 +189,9 @@ AppUiSmokeInputMode AppUi_smokeInputMode() {
         std::getenv("MDKR_APP_SMOKE_INPUT_TOKEN"),
         std::getenv("MDKR_APP_SMOKE_SELECT_PRESENTATION_PACE"),
         std::getenv("MDKR_APP_SMOKE_A11Y_WALK"),
-        std::getenv("MDKR_APP_SMOKE_ONLINE_ACTION"));
+        std::getenv("MDKR_APP_SMOKE_ONLINE_ACTION"),
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER"),
+        std::getenv("MDKR_APP_SMOKE_PACK_BROWSER"));
 }
 
 bool AppUi_a11yWalkArmed() {

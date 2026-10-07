@@ -467,6 +467,7 @@ int platform_content_pack_name_disabled(const char *list, const char *name);
  * state is published only when the host driver issues a fixed-step ticket.
  * Script entries bypass host poll cadence and remain authoritative-tick
  * indexed. */
+void platform_load_controller_mappings(void);
 void platform_input_init(void);
 void platform_input_pump(void);
 /* Just-in-time host sample, taken at the tick boundary immediately before the

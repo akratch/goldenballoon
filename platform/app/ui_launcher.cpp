@@ -49,6 +49,11 @@ extern "C" {
 #endif
 
 namespace {
+bool g_smokeChooseRomFocused = false;
+bool g_smokePackButtonFocused = false;
+bool g_smokePackPublished = false;
+bool g_smokePackFocusRequested = false;
+
 
 struct Panel {
     const char *label;
@@ -387,6 +392,7 @@ void drawPrimaryLauncherAction(LauncherState &state, const ImVec2 &size,
      * with none and a gate that no longer measures what it was written for.
      */
     const bool pressed = ui::BrandPrimaryButton(label, size);
+    g_smokeChooseRomFocused = !ready && !busy && ImGui::IsItemFocused();
     if (busy) ImGui::EndDisabled();
     if (g_characterWorkshopReturnFocusRequested && workshopActive && !busy) {
         g_characterWorkshopReturnFocusRequested = false;
@@ -1419,6 +1425,7 @@ void Launcher_requestTab(LauncherState &s, int panel, int priority) {
     s.requestTabPriority = priority;
 }
 
+bool Launcher_smokeChooseRomFocused() { return g_smokeChooseRomFocused; }
 bool Launcher_smokeTopTabCenter(int panel, int *x, int *y) {
     if (!x || !y || panel < 0 || panel >= kPanelCount ||
         !g_smokeTopTabValid[panel]) {
@@ -1539,7 +1546,10 @@ void servicePackInstall(bool quitting) {
     // The inventory refresh stays on the launcher thread: it rebinds the
     // texture store and retires caches the renderer owns. It runs only while
     // the launcher owns the frame, never inside a live engine session.
-    if (g_packInstall.service(quitting)) platform_content_packs_init();
+    if (g_packInstall.service(quitting)) {
+        g_smokePackPublished = true;
+        platform_content_packs_init();
+    }
 }
 
 #if !defined(_WIN32)
@@ -1579,6 +1589,10 @@ void servicePackInstall(bool quitting) {
 #endif
 
 void installContentPack(const char *modsDirectory) {
+    if (const char *path = FileBrowserUi_smokePath(true)) {
+        g_packBrowser.open(path, BrowserFileKind::ZipPack);
+        return;
+    }
 #if defined(__linux__)
     // The in-window browser installs through startPackInstall once a ZIP is
     // picked, which finds the mods folder again then.
@@ -1631,6 +1645,11 @@ void drawContentPanel(LauncherState &s, LauncherAction &out) {
         if (ui::BrandPrimaryButton("Install pack…", ui::kBtnWide())) {
             installContentPack(modsDirectory);
         }
+        if (FileBrowserUi_smokePath(true) && !g_smokePackFocusRequested) {
+            ImGui::SetKeyboardFocusHere(-1);
+            g_smokePackFocusRequested = true;
+        }
+        g_smokePackButtonFocused = ImGui::IsItemFocused();
         ImGui::EndDisabled();
         ui::SpeakFocusedItem(
             "Install pack", nullptr,
@@ -1878,6 +1897,22 @@ void drawAboutPanel(LauncherState &s, LauncherAction &out) {
 }
 
 }  // namespace
+
+const char *FileBrowserUi_smokePath(bool pack) {
+    if (AppUi_smokeInputMode() != AppUiSmokeInputMode::Gamepad ||
+        std::getenv("MDKR_APP_SMOKE_FRAMES") == nullptr) return nullptr;
+    const char *path = std::getenv(pack ? "MDKR_APP_SMOKE_PACK_BROWSER" : "MDKR_APP_SMOKE_ROM_BROWSER");
+    const char *token = std::getenv(pack ? "MDKR_APP_SMOKE_PACK_BROWSER_TOKEN" : "MDKR_APP_SMOKE_ROM_BROWSER_TOKEN");
+    return path && path[0] && token &&
+        std::strcmp(token, pack ? "mdkr64-app-pack-browser-v1" : "mdkr64-app-rom-browser-v1") == 0
+        ? path : nullptr;
+}
+
+bool Launcher_smokePackInstallButtonFocused() { return g_smokePackButtonFocused; }
+bool Launcher_smokePackBrowserOpen() { return g_packBrowser.visible(); }
+bool Launcher_smokePackBrowserFocusedZip(const char *path) { return g_packBrowser.focusedPath(path, false); }
+bool Launcher_smokePackInstalled() { return g_smokePackPublished && !g_packInstall.busy(); }
+bool Launcher_smokePackInstallPending() { return g_packInstall.busy(); }
 
 void Launcher::serviceCharacterWork() {
     // Character subprocesses publish through launcher-owned UI state. Service

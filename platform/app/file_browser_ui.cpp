@@ -11,6 +11,9 @@ void FileBrowserUi::open(const std::string &remembered, BrowserFileKind kind) {
 }
 
 bool FileBrowserUi::draw(const char *title, std::string &selection) {
+    visible_ = false;
+    focusedPath_.clear();
+    rootFocused_ = upFocused_ = scrolled_ = false;
     if (!open_) return false;
     if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
     const ImVec2 viewport = ImGui::GetMainViewport()->Size;
@@ -20,6 +23,7 @@ bool FileBrowserUi::draw(const char *title, std::string &selection) {
     if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_NoSavedSettings))
         return false;
     bool selected = false;
+    visible_ = true;
     ImGui::TextWrapped("Folder: %s", browser_.directory().u8string().c_str());
     const float width = (std::max)(1.0f,
         (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2) / 3);
@@ -32,6 +36,7 @@ bool FileBrowserUi::draw(const char *title, std::string &selection) {
         focusFirst_ = false;
     }
     ui::SpeakFocusedItem("Up", nullptr, "Go to the parent folder.");
+    upFocused_ = ImGui::IsItemFocused();
     ImGui::SameLine();
     if (ImGui::Button("Home", navSize)) {
         const char *homePath = std::getenv("HOME");
@@ -42,6 +47,7 @@ bool FileBrowserUi::draw(const char *title, std::string &selection) {
     ImGui::SameLine();
     if (ImGui::Button("Root /", navSize)) { browser_.goTo("/"); focusFirst_ = true; }
     ui::SpeakFocusedItem("Root", nullptr, "Find mounted drives from the filesystem root.");
+    rootFocused_ = ImGui::IsItemFocused();
 
     // Reserve the actual scaled footer height, including the navigation hint.
     const float footer = ImGui::GetFrameHeightWithSpacing() +
@@ -69,6 +75,10 @@ bool FileBrowserUi::draw(const char *title, std::string &selection) {
             focusFirst_ = false;
         }
         ImGui::PopID();
+        if (ImGui::IsItemFocused()) {
+            focusedPath_ = entry.path.u8string();
+            focusedDirectory_ = entry.directory;
+        }
         if (activated) {
             // Copy before navigating: goTo replaces the backing entry vector.
             const auto path = entry.path;
@@ -77,6 +87,7 @@ bool FileBrowserUi::draw(const char *title, std::string &selection) {
             break;
         }
     }
+    scrolled_ = ImGui::GetScrollMaxY() > 0.0f && ImGui::GetScrollY() > 0.0f;
     ImGui::EndChild();
     ImGui::TextUnformatted("A: open   B: parent folder   D-pad/stick: move");
     if (ImGui::Button("Cancel", ui::kBtnSecondary()) || ImGui::IsKeyPressed(ImGuiKey_Escape))

@@ -279,6 +279,19 @@ private:
 // Returns the last rendered logical-window rectangle center for a top
 // navigation destination. Test-only; false when the responsive layout is using
 // the wide rail or dense dropdown instead of top tabs.
+bool Launcher_smokeChooseRomFocused();
+bool Launcher_smokePackInstallButtonFocused();
+bool Launcher_smokePackBrowserOpen();
+bool Launcher_smokePackBrowserFocusedZip(const char *path);
+bool Launcher_smokePackInstalled();
+bool Launcher_smokePackInstallPending();
+bool RomPanel_smokeBrowserOpen();
+bool RomPanel_smokeBrowserFocusedRom(const char *path);
+bool RomPanel_smokeBrowserFocusedFolder(const char *path);
+bool RomPanel_smokeBrowserAtDirectory(const char *path);
+bool RomPanel_smokeBrowserRootFocused();
+bool RomPanel_smokeBrowserUpFocused();
+bool RomPanel_smokeBrowserScrolled();
 bool Launcher_smokeTopTabCenter(int panel, int *x, int *y);
 
 // Last rendered Settings scroll viewport and position. These read-only seams

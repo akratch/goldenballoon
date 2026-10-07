@@ -325,6 +325,12 @@ void drawAcquisition(LauncherState &s, bool haveRom) {
 }  // namespace
 
 bool RomPanel_chooseRom(LauncherState &s) {
+    if (const char *path = FileBrowserUi_smokePath(false)) {
+        // The explicit fixture directory, including the empty-directory arm.
+        g_romFileBrowser.open(path,
+                              BrowserFileKind::Rom);
+        return true;
+    }
 #if defined(__linux__)
     g_romFileBrowser.open(s.romPath, BrowserFileKind::Rom);
     return true;
@@ -337,6 +343,14 @@ bool RomPanel_chooseRom(LauncherState &s) {
     return true;
 #endif
 }
+
+bool RomPanel_smokeBrowserOpen() { return g_romFileBrowser.visible(); }
+bool RomPanel_smokeBrowserFocusedRom(const char *path) { return g_romFileBrowser.focusedPath(path, false); }
+bool RomPanel_smokeBrowserFocusedFolder(const char *path) { return g_romFileBrowser.focusedPath(path, true); }
+bool RomPanel_smokeBrowserAtDirectory(const char *path) { return g_romFileBrowser.atDirectory(path); }
+bool RomPanel_smokeBrowserRootFocused() { return g_romFileBrowser.rootFocused(); }
+bool RomPanel_smokeBrowserUpFocused() { return g_romFileBrowser.upFocused(); }
+bool RomPanel_smokeBrowserScrolled() { return g_romFileBrowser.scrolled(); }
 
 static void applySelectionResult(LauncherState &s,
                                  const std::string &candidatePath,

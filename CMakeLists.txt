@@ -1054,6 +1054,16 @@ if(NOT EMSCRIPTEN)
             COMMENT "Embedding brand/hero.png for the launcher home"
             VERBATIM)
 
+        # Also resolve the launcher database from an unrelated working directory.
+        configure_file(
+            ${CMAKE_SOURCE_DIR}/lib/sdl_gamecontrollerdb/gamecontrollerdb.txt
+            ${CMAKE_CURRENT_BINARY_DIR}/gamecontrollerdb.txt COPYONLY)
+        add_custom_command(TARGET ${MDKR_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_SOURCE_DIR}/lib/sdl_gamecontrollerdb/gamecontrollerdb.txt
+                $<TARGET_FILE_DIR:${MDKR_TARGET}>/gamecontrollerdb.txt
+            VERBATIM)
+
         set(APP_SOURCES
             ${MDKR_HERO_HEADER}
             ${CMAKE_SOURCE_DIR}/platform/app/app_config.cpp

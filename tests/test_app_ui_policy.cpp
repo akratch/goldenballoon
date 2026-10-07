@@ -412,6 +412,26 @@ int main() {
                                     "mdkr64-app-ui-input-v1", nullptr) ==
                SmokeMode::Invalid,
            "partial controller environment is rejected");
+    expect(AppUi_validateSmokeInput("60", nullptr, "gamepad",
+                                    "mdkr64-app-ui-input-v1", nullptr,
+                                    nullptr, nullptr, "fixture/invalid.z64") ==
+               SmokeMode::Gamepad,
+           "ROM browser is a complete gamepad smoke script");
+    expect(AppUi_validateSmokeInput("60", "240", "gamepad",
+                                    "mdkr64-app-ui-input-v1", nullptr,
+                                    nullptr, nullptr, "fixture/invalid.z64") ==
+               SmokeMode::Invalid,
+           "ROM browser cannot share a run with settings scripts");
+    expect(AppUi_validateSmokeInput("60", nullptr, "gamepad",
+                                    "mdkr64-app-ui-input-v1", nullptr,
+                                    nullptr, nullptr, nullptr,
+                                    "fixture/pack.zip") == SmokeMode::Gamepad,
+           "pack browser is a complete gamepad smoke script");
+    expect(AppUi_validateSmokeInput("60", nullptr, "gamepad",
+                                    "mdkr64-app-ui-input-v1", nullptr,
+                                    nullptr, nullptr, "fixture/invalid.z64",
+                                    "fixture/pack.zip") == SmokeMode::Invalid,
+           "ROM and pack browser scripts cannot share a run");
     // The presentation-pace script is the second scripted selection, and the
     // contract has to be exactly as strict about it as about the first.
     expect(AppUi_validateSmokeInput("10", nullptr, "keyboard",

@@ -9944,3 +9944,15 @@ errors fail closed; Python-owned temporary stderr storage replaces predictable
 scratch filenames. Blob-size warnings remain provenance-review prompts rather
 than automatic failures. These heuristics are not a complete license audit or
 proof that arbitrary content is non-derived.
+
+## Controller file intake
+
+`tests/check_app_rom_browser_input.py` drives the in-window ROM picker through
+SDL gamepad input, including a second controller, scrolling, root/back navigation,
+invalid-file recovery and a fresh process restoring a validated ROM.
+`tests/check_app_pack_install_input.py` installs a synthetic ZIP from Content,
+including a 640x480 run. Both use private saves, preferences and content folders.
+On macOS the versioned smoke contract selects the Linux-style picker.
+`tests/check_steam_deck_mappings.py` runs on Linux and resolves the shipped Deck
+and Steam Virtual controller bindings through SDL itself. Packaged Linux gates
+exercise AppRun and the AppImage runtime from unrelated working directories.

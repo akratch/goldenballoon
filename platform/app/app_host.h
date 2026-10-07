@@ -163,6 +163,8 @@ private:
     std::vector<SDL_GameControllerButton> pendingSmokeGamepadButtons_;
     SDL_GameController *smokeGamepad_ = nullptr;
     int smokeGamepadDeviceIndex_ = -1;
+    int smokeIdleGamepadDeviceIndex_ = -1;
+    bool smokeGamepadAutoAll_ = false;
     int smokeHeldGamepadButton_ = -1;
     /* A scripted-input run is the sole author of ImGui's pointer, keyboard and
      * focus state. The foreground activation every launcher process performs

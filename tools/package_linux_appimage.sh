@@ -151,6 +151,20 @@ verify_linux_tarball() {
     echo "ERROR: Linux package carries an unreviewed native Phone Party notice." >&2
     return 1
   fi
+  # A filename-only manifest could accept an empty or stale mapping DB. That
+  # would strand first-run Steam Deck users before they can select a ROM.
+  local source_mapping_hash staged_mapping_hash archive_mapping_hash
+  source_mapping_hash="$(sha256sum \
+    lib/sdl_gamecontrollerdb/gamecontrollerdb.txt | awk '{print $1}')"
+  staged_mapping_hash="$(sha256sum \
+    "$staged/usr/bin/gamecontrollerdb.txt" | awk '{print $1}')"
+  archive_mapping_hash="$(tar -xOzf "$archive" \
+    Golden-Balloon.AppDir/usr/bin/gamecontrollerdb.txt | sha256sum | awk '{print $1}')"
+  if [[ "$staged_mapping_hash" != "$source_mapping_hash" ||
+        "$archive_mapping_hash" != "$source_mapping_hash" ]]; then
+    echo "ERROR: Linux package controller mappings differ from the tracked database." >&2
+    return 1
+  fi
   python3 - "$archive" <<'PY'
 import hashlib
 import json
@@ -247,7 +261,7 @@ if [[ "$self_test" == true ]]; then
   cp third_party/meshoptimizer/README.md "$test_appdir/Meshoptimizer-README.md"
   cp third_party/native_phone_party/NOTICE.txt \
     "$test_appdir/NativePhoneParty-NOTICES.txt"
-  : >"$test_appdir/usr/bin/gamecontrollerdb.txt"
+  cp lib/sdl_gamecontrollerdb/gamecontrollerdb.txt "$test_appdir/usr/bin/gamecontrollerdb.txt"
   : >"$test_appdir/usr/bin/mdkr64"
   : >"$test_appdir/usr/bin/tools/character_importer"
   : >"$test_appdir/usr/bin/tools/mdkr-character-lod"
@@ -483,9 +497,12 @@ Tarball fallback:
 1. Extract the entire archive to a writable folder you own.
 2. Run Golden-Balloon.AppDir/AppRun. Do not move AppRun away from its folder.
 
-The Linux launcher intentionally does not search your disk or open a native
-file picker. Drag your legally dumped ROM onto the launcher, or paste its
-absolute path. US 1.1 and European 1.1 .z64, .v64, and .n64 dumps are supported.
+The launcher does not search your disk automatically or open a desktop file
+picker. Choose ROM opens an in-window Browse panel that you can navigate with
+a gamepad in Steam Deck Gaming Mode: D-pad/stick to move, A to open or select,
+B to go up, and Root / to reach mounted drives. You can also drag your legally
+dumped ROM onto the launcher or paste its absolute path. US 1.1 and European
+1.1 .z64, .v64, and .n64 dumps are supported.
 
 WebGPU is the default and requires a current host graphics driver. If startup
 fails, copy the Diagnostics details first. `MDKR_RENDERER=gl` selects the
@@ -493,9 +510,6 @@ diagnostic OpenGL backend; it is useful for narrowing down a driver problem,
 not the recommended presentation path. Press F1 in-game for the pause overlay.
 
 This app ships no game data. See README.md for controls and support details.
-The complete Character Workshop importer and its pinned Khronos glTF Validator
-are bundled; no Python installation is required. Their terms are in
-usr/bin/tools and usr/bin/tools/validators.
 EOF
 
 # Scan the exact tree consumed by both tar and appimagetool, including every

@@ -309,6 +309,27 @@ jobs:
 
           qualify_launcher webgpu "" "$GITHUB_WORKSPACE/build/mdkr64"
           qualify_launcher gl gl "$GITHUB_WORKSPACE/build/mdkr64"
+
+          python3 tests/check_steam_deck_mappings.py \
+            --database "$GITHUB_WORKSPACE/build/gamecontrollerdb.txt"
+
+          # The same virtual SDL gamepad used by launcher widget tests must
+          # open Choose ROM and select a file through the production Linux
+          # in-window browser. This is ROM-free and does not need a portal.
+          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+            env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+              python3 tests/check_app_rom_browser_input.py \
+                --build "$GITHUB_WORKSPACE/build/mdkr64"
+          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+            env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+              python3 tests/check_app_pack_install_input.py \
+                --build "$GITHUB_WORKSPACE/build/mdkr64"
+          xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+            env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+              python3 tests/check_app_pack_install_input.py \
+                --build "$GITHUB_WORKSPACE/build/mdkr64" \
+                --window-size 640x480
+
           qualify_launcher online-beta "" "$GITHUB_WORKSPACE/build/mdkr64" \
             "Online Room" "Online Room"
 
@@ -411,7 +432,7 @@ jobs:
             --gltf-validator-manifest build-tools/validators/gltf_validator.manifest.json \
             --character-lod-tool build/tools/mdkr-character-lod \
             --version "${{ needs.validate.outputs.version }}"
-      - name: Qualify extracted tar/AppRun from an unrelated directory
+      - name: Qualify packaged Linux launchers from an unrelated directory
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
@@ -427,6 +448,7 @@ jobs:
           tar -xzf "dist/Golden-Balloon-$RELEASE_VERSION-linux-x86_64.tar.gz" \
             -C "$extract"
           app_run="$extract/Golden-Balloon.AppDir/AppRun"
+          app_image="$GITHUB_WORKSPACE/dist/Golden-Balloon-$RELEASE_VERSION-linux-x86_64.AppImage"
           binary="$extract/Golden-Balloon.AppDir/usr/bin/mdkr64"
           importer="$extract/Golden-Balloon.AppDir/usr/bin/tools/character_importer"
           validator="$extract/Golden-Balloon.AppDir/usr/bin/tools/validators/gltf_validator"
@@ -494,6 +516,30 @@ jobs:
           qualify_package webgpu ""
           qualify_package gl gl
           qualify_package online-beta "" "Online Room" "Online Room"
+
+          (
+            cd "$unrelated"
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                python3 "$GITHUB_WORKSPACE/tests/check_app_rom_browser_input.py" \
+                  --build "$app_run"
+            # AppImage is the direct-download path. Exercise its embedded
+            # runtime and AppDir independently of the tarball. Extract-and-run
+            # avoids relying on FUSE in the hosted runner.
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                APPIMAGE_EXTRACT_AND_RUN=1 \
+                python3 "$GITHUB_WORKSPACE/tests/check_app_rom_browser_input.py" \
+                  --build "$app_image"
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                python3 "$GITHUB_WORKSPACE/tests/check_app_pack_install_input.py" \
+                  --build "$app_run"
+            xvfb-run -a -s '-screen 0 1280x800x24 +extension GLX +render -noreset' \
+              env -u SDL_VIDEODRIVER -u MDKR_RENDERER \
+                python3 "$GITHUB_WORKSPACE/tests/check_app_pack_install_input.py" \
+                  --build "$app_run" --window-size 640x480
+          )
 
           # Phone Party surface witness for the artifact players actually get.
           # Same seam and same honest limits as the built-tree step above. A

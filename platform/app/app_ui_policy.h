@@ -148,7 +148,8 @@ enum class AppUiSmokeInputMode { Disabled, Keyboard, Gamepad, Invalid };
 AppUiSmokeInputMode AppUi_validateSmokeInput(
     const char *frames, const char *selection, const char *input,
     const char *token, const char *pace, const char *walk = nullptr,
-    const char *onlineAction = nullptr);
+    const char *onlineAction = nullptr,
+    const char *browser = nullptr, const char *packBrowser = nullptr);
 AppUiSmokeInputMode AppUi_smokeInputMode();
 
 // True while the scripted accessibility walk is armed. The walk needs two

@@ -1008,7 +1008,7 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         "Verify built executable identity and ROM-free surfaces",
         "Qualify built AppHost pixels",
         "Package AppImage + tar.gz",
-        "Qualify extracted tar/AppRun",
+        "Qualify packaged Linux launchers",
         "Stamp provenance",
         "uses: actions/upload-artifact@",
     )
@@ -1017,6 +1017,39 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
         failures.append(
             "Linux release no longer qualifies built pixels, packages, qualifies "
             "the extracted AppRun, stamps, then uploads in that order"
+        )
+    built_qualification = workflow.split(
+        "      - name: Qualify built AppHost pixels", 1
+    )[-1].split("      - name: Package AppImage + tar.gz", 1)[0]
+    package_qualification = workflow.split(
+        "      - name: Qualify packaged Linux launchers", 1
+    )[-1].split("      - name: Stamp provenance", 1)[0]
+    if not re.search(
+        r"python3 tests/check_app_rom_browser_input\.py\s*\\?\s*"
+        r'--build "\$GITHUB_WORKSPACE/build/mdkr64"',
+        built_qualification,
+    ):
+        failures.append("Linux release no longer exercises the built controller ROM picker")
+    if not re.search(
+        r'cd "\$unrelated".*?'
+        r'python3 "\$GITHUB_WORKSPACE/tests/check_app_rom_browser_input\.py"\s*\\?\s*'
+        r'--build "\$app_run"',
+        package_qualification,
+        re.DOTALL,
+    ):
+        failures.append(
+            "Linux release no longer exercises the packaged AppRun controller "
+            "ROM picker from an unrelated directory"
+        )
+    if not re.search(
+        r'APPIMAGE_EXTRACT_AND_RUN=1\s*\\\s*'
+        r'python3 "\$GITHUB_WORKSPACE/tests/check_app_rom_browser_input\.py"\s*\\?\s*'
+        r'--build "\$app_image"',
+        package_qualification,
+    ):
+        failures.append(
+            "Linux release no longer exercises the downloadable AppImage "
+            "controller ROM picker through its embedded runtime"
         )
     windows_job = workflow.split("\n  windows:", 1)[-1]
     # No hosted Windows runner content-validates the WebGPU/GL launchers, so
@@ -1494,7 +1527,8 @@ def validate_tests_readme(source: str) -> list[str]:
         for script in undocumented
     ]
     documented = re.findall(r"tests/(check_[a-z0-9_]+\.py)", source)
-    registered = {check.script for check in manifest.CHECKS if check.script}
+    registered = ({check.script for check in manifest.CHECKS if check.script} |
+                  manifest.CTEST_COMPANION_SCRIPTS)
     for script in sorted(set(documented) - registered):
         if (TESTS / script).is_file():
             failures.append(

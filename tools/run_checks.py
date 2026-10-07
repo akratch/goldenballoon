@@ -177,6 +177,9 @@ GPU_SERIAL_NAMES = frozenset({
     "shadow_plausibility",
     "charselect_motion",
     "tool_freecam",
+    "app_rom_browser_input",
+    "app_pack_install_input",
+    "app_pack_install_input_small",
     "app_capture",
     "renderer_backends",
     "gpu_backpressure",
@@ -426,6 +429,13 @@ CHECKS = (
           "real ImGui keyboard/gamepad selection, the Presentation pace quick "
           "choice writing both pacing keys, reload, scale matrix, "
           "save failure, and retry"),
+    Check("app_rom_browser_input", "check_app_rom_browser_input.py", "native",
+          "controller ROM picking, invalid-file recovery, root/back navigation, "
+          "offscreen scrolling, second pad and remembered valid selection"),
+    Check("app_pack_install_input", "check_app_pack_install_input.py", "native",
+          "controller Content picker installs a synthetic ZIP pack"),
+    Check("app_pack_install_input_small", "check_app_pack_install_input.py", "native",
+          "controller ZIP intake at 640x480", args=("--window-size", "640x480")),
     Check("app_scroll", "check_app_scroll.py", "native",
           "launcher panel scrolling through the production SDL adapter: a "
           "MacBook-trackpad-shaped fractional-preciseY wheel (integer y zero), "
@@ -1473,6 +1483,7 @@ CTEST_COMPANION_SCRIPTS = {
     # Registered as the gamecontrollerdb_lint CTest (cmake/tests.cmake); a
     # plain source lint with no artifacts, run once by the ctest task.
     "check_gamecontrollerdb.py",
+    "check_steam_deck_mappings.py",
     "check_controller_settings_persistence.py",
     "check_host_input_focus.py",
     "check_launcher_tabs.py",

@@ -1743,6 +1743,20 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
         summary='desktop-release positive controls unexpectedly passed: ',
         controls=(
             Control(
+                "Linux AppImage controller ROM-picker qualification",
+                "desktop_release",
+                '--build "$app_image"',
+                '--build "$app_run"',
+                count=1,
+            ),
+            Control(
+                "packaged controller ROM picker accidentally tests the built binary",
+                "desktop_release",
+                '--build "$app_run"',
+                '--build "$GITHUB_WORKSPACE/build/mdkr64"',
+                count=1,
+            ),
+            Control(
                 "central version validation",
                 "desktop_release",
                 '\n  validate:',

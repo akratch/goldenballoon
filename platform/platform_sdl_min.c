@@ -2842,8 +2842,7 @@ static void pad_hotplug_trace_channels(void) {
     fflush(stderr);
 }
 
-void platform_input_init(void) {
-    MdkrInputSample initial[MDKR_INPUT_PORTS];
+void platform_load_controller_mappings(void) {
     char packaged_mapping_path[4096];
     char executable_mapping_path[4096];
     char *executable_base = NULL;
@@ -2873,6 +2872,25 @@ void platform_input_init(void) {
     }
     paths[path_count++] = "lib/sdl_gamecontrollerdb/gamecontrollerdb.txt";
     paths[path_count++] = "gamecontrollerdb.txt";
+    for (size_t i = 0; i < path_count; i++) {
+        int n = SDL_GameControllerAddMappingsFromFile(paths[i]);
+        if (n > 0) {
+            printf("[SDL] loaded %d controller mappings from %s\n", n, paths[i]);
+        }
+        /* SDL returns zero when every mapping is already present. That is a
+         * successful reload, not a reason to try a lower-priority CWD file
+         * that might override the packaged database on engine handoff. */
+        if (n >= 0) {
+            break;
+        }
+    }
+    if (executable_base != NULL) {
+        SDL_free(executable_base);
+    }
+}
+
+void platform_input_init(void) {
+    MdkrInputSample initial[MDKR_INPUT_PORTS];
     memset(initial, 0, sizeof(initial));
     initial[0].present = true;
     mdkr_input_tick_queue_init(&s_inputQueue, initial);
@@ -2893,16 +2911,7 @@ void platform_input_init(void) {
             memcpy(s_keyboardDown, keyboard, sizeof(s_keyboardDown));
         }
     }
-    for (size_t i = 0; i < path_count; i++) {
-        int n = SDL_GameControllerAddMappingsFromFile(paths[i]);
-        if (n > 0) {
-            printf("[SDL] loaded %d controller mappings from %s\n", n, paths[i]);
-            break;
-        }
-    }
-    if (executable_base != NULL) {
-        SDL_free(executable_base);
-    }
+    platform_load_controller_mappings();
     /* Before the enumeration below, so a fixture's boot pads are indistinguish-
      * able from hardware SDL_Init already saw. Inert unless the arm is set. */
     pad_hotplug_boot();

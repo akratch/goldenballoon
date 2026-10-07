@@ -71,19 +71,20 @@ running them weeks apart on different hardware produces two anecdotes instead.
 
 ## Route L3 — Linux, ROM intake
 
-**Why:** the launcher's file picker is dynamically loaded, and which path is
-available depends on the desktop.
+**Why:** Linux uses an in-window browser so ROM and pack selection work without
+a desktop file dialog, including Steam Deck Gaming Mode.
 
 | # | Step | Expected |
 |---|---|---|
-| 1 | Capture the `[ROMINTAKE]` line at launch. | Names `portal`, `gtk`, or `paste-only`. |
-| 2 | Click **Choose ROM File**. | On `portal` or `gtk`, a real file chooser opens. On `paste-only`, the UI says so rather than presenting paste as the only design. |
-| 3 | Select the ROM through the chooser. | Accepted, validated, Play becomes available. |
-| 4 | Restart and instead drag the ROM onto the launcher. | Also accepted. |
+| 1 | Start the packaged AppImage, then repeat with the tarball's AppRun from an unrelated directory. | The launcher and controller mappings work in both packages. |
+| 2 | Activate **Choose ROM** with a gamepad. | An in-window file browser opens. D-pad/stick moves, A opens, B goes to the parent; B at Root closes. |
+| 3 | Navigate a long folder at 640x480, select an invalid file, then a supported ROM. | Focus scrolls into view; an invalid file is explained; a valid file enables Play. |
+| 4 | Restart, then exercise drag/drop and typed-path intake. | The remembered ROM and both alternative intake paths work. |
+| 5 | Open Content and activate **Install pack**; choose a ZIP with the gamepad. | The pack is installed and available on the next Play. |
+| 6 | Repeat with an inactive first controller and an active second controller. | The active controller can navigate the launcher. |
 
-**Result:** _not executed_ — the picker itself is
-[S4 task 4](sprints/S4-platform-breadth.md#task-4-linux-native-file-picker) and
-is not built yet; today every Linux desktop reports `paste-only`.
+**Result:** _hardware acceptance pending_. Automated SDL journeys are part of
+the Linux packaging lane; physical Steam Deck Gaming Mode is a separate result.
 
 ## Route W1 — Windows, hybrid-graphics laptop
 

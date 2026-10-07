@@ -117,6 +117,14 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_include_directories(mdkr_custom_track_table_test PRIVATE ${CMAKE_SOURCE_DIR}/platform)
     target_compile_definitions(mdkr_custom_track_table_test PRIVATE MDKR_CUSTOM_TRACK_TEST_ALLOCATOR=1)
     add_test(NAME custom_track_table COMMAND mdkr_custom_track_table_test)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME steam_deck_controller_mappings
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/check_steam_deck_mappings.py
+                --database ${CMAKE_SOURCE_DIR}/lib/sdl_gamecontrollerdb/gamecontrollerdb.txt)
+        set_tests_properties(steam_deck_controller_mappings PROPERTIES
+            LABELS app_process TIMEOUT 30)
+    endif()
     add_executable(mdkr_rom_browser_test
         ${CMAKE_SOURCE_DIR}/tests/test_rom_browser.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/rom_browser.cpp)

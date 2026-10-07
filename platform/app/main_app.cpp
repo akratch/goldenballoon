@@ -47,6 +47,7 @@
 #include "imgui.h"          // the accessibility key walk's key observation
 #include "video_config.h"   // mdkr_video_config_init / _schema (settings panel)
 
+#include <filesystem>
 #include <SDL.h>
 
 #include <cerrno>
@@ -3158,6 +3159,99 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
     bool smokeNavigationQueued = false;
     const bool smokeUsesGamepad =
         smokeInputMode == AppUiSmokeInputMode::Gamepad;
+    const char *smokeBrowserRom =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER");
+    const bool smokeBrowser = smokeBrowserRom && smokeBrowserRom[0];
+    const bool smokeBrowserExpectValid =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_EXPECT_VALID") != nullptr;
+    const char *smokeRememberedRom =
+        std::getenv("MDKR_APP_SMOKE_ROM_REMEMBERED");
+    const bool smokeRemembered = smokeRememberedRom && smokeRememberedRom[0];
+    if (smokeRemembered) {
+        const char *token = std::getenv("MDKR_APP_SMOKE_ROM_REMEMBERED_TOKEN");
+        if (smokeBrowser || !token ||
+            std::strcmp(token, "mdkr64-app-rom-remembered-v1") != 0) {
+            std::fprintf(stderr,
+                         "[app] smoke: remembered ROM requires its versioned contract\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+        if (frames < 60) frames = 60;
+    }
+    const char *smokePackZip =
+        std::getenv("MDKR_APP_SMOKE_PACK_BROWSER");
+    const bool smokePackBrowser = smokePackZip && smokePackZip[0];
+    bool smokePackOpenQueued = false;
+    bool smokePackZipQueued = false;
+    bool smokePackModalSeen = false;
+    if (smokePackBrowser) {
+        const char *token = std::getenv("MDKR_APP_SMOKE_PACK_BROWSER_TOKEN");
+        if (!smokeUsesGamepad || smokeBrowser || !token ||
+            std::strcmp(token, "mdkr64-app-pack-browser-v1") != 0) {
+            std::fprintf(stderr,
+                         "[app] smoke: pack browser requires the gamepad input contract\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+        if (frames < 60) frames = 60;
+    }
+    const char *smokeBrowserNavFolder =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_NAV_FOLDER");
+    const bool smokeBrowserNavigate = smokeBrowserNavFolder &&
+        smokeBrowserNavFolder[0];
+    const bool smokeBrowserRoot =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_ROOT") != nullptr;
+    const bool smokeBrowserEmptyStart =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_EMPTY_START") != nullptr;
+    const bool smokeBrowserDeep =
+        std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_DEEP") != nullptr;
+    const std::string smokeBrowserParent = smokeBrowser
+        ? std::filesystem::u8path(smokeBrowserRom).parent_path().u8string()
+        : std::string();
+    if (smokeBrowser) {
+        const char *token = std::getenv("MDKR_APP_SMOKE_ROM_BROWSER_TOKEN");
+        if (!smokeUsesGamepad || !token ||
+            std::strcmp(token, "mdkr64-app-rom-browser-v1") != 0) {
+            std::fprintf(stderr,
+                         "[app] smoke: ROM browser requires the gamepad input contract\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+        if (frames < (smokeBrowserDeep ? 180 : 60))
+            frames = smokeBrowserDeep ? 180 : 60;
+        if ((smokeBrowserNavigate && smokeBrowserRoot) ||
+            (smokeBrowserDeep && (smokeBrowserNavigate || smokeBrowserRoot))) {
+            std::fprintf(stderr,
+                         "[app] smoke: choose one ROM browser navigation route\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+        if (smokeBrowserEmptyStart && !smokeBrowserRoot) {
+            std::fprintf(stderr,
+                         "[app] smoke: empty browser start requires Root route\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+        if (smokeBrowserNavigate &&
+            std::filesystem::u8path(smokeBrowserNavFolder).parent_path() !=
+                std::filesystem::u8path(smokeBrowserParent)) {
+            std::fprintf(stderr,
+                         "[app] smoke: navigation folder must be beside the ROM\n");
+            shutdownLauncherHost(host, launcher);
+            return 2;
+        }
+    }
+    bool smokeBrowserOpenQueued = false;
+    bool smokeBrowserFileQueued = false;
+    bool smokeBrowserModalSeen = false;
+    bool smokeBrowserScrolled = false;
+    int smokeBrowserNavStage = 0;
+    bool smokeBrowserFolderOpened = false;
+    bool smokeBrowserBackReached = false;
+    int smokeBrowserRootStage = 0;
+    int smokeBrowserRootStepFrame = -1;
+    bool smokeBrowserRootVisited = false;
+    bool smokeBrowserRootClosed = false;
     const char *smokeFrameLimit =
         std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT");
     // Drives the real Presentation pace radio button through SDL, for the same
@@ -3662,6 +3756,134 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                 }
             }
             if (!renderOk) break;
+        }
+
+        if (smokeBrowser) {
+            if (RomPanel_smokeBrowserOpen()) smokeBrowserModalSeen = true;
+            if (RomPanel_smokeBrowserScrolled()) smokeBrowserScrolled = true;
+            if (i == 1) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+            } else if (i == 3) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_UP) && renderOk;
+            } else if (i >= 6 && !smokeBrowserOpenQueued &&
+                Launcher_smokeChooseRomFocused()) {
+                smokeBrowserOpenQueued = host.queueGamepadPressForSmoke(
+                    SDL_CONTROLLER_BUTTON_A);
+                std::fprintf(stderr,
+                             "[app-ui-test] Choose ROM gamepad press queued=%d\n",
+                             smokeBrowserOpenQueued ? 1 : 0);
+            } else if (i >= 6 && !smokeBrowserOpenQueued && (i % 2) == 0) {
+                renderOk = host.queueGamepadPressForSmoke(SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+            } else if (smokeBrowserOpenQueued && smokeBrowserRoot &&
+                       smokeBrowserEmptyStart && smokeBrowserRootStage == 0 &&
+                       RomPanel_smokeBrowserUpFocused()) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_RIGHT) && renderOk;
+                smokeBrowserRootStage = 2;
+                smokeBrowserRootStepFrame = i;
+            } else if (smokeBrowserOpenQueued && smokeBrowserRoot &&
+                       !smokeBrowserEmptyStart &&
+                       smokeBrowserRootStage == 0 &&
+                       RomPanel_smokeBrowserFocusedRom(smokeBrowserRom)) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_UP) && renderOk;
+                smokeBrowserRootStage = 1;
+                smokeBrowserRootStepFrame = i;
+            } else if (smokeBrowserRoot &&
+                       smokeBrowserRootStage >= 1 &&
+                       smokeBrowserRootStage <= 3 &&
+                       i > smokeBrowserRootStepFrame &&
+                       RomPanel_smokeBrowserRootFocused()) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_A) && renderOk;
+                smokeBrowserRootStage = 4;
+                smokeBrowserRootStepFrame = i;
+            } else if (smokeBrowserRoot &&
+                       smokeBrowserRootStage >= 1 &&
+                       smokeBrowserRootStage < 3 &&
+                       i >= smokeBrowserRootStepFrame + 2) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_RIGHT) && renderOk;
+                smokeBrowserRootStage++;
+                smokeBrowserRootStepFrame = i;
+            } else if (smokeBrowserRoot && smokeBrowserRootStage == 4 &&
+                       i > smokeBrowserRootStepFrame &&
+                       RomPanel_smokeBrowserAtDirectory("/")) {
+                smokeBrowserRootVisited = true;
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_B) && renderOk;
+                smokeBrowserRootStage = 5;
+            } else if (smokeBrowserRoot && smokeBrowserRootStage == 5 &&
+                       !RomPanel_smokeBrowserOpen()) {
+                smokeBrowserRootClosed = true;
+                smokeBrowserRootStage = 6;
+            } else if (smokeBrowserOpenQueued && !smokeBrowserFileQueued &&
+                       smokeBrowserNavigate && smokeBrowserNavStage == 0 &&
+                       RomPanel_smokeBrowserFocusedFolder(smokeBrowserNavFolder)) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_A) && renderOk;
+                smokeBrowserNavStage = 1;
+            } else if (smokeBrowserNavigate && smokeBrowserNavStage == 1 &&
+                       RomPanel_smokeBrowserAtDirectory(smokeBrowserNavFolder)) {
+                smokeBrowserFolderOpened = true;
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_B) && renderOk;
+                smokeBrowserNavStage = 2;
+            } else if (smokeBrowserNavigate && smokeBrowserNavStage == 2 &&
+                       RomPanel_smokeBrowserAtDirectory(smokeBrowserParent.c_str()) &&
+                       RomPanel_smokeBrowserFocusedFolder(smokeBrowserNavFolder)) {
+                smokeBrowserBackReached = true;
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+                smokeBrowserNavStage = 3;
+            } else if (smokeBrowserOpenQueued && smokeBrowserDeep &&
+                       !smokeBrowserFileQueued && RomPanel_smokeBrowserOpen() &&
+                       !RomPanel_smokeBrowserFocusedRom(smokeBrowserRom) &&
+                       (i % 2) == 0) {
+                // One press every other frame gives ImGui a release frame.
+                // This must traverse an overflowing child, not teleport focus
+                // to the target entry through a test-only widget hook.
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+            } else if (smokeBrowserOpenQueued && !smokeBrowserFileQueued &&
+                       !smokeBrowserRoot &&
+                       (!smokeBrowserNavigate || smokeBrowserNavStage == 3) &&
+                       RomPanel_smokeBrowserFocusedRom(smokeBrowserRom)) {
+                smokeBrowserFileQueued = host.queueGamepadPressForSmoke(
+                    SDL_CONTROLLER_BUTTON_A);
+                std::fprintf(stderr,
+                             "[app-ui-test] ROM entry gamepad press queued=%d\n",
+                             smokeBrowserFileQueued ? 1 : 0);
+            }
+        }
+
+        if (smokePackBrowser) {
+            if (Launcher_smokePackBrowserOpen()) smokePackModalSeen = true;
+            if (i == 1) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+            } else if (i == 3) {
+                renderOk = host.queueGamepadPressForSmoke(
+                               SDL_CONTROLLER_BUTTON_DPAD_UP) && renderOk;
+            } else if (i >= 6 && !smokePackOpenQueued &&
+                Launcher_smokePackInstallButtonFocused()) {
+                smokePackOpenQueued = host.queueGamepadPressForSmoke(
+                    SDL_CONTROLLER_BUTTON_A);
+                std::fprintf(stderr,
+                             "[app-ui-test] Install pack gamepad press queued=%d\n",
+                             smokePackOpenQueued ? 1 : 0);
+            } else if (i >= 6 && !smokePackOpenQueued && (i % 2) == 0) {
+                renderOk = host.queueGamepadPressForSmoke(SDL_CONTROLLER_BUTTON_DPAD_DOWN) && renderOk;
+            } else if (smokePackOpenQueued && !smokePackZipQueued &&
+                       Launcher_smokePackBrowserFocusedZip(smokePackZip)) {
+                smokePackZipQueued = host.queueGamepadPressForSmoke(
+                    SDL_CONTROLLER_BUTTON_A);
+                std::fprintf(stderr,
+                             "[app-ui-test] ZIP entry gamepad press queued=%d\n",
+                             smokePackZipQueued ? 1 : 0);
+            }
         }
 
         if (smokeNavigation && !smokeNavigationQueued) {
@@ -4217,7 +4439,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * with a hard deadline so a stalled removable/network drive fails the gate
      * rather than freezing the UI or hanging CI. These service frames do not
      * change the requested smoke-frame contract printed below. */
-    if (smokeDrop && smokeDrop[0] &&
+    if (((smokeDrop && smokeDrop[0]) || smokeBrowserFileQueued || smokeRemembered) &&
         launcher.state().romValidationPending && renderOk) {
         const Uint64 validationDeadline = SDL_GetTicks64() + 5000u;
         int validationServiceFrames = 0;
@@ -4420,6 +4642,18 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             skipState.romValidationPending ? 0 : 1);
     }
 
+    if (smokePackZipQueued && renderOk && Launcher_smokePackInstallPending()) {
+        const Uint64 deadline = SDL_GetTicks64() + 5000u;
+        while (Launcher_smokePackInstallPending() &&
+               SDL_GetTicks64() < deadline && renderOk) {
+            if (host.waitAndPump(1)) sawQuit = true;
+            host.beginFrame();
+            const LauncherAction action = launcher.draw(host);
+            observeSmokePlay(action);
+            renderOk = host.endFrame();
+        }
+    }
+
     /* Release-candidate verification must prove compositor presentation in
      * addition to the window-independent capture. Give a newly activated
      * macOS app a bounded opportunity to obtain its first CAMetalLayer
@@ -4478,6 +4712,65 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
             state.romCandidateVisible ? 1 : 0,
             (state.romInfo.valid && state.romCandidateVisible) ? 1 : 0,
             state.romPersistenceWarning[0] ? 1 : 0);
+    }
+    if (smokeBrowser) {
+        const LauncherState &state = launcher.state();
+        const bool navigated = !smokeBrowserNavigate ||
+            (smokeBrowserFolderOpened && smokeBrowserBackReached &&
+             smokeBrowserNavStage == 3);
+        const bool selected = smokeBrowserOpenQueued && smokeBrowserModalSeen &&
+            navigated &&
+            (!smokeBrowserDeep || smokeBrowserScrolled) &&
+            smokeBrowserFileQueued && !state.romValidationPending &&
+            (smokeBrowserExpectValid
+                ? (state.romInfo.valid && state.romPath == smokeBrowserRom &&
+                   !state.romCandidateVisible)
+                : (state.romCandidateVisible &&
+                   state.romCandidatePath == smokeBrowserRom &&
+                   !state.romCandidateInfo.valid));
+        const bool completed = smokeBrowserRoot
+            ? smokeBrowserRootVisited && smokeBrowserRootClosed &&
+              !state.romCandidateVisible
+            : selected;
+        std::printf(
+            "[app-ui-test] ROM browser gamepad opened=%d modal=%d "
+            "selected=%d folderOpened=%d back=%d rootVisited=%d rootClosed=%d "
+            "scrolled=%d "
+            "candidate=%s invalid=%d active=%s valid=%d\n",
+            smokeBrowserOpenQueued ? 1 : 0,
+            smokeBrowserModalSeen ? 1 : 0,
+            smokeBrowserFileQueued ? 1 : 0,
+            smokeBrowserFolderOpened ? 1 : 0,
+            smokeBrowserBackReached ? 1 : 0,
+            smokeBrowserRootVisited ? 1 : 0,
+            smokeBrowserRootClosed ? 1 : 0,
+            smokeBrowserScrolled ? 1 : 0,
+            state.romCandidateVisible ? state.romCandidatePath.c_str() : "(none)",
+            state.romCandidateVisible && !state.romCandidateInfo.valid ? 1 : 0,
+            state.romPath.empty() ? "(none)" : state.romPath.c_str(),
+            state.romInfo.valid ? 1 : 0);
+        if (!completed) renderOk = false;
+    }
+    if (smokeRemembered) {
+        const LauncherState &state = launcher.state();
+        const bool ready = !state.romValidationPending && state.romInfo.valid &&
+            state.romPath == smokeRememberedRom && !state.romCandidateVisible;
+        std::printf("[app-ui-test] remembered ROM path=%s ready=%d\n",
+                    state.romPath.empty() ? "(none)" : state.romPath.c_str(),
+                    ready ? 1 : 0);
+        if (!ready) renderOk = false;
+    }
+    if (smokePackBrowser) {
+        const bool installed = smokePackOpenQueued && smokePackModalSeen &&
+            smokePackZipQueued && Launcher_smokePackInstalled();
+        std::printf(
+            "[app-ui-test] pack browser gamepad opened=%d modal=%d "
+            "selected=%d installed=%d\n",
+            smokePackOpenQueued ? 1 : 0,
+            smokePackModalSeen ? 1 : 0,
+            smokePackZipQueued ? 1 : 0,
+            installed ? 1 : 0);
+        if (!installed) renderOk = false;
     }
     if (smokeFrameLimit) {
         const MdkrVideoConfig *desiredConfig = mdkr_video_config_desired();
