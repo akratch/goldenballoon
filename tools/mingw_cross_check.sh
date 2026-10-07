@@ -209,6 +209,8 @@ CONFIGURE_ARGS=(
     -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/cmake/mingw-w64-x86_64.cmake"
     -DCMAKE_PREFIX_PATH="$PREFIX"
     -DCMAKE_BUILD_TYPE=Release
+    # Always reload the project version; a cache from the previous release is stale.
+    -UMDKR_VERSION
     "-DMDKR_BUILD_STAMP=$BUILD_STAMP"
     -DMDKR_WEBGPU_BACKEND=$WEBGPU
     # WebGPU is a platform-specific prebuilt, never a reusable source tree.
@@ -322,6 +324,7 @@ if [ "$INTAKE" = "1" ]; then
         -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/cmake/mingw-w64-x86_64.cmake" \
         -DCMAKE_PREFIX_PATH="$PREFIX" \
         -DCMAKE_BUILD_TYPE=Release \
+        -UMDKR_VERSION \
         -DMDKR_WEBGPU_BACKEND=$WEBGPU \
         -DBUILD_TESTING=ON \
         ${INTAKE_ARGS[@]+"${INTAKE_ARGS[@]}"} \
