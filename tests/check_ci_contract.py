@@ -869,6 +869,17 @@ def validate_desktop_release(sources: dict[str, str]) -> list[str]:
     provenance_stamp = sources["provenance_stamp"]
     provenance_verify = sources["provenance_verify"]
     failures = pinned("desktop_release", sources)
+    # The beta's live compatibility identity rejects an empty commit, even if
+    # the launcher visibly offers Online Room. Bind both compiled binaries to
+    # the same source commit their artifact sidecars certify.
+    active_workflow = active_shell_source(workflow).replace("\\\n", " ")
+    for job in ("linux", "windows"):
+        block = re.search(rf"(?ms)^  {job}:\n(.*?)(?=^  [a-z_]+:|\Z)",
+                          active_workflow)
+        commands = re.findall(r"(?m)^\s*cmake -B build\b[^\n]*",
+                              block.group(1) if block else "")
+        if len(commands) != 1 or '-DMDKR_BUILD_STAMP="$GITHUB_SHA"' not in commands[0]:
+            failures.append(f"{job} release binary must compile its source commit stamp")
     failures.extend(validate_windows_manifest_version(workflow))
     checklist = sources["checklist"]
     readiness_at = checklist.find(

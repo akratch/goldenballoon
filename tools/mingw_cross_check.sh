@@ -39,6 +39,8 @@
 #
 # MDKR_MINGW_PARTY_ORIGIN overrides the online profile origin; an explicitly
 # empty value selects the canonical partyless release profile (LAN stays on).
+# MDKR_MINGW_BUILD_STAMP may bind a local release build to the current clean
+# 40-hex commit. Without it the build remains unstamped development output.
 #
 # --intake-tests additionally builds the content-pack intake test executables
 # (fs_utf8, mod_source_zip, pack_installer, pack_install_job) in a separate
@@ -149,6 +151,13 @@ mdkr_online_live_transport_e2e_driver"
 
 fail() { echo ""; echo "MINGW CROSS-CHECK: FAIL — $1"; exit 1; }
 
+BUILD_STAMP="${MDKR_MINGW_BUILD_STAMP:-}"
+if [ -n "$BUILD_STAMP" ]; then
+    [[ "$BUILD_STAMP" =~ ^[0-9a-f]{40}$ ]] || fail "build stamp must be a full commit"
+    [[ "$BUILD_STAMP" == "$(git rev-parse HEAD)" ]] || fail "build stamp must match HEAD"
+    [[ -z "$(git status --porcelain --untracked-files=all)" ]] || fail "stamped release build requires a clean source tree"
+fi
+
 sha256_of() {
     if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}';
     elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
@@ -200,6 +209,7 @@ CONFIGURE_ARGS=(
     -DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/cmake/mingw-w64-x86_64.cmake"
     -DCMAKE_PREFIX_PATH="$PREFIX"
     -DCMAKE_BUILD_TYPE=Release
+    "-DMDKR_BUILD_STAMP=$BUILD_STAMP"
     -DMDKR_WEBGPU_BACKEND=$WEBGPU
     # WebGPU is a platform-specific prebuilt, never a reusable source tree.
     -UFETCHCONTENT_SOURCE_DIR_WGPU_NATIVE

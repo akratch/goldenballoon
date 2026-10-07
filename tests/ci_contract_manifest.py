@@ -1876,6 +1876,21 @@ CONTROL_GROUPS: dict[str, ControlGroup] = {
                 count=1,
             ),
             Control(
+                "compiled Linux compatibility stamp",
+                "desktop_release",
+                '-DMDKR_BUILD_STAMP="$GITHUB_SHA"',
+                '-DMDKR_BUILD_STAMP=""',
+                count=1,
+            ),
+            Control(
+                "compiled Windows compatibility stamp",
+                "desktop_release",
+                r'(?s)(cmake -B build -G Ninja\b.*?-DMDKR_BUILD_STAMP=)"\$GITHUB_SHA"',
+                r'\1""',
+                count=1,
+                regex=True,
+            ),
+            Control(
                 "exact Linux binary version",
                 "desktop_release",
                 'test "$version_output" = "mdkr64 ${{ needs.validate.outputs.version }}"',

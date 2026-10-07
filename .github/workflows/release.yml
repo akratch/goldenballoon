@@ -201,6 +201,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_BUILD_STAMP="$GITHUB_SHA" \
             -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
@@ -684,6 +685,7 @@ jobs:
         run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
             -DMDKR_VERSION="$RELEASE_VERSION" \
+            -DMDKR_BUILD_STAMP="$GITHUB_SHA" \
             -DMDKR_ENABLE_ONLINE_BETA=ON \
             -DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \
             -DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"
