@@ -457,6 +457,15 @@ struct RawPeer {
     }
 
     ~RawPeer() {
+        // close() starts transport retirement but does not join callbacks.
+        // Stop channel adoption first, then drain callbacks capturing this
+        // before controlText/mutex are destroyed. The pinned library's
+        // resetCallbacks synchronizes with any callback already executing.
+        // Do not hold mutex here: the callbacks being drained acquire it.
+        if (pc) pc->resetCallbacks();
+        for (auto &channel : channels) {
+            if (channel) channel->resetCallbacks();
+        }
         if (pc) pc->close();
         mdkr_match_peer_keyring_forget(&ring);
         mdkr_match_peer_identity_destroy(identity);
