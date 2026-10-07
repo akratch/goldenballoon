@@ -358,7 +358,10 @@ APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/${A
 # without verifying it. Fetch it ourselves and fail closed on any upstream
 # change so one reviewed source commit cannot silently produce different
 # executable bytes.
-APPIMAGE_RUNTIME_SHA256="1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf"
+# Reviewed runtime source: AppImage/type2-runtime 8f39b89e2ac31e1640b3d3f7e9a5108e6ce805fa.
+# Relative to 75849dc (the previous pinned build), extraction directories now
+# use mode 0700 instead of 0755. Upstream SHA-256 and detached signature match.
+APPIMAGE_RUNTIME_SHA256="156f4bdbde9c52d01814600013e0a273f0118dc2de98975f3c8c63427ec79074"
 APPIMAGE_RUNTIME_URL="https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
 
 sha256_of() {

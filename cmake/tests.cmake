@@ -118,6 +118,7 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     target_compile_definitions(mdkr_custom_track_table_test PRIVATE MDKR_CUSTOM_TRACK_TEST_ALLOCATOR=1)
     add_test(NAME custom_track_table COMMAND mdkr_custom_track_table_test)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
         add_test(NAME steam_deck_controller_mappings
             COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/check_steam_deck_mappings.py

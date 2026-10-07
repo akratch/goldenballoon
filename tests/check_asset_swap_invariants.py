@@ -741,6 +741,7 @@ def check_vehicle_audio(rom, rep):
 # "swap"  -- the call site must be followed by an asset_swap_* call.
 # "bytes" -- byte-order-defined or ASCII payload; no swap is correct.
 # "own"   -- the consumer owns the conversion in its own parser.
+# "site"  -- only the individually inventoried wire-format readers may load it.
 RAW_LOAD_DISPOSITION = {
     "ASSET_AI_BEHAVIOUR": "swap",
     "ASSET_LEVEL_HEADERS": "swap",
@@ -749,12 +750,15 @@ RAW_LOAD_DISPOSITION = {
     "ASSET_OBJECT_MODELS": "swap",
     "ASSET_OBJECT_ANIMATIONS": "swap",
     "ASSET_OBJECTS": "swap",
+    "ASSET_OBJECT_HEADERS_TABLE": "swap",
+    "ASSET_LEVEL_OBJECT_TRANSLATION_TABLE": "site",
+    "ASSET_TEXTURES_3D": "site",
+    "ASSET_MISC": "site",
     "ASSET_SPRITES": "swap",
     "ASSET_TTGHOSTS": "swap",
-    # NOTE: TEXTURES_2D/3D do not appear here because load_texture() passes a
-    # VARIABLE (`assetSection`) to asset_load(), so no literal reaches this
-    # scan. They are swapped per animation frame inside load_texture()'s own
-    # walk (swap_texture_header) rather than at the asset_load() line.
+    # load_texture() passes a VARIABLE (`assetSection`) to asset_load(). Its
+    # frames are swapped inside that walk (swap_texture_header). The literal
+    # TEXTURES_3D entry above belongs to the wire-format corpus reader only.
     "ASSET_GAME_TEXT_TABLE": "own",   # 4-word manual swap at the call site
     # Heterogeneous: every literal call site is separately enumerated and
     # ownership-checked by check_audio_source_ownership() below.
@@ -766,6 +770,55 @@ RAW_LOAD_DISPOSITION = {
     "ASSET_SCREENS": "bytes",         # 16-byte header + RGBA16 texels
     "ASSET_EMPTY_14": "bytes",        # CI4/CI8 TLUT texels, read MSB-first
 }
+
+# These particular readers consume the byte-order-defined wire format, not
+# native engine structs. Do not exempt an entire asset type: ordinary engine
+# loads of OBJECTS, LEVEL_HEADERS and LEVEL_OBJECT_MAPS still owe their swap.
+# The ROM corpus arms in custom_track_loader/runtime_safety exercise these
+# parsers; this inventory covers ownership at the raw DMA boundary.
+RAW_LOAD_SITE_OWNERS = {
+    ("game/src/asset_loading.c", "asset_object_behavior_catalog",
+     "ASSET_LEVEL_OBJECT_TRANSLATION_TABLE"): "explicit big-endian byte assembly",
+    ("game/src/asset_loading.c", "asset_object_behavior_catalog",
+     "ASSET_OBJECTS"): "one behaviorId byte, with a static layout assertion",
+    ("game/src/asset_loading.c", "asset_pulse_texture_selftest",
+     "ASSET_TEXTURES_3D"): "wire-format texture admission parser",
+    ("game/src/asset_loading.c", "asset_custom_track_env_selftest",
+     "ASSET_MISC"): "wire-format colour/pulse cycle admission parsers",
+    ("game/src/asset_loading.c", "asset_custom_track_env_selftest",
+     "ASSET_LEVEL_HEADERS"): "wire-format header/model relationship parser",
+    ("game/src/objects.c", "mdkr_objmap_admission_selftest",
+     "ASSET_LEVEL_OBJECT_MAPS"): "compressed bytes then wire-format map admission",
+}
+
+
+def raw_load_site_owner(name, source, offset, asset):
+    for key in RAW_LOAD_SITE_OWNERS:
+        file, function, kind = key
+        if file != name or kind != asset:
+            continue
+        declaration = re.search(
+            rf"(?m)^[A-Za-z_][^;{{}}\n]*\b{re.escape(function)}"
+            rf"\s*\([^;{{}}]*\)\s*\{{", source)
+        if declaration is None:
+            continue
+        # Selftests contain multi-line assertion macros with a column-zero
+        # closing brace. Balance braces while ignoring strings/comments rather
+        # than mistaking that macro for the end of the containing function.
+        depth = 1
+        tokens = re.finditer(
+            r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|//[^\n]*|/\*.*?\*/|[{}]',
+            source[declaration.end():], re.DOTALL)
+        for token in tokens:
+            if token.group() == "{":
+                depth += 1
+            elif token.group() == "}":
+                depth -= 1
+                if depth == 0:
+                    if declaration.end() <= offset < declaration.end() + token.start():
+                        return key
+                    break
+    return None
 
 SWAP_CALL = re.compile(r"asset_swap_(normalize|object_animation|misc_\w+)\s*\(")
 LOAD_CALL = re.compile(r"asset_load\(\s*(ASSET_[A-Z_0-9]+)")
@@ -968,18 +1021,27 @@ def scan_swap_coverage(named_sources):
     problems = []
     seen = {}
     distances = {}
+    owned = {}
     for name, source in named_sources:
         lines = source.splitlines()
         for match in LOAD_CALL.finditer(source):
             number = source.count("\n", 0, match.start())
             asset = match.group(1)
             seen.setdefault(asset, []).append(f"{name}:{number + 1}")
+            owner = raw_load_site_owner(name, source, match.start(), asset)
+            if owner is not None:
+                owned[owner] = owned.get(owner, 0) + 1
+                continue
             disposition = RAW_LOAD_DISPOSITION.get(asset)
             if disposition is None:
                 problems.append(
                     f"{name}:{number + 1}: asset_load({asset}) "
                     "has no entry in RAW_LOAD_DISPOSITION -- declare whether it "
                     "needs a swap")
+                continue
+            if disposition == "site":
+                problems.append(f"{name}:{number + 1}: asset_load({asset}) "
+                                "has no declared wire-format reader at this site")
                 continue
             if disposition != "swap":
                 continue
@@ -990,12 +1052,12 @@ def scan_swap_coverage(named_sources):
                     f"and {detail} -- this asset would be consumed big-endian")
             else:
                 distances[f"{name}:{number + 1}"] = detail
-    return problems, seen, distances
+    return problems, seen, distances, owned
 
 
 def swap_coverage_ok(source):
     """Positive-control helper: does one synthetic translation unit pass Arm 2?"""
-    problems, _, _ = scan_swap_coverage([("synthetic.c", source)])
+    problems, _, _, _ = scan_swap_coverage([("synthetic.c", source)])
     return not problems
 
 
@@ -1062,7 +1124,11 @@ def check_source_coverage(rep):
     sources = sorted((ROOT / "game" / "src").rglob("*.c"))
     named = [(str(path.relative_to(ROOT)), path.read_text(errors="replace"))
              for path in sources]
-    problems, seen, distances = scan_swap_coverage(named)
+    problems, seen, distances, owned = scan_swap_coverage(named)
+    for key in RAW_LOAD_SITE_OWNERS:
+        if owned.get(key, 0) != 1:
+            problems.append(f"raw reader {key}: expected exactly one load, "
+                            f"found {owned.get(key, 0)}")
     for asset, disposition in RAW_LOAD_DISPOSITION.items():
         if asset not in seen:
             problems.append(
@@ -1073,6 +1139,19 @@ def check_source_coverage(rep):
             "raw asset_load() coverage failures:\n  " + "\n  ".join(problems))
 
     check_swap_window_controls(rep)
+    # Each exception is local to one function and one asset. Moving that same
+    # load to a sibling or adding another copy must not acquire its exemption.
+    for key in RAW_LOAD_SITE_OWNERS:
+        file, function, asset = key
+        fixture = f"void {function}(void) {{\n    asset_load({asset}, data, 0, 1);\n}}\n"
+        baseline, _, _, owners = scan_swap_coverage([(file, fixture)])
+        moved, _, _, _ = scan_swap_coverage([(file, fixture.replace(function, "unowned_reader"))])
+        rep.control(f"raw reader ownership: {function}/{asset}",
+                    not baseline and owners.get(key) == 1, not moved)
+        duplicate = fixture.replace("\n}", f"\n    asset_load({asset}, other, 0, 1);\n}}")
+        _, _, _, duplicate_owners = scan_swap_coverage([(file, duplicate)])
+        rep.control(f"raw reader inventory: {function}/{asset}",
+                    owners.get(key) == 1, duplicate_owners.get(key) == 1)
     if distances:
         widest, span = max(distances.items(), key=lambda item: item[1])
         rep.note(f"swap window: widest live site {widest} at {span}/"
