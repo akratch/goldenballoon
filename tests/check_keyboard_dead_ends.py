@@ -121,10 +121,11 @@ class OverlayArm:
 # The menu opens with focus on Resume and the highlight hidden, so the first
 # Tab only shows the highlight there; Shift+Tab from Resume wraps to the last
 # button. Both are Dear ImGui's behaviour, and the expectations pin them.
-_RETURN = ("shift-tab", "shift-tab", "enter", "tab")
+_RETURN = ("shift-tab", "shift-tab", "enter")
 _RETURN_EXPECT = (("heard", 1, "Return to Launcher."),
                   ("state", 2, "confirm=1"),
-                  ("heard", 3, "Cancel."))
+                  ("heard", 2, "Cancel."),
+                  ("once", 2, "Return to the launcher?"))
 _LIST = ("tab", "tab", "enter", "down", "enter")
 _LIST_EXPECT = (("heard", 1, "Settings."),
                 ("state", 2, "settings=1"),
@@ -134,23 +135,30 @@ _LIST_EXPECT = (("heard", 1, "Settings."),
 
 OVERLAY_ARMS = (
     OverlayArm("confirmation closed by Escape", _RETURN + ("escape", "tab"),
-               _RETURN_EXPECT + (("state", 4, "confirm=0 open=1"),)),
+               _RETURN_EXPECT + (("state", 3, "confirm=0 open=1"),
+                                  ("heard", 3, "Resume."))),
     OverlayArm("confirmation closed by controller B",
                _RETURN + ("pad-b", "tab"),
-               _RETURN_EXPECT + (("state", 4, "confirm=0 open=1 input=gamepad"),)),
+               _RETURN_EXPECT + (("state", 3, "confirm=0 open=1 input=gamepad"),
+                                  ("heard", 3, "Resume."))),
     OverlayArm("confirmation closed by Enter on Cancel",
                _RETURN + ("enter", "tab"),
-               _RETURN_EXPECT + (("state", 4, "confirm=0 open=1"),)),
+               _RETURN_EXPECT + (("state", 3, "confirm=0 open=1"),
+                                  ("heard", 3, "Resume."))),
     OverlayArm("confirmation opened from Quit to Desktop",
                ("shift-tab", "enter", "tab"),
                (("heard", 0, "Quit to Desktop."),
                 ("state", 1, "confirm=1"),
+                ("heard", 1, "Cancel."),
+                ("once", 1, "Quit to desktop?"),
                 ("state", 2, "confirm=1"))),
     OverlayArm("Settings list closed by Escape", _LIST + ("escape", "tab"),
-               _LIST_EXPECT + (("state", 5, "settings=0 open=1"),)),
+               _LIST_EXPECT + (("state", 5, "settings=0 open=1"),
+                               ("heard", 5, "Resume."))),
     OverlayArm("Settings list closed by controller B",
                _LIST + ("pad-b", "tab"),
-               _LIST_EXPECT + (("state", 5, "settings=0 open=1 input=gamepad"),)),
+               _LIST_EXPECT + (("state", 5, "settings=0 open=1 input=gamepad"),
+                               ("heard", 5, "Resume."))),
     # Pressing Settings must leave focus on that button (one ### id for both
     # labels), so the next Tab moves on into the list it just opened rather
     # than starting over at Resume.
@@ -179,6 +187,42 @@ def walk_overlay(executable: Path, root: Path, rom: Path, arm: OverlayArm,
     return run(executable, env, f"overlay arm '{arm.name}'", timeout)
 
 
+STUDIO_ARM = OverlayArm(
+    "Character Studio confirmation and return",
+    ("tab", "tab", "enter", "tab", "escape", "escape", "tab", "enter", "tab"),
+    (("heard", 1, "Offset Studio controls."),
+     ("heard", 2, "Character size,"),
+     ("heard", 4, "Cancel."),
+     ("once", 4, "Return to the Workshop?"),
+     ("state", 5, "confirm=0 open=1"),
+     ("heard", 5, "Hide Offset Studio controls."),
+     ("heard", 6, "Offset Studio controls.")))
+
+
+def walk_studio(executable, root, rom, timeout):
+    from check_character_test_evidence_ui import install_fixture, PACKAGE_ID
+    fixture = root / "studio-fixture"
+    fixture.mkdir()
+    characters = install_fixture(fixture)
+    home, env = session(root, "studio")
+    (home / "prefs" / "mdkr64_app.ini").write_text(
+        f"rom_path={rom.resolve()}\ncharacter_workshop_last_selected={PACKAGE_ID}\n"
+        "character_workshop_last_tab=vehicles\n", encoding="utf-8")
+    env.update(MDKR_APP_PANEL="Character Workshop", MDKR_APP_UI_TRACE="1",
+               MDKR_CUSTOM_CHARACTER_DIRECTORY=str(characters),
+               MDKR_MODS_DIR=str(home / "mods"),
+               MDKR_APP_SMOKE_CHARACTER_STUDIO_TOKEN="mdkr64-character-studio-v1",
+               MDKR_APP_SMOKE_CHARACTER_STUDIO_RETURN_FRAME="350",
+               MDKR_TEST_OVERLAY_NAV_SCRIPT=",".join(STUDIO_ARM.script),
+               MDKR_CHARACTER_MANAGER=str(Path(__file__).parent / "run_character_manager_fixture.py"))
+    output = run(executable, env, "rendered Character Studio", timeout)
+    for marker in ("exact-character-studio overlay-rendered vertices=",
+                   "exact-character-studio smoke completed published launcher return"):
+        if marker not in output:
+            raise GateFailure(f"Character Studio did not render and return: missing {marker}")
+    return output
+
+
 def describe(steps: list[Step]) -> str:
     lines = []
     for index, step in enumerate(steps):
@@ -204,6 +248,9 @@ def check_overlay_arm(arm: OverlayArm, output: str) -> str:
         if kind == "heard":
             ok = any(text.startswith(detail) for text in step.focus)
             what = f"announce {detail!r}"
+        elif kind == "once":
+            ok = sum(detail in text for text in step.spoken) == 1
+            what = f"announce {detail!r} exactly once"
         elif kind == "spoke":
             ok = bool(step.spoken)
             what = "announce anything"
@@ -346,6 +393,7 @@ def main() -> int:
             if not (arm.rom and args.launcher_only)]
         if not args.launcher_only:
             arms += [("overlay", arm) for arm in OVERLAY_ARMS]
+            arms += [("studio", STUDIO_ARM)]
         for index, (kind, arm) in enumerate(arms):
             try:
                 if kind == "launcher":
@@ -353,6 +401,10 @@ def main() -> int:
                     results.append(check_launcher_arm(
                         arm, walk_launcher(executable, root, rom, arm,
                                            args.timeout)))
+                elif kind == "studio":
+                    landed = check_overlay_arm(STUDIO_ARM, walk_studio(
+                        executable, root, rom, args.timeout))
+                    results.append(f"Character Studio: Tab -> {landed}")
                 else:
                     assert isinstance(arm, OverlayArm)
                     landed = check_overlay_arm(arm, walk_overlay(

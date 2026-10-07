@@ -13552,7 +13552,11 @@ static void ImGui::NavProcessItem()
 
     // Process Move Request (scoring for navigation)
     // FIXME-NAV: Consider policy for double scoring (scoring from NavScoringRect + scoring from a rect wrapped according to current wrapping policy)
-    if (g.NavMoveScoringItems && (item_flags & ImGuiItemFlags_Disabled) == 0)
+    // Golden Balloon: a newly disabled focused item is still the Tab reference.
+    // Let tabbing observe its position without ever choosing it as a destination.
+    const bool disabled_tab_reference = g.NavId == id &&
+        (g.NavMoveFlags & ImGuiNavMoveFlags_IsTabbing) != 0;
+    if (g.NavMoveScoringItems && ((item_flags & ImGuiItemFlags_Disabled) == 0 || disabled_tab_reference))
     {
         if ((g.NavMoveFlags & ImGuiNavMoveFlags_FocusApi) || (window->Flags & ImGuiWindowFlags_NoNavInputs) == 0)
         {
@@ -13623,7 +13627,9 @@ void ImGui::NavProcessItemForTabbingRequest(ImGuiID id, ImGuiItemFlags item_flag
     // - Tabbing with _NavEnableKeyboard (space/enter/arrows): goes through every item.
     // - Tabbing without _NavEnableKeyboard: goes through inputable items only.
     bool can_stop;
-    if (move_flags & ImGuiNavMoveFlags_FocusApi)
+    if (item_flags & ImGuiItemFlags_Disabled)
+        can_stop = false;
+    else if (move_flags & ImGuiNavMoveFlags_FocusApi)
         can_stop = true;
     else
         can_stop = (item_flags & ImGuiItemFlags_NoTabStop) == 0 && ((g.IO.ConfigFlags & ImGuiConfigFlags_NavEnableKeyboard) || (item_flags & ImGuiItemFlags_Inputable));

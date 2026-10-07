@@ -28958,13 +28958,27 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
     ImGui::SeparatorText("Source correction");
     bool edited = false;
     bool commit = false;
+    const auto speakScalar = [](const char *label, float value) {
+        char spoken[48];
+        std::snprintf(spoken, sizeof(spoken), "%.3f", static_cast<double>(value));
+        ui::SpeakFocusedItem(label, spoken, "Adjusts the live fit draft.");
+    };
+    const auto speakVector = [](const char *label, const float *value) {
+        char spoken[120];
+        std::snprintf(spoken, sizeof(spoken), "X %.3f, Y %.3f, Z %.3f",
+                      static_cast<double>(value[0]), static_cast<double>(value[1]),
+                      static_cast<double>(value[2]));
+        ui::SpeakFocusedItem(label, spoken, "Adjusts the live fit draft.");
+    };
     edited |= ImGui::SliderFloat(
         "Character size", &edit.scale, 0.1f, 5.0f, "%.2fx",
         ImGuiSliderFlags_AlwaysClamp);
+    speakScalar("Character size", edit.scale);
     commit |= ImGui::IsItemDeactivatedAfterEdit();
     edited |= ImGui::DragFloat3(
         "Source rotation", edit.rotation, 0.5f, -180.0f, 180.0f,
         "%.1f°", ImGuiSliderFlags_AlwaysClamp);
+    speakVector("Source rotation", edit.rotation);
     commit |= ImGui::IsItemDeactivatedAfterEdit();
     if (ImGui::Button("Turn around 180°")) {
         edit.rotation[1] = characterWorkshopWrappedDegrees(
@@ -28979,14 +28993,17 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
     edited |= ImGui::SliderFloat(
         "Context size", &placement.scale, 0.5f, 2.0f, "%.2fx",
         ImGuiSliderFlags_AlwaysClamp);
+    speakScalar("Context size", placement.scale);
     commit |= ImGui::IsItemDeactivatedAfterEdit();
     edited |= ImGui::DragFloat3(
         "Position", placement.offset, 0.01f, -10.0f, 10.0f,
         "%.3f m", ImGuiSliderFlags_AlwaysClamp);
+    speakVector("Position", placement.offset);
     commit |= ImGui::IsItemDeactivatedAfterEdit();
     edited |= ImGui::DragFloat3(
         "Rotation", placement.rotation, 0.5f, -180.0f, 180.0f,
         "%.1f°", ImGuiSliderFlags_AlwaysClamp);
+    speakVector("Rotation", placement.rotation);
     commit |= ImGui::IsItemDeactivatedAfterEdit();
     ui::TextSubtleWrapped(
         "Position is relative to the automatic %s anchor. Y moves up/down; Z moves forward/back; X moves left/right.",
@@ -29013,6 +29030,7 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
                     contactNames[contact], placement.contacts[contact],
                     0.005f, -1.0f, 1.0f, "%.3f m",
                     ImGuiSliderFlags_AlwaysClamp);
+                speakVector(contactNames[contact], placement.contacts[contact]);
                 commit |= ImGui::IsItemDeactivatedAfterEdit();
             }
             if (!contactReady) ImGui::EndDisabled();
@@ -29028,6 +29046,7 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
         placement = CharacterTuningEdit::Context{};
         edited = commit = true;
     }
+    ui::SpeakFocusedItem("Reset this context", nullptr, "Restores the placement for this game context.");
     ImGui::SameLine();
     if (ImGui::Button("Reset source correction")) {
         edit.scale = 1.0f;
@@ -29035,6 +29054,8 @@ SettingsCharacterStudioFrame Settings_drawCharacterOffsetStudio(
         std::fill(std::begin(edit.rotation), std::end(edit.rotation), 0.0f);
         edited = commit = true;
     }
+
+    ui::SpeakFocusedItem("Reset source correction", nullptr, "Restores the source size and rotation for all contexts.");
 
     if (edited) {
         if (!applyCharacterStudioRuntime(edit)) {

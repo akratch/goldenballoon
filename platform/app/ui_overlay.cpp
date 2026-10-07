@@ -79,6 +79,7 @@ struct OverlayState {
     bool showSettings = false;
     bool showFps = false;
     ConfirmAction confirm = ConfirmAction::None;
+    ConfirmAction presentedConfirm = ConfirmAction::None;
     bool justOpened = false;
     bool audioPaused = false;
     bool pauseAllowed = true;
@@ -209,7 +210,13 @@ void navigateBack(OverlayBackInput input, bool keyRepeat) {
         if (!keyRepeat &&
             !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
             g_overlay.studioControlsCollapsed = false;
-            g_overlay.confirm = ConfirmAction::ReturnToWorkshop;
+            if (g_overlay.confirm != ConfirmAction::None) {
+                g_overlay.confirm = ConfirmAction::None;
+                g_overlay.presentedConfirm = ConfirmAction::None;
+                g_overlay.justOpened = true;
+            } else {
+                g_overlay.confirm = ConfirmAction::ReturnToWorkshop;
+            }
         }
         return;
     }
@@ -223,8 +230,11 @@ void navigateBack(OverlayBackInput input, bool keyRepeat) {
         ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId), keyRepeat);
     if (current.confirmation && !next.confirmation) {
         g_overlay.confirm = ConfirmAction::None;
+        g_overlay.presentedConfirm = ConfirmAction::None;
+        g_overlay.justOpened = true;
     } else if (current.settings && !next.settings) {
         g_overlay.showSettings = false;
+        g_overlay.justOpened = true;
     } else if (current.open && !next.open) {
         setOpen(false);
     }
@@ -992,6 +1002,13 @@ void drawConfirmation(float uiScale) {
         description = "Quit to desktop? This ends the current race.";
         primary = "Quit";
     }
+    const bool newlyPresented = g_overlay.presentedConfirm != g_overlay.confirm;
+    if (newlyPresented) {
+        g_overlay.presentedConfirm = g_overlay.confirm;
+        if (ui::SpeechEnabled()) {
+            mdkr_a11y_announce(MDKR_A11Y_CAT_STATUS, MDKR_A11Y_PRI_NORMAL, description);
+        }
+    }
     ui::TextSubtleWrapped("%s", description);
     ui::Gap(ui::kGapM);
     const OverlayButtonPair actions =
@@ -1007,8 +1024,11 @@ void drawConfirmation(float uiScale) {
     // action that answers it carries it as its help.
     ui::SpeakFocusedItem(primary, nullptr, description);
     if (actions.sameLine) ImGui::SameLine();
+    if (newlyPresented) ImGui::SetKeyboardFocusHere();
     if (ImGui::Button("Cancel", actions.second)) {
         g_overlay.confirm = ConfirmAction::None;
+        g_overlay.presentedConfirm = ConfirmAction::None;
+        g_overlay.justOpened = true;
     }
     ui::SpeakFocusedItem(
         "Cancel", nullptr,
@@ -1017,6 +1037,7 @@ void drawConfirmation(float uiScale) {
 }
 
 void drawOverlayMenu(float uiScale) {
+    g_overlay.presentedConfirm = ConfirmAction::None;
     const bool review = g_overlay.mode == OverlayMode::CharacterReview;
     const OverlayButtonPair primaryActions =
         fitButtonPair(ui::kBtnSecondary(), ui::kBtnSecondary(), uiScale);
@@ -1208,6 +1229,10 @@ void drawCharacterStudio() {
     ImGui::SetCursorPosX(std::max(
         ImGui::GetCursorPosX(),
         ImGui::GetWindowContentRegionMax().x - hideWidth));
+    if (g_overlay.justOpened && g_overlay.confirm == ConfirmAction::None) {
+        ImGui::SetKeyboardFocusHere();
+        g_overlay.justOpened = false;
+    }
     if (ImGui::Button("Hide controls")) {
         g_overlay.studioControlsCollapsed = true;
     }
@@ -1261,6 +1286,8 @@ void drawCharacterStudio() {
         }
         ui::TouchScrollCurrentWindow();
         ImGui::EndChild();
+        ui::SpeakFocusedItem("Offset Studio controls", nullptr,
+                             "Press Enter to adjust the character fit. Escape opens the return confirmation.");
     }
     ImGui::End();
 }

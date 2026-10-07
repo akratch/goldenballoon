@@ -62,7 +62,7 @@ inline bool AppNavigation_recoverLostFocus() {
     // of view skips drawing its controls, but Dear ImGui submits them again
     // as soon as a Tab or move is pending, so Tab carries on from the focused
     // control inside it. Not a vanished control: leave focus where it is.
-    if (window->SkipItems &&
+    if (window->SkipItems && window->ContentSize.y > 0.0f &&
         (window->ChildFlags & ImGuiChildFlags_NavFlattened) != 0) {
         return false;
     }

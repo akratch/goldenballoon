@@ -391,6 +391,56 @@ void scrolledCardKeepsTab(bool recover) {
            "Tab from a scrolled-away card carries on inside it");
 }
 
+// A live control can become disabled while it holds focus (a job starts or
+// availability changes). It remains a traversal reference, never a destination.
+void disabledFocusContinuesTab() {
+    bool disabled = false;
+    ImGuiID middle = 0, last = 0;
+    Ui ui(true, [&] {
+        ImGui::Button("Before disabled");
+        ImGui::BeginDisabled(disabled);
+        ImGui::Button("Becomes disabled");
+        middle = ImGui::GetItemID();
+        ImGui::EndDisabled();
+        ImGui::Button("After disabled");
+        last = ImGui::GetItemID();
+    });
+    expect(ui.tabTo(middle), "fixture focuses the control before disabling");
+    disabled = true;
+    ui.frame();
+    ui.press(ImGuiKey_Tab);
+    expect(ui.focused() == last, "Tab advances past a newly disabled control");
+    ui.press(ImGuiKey_Tab);
+    expect(ui.focused() != middle, "disabled control is never a Tab destination");
+}
+
+void collapsedCardRecoversTab() {
+    bool collapsed = false;
+    ImGuiID inside = 0;
+    ImGuiWindow *card = nullptr;
+    Ui ui(true, [&] {
+        ImGui::Button("Before collapsed card");
+        ImGui::BeginChild("##collapsing-card", ImVec2(0.0f, 0.0f),
+                          ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
+        card = ImGui::GetCurrentWindow();
+        if (!collapsed) {
+            ImGui::Button("Vanishing control");
+            inside = ImGui::GetItemID();
+        }
+        ImGui::EndChild();
+        ImGui::Button("After collapsed card");
+    });
+    expect(ui.tabTo(inside), "fixture focuses the auto-sized card");
+    collapsed = true;
+    ui.frame();
+    ui.frame();
+    ui.frame();
+    expect(card->ContentSize.y == 0.0f, "fixture collapses the card content");
+    ui.press(ImGuiKey_Tab);
+    expect(ui.focused() != inside && ImGui::GetCurrentContext()->NavIdIsAlive,
+           "Tab recovers after a flattened auto-sized card collapses");
+}
+
 // The recovery must not undo Dear ImGui's own focus moves: a popup opened from
 // the keyboard focuses its first item with the highlight showing, and Escape
 // closes it back onto the control that opened it (the launcher configuration
@@ -484,6 +534,8 @@ int main() {
     // Stock Dear ImGui carries on here; the recovery must leave it so.
     scrolledCardKeepsTab(false);
     scrolledCardKeepsTab(true);
+    disabledFocusContinuesTab();
+    collapsedCardRecoversTab();
     popupKeepsFocus();
     textEntryKeepsFocus();
 
