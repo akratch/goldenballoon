@@ -37,6 +37,31 @@ TRANSPORT_RE = re.compile(
 )
 
 
+# Histogram overflow is a timing observation, not lost transport/event data.
+# Match complete counter names and reject every positive count, not just "1".
+UNSAFE_COUNTER_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:overflow|overflows|command_overflows|forbidden_io)="
+    r"[1-9][0-9]*(?![0-9])"
+)
+
+
+def unsafe_counter_lines(output: str) -> list[str]:
+    return [line for line in output.splitlines() if UNSAFE_COUNTER_RE.search(line)]
+
+
+def counter_controls() -> None:
+    for name in ("overflow", "overflows", "command_overflows", "forbidden_io"):
+        for value in (1, 2, 10, 999):
+            sample = f"[WITNESS] {name}={value} other=0"
+            if unsafe_counter_lines(sample) != [sample]:
+                raise AssertionError(f"unsafe counter was not rejected: {sample}")
+        if unsafe_counter_lines(f"[WITNESS] {name}=0"):
+            raise AssertionError(f"zero counter rejected: {name}")
+    if unsafe_counter_lines(
+            "[ROLLBACK] timing_overflow=1/2\n[PRESENT] sqoverflow=10"):
+        raise AssertionError("timing histogram counter mistaken for data overflow")
+
+
 def fail(message: str, output: str = "") -> int:
     print(f"FAIL online profile rematch: {message}", file=sys.stderr)
     if output:
@@ -59,7 +84,12 @@ def main() -> int:
     parser.add_argument("--rom", type=Path, default="baserom.us.v80.z64")
     parser.add_argument("--timeout", type=int, default=240)
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    counter_controls()
+    if args.self_test:
+        print("PASS online profile rematch counter controls")
+        return 0
 
     binary = Path(resolve_binary(args.build)).expanduser().resolve()
     rom = args.rom.expanduser().resolve()
@@ -113,13 +143,16 @@ def main() -> int:
     if process.returncode != 0:
         return fail(f"application exited {process.returncode}", output)
     forbidden = (
-        "[FATAL]", "[CRASH]", "[NET-RECOVERY]", "overflow=1",
-        "overflows=1", "forbidden_io=1", "simulation witness mismatch",
+        "[FATAL]", "[CRASH]", "[NET-RECOVERY]", "simulation witness mismatch",
         "persistent identity/epoch mismatch",
     )
     for marker in forbidden:
         if marker in output:
             return fail(f"observed forbidden marker {marker!r}", output)
+
+    unsafe = unsafe_counter_lines(output)
+    if unsafe:
+        return fail("unsafe counters: " + " | ".join(unsafe), output)
 
     rosters = ROSTER_RE.findall(output)
     if [epoch for epoch, _ in rosters] != ["1", "2", "3"] or \
