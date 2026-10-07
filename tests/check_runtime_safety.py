@@ -605,11 +605,18 @@ def main() -> int:
     parser.add_argument("--rom", help="accepted for the suite's common invocation shape")
     args = parser.parse_args()
 
+    binary = Path(resolve_binary(args.build))
+    missing = [binary.parent / name for name in BEHAVIOUR_UNITS
+               if not (binary.parent / name).is_file()]
+    if missing:
+        for unit in missing:
+            print(f"FAIL: missing behavioural unit executable {unit}", file=sys.stderr)
+        return 1
+
     sources = load_sources()
     failures = validate(sources)
     failures.extend(run_positive_controls(sources))
 
-    binary = Path(resolve_binary(args.build))
     for name, covers in BEHAVIOUR_UNITS.items():
         unit = binary.parent / name
         if not unit.is_file():
