@@ -256,10 +256,12 @@ MUTATIONS = (
     ("release.yml Linux configure loses the origin",
      "release.yml",
      '-DMDKR_VERSION="$RELEASE_VERSION" \\\n            '
+     '-DMDKR_BUILD_STAMP="$GITHUB_SHA" \\\n            '
      '-DMDKR_ENABLE_ONLINE_BETA=ON \\\n            '
      '-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF \\\n            '
      '-DMDKR_PARTY_ORIGIN="$PARTY_ORIGIN"',
      '-DMDKR_VERSION="$RELEASE_VERSION" \\\n            '
+     '-DMDKR_BUILD_STAMP="$GITHUB_SHA" \\\n            '
      '-DMDKR_ENABLE_ONLINE_BETA=ON \\\n            '
      '-DMDKR_ENABLE_ONLINE_ROOM_PREVIEW=OFF'),
     ("release.yml guard loses its escape-hatch comparison",
