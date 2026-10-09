@@ -1677,10 +1677,14 @@ def validate_invocation_shapes() -> list[str]:
     failures: list[str] = []
 
     def probe(check) -> str | None:
+        # Probe argument routing at the caller's scheduling: background
+        # throttling can consume the missing-artifact startup budget before
+        # argparse runs. Default scheduling prefixes are covered separately
+        # by test_run_checks_artifact_routing; keep this 30-second limit.
         cmd = manifest.command_for(
             check, missing / "native", missing / "release", missing / "asan",
             missing / "rom.z64", missing / "roms", missing / "web.wasm",
-            True)
+            True, scheduling="normal")
         routing = validate_selected_artifacts(
             check, cmd, missing / "native", missing / "release",
             missing / "asan", missing / "roms")

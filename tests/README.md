@@ -528,6 +528,15 @@ non-executing inventory exception. Hidden windows and background scheduling
 are defense in depth. The release gate is the complete suite on an authorized
 test desktop; GPU and timing-sensitive tasks remain serialized.
 
+By default, `--scheduling auto` launches bulk tasks with `taskpolicy -b` on
+macOS or `nice -n 10` on POSIX systems, leaving timing-sensitive and browser
+tasks at the invoking shell's scheduling. Use `--scheduling normal` when
+background CPU/I/O throttling makes functional checks exceed their timeouts.
+This option lets every child inherit the invoking shell's scheduling; it does
+not elevate the runner, change timeout budgets, remove authorization guards,
+or change concurrency and task serialization. The run header records the
+selected mode. Retain earlier failures when comparing scheduling modes.
+
 The manifest registers the `tests/check_*.py` scripts as parallel tasks, apart
 from a set of CTest companions that `rom_free_units` owns and runs through the
 ctest task (`check_controller_settings_persistence.py`, `check_host_input_focus.py`,

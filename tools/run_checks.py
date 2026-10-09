@@ -1940,25 +1940,19 @@ def native_browser_driver(check: Check, native: Path) -> Path | None:
     return native.parent / (name + suffix)
 
 
-def yield_wrapper(check: Check) -> list[str]:
-    """Launcher prefix that makes a bulk task yield to interactive work.
+def yield_wrapper(check: Check, scheduling: str = "auto") -> list[str]:
+    """Select a child launcher without changing the runner's own priority.
 
-    The suite's workstation-safety guarantee is that a run never fights the
-    person at the desk.  It used to be implemented by the RUNNER lowering its
-    own priority (nice 10 + `taskpolicy -b` on itself), which every child
-    inherited.  On Apple Silicon the Darwin background band confines a
-    process to the EFFICIENCY cores and throttles its I/O -- measured on an
-    idle M4 Max, that doubled the rollback matrices' p99s (1.51ms against an
-    840us ceiling), drained the audio sink contract, and timed browser steps
-    out at varying points across otherwise-identical runs.  Nice cannot be
-    given back by a child, so the demotion has to happen per-child, not on
-    the runner.
-
-    So the model is inverted: the runner keeps the invoking shell's
-    priority, bulk children are LAUNCHED into the background band, and the
-    wall-clock measurement set (SERIAL_NAMES, plus the browser roles) runs
-    foreground.  The exempted tasks are exactly the serialized ones, so the
-    foreground cost is bounded at one child at a time."""
+    Auto preserves background scheduling for bulk tasks and the invoking
+    shell's scheduling for timing-sensitive and browser tasks. Normal lets
+    every task inherit the invoking shell's scheduling. It is useful when
+    background CPU/I/O throttling causes functional checks to time out;
+    it does not change concurrency, serialization, or timeout budgets.
+    """
+    if scheduling == "normal":
+        return []
+    if scheduling != "auto":
+        raise ValueError(f"unknown scheduling mode: {scheduling}")
     if check.name in SERIAL_NAMES or check.role in FOREGROUND_ROLES:
         return []
     if sys.platform == "darwin":
@@ -1978,16 +1972,17 @@ def command_for(
     wasm: Path,
     no_rebuild_instrumented: bool,
     reference_build: Path | None = None,
+    scheduling: str = "auto",
 ) -> list[str]:
     if check.role == "ctest":
-        command = yield_wrapper(check) + [
+        command = yield_wrapper(check, scheduling) + [
             "ctest",
             "--test-dir",
             str(native.parent),
             "--output-on-failure",
         ]
         return command
-    cmd = yield_wrapper(check) + [sys.executable, str(TESTS / check.script)]
+    cmd = yield_wrapper(check, scheduling) + [sys.executable, str(TESTS / check.script)]
     if check.role in {"source", "browser_local"}:
         if check.name in NATIVE_BROWSER_BINARIES:
             cmd += ["--build", str(native),
@@ -2498,6 +2493,12 @@ def main() -> int:
         help="run only checks assigned to --build (specialized gates must be run separately)",
     )
     parser.add_argument(
+        "--scheduling", choices=("auto", "normal"), default="auto",
+        help="auto backgrounds bulk children (default); normal lets all "
+             "children inherit the invoking shell's scheduling; neither "
+             "changes timeout budgets or task serialization",
+    )
+    parser.add_argument(
         "--timeout-scale",
         type=float,
         default=1.0,
@@ -2553,13 +2554,8 @@ def main() -> int:
     # guard below. Hidden-window hints remain defense in depth; they do not
     # themselves establish authorization or guarantee focus isolation.
 
-    # Bulk tasks yield to interactive work by being LAUNCHED into the
-    # background band (see yield_wrapper): the runner itself keeps the
-    # invoking shell's priority.  It used to demote itself with nice 10 +
-    # `taskpolicy -b`, which every child inherited and no child could give
-    # back -- on Apple Silicon the background band pins work to the
-    # efficiency cores, which invalidated every wall-clock verdict in
-    # SERIAL_NAMES and the browser lane on an otherwise idle M4 Max.
+    # Scheduling is selected per child. The runner always retains the
+    # invoking shell's scheduling; normal never attempts to elevate it.
 
     try:
         validate_manifest()
@@ -2702,7 +2698,8 @@ def main() -> int:
     })
     print(
         f"run_checks: {len(checks)} task(s); native={native}; "
-        f"release={release}; asan={asan}; wasm={wasm}",
+        f"release={release}; asan={asan}; wasm={wasm}; "
+        f"scheduling={args.scheduling}",
         flush=True,
     )
     def task_timeout(check: Check) -> int:
@@ -2716,7 +2713,7 @@ def main() -> int:
         """Sequential execution, byte-for-byte the pre---jobs behavior."""
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
-            args.no_rebuild_instrumented, reference_build,
+            args.no_rebuild_instrumented, reference_build, args.scheduling,
         )
         print(
             f"\n[{index}/{len(checks)}] {check.name} — {check.description}\n"
@@ -2764,7 +2761,7 @@ def main() -> int:
         """
         cmd = command_for(
             check, native, release, asan, rom, roms, wasm,
-            args.no_rebuild_instrumented, reference_build,
+            args.no_rebuild_instrumented, reference_build, args.scheduling,
         )
         log_path = os.path.join(log_dir, f"{check.name}.log")
         started = time.monotonic()

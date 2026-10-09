@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import io
 import os
 import sys
+import tempfile
 import unittest
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +16,60 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import run_checks  # noqa: E402
+
+
+class ChildScheduling(unittest.TestCase):
+    def test_modes_preserve_every_task_payload_on_each_platform(self):
+        artifacts = [Path(name) for name in
+                     ("native/mdkr64", "release/mdkr64", "asan/mdkr64",
+                      "private.z64", "roms", "web/game.wasm")]
+        for platform, os_name, prefix in (
+                ("darwin", "posix", ["taskpolicy", "-b"]),
+                ("linux", "posix", ["nice", "-n", "10"]),
+                ("win32", "nt", [])):
+            with patch.object(run_checks.sys, "platform", platform), \
+                    patch.object(run_checks, "os", SimpleNamespace(name=os_name)):
+                for check in run_checks.CHECKS:
+                    with self.subTest(platform=platform, check=check.name):
+                        normal = run_checks.command_for(
+                            check, *artifacts, True, scheduling="normal")
+                        automatic = run_checks.command_for(check, *artifacts, True)
+                        exempt = (check.name in run_checks.SERIAL_NAMES or
+                                  check.role in run_checks.FOREGROUND_ROLES)
+                        self.assertEqual(automatic, ([] if exempt else prefix) + normal)
+                        self.assertEqual(normal[0],
+                                         "ctest" if check.role == "ctest" else sys.executable)
+
+    def test_cli_normal_reaches_both_execution_paths_with_original_timeout(self):
+        check = next(c for c in run_checks.CHECKS
+                     if c.role == "source" and not run_checks.is_serial(c))
+        for jobs in (1, 2):
+            with self.subTest(jobs=jobs), ExitStack() as stack:
+                scratch = stack.enter_context(tempfile.TemporaryDirectory())
+                make_temp = tempfile.mkdtemp
+                stack.enter_context(patch.object(
+                    run_checks.tempfile, "mkdtemp",
+                    side_effect=lambda suffix=None, prefix=None, dir=None:
+                    make_temp(suffix, prefix, scratch)))
+                output = stack.enter_context(redirect_stdout(io.StringIO()))
+                stack.enter_context(patch.object(sys, "argv", [
+                    "run_checks.py", "--only", check.name,
+                    "--jobs", str(jobs), "--scheduling", "normal"]))
+                stack.enter_context(patch.dict(os.environ, {
+                    "MDKR_DEDICATED_TEST_DESKTOP": "1", "MDKR_TEST_SAVE_DIR": scratch}))
+                stack.enter_context(patch.object(run_checks, "preflight"))
+                stack.enter_context(patch.object(run_checks, "pack_leaks", return_value=[]))
+                stack.enter_context(patch.object(run_checks, "stale_artifacts", return_value=[]))
+                stack.enter_context(patch.object(run_checks, "memory_capped_jobs",
+                                                return_value=(jobs, "")))
+                launch = stack.enter_context(patch.object(
+                    run_checks.subprocess, "run", return_value=SimpleNamespace(returncode=0)))
+                self.assertEqual(run_checks.main(), 0)
+                launch.assert_called_once()
+                self.assertEqual(launch.call_args.args[0][0], sys.executable)
+                self.assertEqual(launch.call_args.kwargs["timeout"], check.timeout)
+                self.assertIn("scheduling=normal", output.getvalue())
+                self.assertIn("SUBSET", output.getvalue())
 
 
 class NativeBrowserArtifacts(unittest.TestCase):
