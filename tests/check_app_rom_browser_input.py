@@ -18,6 +18,23 @@ import tempfile
 from harness_utils import resolve_binary
 
 
+def run_app(*args, **kwargs) -> subprocess.CompletedProcess:
+    """Keep recoverable ImGui errors and timeout output visible to the gate."""
+    try:
+        result = subprocess.run(*args, **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        output = exc.output or ""
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        raise SystemExit(
+            f"ROM browser subprocess timed out after {exc.timeout} seconds:\n"
+            + output[-7000:]) from exc
+    if "[imgui-error]" in (result.stdout or ""):
+        raise SystemExit("ROM browser reported an ImGui error:\n"
+                         + result.stdout[-7000:])
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", default="build")
@@ -59,7 +76,7 @@ def main() -> int:
             "MDKR64_HIDDEN": "1",
             "MDKR_AUDIO": "0",
         })
-        result = subprocess.run(
+        result = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -82,7 +99,7 @@ def main() -> int:
         # idle virtual pad enumerates before the active smoke pad here; this
         # reproduces a built-in/Steam virtual/external pad ordering hazard.
         env["MDKR_APP_SMOKE_GAMEPAD_AUTOALL"] = "1"
-        multi = subprocess.run(
+        multi = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -102,7 +119,7 @@ def main() -> int:
         for path in filler:
             path.write_bytes(b"not a game ROM")
         env["MDKR_APP_SMOKE_ROM_BROWSER_DEEP"] = "1"
-        deep = subprocess.run(
+        deep = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -119,7 +136,7 @@ def main() -> int:
             path.unlink()
 
         env["MDKR_APP_SMOKE_ROM_BROWSER_ROOT"] = "1"
-        rooted = subprocess.run(
+        rooted = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -135,7 +152,7 @@ def main() -> int:
         # file Selectable, Up must receive focus so Root stays gamepad-reachable.
         candidate.unlink()
         env["MDKR_APP_SMOKE_ROM_BROWSER_EMPTY_START"] = "1"
-        empty_root = subprocess.run(
+        empty_root = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -153,7 +170,7 @@ def main() -> int:
         folder = downloads / "a-folder"
         folder.mkdir()
         env["MDKR_APP_SMOKE_ROM_BROWSER_NAV_FOLDER"] = str(folder)
-        navigated = subprocess.run(
+        navigated = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=180, check=False,
@@ -171,7 +188,7 @@ def main() -> int:
                 f"missing={nav_missing}\n{navigated.stdout[-7000:]}")
 
         env["MDKR_APP_SMOKE_ROM_BROWSER_TOKEN"] = "stale-token"
-        refused = subprocess.run(
+        refused = run_app(
             launch, cwd=root, env=env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=30, check=False,
@@ -194,7 +211,7 @@ def main() -> int:
             env["MDKR_APP_SMOKE_ROM_BROWSER_TOKEN"] = "mdkr64-app-rom-browser-v1"
             env["MDKR_APP_SMOKE_ROM_BROWSER_EXPECT_VALID"] = "1"
             del env["MDKR_APP_SMOKE_ROM_BROWSER_NAV_FOLDER"]
-            accepted = subprocess.run(
+            accepted = run_app(
                 launch, cwd=root, env=env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 timeout=180, check=False,
@@ -217,7 +234,7 @@ def main() -> int:
             env["MDKR_APP_SMOKE_ROM_REMEMBERED"] = str(valid)
             env["MDKR_APP_SMOKE_ROM_REMEMBERED_TOKEN"] = (
                 "mdkr64-app-rom-remembered-v1")
-            remembered = subprocess.run(
+            remembered = run_app(
                 launch, cwd=root, env=env, text=True,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 timeout=180, check=False,

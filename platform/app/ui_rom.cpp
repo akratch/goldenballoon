@@ -869,8 +869,8 @@ void RomPanel_draw(LauncherState &s, LauncherAction &out) {
                     ImGui::PopStyleColor();
                 }
             }
-            ui::CardEnd();
         }
+        ui::CardEnd();
         ui::Gap(ui::kGapS);
     }
 
