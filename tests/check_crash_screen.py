@@ -193,7 +193,7 @@ def presentation_lines(output: str) -> list[str]:
 def presentation_controls() -> None:
     """Keep renderer counters distinct without hiding actual crash panels."""
     unrelated = (
-        "[WGPU-BACKPRESSURE-PERIODIC] cap=3 submitted=4096 presented=0 held=0\n"
+        "[APP-WGPU-PRESENT] attempts=4096 presented=0 unavailable=4096\n"
         "[APP-WGPU-PRESENT] attempts=1 presented=1 unavailable=0\n"
         '[CRASHSCREEN] kind=abort present=0 log="presented=1"\n'
         "[CRASHSCREEN] previously-presented=1\n"
