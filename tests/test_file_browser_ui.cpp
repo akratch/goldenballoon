@@ -97,6 +97,17 @@ int main() {
         assert(ui::lastFocusedName == "textures##literal.ZIP");
         press(ImGuiKey_GamepadFaceDown);
         assert(chosen && selection == expectedZip.u8string());
+
+        // Root navigation is observed using "/" by the app's controller
+        // journey, while the browser stores a drive-qualified root on Windows.
+        browser.open((fs::absolute("/") / "mdkr-root-observer.z64").u8string(),
+                     BrowserFileKind::Rom);
+        idle();
+        assert(browser.atDirectory("/"));
+        assert(!browser.atDirectory(nullptr));
+        assert(!browser.atDirectory(expected.parent_path().u8string().c_str()));
+        press(ImGuiKey_GamepadFaceRight);
+        assert(!browser.visible());
     }
     ImGui::DestroyContext();
     std::puts("file browser UI: ROM/ZIP selection, controller parent navigation and cancel passed at 100%/200%");

@@ -19,7 +19,11 @@ public:
         return visible() && path && focusedDirectory_ == directory && focusedPath_ == path;
     }
     bool atDirectory(const char *path) const {
-        return visible() && path && browser_.directory() == std::filesystem::u8path(path);
+        if (!visible() || !path) return false;
+        // goTo stores an absolute path; on Windows even "/" gains a drive.
+        std::error_code error;
+        const auto expected = std::filesystem::absolute(std::filesystem::u8path(path), error);
+        return !error && browser_.directory() == expected;
     }
     bool rootFocused() const { return visible() && rootFocused_; }
     bool upFocused() const { return visible() && upFocused_; }
