@@ -24,9 +24,11 @@ and only then about what was added:
 
   4. one ``[CRASHSCREEN]`` line naming the fault kind, the authoritative tick,
      the track, the renderer, the app version and the log path;
-  5. ``present=0`` with no window, and no ``presented=`` line -- headless never
+  5. ``present=0`` with no window, and no ``[CRASHSCREEN] presented=`` line -- headless never
      attempts to show a panel, because ``AppHost`` (the only thing that
      registers a window) is never built on the automation path.
+     Renderer ``presented=`` counters are not crash-panel reports. Parser
+     controls run on every invocation, or alone with ``--self-test``.
 
 The two faults, and why there are two
 -------------------------------------
@@ -177,6 +179,34 @@ def parse_fields(line: str) -> dict[str, str]:
             for key, value in FIELD_RE.findall(payload)}
 
 
+def presentation_lines(output: str) -> list[str]:
+    """Only crash-screen presentation reports count as crash panels."""
+    reports = []
+    for line in output.splitlines():
+        if MARKER in line:
+            report = line[line.index(MARKER):]
+            if "presented" in parse_fields(report):
+                reports.append(report)
+    return reports
+
+
+def presentation_controls() -> None:
+    """Keep renderer counters distinct without hiding actual crash panels."""
+    unrelated = (
+        "[WGPU-BACKPRESSURE-PERIODIC] cap=3 submitted=4096 presented=0 held=0\n"
+        "[APP-WGPU-PRESENT] attempts=1 presented=1 unavailable=0\n"
+        '[CRASHSCREEN] kind=abort present=0 log="presented=1"\n'
+        "[CRASHSCREEN] previously-presented=1\n"
+    )
+    if presentation_lines(unrelated):
+        raise AssertionError("unrelated presentation telemetry counted as a crash panel")
+    for count in (0, 1, 2, 10):
+        report = f"[CRASHSCREEN] presented={count} copied=0"
+        for prefix in ("", "diagnostic: "):
+            if presentation_lines(unrelated + prefix + report + "\n") != [report]:
+                raise AssertionError("crash-panel presentation control was missed")
+
+
 def check_ordering(label: str, output: str, marker: str, exact: str | None,
                    failures: list[str]) -> None:
     """The engine's marker is first. Not "present somewhere" -- first."""
@@ -253,11 +283,17 @@ def main() -> int:
     parser.add_argument("--rom", default="baserom.us.v80.z64")
     parser.add_argument("--frames", type=int, default=20)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--self-test", action="store_true",
+                        help="check presentation-report controls without launching the app")
     parser.add_argument(
         "--warmup", type=float, default=4.0,
         help="seconds to let the signal arm run before faulting it; measured "
              "reaching tick 1252 of the intro track in 1.5 s")
     args = parser.parse_args()
+    presentation_controls()
+    if args.self_test:
+        print("check_crash_screen: presentation controls PASS")
+        return 0
 
     binary = Path(resolve_binary(args.build)).resolve()
     rom = Path(args.rom).resolve()
@@ -292,9 +328,10 @@ def main() -> int:
     # --- 4 + 5. the report, and no presentation without a window ----------
     line = field_line(output)
     fields = check_report("abort arm", line, "abort", failures)
-    if "presented=" in output:
+    if presented := presentation_lines(output):
         failures.append(
-            "abort arm: the crash screen presented a panel in a headless run")
+            "abort arm: the crash screen presented a panel in a headless run: "
+            + repr(presented))
 
     # --- the OTHER seam: a signal, whose marker main_pc.c owns -------------
     signal_line: str | None = None
@@ -316,9 +353,10 @@ def main() -> int:
         signal_line = field_line(signal_output)
         signal_fields = check_report("signal arm", signal_line, "memory-fault",
                                      failures)
-        if "presented=" in signal_output:
+        if presented := presentation_lines(signal_output):
             failures.append(
-                "signal arm: the crash screen presented a panel in a headless run")
+                "signal arm: the crash screen presented a panel in a headless run: "
+                + repr(presented))
 
     # --- non-vacuity: the fields follow live state ------------------------
     if fields and signal_fields:
