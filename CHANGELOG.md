@@ -8,9 +8,13 @@ From 1.0.0 onward this project follows semantic versioning for the platform
 layer's public seams (config keys, environment variables, command-line flags and
 save formats). Everything below 1.0.0 predates that commitment.
 
-## [1.8.0] — 2026-10-09
+## [1.8.0] — Unreleased
 
 ### Added
+
+- Launcher Settings save export creates a portable `.mdkr-save` with all three
+  adventure slots, unlocks and time records. Native macOS/Windows save dialogs
+  and a typed destination elsewhere preserve the original and refuse replacement.
 
 - Controller-operated ROM and ZIP file browsers on Linux, packaged SDL controller
   mappings, and isolated controller intake tests through AppRun and AppImage.

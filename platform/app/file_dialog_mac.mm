@@ -264,6 +264,29 @@ bool saveCharacterCapture(std::string &out) {
     }
 }
 
+bool saveGameProgress(std::string &out, const std::string &suggestedName) {
+    @autoreleasepool {
+        if (![NSThread isMainThread]) return false;
+        NSSavePanel *panel = [NSSavePanel savePanel];
+        panel.title = @"Export game save";
+        panel.message = @"Save your adventure progress, unlocks and time records as a portable file.";
+        panel.prompt = @"Choose Filename";
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:suggestedName.c_str()];
+        panel.canCreateDirectories = YES;
+        UTType *type = [UTType typeWithFilenameExtension:@"mdkr-save"];
+        if (type != nil) panel.allowedContentTypes = @[ type ];
+        panel.allowsOtherFileTypes = NO;
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] != NSModalResponseOK) return false;
+        NSURL *url = panel.URL;
+        if (url == nil || !url.isFileURL) return false;
+        const char *path = url.fileSystemRepresentation;
+        if (path == nullptr || path[0] == '\0') return false;
+        out = path;
+        return true;
+    }
+}
+
 bool saveCharacterReport(std::string &out) {
     @autoreleasepool {
         if (![NSThread isMainThread]) return false;

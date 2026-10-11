@@ -25,6 +25,7 @@ extern "C" {
 #include "ui_common.h"
 #include "ui_online_room.h"
 #include "ui_settings.h"
+#include "ui_save_export.h"
 #include "party/libdatachannel_party_transport.h"
 #include "party/lan_party_transport.h"
 #include "party/lan_party_launch.h"
@@ -1749,6 +1750,8 @@ void drawSettingsPanel(LauncherState &s, LauncherAction &out) {
     ui::SectionHeader("Settings",
                       "Everything saves as you change it. Anything marked "
                       "“Next launch” waits for Play.");
+
+    SaveExport_draw();
 
     const bool restartPending = Settings_restartPending();
     if (restartPending) {

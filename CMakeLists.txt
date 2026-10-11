@@ -1065,6 +1065,9 @@ if(NOT EMSCRIPTEN)
             VERBATIM)
 
         set(APP_SOURCES
+            ${CMAKE_SOURCE_DIR}/platform/app/save_export.cpp
+            ${CMAKE_SOURCE_DIR}/platform/app/ui_save_export.cpp
+            ${CMAKE_SOURCE_DIR}/platform/save_container.c
             ${MDKR_HERO_HEADER}
             ${CMAKE_SOURCE_DIR}/platform/app/app_config.cpp
             ${CMAKE_SOURCE_DIR}/platform/app/app_config_escape.cpp

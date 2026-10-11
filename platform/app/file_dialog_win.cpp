@@ -321,6 +321,38 @@ bool saveCharacterCapture(std::string &out) {
     return true;
 }
 
+bool saveGameProgress(std::string &out, const std::string &suggestedName) {
+    static const wchar_t kFilter[] = L"Golden Balloon saves\0*.mdkr-save\0\0";
+    std::vector<wchar_t> file(32768, L'\0');
+    const auto initial = toUtf16(suggestedName);
+    if (initial.empty() || initial.size() >= file.size()) return false;
+    std::copy(initial.begin(), initial.end(), file.begin());
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    SDL_Window *window = SDL_GetKeyboardFocus();
+    if (window == nullptr) window = SDL_GetMouseFocus();
+    SDL_SysWMinfo windowInfo;
+    SDL_VERSION(&windowInfo.version);
+    if (window != nullptr &&
+        SDL_GetWindowWMInfo(window, &windowInfo) == SDL_TRUE &&
+        windowInfo.subsystem == SDL_SYSWM_WINDOWS) {
+        ofn.hwndOwner = windowInfo.info.win.window;
+    }
+    ofn.lpstrFilter = kFilter;
+    ofn.nFilterIndex = 1;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = (DWORD)file.size();
+    ofn.lpstrTitle = L"Export game save";
+    ofn.lpstrDefExt = L"mdkr-save";
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+    if (!GetSaveFileNameW(&ofn)) return false;
+    std::string picked = toUtf8(file.data());
+    if (picked.empty()) return false;
+    out = picked;
+    return true;
+}
+
 bool saveCharacterReport(std::string &out) {
     static const wchar_t kFilter[] = L"HTML documents\0*.html\0\0";
     std::vector<wchar_t> file(32768, L'\0');

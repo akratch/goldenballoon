@@ -139,6 +139,39 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     add_test(NAME rom_browser COMMAND mdkr_rom_browser_test)
 
+    add_executable(mdkr_save_export_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_export.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/save_export.cpp
+        ${CMAKE_SOURCE_DIR}/platform/save_codec.c
+        ${CMAKE_SOURCE_DIR}/platform/save_container.c
+        ${CMAKE_SOURCE_DIR}/platform/save_tools_core.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c)
+    target_include_directories(mdkr_save_export_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform ${CMAKE_SOURCE_DIR}/platform/app)
+    target_compile_features(mdkr_save_export_test PRIVATE cxx_std_17)
+    set_target_properties(mdkr_save_export_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME save_export COMMAND mdkr_save_export_test)
+
+    add_executable(mdkr_save_export_ui_test
+        ${CMAKE_SOURCE_DIR}/tests/test_save_export_ui.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/ui_save_export.cpp
+        ${CMAKE_SOURCE_DIR}/platform/app/save_export.cpp
+        ${CMAKE_SOURCE_DIR}/platform/save_codec.c
+        ${CMAKE_SOURCE_DIR}/platform/save_container.c
+        ${CMAKE_SOURCE_DIR}/platform/sha256.c
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_draw.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_tables.cpp
+        ${CMAKE_SOURCE_DIR}/lib/imgui/imgui_widgets.cpp)
+    target_include_directories(mdkr_save_export_ui_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform/app ${CMAKE_SOURCE_DIR}/lib/imgui)
+    target_compile_definitions(mdkr_save_export_ui_test PRIVATE MDKR_APP_VERSION_STR="test")
+    target_compile_features(mdkr_save_export_ui_test PRIVATE cxx_std_17)
+    set_target_properties(mdkr_save_export_ui_test PROPERTIES
+        CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    add_test(NAME save_export_ui COMMAND mdkr_save_export_ui_test)
+
     add_executable(mdkr_file_browser_ui_test
         ${CMAKE_SOURCE_DIR}/tests/test_file_browser_ui.cpp
         ${CMAKE_SOURCE_DIR}/platform/app/file_browser_ui.cpp

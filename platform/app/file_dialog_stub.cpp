@@ -16,6 +16,10 @@ namespace filedialog {
 
 bool isAvailable() { return false; }
 
+bool saveGameProgress(std::string &out, const std::string &suggestedName) {
+    (void)out; (void)suggestedName; return false;
+}
+
 bool openRom(std::string &out) {
     (void)out;   // never written: callers must gate on isAvailable()
     return false;

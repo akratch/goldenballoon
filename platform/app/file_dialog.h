@@ -35,6 +35,9 @@ namespace filedialog {
 // caller with its own in-window picker from offering that separate capability.
 bool isAvailable();
 
+// Choose a portable progress/records export. Writer still refuses replacement.
+bool saveGameProgress(std::string &out, const std::string &suggestedName);
+
 // Show a modal native open-panel filtered to N64 ROM images. Returns true and
 // writes the chosen absolute path to `out` when the user picks a file; false
 // when they cancel (or no implementation exists). `out` is untouched on false.

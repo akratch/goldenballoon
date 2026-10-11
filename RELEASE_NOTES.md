@@ -1,10 +1,14 @@
 # Golden Balloon 1.8.0
 
-*Released 2026-10-09. Online multiplayer is still a beta.*
+*Release candidate. Online multiplayer is still a beta.*
 
 This update makes texture packs smoother to play with, brings controller file
 picking to Linux and Steam Deck, and fixes music, finish banners and menu navigation.
 
+- **Export your save from Settings.** Saves → Export save creates a portable
+  `.mdkr-save` copy of all three adventure slots, unlocks and time records.
+  Ghosts and launcher settings are stored separately, and existing files are
+  never overwritten.
 - **Texture packs load in the background.** Moving into a new area no longer
   makes the game wait for each replacement image to be read and decoded. The
   original texture may appear briefly while its replacement loads. This reduces
