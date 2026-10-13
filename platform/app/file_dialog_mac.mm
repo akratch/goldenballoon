@@ -271,11 +271,14 @@ bool saveGameProgress(std::string &out, const std::string &suggestedName) {
         panel.title = @"Export game save";
         panel.message = @"Save your adventure progress, unlocks and time records as a portable file.";
         panel.prompt = @"Choose Filename";
-        panel.nameFieldStringValue = [NSString stringWithUTF8String:suggestedName.c_str()];
         panel.canCreateDirectories = YES;
         UTType *type = [UTType typeWithFilenameExtension:@"mdkr-save"];
         if (type != nil) panel.allowedContentTypes = @[ type ];
         panel.allowsOtherFileTypes = NO;
+        // Configure the type and extension display before assigning the name.
+        // Reused panel state must not append another suffix on the next export.
+        panel.extensionHidden = NO;
+        panel.nameFieldStringValue = [NSString stringWithUTF8String:suggestedName.c_str()];
         [NSApp activateIgnoringOtherApps:YES];
         if ([panel runModal] != NSModalResponseOK) return false;
         NSURL *url = panel.URL;
