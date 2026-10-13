@@ -76,9 +76,9 @@ def main() -> int:
             "55f93686c01528224f448c19128836e7df245f72",
             "94899e0b926ac1b0f4750bfbd495167b4a6ae9ef",
             "cmake/apply_libdatachannel_patch.cmake",
-            "53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674",
+            "434ba641795184ec8af565ef37c097c76f64b84dc81b8570aad4aab523f2a5d0",
             "cmake/verify_datachannel_startup.cmake",
-            "a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130",
+            "8f47cf1212a9fc7148757e3f9c951c7568f28f68ea51b8839ca1f4a963a88be2",
             "__PRETTY_FUNCTION__ to __func__",
             "cmake/patches/libdatachannel-cleanup-worker.patch",
             "platform/online/reserved_cleanup_worker.h",
@@ -260,7 +260,7 @@ def main() -> int:
         "third_party/qrcodegen/qrcodegen.cpp":
             "8948b57053deb5d132bfc675ca2688b7abef9f03ec633c0de59770c945a66fc9",
         "third_party/native_phone_party/NOTICE.txt":
-            "09dc99293dc43b80a49049e9ad91d0e14fc1010da770ad1b13fe766b6f9f3fee",
+            "dd753a65bb8de6de10a5bfc5de8ff6ae3690e333466c034ef4efbaa7ddb54a20",
         "third_party/character_importer/CPython-LICENSE.txt":
             "78b12c3a81360b357002334f0e70ea0e92eebf7a9b358805c03c48484945f3bb",
         "third_party/character_importer/PyInstaller-COPYING.txt":
@@ -283,14 +283,16 @@ def main() -> int:
             "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26",
         "cmake/patches/libdatachannel-windows-mbedtls-verify.patch":
             "b47d81ee765b2eed51f75b9cb599522fdd6f9eda7511b025214c63cc4c3336a7",
+        "cmake/patches/libjuice-picohash-callbacks.patch":
+            "dbc8fa9d906af33327d629b857914f1a4237ed7bd03ffdb68ef221755f859f0e",
         "cmake/patches/libdatachannel-cleanup-worker.patch":
             "eb697e5b4c0cf368c73d1fec010e0666438cab6be88935e979f17f60b3c3f2cf",
         "platform/online/reserved_cleanup_worker.h":
             "25b834a6e85361c7a92464a403bfbade7f8abd90bf2efa397960d0a645ca28bc",
         "cmake/apply_libdatachannel_patch.cmake":
-            "53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674",
+            "434ba641795184ec8af565ef37c097c76f64b84dc81b8570aad4aab523f2a5d0",
         "cmake/verify_datachannel_startup.cmake":
-            "a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130",
+            "8f47cf1212a9fc7148757e3f9c951c7568f28f68ea51b8839ca1f4a963a88be2",
         "cmake/patches/libdatachannel-initialization.patch":
             "8baa28ca33a2bda267f705f4421cd893dd477f10a621ff5b81b9415876f6d3b8",
         "cmake/patches/libdatachannel-startup-stages.patch":

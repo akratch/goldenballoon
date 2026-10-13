@@ -65,7 +65,7 @@ SDL2_LICENSE_SHA256="$(shasum -a 256 "${SDL2_LICENSE}" | awk '{print $1}')"
 PHONE_PARTY_NOTICE="${APP_PATH}/Contents/Resources/ThirdParty/NativePhoneParty-NOTICES.txt"
 [[ -f "${PHONE_PARTY_NOTICE}" ]] || die "bundled native Phone Party notices are missing"
 PHONE_PARTY_NOTICE_SHA256="$(shasum -a 256 "${PHONE_PARTY_NOTICE}" | awk '{print $1}')"
-[[ "${PHONE_PARTY_NOTICE_SHA256}" == "09dc99293dc43b80a49049e9ad91d0e14fc1010da770ad1b13fe766b6f9f3fee" ]] ||
+[[ "${PHONE_PARTY_NOTICE_SHA256}" == "dd753a65bb8de6de10a5bfc5de8ff6ae3690e333466c034ef4efbaa7ddb54a20" ]] ||
     die "bundled native Phone Party notices do not match the reviewed manifest"
 BASISU_NOTICE_DIR="${APP_PATH}/Contents/Resources/ThirdParty"
 for BASISU_NOTICE_SPEC in \

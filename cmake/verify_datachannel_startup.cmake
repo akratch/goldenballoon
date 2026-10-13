@@ -35,6 +35,13 @@ function(mdkr_verify_datachannel_startup source_dir)
                 "use the patched source also for source-directory overrides")
         endif()
     endforeach()
+    file(SHA256 "${source_dir}/deps/libjuice/src/picohash.h" picohash_sha256)
+    if(NOT picohash_sha256 STREQUAL
+            "6919bc490c56a7ed0cb73cf9f439794309e6463739bf97206cc08763c776d9a5")
+        message(FATAL_ERROR
+            "libjuice picohash callbacks do not match the reviewed type-safe amendment; "
+            "use the patched source also for source-directory overrides")
+    endif()
     execute_process(
         COMMAND git apply --reverse --check
             "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/patches/libdatachannel-startup-stages.patch"

@@ -103,6 +103,7 @@ FetchContent_Declare(mdkr_libdatachannel
       "-DWORK_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-work-admission.patch"
       "-DPREPARED_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-prepared-work.patch"
       "-DRETIREMENT_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libdatachannel-transport-retirement.patch"
+      "-DPICOHASH_PATCH_FILE=${CMAKE_SOURCE_DIR}/cmake/patches/libjuice-picohash-callbacks.patch"
       -P "${CMAKE_SOURCE_DIR}/cmake/apply_libdatachannel_patch.cmake")
 FetchContent_MakeAvailable(mdkr_libdatachannel)
 

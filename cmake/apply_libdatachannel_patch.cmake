@@ -1,8 +1,8 @@
 if(NOT DEFINED SOURCE_DIR OR NOT DEFINED PATCH_FILE OR NOT DEFINED CLEANUP_PATCH_FILE
    OR NOT DEFINED INIT_PATCH_FILE OR NOT DEFINED STAGES_PATCH_FILE
    OR NOT DEFINED WORK_PATCH_FILE OR NOT DEFINED PREPARED_PATCH_FILE
-   OR NOT DEFINED RETIREMENT_PATCH_FILE)
-    message(FATAL_ERROR "SOURCE_DIR and all seven RTC patch paths are required")
+   OR NOT DEFINED RETIREMENT_PATCH_FILE OR NOT DEFINED PICOHASH_PATCH_FILE)
+    message(FATAL_ERROR "SOURCE_DIR and all seven RTC patch paths plus PICOHASH_PATCH_FILE are required")
 endif()
 
 # Patch only FetchContent-owned sources. A reverse dry-run recognizes an already
@@ -68,6 +68,7 @@ if(NOT RETIREMENT_ALREADY_APPLIED EQUAL 0)
     endif()
     mdkr_apply_checked_patch("${RETIREMENT_PATCH_FILE}")
 endif()
+mdkr_apply_checked_patch("${PICOHASH_PATCH_FILE}")
 include("${CMAKE_CURRENT_LIST_DIR}/verify_datachannel_startup.cmake")
 mdkr_verify_datachannel_startup("${SOURCE_DIR}")
 

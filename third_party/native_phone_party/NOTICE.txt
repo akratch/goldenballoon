@@ -93,10 +93,10 @@ COMPONENT MANIFEST
   __PRETTY_FUNCTION__ to __func__. This local source amendment retains plog's
   license and changes the captured function-name spelling only.
   The exact application recipe is cmake/apply_libdatachannel_patch.cmake,
-  SHA-256 53d437ced9902a056210cf349a44a1eb2b55bb1afb0d27cd37e978197d3bc674;
+  SHA-256 434ba641795184ec8af565ef37c097c76f64b84dc81b8570aad4aab523f2a5d0;
   this tracked source file also applies the seven libdatachannel patches above.
   Its composed-source verification recipe is cmake/verify_datachannel_startup.cmake,
-  SHA-256 a77aa87cd74c8105d38fa05be99c38a95726e5b994045cff9b8255d97c450130.
+  SHA-256 8f47cf1212a9fc7148757e3f9c951c7568f28f68ea51b8839ca1f4a963a88be2.
 - Mbed TLS 3.6.7, official archive SHA-256
   a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
   Source: https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-3.6.7
@@ -1165,3 +1165,7 @@ Project Nayuki QR Code generator MIT License
  *   out of or in connection with the Software or the use or other dealings in the
  *   Software.
  */
+
+Type-safe libjuice picohash callbacks (algorithms unchanged): cmake/patches/libjuice-picohash-callbacks.patch
+SHA-256: dbc8fa9d906af33327d629b857914f1a4237ed7bd03ffdb68ef221755f859f0e
+Patched picohash.h SHA-256: 6919bc490c56a7ed0cb73cf9f439794309e6463739bf97206cc08763c776d9a5

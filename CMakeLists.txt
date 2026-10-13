@@ -1236,6 +1236,12 @@ if(NOT EMSCRIPTEN)
                 endif()
                 add_test(NAME native_party_sas COMMAND mdkr_native_party_sas_test)
 
+                add_executable(mdkr_picohash_callbacks_test
+                    ${CMAKE_SOURCE_DIR}/tests/test_picohash_callbacks.c)
+                target_include_directories(mdkr_picohash_callbacks_test SYSTEM PRIVATE
+                    ${mdkr_libdatachannel_SOURCE_DIR}/deps/libjuice/src)
+                add_test(NAME picohash_callbacks COMMAND mdkr_picohash_callbacks_test)
+
                 # Phase 3 local-only play: the LanPartyTransport driven under
                 # the real MdkrNativePartyHost. Lives here (not cmake/tests.cmake)
                 # because it needs libdatachannel + nlohmann + MbedTLS, which are

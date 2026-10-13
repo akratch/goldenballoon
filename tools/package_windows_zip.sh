@@ -16,7 +16,7 @@
 # The app ships NO game data (bring-your-own-ROM); nothing here embeds ROM bytes.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-readonly PHONE_PARTY_NOTICE_SHA256="09dc99293dc43b80a49049e9ad91d0e14fc1010da770ad1b13fe766b6f9f3fee"
+readonly PHONE_PARTY_NOTICE_SHA256="dd753a65bb8de6de10a5bfc5de8ff6ae3690e333466c034ef4efbaa7ddb54a20"
 
 # Trimmed local-play (no internet) controller assets staged beside the exe
 # (Task 5), emitted as the exact zip entries they produce: each file plus the
