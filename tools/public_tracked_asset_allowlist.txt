@@ -57,7 +57,7 @@ tests/fuzz_corpus/modern_character_asset/hostile-section-offset.mdkc
 tests/fuzz_corpus/modern_character_asset/sixtyfive-animations.mdkc
 tests/fuzz_corpus/modern_character_asset/truncated-character.mdkc
 tests/fuzz_corpus/modern_character_asset/truncated-level-table.ktx2
-tests/fuzz_corpus/modern_character_asset/truncated-portrait.png
+tests/fuzz_corpus/modern_character_asset/truncated-portrait.bin
 tests/fuzz_corpus/modern_character_asset/valid-character.mdkc
 tests/fuzz_corpus/modern_character_asset/valid-etc1s-srgb.ktx2
 tests/fuzz_corpus/modern_character_asset/valid-portrait.png

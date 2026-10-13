@@ -40,6 +40,11 @@ namespace fs = std::filesystem;
 
 namespace {
 
+struct FileCloser {
+    void operator()(FILE *stream) const noexcept { std::fclose(stream); }
+};
+using FileHandle = std::unique_ptr<FILE, FileCloser>;
+
 // Every staging folder is named ".install-<tick>-<attempt>": the steady-clock
 // tick and an attempt number below kStageAttempts, both decimal without
 // leading zeros. A sweep removes only names of exactly that form, so a
@@ -713,8 +718,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
                 prepared.error_ = "The pack exceeds the installation byte budget.";
                 return prepared;
             }
-            std::unique_ptr<FILE, decltype(&std::fclose)> listing(
-                openSource(prepared.filename_), std::fclose);
+            FileHandle listing(openSource(prepared.filename_));
             const auto problem = zipDirectoryProblem(listing.get(), limits, false, {});
             if (!problem.empty()) {
                 prepared.error_ = problem;
@@ -892,7 +896,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
     // `relative` names the file below the selected folder (a ZIP: its own
     // name); the staged copy lands at the same place below the payload.
     const auto copyFile = [&](const fs::path &relative) {
-        std::unique_ptr<FILE, decltype(&std::fclose)> input(openSource(relative), std::fclose);
+        FileHandle input(openSource(relative));
         if (input && directory) {
             // Same per-entry limit as runtime directory reads. Inspect before
             // copying, then enforce again while streaming if the file grows.
@@ -912,8 +916,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
             }
         }
         const fs::path staged = directory ? prepared.filename_ / relative : prepared.filename_;
-        std::unique_ptr<FILE, decltype(&std::fclose)> output(
-            input ? createStaged(staged) : nullptr, std::fclose);
+        FileHandle output(input ? createStaged(staged) : nullptr);
         if (!input || !output) {
             prepared.error_ = "Could not open the pack or staging file for copying.";
             return false;
@@ -953,8 +956,7 @@ PreparedPackInstall PreparedPackInstall::copyPack(const fs::path &source,
         if (!takeEntry() || !copyFile(prepared.filename_)) return prepared;
         // Inspect the completed staged bytes on the worker, not the mutable
         // source or the launcher thread. No payload inflation is needed.
-        std::unique_ptr<FILE, decltype(&std::fclose)> staged(
-            openStaged(prepared.filename_), std::fclose);
+        FileHandle staged(openStaged(prepared.filename_));
         const auto problem = zipDirectoryProblem(staged.get(), limits, true, stop);
         if (!problem.empty() && prepared.error_.empty()) prepared.error_ = problem;
         return prepared;

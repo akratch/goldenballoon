@@ -63,7 +63,10 @@ def main() -> int:
     # portraits. A valid generated portrait reaches full RGBA decode; its
     # truncation anchors the PNG error paths without importing external art.
     (CORPUS / "valid-portrait.png").write_bytes(portrait)
-    (CORPUS / "truncated-portrait.png").write_bytes(portrait[:-13])
+    # This deliberately malformed byte stream is fuzz input, not a display
+    # image. Keep it as .bin so the image-metadata gate still requires every
+    # tracked .png to be structurally valid.
+    (CORPUS / "truncated-portrait.bin").write_bytes(portrait[:-13])
 
     # A fully valid compiled character reaches every section parser and its
     # embedded portrait PNG. Truncated and checksum-valid hostile-offset
