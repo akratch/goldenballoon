@@ -1,6 +1,6 @@
 # Golden Balloon 1.8.0
 
-*Release candidate. Online multiplayer is still a beta.*
+*Online multiplayer is still a beta.*
 
 This update makes texture packs smoother to play with, brings controller file
 picking to Linux and Steam Deck, and fixes music, finish banners and menu navigation.
