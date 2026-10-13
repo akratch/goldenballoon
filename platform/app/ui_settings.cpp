@@ -1038,6 +1038,16 @@ bool drawKey(SDL_Window *window, MdkrVideoKey k, bool compact) {
                  * frame, and Settings_smokeFrameLimitCenter() refuses to hand
                  * them over unless this says the widget is on screen. */
                 g_frameLimitRectValid = ImGui::IsItemVisible();
+                if (std::getenv("MDKR_APP_SMOKE_SELECT_FRAME_LIMIT")) {
+                    // A section above this row may leave only a clipped edge
+                    // visible. Settle the test viewport before its real SDL
+                    // pointer press, as the UI-scale drag fixture does.
+                    static int scrolledFrames = 0;
+                    if (scrolledFrames < 2) {
+                        ImGui::SetScrollHereY(0.5f);
+                        ++scrolledFrames;
+                    }
+                }
             }
             /* Same fact, said out loud, because a gate that simply cannot find
              * its target reports "was not rendered" and leaves the reader to

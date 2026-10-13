@@ -3522,7 +3522,7 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
      * and for the successful same-process save verdict to be observed. */
     const int smokeMinimumFrames = smokeUsesGamepad
         ? smokeActivateFrame + 8
-        : smokeFrameLimitSteps * 3 + 12;
+        : smokeFrameLimitSteps * 3 + 14;
     if (smokeFrameLimit && smokeFrameLimitSteps >= 0 &&
         frames < smokeMinimumFrames) {
         frames = smokeMinimumFrames;
@@ -3938,10 +3938,10 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
 
         if (smokeUiScaleDrag) {
             int currentRect[4] = {0, 0, 0, 0};
-            // Through frame 8 the real SDL button is held or its release is
-            // being consumed by ImGui: this arm is driving the slider, so the
-            // slider not being on screen is a failure to drive it.
-            const bool dragUnderway = i <= 8;
+            // Frame 0 settles the initial viewport before any pointer press.
+            // From frame 1 through frame 8 the real SDL button is held or its
+            // release is being consumed: a missing slider then fails the drag.
+            const bool dragUnderway = i >= 1 && i <= 8;
             if (!Settings_smokeUiScaleRect(
                     &currentRect[0], &currentRect[1],
                     &currentRect[2], &currentRect[3])) {
@@ -3958,6 +3958,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
                         stderr,
                         "[app-ui-test] UI-scale slider was not rendered\n");
                     renderOk = false;
+                } else if (i == 0) {
+                    std::fprintf(stderr,
+                                 "[app-ui-test] ui-scale waiting for initial viewport scroll\n");
                 } else {
                     std::fprintf(
                         stderr,
@@ -4292,7 +4295,9 @@ int runShellSmoke(AppHost &host, Launcher &launcher, AppUiSmokeInputMode smokeIn
         // the rendered popup; gamepad retains its explicit production-input
         // choreography. Every action still enters through SDL and ImGui.
         if (smokeFrameLimit) {
-            if (i == 0 && !useGamepad) {
+            // Allow the Settings viewport's two settling frames before
+            // sampling a pointer target; IsItemVisible includes clipped edges.
+            if (i == 2 && !useGamepad) {
                 int x = 0, y = 0;
                 if (Settings_smokeFrameLimitCenter(&x, &y)) {
                     host.queueMouseClickForSmoke(x, y);
